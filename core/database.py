@@ -689,6 +689,54 @@ def _init_db_locked():
         if "download_id" not in wph_columns:
             c.execute("ALTER TABLE weekly_packs_history ADD COLUMN download_id TEXT")
 
+        # What each automatic download run did (core/download_runs.py): one row
+        # per GetComics sweep / weekly-pack run, one item per issue it searched
+        # for. Skips are counters in counts_json, never items, and old runs are
+        # pruned when a new one starts, so both tables stay bounded.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS download_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                trigger TEXT,
+                scope TEXT,
+                started_at TIMESTAMP NOT NULL,
+                finished_at TIMESTAMP,
+                status TEXT NOT NULL DEFAULT 'running',
+                error TEXT,
+                counts_json TEXT NOT NULL DEFAULT '{}',
+                items_truncated INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_download_runs_kind_started "
+            "ON download_runs(kind, started_at)"
+        )
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS download_run_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                series_id INTEGER,
+                series_name TEXT,
+                issue_number TEXT,
+                source TEXT,
+                provider TEXT,
+                outcome TEXT NOT NULL,
+                detail TEXT,
+                download_id TEXT,
+                download_status TEXT,
+                updated_at TIMESTAMP
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_download_run_items_run "
+            "ON download_run_items(run_id)"
+        )
+        # Every settled download (manual ones too) looks its item up by this.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_download_run_items_download "
+            "ON download_run_items(download_id)"
+        )
+
         # Create wanted_issues table (cache pre-computed wanted issues)
         c.execute("""
             CREATE TABLE IF NOT EXISTS wanted_issues (

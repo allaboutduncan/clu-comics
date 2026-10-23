@@ -386,6 +386,9 @@ app.register_blueprint(mylar_import_bp)
 from routes.setup import setup_bp
 
 app.register_blueprint(setup_bp)
+from routes.download_runs import download_runs_bp
+
+app.register_blueprint(download_runs_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -1147,7 +1150,8 @@ MAX_DOWNLOADS_PER_SWEEP = 150
 
 
 # Function to perform scheduled GetComics auto-download
-def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None):
+def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
+                                 trigger=None):
     """Auto-download wanted issues from GetComics on schedule.
 
     Args:
@@ -1166,12 +1170,23 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         op_id: Operations-registry id (core/app_state) to report progress
                  against. The caller registers it so it can hand the id to the
                  browser immediately; this function updates and completes it.
+        trigger: How the run started, for its report on the Status page
+                 (core/download_runs): "manual" from Run Now. Defaults to
+                 "series" for a scoped run and "scheduled" otherwise.
 
     Returns:
         ``{"searched": int, "queued": int}``, or the simulation list when
         ``dry_run`` is set. A run that stood down because its scope was already
         in flight returns that shape with ``skipped`` set.
     """
+    from core import download_runs
+
+    # The run report (Status page). A dry run records nothing -- the
+    # simulation page is its report -- so it keeps the no-op recorder and no
+    # hook site below needs an `if`.
+    run = download_runs.NULL_RECORDER
+    run_status, run_error = download_runs.STATUS_ERROR, "Run ended unexpectedly"
+
     # A dry run queues nothing, so it neither needs the claim nor may block a
     # real sweep out of one.
     #
@@ -1205,6 +1220,24 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
             op_id = app_state.register_operation(
                 "search", "GetComics Auto-Download"
             )
+
+        # After the claim, like the operation: a run that stood down did
+        # nothing and gets no report.
+        run = download_runs.start_run(
+            download_runs.KIND_GETCOMICS,
+            trigger or (
+                download_runs.TRIGGER_SERIES if only_series_id is not None
+                else download_runs.TRIGGER_SCHEDULED
+            ),
+        )
+
+    def _record(item, outcome, provider="getcomics", detail=None, download_id=None):
+        """One searched issue's outcome, for the run report."""
+        run.item(
+            item["series_name"], item["issue_num"], outcome,
+            series_id=item.get("series_id"), source=item.get("source"),
+            provider=provider, detail=detail, download_id=download_id,
+        )
 
     try:
         from core.database import (
@@ -1308,6 +1341,8 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         # or unknown id yields an empty list, so the run is a no-op.
         if only_series_id is not None:
             mapped_series = [s for s in mapped_series if s.get("id") == only_series_id]
+            if mapped_series:
+                run.set_scope(mapped_series[0].get("name"))
 
         # Track downloaded ranges per series to avoid re-downloading the same range
         # Format: {series_name: [(start_issue, end_issue), ...]}
@@ -1344,9 +1379,11 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
             # A scoped run is an explicit request for this one series, so the
             # toggle -- which only governs the unattended sweep -- doesn't apply.
             if only_series_id is None and series.get("monitored") == 0:
+                run.count(download_runs.COUNT_UNMONITORED)
                 continue
 
             if not mapped_path or not os.path.exists(mapped_path):
+                run.count(download_runs.COUNT_NO_FOLDER)
                 continue
 
             # Configured GetComics search aliases for this series (e.g. "2000AD"
@@ -1392,14 +1429,17 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
 
                 # Skip if already found in collection
                 if status.get("found"):
+                    run.count(download_runs.COUNT_OWNED)
                     continue
 
                 # Skip if manually marked as owned or skipped
                 if issue_num in manual_status:
+                    run.count(download_runs.COUNT_MANUAL)
                     continue
 
                 # Only process issues with store_date <= today (already released)
                 if not store_date or store_date > today:
+                    run.count(download_runs.COUNT_UNRELEASED)
                     continue
 
                 # Queued recently and still missing. Something downstream is
@@ -1413,6 +1453,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                     cooldown_now,
                     QUEUE_COOLDOWN_DAYS,
                 ):
+                    run.count(download_runs.COUNT_COOLDOWN)
                     continue
 
                 work_items.append({
@@ -1464,6 +1505,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                     f"{len(work_items)} items searched. The rest are picked up "
                     f"by the next run."
                 )
+                run.count(
+                    download_runs.COUNT_CAP,
+                    len(work_items) - work_items.index(item),
+                )
                 break
 
             # Unpacked before the try: the except handler logs these, and an
@@ -1495,6 +1540,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                             app_logger.debug(f"Skipping {series_name} #{issue_num} — covered by downloaded range #{r_start}-{r_end}")
                             break
                 if skip_for_range:
+                    run.count(download_runs.COUNT_RANGE)
                     continue
 
                 # Search GetComics for this issue
@@ -1544,6 +1590,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                 # Higher-priority sources first: try each before GetComics
                 # and, on a hit, skip GetComics for this issue.
                 handled_by_pre_source = False
+                # Why GetComics took nothing for this issue, recorded only once
+                # the fallback sources below have had their turn -- an issue a
+                # fallback found must not also be reported as not found.
+                gc_miss = None
                 for src_name, src_label, src_try in pre_sources:
                     u = src_try(
                         series_name, issue_num,
@@ -1575,6 +1625,11 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         app_logger.info(
                             f"Submitted {src_label} download for {series_name} "
                             f"#{issue_num}: {u['chosen']['filename']} {search_context}"
+                        )
+                        _record(
+                            item, download_runs.OUTCOME_QUEUED, provider=src_name,
+                            detail=u["chosen"].get("filename"),
+                            download_id=u.get("download_id"),
                         )
                         _mark_queued(item)
                         handled_by_pre_source = True
@@ -1617,6 +1672,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                             "all_results": [],
                             "status": "no_results",
                         })
+                    _record(item, download_runs.OUTCOME_NO_RESULTS)
                     continue
 
                 # Score results and find best match.
@@ -1751,6 +1807,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                             f"Skipped pack {best_result['title']} for {series_name} "
                             f"#{issue_num}: Download Packs is off {search_context}"
                         )
+                        gc_miss = (
+                            download_runs.OUTCOME_PACK_SKIPPED,
+                            f"{best_result.get('title', '')} (Download Packs is off)",
+                        )
                         if dry_run:
                             simulation_results.append({
                                 "series": series_name,
@@ -1780,6 +1840,9 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                     elif not parts:
                         app_logger.warning(
                             f"No part of {best_result['title']} can be matched to #{issue_num} {search_context}"
+                        )
+                        gc_miss = (
+                            download_runs.OUTCOME_NO_PART, best_result.get("title", "")
                         )
                         if dry_run:
                             simulation_results.append({
@@ -1866,6 +1929,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                     f"#{issue_num}: same file already queued for "
                                     f"{claimed_by} ({download_url}) {search_context}"
                                 )
+                                _record(
+                                    item, download_runs.OUTCOME_DUPLICATE,
+                                    detail=f"Same file as {claimed_by}",
+                                )
                                 continue
 
                             # Queue the download (matching manual download structure).
@@ -1909,6 +1976,17 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                 # establish the session/referrer the mirrors require.
                                 "page_url": best_result["link"],
                             }
+                            # Recorded before put(): a worker can settle the
+                            # download before this line would otherwise run,
+                            # and its outcome write needs the item to exist.
+                            # The recorder buffers, so flush it first.
+                            _record(
+                                item, download_runs.OUTCOME_QUEUED,
+                                provider=primary_provider,
+                                detail=f"{filename} ← {best_result.get('title', '')}",
+                                download_id=download_id,
+                            )
+                            run.flush()
                             download_queue.put(task)
                             queued_download_urls[download_url] = f"{series_name} #{issue_num}"
 
@@ -1936,9 +2014,16 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                         app_logger.warning(
                             f"No download link found for: {best_result['title']} {search_context}"
                         )
+                        gc_miss = (
+                            download_runs.OUTCOME_NO_LINK, best_result.get("title", "")
+                        )
                 else:
                     app_logger.debug(
                         f"No good match found for {series_name} #{issue_num} {search_context}"
+                    )
+                    gc_miss = (
+                        download_runs.OUTCOME_NO_MATCH,
+                        f"{len(results)} result(s), none accepted",
                     )
                     if dry_run:
                         best_score_val = scored_results[0]["score"] if scored_results else 0
@@ -1982,13 +2067,23 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
                                 f"#{issue_num}: {u['chosen']['filename']} "
                                 f"{search_context}"
                             )
+                            _record(
+                                item, download_runs.OUTCOME_QUEUED, provider=src_name,
+                                detail=u["chosen"].get("filename"),
+                                download_id=u.get("download_id"),
+                            )
+                            gc_miss = None
                             _mark_queued(item)
                             break
+
+                if gc_miss:
+                    _record(item, gc_miss[0], detail=gc_miss[1])
             except Exception as issue_err:
                 app_logger.error(
                     f"GetComics auto-download: skipping {series_name} "
                     f"#{issue_num} after error: {issue_err}"
                 )
+                _record(item, download_runs.OUTCOME_ERROR, detail=str(issue_err))
                 continue
 
         # Update last run timestamp -- the *schedule's*, so a scoped run
@@ -1999,7 +2094,9 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         elapsed = time.time() - start_time
         app_logger.info(
             f"GetComics auto-download completed in {elapsed:.2f}s ({search_count} searched, {download_count} queued)"
+            + (f" [run {run.run_id}]" if run.run_id else "")
         )
+        run_status, run_error = download_runs.STATUS_OK, None
 
         if op_id:
             app_state.update_operation(
@@ -2015,6 +2112,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
 
     except Exception as e:
         app_logger.error(f"GetComics auto-download failed: {e}")
+        run_error = str(e)
         if op_id:
             app_state.update_operation(op_id, detail=f"Failed: {e}")
             app_state.complete_operation(op_id, error=True)
@@ -2023,6 +2121,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None)
         return {"searched": 0, "queued": 0, "error": str(e)}
 
     finally:
+        run.finish(run_status, run_error)
         if sweep_scope:
             app_state.release_getcomics_sweep(sweep_scope)
 
@@ -2188,7 +2287,8 @@ def configure_scrape_index_schedule():
 
 # Function to perform scheduled Weekly Packs auto-download
 def _enqueue_weekly_pack(
-    pack_date, publisher, pixeldrain_url, format_pref, download_progress, download_queue
+    pack_date, publisher, pixeldrain_url, format_pref, download_progress, download_queue,
+    run=None,
 ):
     """Queue one weekly pack download and record it in history.
 
@@ -2225,6 +2325,16 @@ def _enqueue_weekly_pack(
         download_id=download_id,
     )
 
+    # The run report's item, written before put() for the same reason as the
+    # history row: the worker writes the outcome back onto it.
+    if run is not None:
+        run.item(
+            f"{publisher} weekly pack", pack_date, "queued",
+            source="pack", provider="pixeldrain", detail=filename,
+            download_id=download_id,
+        )
+        run.flush()
+
     download_queue.put(
         {
             "download_id": download_id,
@@ -2243,8 +2353,16 @@ def _enqueue_weekly_pack(
     return download_id
 
 
-def scheduled_weekly_packs_download():
-    """Auto-download weekly packs from GetComics on schedule."""
+def scheduled_weekly_packs_download(trigger=None):
+    """Auto-download weekly packs from GetComics on schedule.
+
+    ``trigger`` is "manual" from Run Now; it only labels the run's report.
+    """
+    from core import download_runs
+
+    # Opened once the config says there is something to do: a disabled job
+    # is not a run worth reporting.
+    run = download_runs.NULL_RECORDER
     try:
         from core.database import (
             get_weekly_packs_config,
@@ -2289,6 +2407,11 @@ def scheduled_weekly_packs_download():
             app_logger.info("No publishers selected for weekly packs, skipping")
             return
 
+        run = download_runs.start_run(
+            download_runs.KIND_WEEKLY_PACKS,
+            trigger or download_runs.TRIGGER_SCHEDULED,
+        )
+
         format_pref = config["format"]
         publishers = config["publishers"]
         start_date = config.get("start_date")
@@ -2315,6 +2438,7 @@ def scheduled_weekly_packs_download():
                     app_logger.debug(
                         f"Pack {pack_date} already downloaded for all publishers, skipping"
                     )
+                    run.count(download_runs.COUNT_ALREADY_DOWNLOADED)
                     continue
 
                 # Construct URL and check status
@@ -2331,6 +2455,7 @@ def scheduled_weekly_packs_download():
                     # 'pending' (links not ready) or 'error' (transient failure).
                     app_logger.info(f"Pack {pack_date} links not ready yet ({status})")
                     any_not_ready = True
+                    run.count(download_runs.COUNT_NOT_READY)
                     continue
 
                 # Parse download links
@@ -2356,6 +2481,7 @@ def scheduled_weekly_packs_download():
                         format_pref,
                         download_progress,
                         download_queue,
+                        run=run,
                     )
                     total_download_count += 1
                     latest_successful_pack = pack_date
@@ -2366,6 +2492,10 @@ def scheduled_weekly_packs_download():
             if not pack_url or not pack_date:
                 app_logger.warning("Could not find weekly pack on GetComics homepage")
                 update_last_weekly_packs_run()
+                run.finish(
+                    download_runs.STATUS_ERROR,
+                    "Could not find a weekly pack on the GetComics homepage",
+                )
                 return
 
             app_logger.info(f"Found weekly pack: {pack_date} -> {pack_url}")
@@ -2380,11 +2510,14 @@ def scheduled_weekly_packs_download():
             ):
                 app_logger.info(f"Already downloaded pack {pack_date}, skipping")
                 update_last_weekly_packs_run()
+                run.count(download_runs.COUNT_ALREADY_DOWNLOADED)
+                run.finish(download_runs.STATUS_OK)
                 return
 
             if not check_weekly_pack_availability(pack_url):
                 app_logger.info(f"Weekly pack {pack_date} links not ready yet")
                 any_not_ready = True
+                run.count(download_runs.COUNT_NOT_READY)
             else:
                 download_links = parse_weekly_pack_page(
                     pack_url, format_pref, publishers
@@ -2404,6 +2537,7 @@ def scheduled_weekly_packs_download():
                             format_pref,
                             download_progress,
                             download_queue,
+                            run=run,
                         )
                         total_download_count += 1
                         latest_successful_pack = pack_date
@@ -2419,9 +2553,11 @@ def scheduled_weekly_packs_download():
         app_logger.info(
             f"✅ Weekly packs download completed in {elapsed:.2f}s ({total_download_count} packs queued)"
         )
+        run.finish(download_runs.STATUS_OK)
 
     except Exception as e:
         app_logger.error(f"❌ Weekly packs download failed: {e}")
+        run.finish(download_runs.STATUS_ERROR, str(e))
 
 
 def schedule_weekly_packs_retry():
@@ -8195,6 +8331,12 @@ def start_background_services():
             )
     except Exception as e:
         app_logger.error(f"Weekly pack reconciliation failed at startup: {e}")
+
+    # Same reasoning for the download run reports: a run still 'running', or a
+    # download still 'queued', belongs to the process that just died.
+    from core.download_runs import reconcile_interrupted_runs
+
+    reconcile_interrupted_runs()
 
     # Re-adopt DC++ bundles left in flight by the previous process. AirDC++ is
     # a separate process and keeps downloading across a CLU restart, so without

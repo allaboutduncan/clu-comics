@@ -320,6 +320,38 @@ def _preflight_json() -> str:
     return json.dumps(data, indent=2, default=str)
 
 
+DOWNLOAD_RUNS_IN_PACKAGE = 5
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
+
+
+def _scrub(text):
+    """Secrets masked and URL query strings dropped (a mirror URL in an error
+    message can carry a token)."""
+    return _URL_QUERY_RE.sub(r"\1?...", _redact_blob(text))
+
+
+def _download_runs_json() -> str:
+    """The last few automatic download run reports (core/download_runs); never
+    raises."""
+    try:
+        from core.download_runs import get_run, list_runs
+
+        runs = []
+        for summary in list_runs(limit=DOWNLOAD_RUNS_IN_PACKAGE) or []:
+            run = get_run(summary["id"]) or summary
+            for item in run.get("items", []):
+                if item.get("detail"):
+                    item["detail"] = _scrub(item["detail"])
+            if run.get("error"):
+                run["error"] = _scrub(run["error"])
+            runs.append(run)
+        data = {"runs": runs}
+    except Exception as e:
+        app_logger.error(f"Debug package: failed reading download runs: {e}")
+        data = {"error": str(e)}
+    return json.dumps(data, indent=2, default=str)
+
+
 def _tail(path: str, lines: int = LOG_TAIL_LINES) -> str:
     """Return the last ``lines`` lines of a text file, or a placeholder."""
     if not path or not os.path.exists(path):
@@ -344,6 +376,8 @@ def _readme() -> str:
         "  preflight.json    - setup checks: volumes writable, database, owner, user\n"
         "  config.ini        - your config with secrets masked\n"
         "  db_settings.json  - user_preferences (settings) + table list\n"
+        "  download_runs.json - what the last automatic download runs searched,\n"
+        "                      queued and failed (series names, issue numbers)\n"
         "  logs/app.log      - last {n} lines of the application log\n"
         "  logs/monitor.log  - last {n} lines of the monitor log\n\n"
         "Redaction:\n"
@@ -364,6 +398,7 @@ def build_debug_package() -> bytes:
         zf.writestr("preflight.json", _preflight_json())
         zf.writestr("config.ini", _redacted_settings())
         zf.writestr("db_settings.json", _db_settings_json())
+        zf.writestr("download_runs.json", _download_runs_json())
         zf.writestr("logs/app.log", _tail(APP_LOG))
         zf.writestr("logs/monitor.log", _tail(MONITOR_LOG))
     buf.seek(0)

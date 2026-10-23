@@ -26,26 +26,65 @@
 
 <div class="container my-5">
     <h2>Download Status</h2>
-    <button id="clear-downloads-btn" class="btn btn-primary mb-3">
-      Clear Completed/Cancelled Downloads
-    </button>
-    <button id="clear-errors-btn" class="btn btn-danger mb-3 ms-2">
-      Clear Failed Downloads
-    </button>
-    <table class="table table-striped" id="downloads-table">
-      <thead>
-        <tr>
-          <th>Filename</th>
-          <th>Provider</th>
-          <th>Progress</th>
-          <th>Downloaded</th>
-          <th>Status</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-      </tbody>
-    </table>
+    <ul class="nav nav-tabs mb-3" id="statusTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="downloads-tab" data-bs-toggle="tab" data-bs-target="#downloads-pane"
+                type="button" role="tab" aria-controls="downloads-pane" aria-selected="true">
+          <i class="bi bi-download me-1"></i>Active Downloads
+        </button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="runs-tab" data-bs-toggle="tab" data-bs-target="#runs-pane"
+                type="button" role="tab" aria-controls="runs-pane" aria-selected="false">
+          <i class="bi bi-clock-history me-1"></i>Scheduled Runs
+        </button>
+      </li>
+    </ul>
+
+    <div class="tab-content">
+      <div class="tab-pane fade show active" id="downloads-pane" role="tabpanel" aria-labelledby="downloads-tab">
+        <button id="clear-downloads-btn" class="btn btn-primary mb-3">
+          Clear Completed/Cancelled Downloads
+        </button>
+        <button id="clear-errors-btn" class="btn btn-danger mb-3 ms-2">
+          Clear Failed Downloads
+        </button>
+        <table class="table table-striped" id="downloads-table">
+          <thead>
+            <tr>
+              <th>Filename</th>
+              <th>Provider</th>
+              <th>Progress</th>
+              <th>Downloaded</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="tab-pane fade" id="runs-pane" role="tabpanel" aria-labelledby="runs-tab">
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
+          <select id="runs-kind" class="form-select form-select-sm w-auto" aria-label="Which runs to show">
+            <option value="">All automatic runs</option>
+            <option value="getcomics">GetComics Auto-Download</option>
+            <option value="weekly_packs">Weekly Packs</option>
+          </select>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="runs-refresh">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+          <span class="text-muted small ms-md-auto">
+            What each automatic run searched for, queued and could not find, and how its downloads finished.
+            Already-owned and unreleased issues are counted, not listed.
+          </span>
+        </div>
+        <div id="runs-list" class="list-group">
+          <div class="list-group-item text-muted">Loading run history...</div>
+        </div>
+      </div>
+    </div>
   </div>
 {% endblock %}
 
@@ -432,8 +471,306 @@
                              'Failed downloads cleared'));
     });
 
+    // Which tab is showing. The 1s download poll only does work on its own tab.
+    let activeStatusTab = 'downloads';
+
     // Poll the status endpoint every second (guarded: no overlap, self-aborts).
-    CLU.startPoll(fetchStatus, 1000);
+    CLU.startPoll(signal => activeStatusTab === 'downloads' ? fetchStatus(signal) : null, 1000);
+
+    // ── Scheduled Runs ────────────────────────────────────────────────────
+    // Reports written by core/download_runs.py. Every value from the server is
+    // set through textContent; nothing here is parsed as HTML.
+    const RUNS_URL = "{{ url_for('download_runs.api_list_runs') }}";
+    const RUNS_POLL_MS = 15000;
+
+    const KIND_LABELS = {
+      getcomics: 'GetComics Auto-Download',
+      weekly_packs: 'Weekly Packs',
+    };
+    const TRIGGER_LABELS = {
+      scheduled: 'Scheduled', manual: 'Run now', series: 'Series check',
+    };
+    const RUN_STATUS = {
+      running: { text: 'Running', cls: 'bg-info' },
+      ok: { text: 'Finished', cls: 'bg-success' },
+      error: { text: 'Failed', cls: 'bg-danger' },
+    };
+    const OUTCOME_LABELS = {
+      queued: 'Queued',
+      duplicate: 'Queued (same file as another issue)',
+      no_results: 'No search results',
+      no_match: 'No matching result',
+      no_part_matched: 'Post had no part for this issue',
+      pack_skipped: 'Only a pack found (Download Packs is off)',
+      no_link: 'No download link',
+      error: 'Error',
+    };
+    const DOWNLOAD_STATUS = {
+      queued: { text: 'In progress', cls: 'bg-secondary' },
+      retrying: { text: 'Retrying', cls: 'bg-warning text-dark' },
+      complete: { text: 'Downloaded', cls: 'bg-success' },
+      complete_no_move: { text: 'Downloaded (import pending)', cls: 'bg-warning text-dark' },
+      failed: { text: 'Failed', cls: 'bg-danger' },
+      cancelled: { text: 'Cancelled', cls: 'bg-secondary' },
+      interrupted: { text: 'Interrupted by restart', cls: 'bg-danger' },
+    };
+    const SOURCE_LABELS = {
+      mapped_series: 'Wanted', reading_list: 'Reading list', pack: 'Weekly pack',
+    };
+    const PROVIDER_LABELS = { usenet: 'Usenet', dcpp: 'DC++', getcomics: 'GetComics' };
+    const COUNT_LABELS = {
+      skipped_owned: 'already in the library',
+      skipped_manual_status: 'marked owned/skipped',
+      skipped_unreleased: 'not released yet',
+      skipped_cooldown: 'queued recently (cooldown)',
+      skipped_unmonitored_series: 'series not monitored',
+      skipped_missing_folder: 'series folder missing',
+      skipped_covered_by_pack: 'covered by a pack this run',
+      skipped_already_downloaded: 'already downloaded',
+      not_searched_cap_reached: 'not searched (per-run cap reached)',
+      not_ready: 'pack links not ready yet',
+    };
+    const RUN_FILTERS = [
+      ['all', 'All'], ['queued', 'Queued'], ['downloaded', 'Downloaded'],
+      ['failed', 'Failed'], ['not_found', 'Not found'], ['missing', 'Still missing'],
+    ];
+
+    let runsLoaded = false;
+    let expandedRunId = null;
+    let expandedFilter = 'all';
+
+    function el(tag, cls, text) {
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function formatDuration(startIso, endIso) {
+      // Both are UTC "YYYY-MM-DD HH:MM:SS"; only the difference matters.
+      const a = Date.parse(String(startIso).replace(' ', 'T') + 'Z');
+      const b = endIso ? Date.parse(String(endIso).replace(' ', 'T') + 'Z') : Date.now();
+      if (isNaN(a) || isNaN(b)) return '';
+      const secs = Math.max(0, Math.round((b - a) / 1000));
+      if (secs < 60) return `${secs}s`;
+      const mins = Math.floor(secs / 60);
+      if (mins < 60) return `${mins}m ${String(secs % 60).padStart(2, '0')}s`;
+      return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+    }
+
+    function chip(label, value, cls, title) {
+      const span = el('span', `badge rounded-pill ${cls} me-1 mb-1`, `${label}: ${value}`);
+      if (title) span.title = title;
+      return span;
+    }
+
+    function skippedBreakdown(counts) {
+      return Object.keys(COUNT_LABELS)
+        .filter(k => counts[k])
+        .map(k => `${counts[k]} ${COUNT_LABELS[k]}`)
+        .join('\n');
+    }
+
+    function renderRunHeader(run) {
+      const t = run.tally || {};
+      const counts = run.counts || {};
+      const item = el('button', 'list-group-item list-group-item-action');
+      item.type = 'button';
+      item.dataset.runId = run.id;
+      item.setAttribute('aria-expanded', String(expandedRunId === run.id));
+
+      const top = el('div', 'd-flex flex-wrap align-items-center gap-2');
+      top.appendChild(el('strong', null, KIND_LABELS[run.kind] || run.kind));
+      top.appendChild(el('span', 'badge bg-light text-dark border', TRIGGER_LABELS[run.trigger] || run.trigger || ''));
+      if (run.scope) top.appendChild(el('span', 'text-muted small', run.scope));
+      const st = RUN_STATUS[run.status] || { text: run.status, cls: 'bg-secondary' };
+      const stBadge = el('span', `badge ${st.cls}`, st.text);
+      if (run.error) stBadge.title = run.error;
+      top.appendChild(stBadge);
+      const when = el('span', 'text-muted small ms-auto');
+      when.textContent = `${run.started_at_display || run.started_at}`
+        + ` · ${formatDuration(run.started_at, run.finished_at)}`;
+      top.appendChild(when);
+      item.appendChild(top);
+
+      const chips = el('div', 'mt-2');
+      if (run.kind === 'getcomics') {
+        chips.appendChild(chip('Searched', t.searched || 0, 'bg-secondary'));
+      }
+      chips.appendChild(chip('Queued', t.queued || 0, 'bg-primary'));
+      chips.appendChild(chip('Downloaded', t.downloaded || 0, 'bg-success'));
+      if (t.failed || t.interrupted) {
+        chips.appendChild(chip('Failed', (t.failed || 0) + (t.interrupted || 0), 'bg-danger'));
+      }
+      if (run.kind === 'getcomics') {
+        chips.appendChild(chip('Not found', t.not_found || 0, 'bg-warning text-dark'));
+      }
+      const skippedTotal = Object.keys(COUNT_LABELS).reduce((n, k) => n + (counts[k] || 0), 0);
+      if (skippedTotal) {
+        chips.appendChild(chip('Skipped', skippedTotal, 'bg-light text-dark border',
+          skippedBreakdown(counts)));
+      }
+      if (run.items_truncated) {
+        chips.appendChild(chip('List truncated', 'yes', 'bg-light text-dark border',
+          'This run searched more issues than the report keeps; the counts are still complete.'));
+      }
+      item.appendChild(chips);
+      if (run.status === 'error' && run.error) {
+        item.appendChild(el('div', 'small text-danger mt-1', run.error));
+      }
+      item.addEventListener('click', () => toggleRun(run.id));
+      return item;
+    }
+
+    function renderRunDetail(run) {
+      const box = el('div', 'list-group-item bg-body-tertiary');
+      box.id = `run-detail-${run.id}`;
+
+      const bar = el('div', 'd-flex flex-wrap gap-2 align-items-center mb-2');
+      const pills = el('div', 'btn-group btn-group-sm flex-wrap');
+      pills.setAttribute('role', 'group');
+      pills.setAttribute('aria-label', 'Filter issues');
+      RUN_FILTERS.forEach(([key, label]) => {
+        const b = el('button', `btn ${key === expandedFilter ? 'btn-primary' : 'btn-outline-primary'}`, label);
+        b.type = 'button';
+        b.addEventListener('click', () => { expandedFilter = key; loadRunDetail(run.id); });
+        pills.appendChild(b);
+      });
+      bar.appendChild(pills);
+
+      const exports = el('div', 'ms-auto d-flex gap-2');
+      ['json', 'csv'].forEach(fmt => {
+        const a = el('a', 'btn btn-sm btn-outline-secondary');
+        a.href = `${RUNS_URL}/${run.id}/export?format=${fmt}&filter=${encodeURIComponent(expandedFilter)}`;
+        a.setAttribute('download', '');
+        a.appendChild(el('i', 'bi bi-filetype-' + fmt + ' me-1'));
+        a.appendChild(document.createTextNode(`Export ${fmt.toUpperCase()}`));
+        exports.appendChild(a);
+      });
+      bar.appendChild(exports);
+      box.appendChild(bar);
+
+      const items = run.items || [];
+      if (!items.length) {
+        box.appendChild(el('div', 'text-muted small',
+          expandedFilter === 'all' ? 'This run searched for nothing.' : 'No issues match this filter.'));
+        return box;
+      }
+
+      const wrap = el('div', 'table-responsive');
+      const table = el('table', 'table table-sm table-hover mb-0 align-middle');
+      const thead = el('thead');
+      const hr = el('tr');
+      ['Issue', 'Source', 'Provider', 'Result', 'Details'].forEach(h => hr.appendChild(el('th', null, h)));
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      const tbody = el('tbody');
+      items.forEach(it => {
+        const tr = el('tr');
+        tr.appendChild(el('td', null, `${it.series_name || ''} #${it.issue_number || ''}`));
+        tr.appendChild(el('td', 'small', SOURCE_LABELS[it.source] || it.source || ''));
+        tr.appendChild(el('td', 'small', PROVIDER_LABELS[it.provider] || it.provider || ''));
+        const result = el('td');
+        result.appendChild(el('div', 'small', OUTCOME_LABELS[it.outcome] || it.outcome));
+        const ds = DOWNLOAD_STATUS[it.download_status];
+        if (ds) result.appendChild(el('span', `badge ${ds.cls}`, ds.text));
+        tr.appendChild(result);
+        const detail = el('td', 'small text-break', it.detail || '');
+        tr.appendChild(detail);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      box.appendChild(wrap);
+      if (run.items_truncated) {
+        box.appendChild(el('div', 'small text-muted mt-2',
+          'Only the first issues this run searched are listed; the counts above cover all of them.'));
+      }
+      return box;
+    }
+
+    function loadRunDetail(runId, signal) {
+      const url = `${RUNS_URL}/${runId}?filter=${encodeURIComponent(expandedFilter)}`;
+      return fetch(url, { signal })
+        .then(r => r.json().then(d => { if (!r.ok || !d.success) throw new Error(d.error || `HTTP ${r.status}`); return d; }))
+        .then(d => {
+          const header = document.querySelector(`#runs-list [data-run-id="${runId}"]`);
+          if (!header || expandedRunId !== runId) return;
+          const old = document.getElementById(`run-detail-${runId}`);
+          const fresh = renderRunDetail(d.run);
+          if (old) old.replaceWith(fresh); else header.after(fresh);
+        })
+        .catch(err => {
+          if (err.name === 'AbortError') return;
+          showToast(`Could not load that run: ${err.message}`, 'error');
+        });
+    }
+
+    function toggleRun(runId) {
+      const old = expandedRunId != null ? document.getElementById(`run-detail-${expandedRunId}`) : null;
+      if (old) old.remove();
+      document.querySelectorAll('#runs-list [data-run-id]').forEach(n => n.setAttribute('aria-expanded', 'false'));
+      if (expandedRunId === runId) { expandedRunId = null; return; }
+      expandedRunId = runId;
+      expandedFilter = 'all';
+      const header = document.querySelector(`#runs-list [data-run-id="${runId}"]`);
+      if (header) header.setAttribute('aria-expanded', 'true');
+      loadRunDetail(runId);
+    }
+
+    function loadRuns(signal) {
+      const kind = document.getElementById('runs-kind').value;
+      const url = `${RUNS_URL}?limit=50${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`;
+      const list = document.getElementById('runs-list');
+      return fetch(url, { signal })
+        .then(r => r.json().then(d => { if (!r.ok || !d.success) throw new Error(d.error || `HTTP ${r.status}`); return d; }))
+        .then(d => {
+          runsLoaded = true;
+          list.replaceChildren();
+          if (!d.runs.length) {
+            list.appendChild(el('div', 'list-group-item text-muted',
+              'No automatic download runs recorded yet. They appear here after the next scheduled run, or after Run Now on the Schedules page.'));
+            expandedRunId = null;
+            return;
+          }
+          let stillThere = false;
+          d.runs.forEach(run => {
+            list.appendChild(renderRunHeader(run));
+            if (run.id === expandedRunId) stillThere = true;
+          });
+          if (stillThere) {
+            return loadRunDetail(expandedRunId, signal);
+          }
+          expandedRunId = null;
+        })
+        .catch(err => {
+          if (err.name === 'AbortError') return;
+          list.replaceChildren(el('div', 'list-group-item text-danger', `Could not load run history: ${err.message}`));
+        });
+    }
+
+    document.getElementById('runs-tab').addEventListener('shown.bs.tab', () => {
+      activeStatusTab = 'runs';
+      if (!runsLoaded) loadRuns();
+      try { localStorage.setItem('clu.status.tab', 'runs'); } catch (e) { }
+    });
+    document.getElementById('downloads-tab').addEventListener('shown.bs.tab', () => {
+      activeStatusTab = 'downloads';
+      try { localStorage.setItem('clu.status.tab', 'downloads'); } catch (e) { }
+    });
+    document.getElementById('runs-kind').addEventListener('change', () => { expandedRunId = null; loadRuns(); });
+    document.getElementById('runs-refresh').addEventListener('click', () => loadRuns());
+
+    // Downloads queued by a run finish long after it; refresh while the tab is open.
+    CLU.startPoll(signal => (activeStatusTab === 'runs' && runsLoaded) ? loadRuns(signal) : null,
+                  RUNS_POLL_MS, { immediate: false });
+
+    // Reopen the tab the user last had.
+    try {
+      if (localStorage.getItem('clu.status.tab') === 'runs' || location.hash === '#runs') {
+        bootstrap.Tab.getOrCreateInstance(document.getElementById('runs-tab')).show();
+      }
+    } catch (e) { }
 
     // Toast notification system for status.html
     function showToast(message, type = 'info', duration = 5000) {

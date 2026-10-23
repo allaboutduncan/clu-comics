@@ -35,6 +35,7 @@ from helpers import is_hidden
 from core.config import load_config, load_flask_config, get_watch_dir, get_target_dir
 from core.settings import get_bool, get_int, get_list, get_setting
 from core.download_utils import download_notification_body
+from core.download_runs import set_download_outcome
 
 # Load config and initialize Flask app.
 app = Flask(__name__)
@@ -96,6 +97,7 @@ def is_cancel_requested(download_id):
 def mark_cancelled(download_id, temp_paths=()):
     """Record the cancelled status and delete any half-written temp files."""
     _mark_cancelled(download_progress, download_id, temp_paths, monitor_logger)
+    set_download_outcome(download_id, 'cancelled')
 
 
 def set_error_status(download_id, error=None):
@@ -557,6 +559,8 @@ def process_download(task):
                 return
             download_progress[download_id]['filename'] = file_path
             download_progress[download_id]['status']   = 'complete'
+            # The run report (core/download_runs); a no-op for a manual grab.
+            set_download_outcome(download_id, 'complete')
 
             notify_async(
                 EVENT_DOWNLOAD_COMPLETE,
@@ -646,7 +650,12 @@ def process_download(task):
     # download in a backoff window and put the same task back on the queue --
     # only once those are exhausted is this a failure worth telling anyone about.
     if _schedule_auto_retry(task, last_error):
+        set_download_outcome(download_id, 'retrying')
         return
+
+    # After the cancel guard and the auto-retry gate, like the notification
+    # below: neither a cancel nor a retryable failure is a failed download.
+    set_download_outcome(download_id, 'failed', detail=str(last_error))
 
     # Past the cancel guard, so this is a genuine failure. Hooked here rather
     # than inside set_error_status because download_getcomics calls that a

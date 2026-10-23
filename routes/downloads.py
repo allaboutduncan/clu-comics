@@ -869,7 +869,7 @@ def api_run_getcomics_now():
         # Run in a background thread to not block the request
         threading.Thread(
             target=scheduled_getcomics_download,
-            kwargs={"op_id": op_id},
+            kwargs={"op_id": op_id, "trigger": "manual"},
             daemon=True,
         ).start()
         return jsonify({
@@ -1108,7 +1108,11 @@ def api_run_weekly_packs_now():
         from app import scheduled_weekly_packs_download
 
         # Run in a background thread to not block the request
-        threading.Thread(target=scheduled_weekly_packs_download, daemon=True).start()
+        threading.Thread(
+            target=scheduled_weekly_packs_download,
+            kwargs={"trigger": "manual"},
+            daemon=True,
+        ).start()
         return jsonify({
             "success": True,
             "message": "Weekly packs download check started in background"

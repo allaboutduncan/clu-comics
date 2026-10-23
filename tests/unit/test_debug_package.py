@@ -126,3 +126,31 @@ class TestRedactedSettings:
         assert "SECRET1234VALUE" not in out
         assert "BOOTSTRAP_THEME = darkly" in out
         assert "AUTOCONVERT = True" in out
+
+
+class TestDownloadRunsJson:
+    def test_scrubs_query_strings_from_errors(self, monkeypatch):
+        import json
+        from core import debug_package as dp
+        import core.download_runs as dr
+
+        run = {"id": 1, "kind": "getcomics", "error": None, "items": [
+            {"detail": "403 for https://mirror.example/f.cbz?token=SECRET123"},
+        ]}
+        monkeypatch.setattr(dr, "list_runs", lambda limit: [{"id": 1}])
+        monkeypatch.setattr(dr, "get_run", lambda run_id: run)
+        data = json.loads(dp._download_runs_json())
+        detail = data["runs"][0]["items"][0]["detail"]
+        assert "SECRET123" not in detail
+        assert "https://mirror.example/f.cbz" in detail
+
+    def test_unreadable_history_does_not_raise(self, monkeypatch):
+        import json
+        from core import debug_package as dp
+        import core.download_runs as dr
+
+        def boom(limit):
+            raise RuntimeError("db gone")
+
+        monkeypatch.setattr(dr, "list_runs", boom)
+        assert "error" in json.loads(dp._download_runs_json())

@@ -361,6 +361,7 @@ _READER_READ_POST_PREFIXES = (
 _CLERK_PREFIXES = (
     "/api/getcomics",
     "/api/download-clients",
+    "/api/download-runs",      # automatic download run reports (Status page)
     "/api/indexers",
     "/api/usenet",
     "/api/dcpp",

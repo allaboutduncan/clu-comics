@@ -88,6 +88,9 @@ SETTINGS_SCHEMA = {
     ),
     "SEQUEL_KEYWORDS": _s("sequel_keywords", _S, "season,volume,book,part,chapter", "downloads"),
     "CROSSOVER_KEYWORDS": _s("crossover_keywords", _S, "meets,vs,versus,x-over,crossover", "downloads"),
+    # How many automatic download runs (per kind) the Status page keeps a
+    # report for. Never in an ini; see core/download_runs.py.
+    "DOWNLOAD_RUN_HISTORY_KEEP": _s("download_run_history_keep", _I, 30, "downloads"),
     "ONESHOT_FOLDERS": _s("oneshot_folders", _S, "oneshots,one-shots,specials", "file_processing"),
     # library health scan (core/library_health.py). Opt-in: it reads every comic.
     "LIBRARY_HEALTH_SCAN_ENABLED": _s("library_health_scan_enabled", _B, False, "system"),

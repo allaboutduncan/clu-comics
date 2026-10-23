@@ -524,6 +524,17 @@ def _set_status(download_id, status, error=None, percent=None):
     # _set_status is only ever called with a terminal status, so this fires
     # exactly once per job.
     _notify_terminal_status(status, filename, error, "Usenet")
+    _record_run_outcome(download_id, status, error)
+
+
+def _record_run_outcome(download_id, status, error):
+    """Write the outcome onto the run report's item (core/download_runs).
+
+    Never raises; a no-op for a job no automatic run queued.
+    """
+    from core.download_runs import set_download_outcome
+
+    set_download_outcome(download_id, status, detail=error if error else None)
 
 
 def _notify_terminal_status(status, filename, error, source):

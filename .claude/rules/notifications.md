@@ -29,6 +29,19 @@ point. A new download path needs its own hook:
 Both pollers delegate to the shared `core.notifications.notify_download_terminal()`
 and must call it **outside** their `_jobs_lock`.
 
+The same three sites also write the outcome onto the **download run report**
+(`core.download_runs.set_download_outcome`, shown on `/status` → Scheduled
+Runs), under the same rules: 'failed' only after the cancel guard and the
+auto-retry gate (a parked retry records 'retrying'), cancels through api.py's
+`mark_cancelled` wrapper, and the pollers via `_record_run_outcome` outside the
+lock. The sweep and `_enqueue_weekly_pack` write the item and `run.flush()`
+**before** `download_queue.put`, or a fast worker settles a download whose item
+does not exist yet. Asserted in `tests/unit/test_download_run_hooks.py`.
+
+Run reports are bounded on purpose: skips are counters, never rows; at most
+`RUN_ITEM_CAP` items a run; `download_run_history_keep` runs per kind and
+nothing older than 90 days, pruned when a run starts.
+
 Two rules that are easy to break:
 
 - **Cancellations must never notify.** Aborting a transfer is how a cancel
