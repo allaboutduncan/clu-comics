@@ -5,10 +5,10 @@
 {% set _theme_css = theme_stylesheets(bootstrap_theme|default('default')) %}
 {% else %}
 {# No auth_bp context processor (a bare Jinja env): stock Bootstrap. #}
-{% set _theme_css = ('https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css', None) %}
+{% set _theme_css = ('https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css', ()) %}
 {% endif %}
 <link href="{{ _theme_css[0] }}" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-{% if _theme_css[1] %}
-<link href="{{ url_for('static', filename=_theme_css[1]) }}" rel="stylesheet">
-{% endif %}
+{% for _local_css in _theme_css[1] %}
+<link href="{{ url_for('static', filename=_local_css) }}" rel="stylesheet">
+{% endfor %}

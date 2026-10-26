@@ -283,6 +283,24 @@ class TestRenderedTheme:
         assert 'data-bs-theme="dark"' in html
         assert "/static/css/themes/gruvbox-dark.css" in html
 
+    def test_catppuccin_light_flavour_renders_a_light_head(self, client):
+        """Latte is the one light local theme: no dark attribute on <html>,
+        and the palette loads before the shared rules."""
+        set_user_setting("bootstrap_theme", "catppuccin-latte", user_id=_uid("reader"))
+        _login(client, "reader", "readerpass")
+        html = client.get("/account").get_data(as_text=True)
+
+        assert '<html lang="en">' in html
+        assert (html.index("/static/css/themes/catppuccin-latte.css")
+                < html.index("/static/css/themes/catppuccin.css"))
+
+    def test_site_default_button_names_the_theme(self, client):
+        set_user_preference("bootstrap_theme", "catppuccin-frappe", category="personalization")
+        _login(client, "reader", "readerpass")
+        html = client.get("/account").get_data(as_text=True)
+
+        assert "(Catppuccin Frappé)" in html
+
     def test_local_preview_honours_the_proxy_prefix(self, client):
         """The preview must resolve like the stylesheet does, not hardcode
         /static/ -- behind a subpath proxy that 404s."""

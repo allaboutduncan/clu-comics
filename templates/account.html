@@ -49,7 +49,9 @@
           <h5 class="mb-1">Theme</h5>
           <p class="text-muted small mb-0">
             Choose how CLU looks for you. Themes provided by
-            <a href="https://bootswatch.com/" target="_blank">Bootswatch</a>.
+            <a href="https://bootswatch.com/" target="_blank">Bootswatch</a>, plus
+            <a href="https://github.com/morhetz/gruvbox" target="_blank">Gruvbox</a> and
+            <a href="https://catppuccin.com/" target="_blank">Catppuccin</a>.
           </p>
         </div>
         <span class="badge {{ 'bg-primary' if theme_is_override else 'bg-secondary' }}" id="themeStateBadge">
@@ -72,7 +74,7 @@
         </button>
         <button type="button" class="btn btn-outline-secondary" id="resetThemeBtn" onclick="resetTheme()">
           <i class="bi bi-arrow-counterclockwise me-1"></i>Use site default
-          <span class="text-muted">({{ site_theme|title }})</span>
+          <span class="text-muted">({{ theme_label(site_theme) }})</span>
         </button>
       </div>
     </div>

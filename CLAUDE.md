@@ -79,8 +79,16 @@ imported in tests.
 
 #### Themes
 Bootswatch themes (26), plus **local themes** that Bootswatch does not ship
-(`core/themes.py` `LOCAL_THEMES`, today Gruvbox Dark): stock Bootstrap 5.3.8 +
-`static/css/themes/<id>.css` + a preview image under `static/images/themes/`.
+(`core/themes.py` `LOCAL_THEMES`: Gruvbox Dark and the four Catppuccin
+flavours): stock Bootstrap 5.3.8 + one or more stylesheets under
+`static/css/themes/` + a preview image under `static/images/themes/`
+(Bootswatch's thumbnail layout, 1000×600, rendered from the theme's real CSS).
+Catppuccin is a shared `catppuccin.css` of rules that only read `--ctp-*`
+variables, plus a palette file per flavour **generated** by
+`tools/build_catppuccin_themes.py` (a test fails if one is stale or edited by
+hand). Latte is the only light local theme, and the header navbar is
+`data-bs-theme="dark"` on every theme, so local-theme rules must never key on
+`[data-bs-theme=dark]`; what differs per flavour is a variable.
 `theme_stylesheets()` resolves the `<head>` links for every theme
 (`partials/theme_css.html`, shared by `base.html` and `login.html`). Every
 theme template global (`bootstrap_theme`, `theme_is_dark`, `theme_stylesheets`,
