@@ -5,12 +5,12 @@
 {% block content %}
 <div class="container py-5">
     <!-- Header Section -->
-    <div class="d-flex justify-content-between align-items-center mb-5 fade-in-down">
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-5 fade-in-down">
         <div>
             <h2 class="display-4 fw-bold mb-1">Weekly Releases</h2>
             <p class="text-muted lead mb-0">{{ date_range }}</p>
         </div>
-        <div class="d-flex gap-2">
+        <div class="d-flex flex-wrap gap-2">
             {% if releases %}
             <div class="btn-group" role="group" aria-label="View mode" id="view-toggle">
                 <button type="button" class="btn btn-outline-secondary" data-view="cards" title="Card view"
@@ -25,13 +25,13 @@
             {% endif %}
             <div class="btn-group" role="group">
                 {% if view_mode != 'error' %}
-                <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary">
+                <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary week-nav">
                     <i class="bi bi-chevron-left"></i> Previous Week
                 </a>
-                <a href="{{ url_for('series.releases') }}" class="btn btn-outline-secondary">
+                <a href="{{ url_for('series.releases') }}" class="btn btn-outline-secondary week-nav">
                     <i class="bi bi-calendar-check"></i> This Week
                 </a>
-                <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary">
+                <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary week-nav">
                     Next Week <i class="bi bi-chevron-right"></i>
                 </a>
                 {% endif %}
@@ -56,13 +56,21 @@
     {% endif %}
 
     {% if releases %}
-    <!-- Publisher Filter -->
-    <div class="publisher-filter mb-4 fade-in-down" id="publisher-filter" hidden>
-        <div class="d-flex align-items-center flex-wrap gap-2">
-            <span class="text-muted small text-uppercase fw-semibold me-1">
+    <!-- Filters. Each group narrows the releases independently and they
+         combine (AND); every pill's count is what you would get by picking it. -->
+    <div class="release-filters mb-4 fade-in-down" id="release-filters">
+        <div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="subscribed">
+            <span class="filter-label text-muted small text-uppercase fw-semibold">
+                <i class="bi bi-bookmark-star me-1"></i>Subscription
+            </span>
+            <div class="d-flex flex-wrap gap-2 filter-pills"></div>
+        </div>
+        <div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="publisher"
+            id="publisher-filter" hidden>
+            <span class="filter-label text-muted small text-uppercase fw-semibold">
                 <i class="bi bi-building me-1"></i>Publisher
             </span>
-            <div class="d-flex flex-wrap gap-2" id="publisher-pills"></div>
+            <div class="d-flex flex-wrap gap-2 filter-pills" id="publisher-pills"></div>
             <span id="publisher-loading"
                 class="text-muted small ms-1{% if not publisher_pending %} d-none{% endif %}">
                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
@@ -71,13 +79,21 @@
         </div>
     </div>
 
+    <div class="text-center text-muted py-5 d-none" id="releases-no-match">
+        <i class="bi bi-funnel display-4 opacity-25 d-block mb-3"></i>
+        <p class="lead mb-3">No releases match these filters.</p>
+        <button type="button" class="btn btn-outline-primary" id="clear-filters">
+            <i class="bi bi-x-circle me-1"></i>Clear filters
+        </button>
+    </div>
+
     <div class="releases-grid" id="releases-cards">
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
         {% set is_tracked = issue.series.id in tracked_ids or (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
         <a href="{% if issue_slug %}{{ url_for('series.issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
             {% if not series_slug %} {% endif %}
-            data-series-id="{{ issue.series.id }}"
+            data-series-id="{{ issue.series.id }}" data-subscribed="{{ 1 if is_tracked else 0 }}"
             class="release-card stagger-load{% if is_tracked %} tracked{% endif %}">
             <!-- Cover Image -->
             <div class="release-cover">
@@ -138,6 +154,7 @@
                         {% set is_tracked = issue.series.id in tracked_ids or (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
                         {% set issue_url = url_for('series.issue_view', slug=issue_slug) if issue_slug else issue.resource_url %}
                         <tr class="release-row" data-series-id="{{ issue.series.id }}"
+                            data-subscribed="{{ 1 if is_tracked else 0 }}"
                             data-title="{{ issue.series.name|lower }}" data-issue="{{ issue.number or '' }}">
                             <td class="ps-4"><span class="publisher-cell text-muted">&mdash;</span></td>
                             <td>
@@ -174,10 +191,10 @@
         <h3 class="h2 text-muted mb-3">No releases this week</h3>
         <p class="text-muted mb-4 lead">Check back later or browse other weeks.</p>
         <div class="d-flex justify-content-center gap-2">
-            <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary btn-lg">
+            <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary btn-lg week-nav">
                 <i class="bi bi-chevron-left me-1"></i>Previous Week
             </a>
-            <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary btn-lg">
+            <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary btn-lg week-nav">
                 Next Week<i class="bi bi-chevron-right ms-1"></i>
             </a>
         </div>
@@ -191,6 +208,21 @@
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
         gap: 1.5rem;
         padding: 1rem 0;
+    }
+
+    .release-filters {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+    }
+
+    /* The groups are d-flex, which beats the bare [hidden] rule. */
+    .filter-group[hidden] {
+        display: none !important;
+    }
+
+    .filter-label {
+        min-width: 8rem;
     }
 
     .publisher-pill {
@@ -493,8 +525,6 @@
         const dateAfter = {{ (query_after or '') | tojson }};
         const dateBefore = {{ (query_before or '') | tojson }};
 
-        const filterBar = document.getElementById('publisher-filter');
-        const pillsEl = document.getElementById('publisher-pills');
         const loadingEl = document.getElementById('publisher-loading');
         const cards = Array.from(document.querySelectorAll('.release-card'));
         const rows = Array.from(document.querySelectorAll('.release-row'));
@@ -636,95 +666,179 @@
         syncPublisherCells();
         applySort();
 
-        if (!filterBar || !pillsEl || !cards.length) return;
+        if (!cards.length) return;
 
+        // ------------------------------------------------------------------
+        // Filters. Each entry is one group of pills; a card is shown when it
+        // matches every group. A new filter is one more entry here plus a
+        // data-* attribute on the cards and rows. `param` is the URL key, so a
+        // filtered view can be bookmarked and survives week navigation.
+        // ------------------------------------------------------------------
         const UNKNOWN = '__unknown__';
-        let selected = new URLSearchParams(window.location.search).get('publisher') || '';
+        const FILTERS = [
+            {
+                key: 'subscribed',
+                param: 'subscribed',
+                valueOf: function (el) { return el.dataset.subscribed === '1' ? 'yes' : 'no'; },
+                // Fixed options in a fixed order, shown even at zero.
+                options: function () {
+                    return [
+                        { value: 'yes', label: 'Subscribed' },
+                        { value: 'no', label: 'Not subscribed' }
+                    ];
+                }
+            },
+            {
+                key: 'publisher',
+                param: 'publisher',
+                valueOf: function (el) { return publisherFor(el) || UNKNOWN; },
+                // Built from whatever part of the map is known, busiest first,
+                // with the not-yet-identified ones last.
+                options: function () {
+                    const totals = new Map();
+                    cards.forEach(function (card) {
+                        const pub = publisherFor(card);
+                        if (pub) totals.set(pub, (totals.get(pub) || 0) + 1);
+                    });
+                    const opts = Array.from(totals.entries())
+                        .sort(function (a, b) { return b[1] - a[1] || a[0].localeCompare(b[0]); })
+                        .map(function (entry) { return { value: entry[0], label: entry[0] }; });
+                    if (opts.length && cards.some(function (c) { return !publisherFor(c); })) {
+                        opts.push({ value: UNKNOWN, label: 'Unidentified' });
+                    }
+                    return opts;
+                }
+            }
+        ];
 
-        function applyFilter() {
-            cards.concat(rows).forEach(function (el) {
-                const pub = publisherFor(el);
-                const match = !selected
-                    || (selected === UNKNOWN ? !pub : pub === selected);
-                el.classList.toggle('d-none', !match);
+        const params = new URLSearchParams(window.location.search);
+        const selected = {};
+        FILTERS.forEach(function (f) { selected[f.key] = params.get(f.param) || ''; });
+
+        // Does `el` pass every active filter, ignoring the one named `skip`?
+        // Skipping lets each group count against the others' selections.
+        function matches(el, skip) {
+            return FILTERS.every(function (f) {
+                return f.key === skip || !selected[f.key] || f.valueOf(el) === selected[f.key];
             });
         }
 
+        const noMatchEl = document.getElementById('releases-no-match');
+        // True until the publisher poll's last answer: a publisher named in the
+        // URL (e.g. carried over from the previous week) may simply not be in
+        // the map yet, so it must not be cleared or reported as "no match".
+        let warming = pendingWarm;
+
+        function applyFilter() {
+            let shown = 0;
+            cards.forEach(function (el) {
+                const ok = matches(el);
+                el.classList.toggle('d-none', !ok);
+                if (ok) shown += 1;
+            });
+            rows.forEach(function (el) { el.classList.toggle('d-none', !matches(el)); });
+            const waiting = warming && selected.publisher;
+            if (noMatchEl) noMatchEl.classList.toggle('d-none', shown > 0 || !!waiting);
+        }
+
+        function filterQuery(url) {
+            FILTERS.forEach(function (f) {
+                if (selected[f.key]) {
+                    url.searchParams.set(f.param, selected[f.key]);
+                } else {
+                    url.searchParams.delete(f.param);
+                }
+            });
+            return url;
+        }
+
+        // The page URL and the week links carry the active filters, so
+        // Previous/Next Week keeps "Subscribed only" on.
         function syncUrl() {
-            const url = new URL(window.location.href);
-            if (selected) {
-                url.searchParams.set('publisher', selected);
-            } else {
-                url.searchParams.delete('publisher');
-            }
-            window.history.replaceState({}, '', url);
+            window.history.replaceState({}, '', filterQuery(new URL(window.location.href)));
+            document.querySelectorAll('a.week-nav').forEach(function (a) {
+                a.href = filterQuery(new URL(a.href, window.location.href)).toString();
+            });
+        }
+
+        function pill(label, count, active, onClick) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'btn btn-sm publisher-pill '
+                + (active ? 'btn-primary' : 'btn-outline-secondary');
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            btn.textContent = label;
+            // A pill that would empty the page stays visible but inert.
+            btn.disabled = !active && count === 0;
+            const badge = document.createElement('span');
+            badge.className = 'badge ' + (active ? 'text-bg-light' : 'text-bg-secondary');
+            badge.textContent = count;
+            btn.appendChild(badge);
+            btn.addEventListener('click', onClick);
+            return btn;
         }
 
         function render() {
-            const counts = new Map();
-            let unknown = 0;
-            cards.forEach(function (card) {
-                const pub = publisherFor(card);
-                if (pub) {
-                    counts.set(pub, (counts.get(pub) || 0) + 1);
-                } else {
-                    unknown += 1;
+            // Pass 1: build every group's options and drop selections that no
+            // longer exist, so pass 2 counts against the final selections.
+            const optionsByKey = {};
+            FILTERS.forEach(function (f) {
+                const options = f.options();
+                optionsByKey[f.key] = options;
+                if (selected[f.key] && !warming
+                    && !options.some(function (o) { return o.value === selected[f.key]; })) {
+                    selected[f.key] = '';
+                    syncUrl();
                 }
             });
 
-            // Nothing resolved yet and nothing pending: no filter worth showing.
-            if (!counts.size) {
-                filterBar.hidden = !pendingWarm;
+            // Pass 2: draw each group's pills with counts against the others.
+            FILTERS.forEach(function (f) {
+                const group = document.querySelector('[data-filter-group="' + f.key + '"]');
+                if (!group) return;
+                const pillsEl = group.querySelector('.filter-pills');
+                const options = optionsByKey[f.key];
+
+                if (f.key === 'publisher') {
+                    // Nothing resolved yet: show the spinner only, while one runs.
+                    group.hidden = !options.length && !warming;
+                }
+
+                const pool = cards.filter(function (el) { return matches(el, f.key); });
+                const counts = new Map();
+                pool.forEach(function (el) {
+                    const v = f.valueOf(el);
+                    counts.set(v, (counts.get(v) || 0) + 1);
+                });
+
                 pillsEl.innerHTML = '';
-                return;
-            }
-            filterBar.hidden = false;
-
-            const options = [{ value: '', label: 'All', count: cards.length }];
-            Array.from(counts.entries())
-                .sort(function (a, b) {
-                    return b[1] - a[1] || a[0].localeCompare(b[0]);
-                })
-                .forEach(function (entry) {
-                    options.push({ value: entry[0], label: entry[0], count: entry[1] });
+                if (!options.length) return;
+                [{ value: '', label: 'All' }].concat(options).forEach(function (opt) {
+                    const count = opt.value ? (counts.get(opt.value) || 0) : pool.length;
+                    const active = opt.value === selected[f.key];
+                    pillsEl.appendChild(pill(opt.label, count, active, function () {
+                        selected[f.key] = active ? '' : opt.value;
+                        update();
+                    }));
                 });
-            if (unknown) {
-                options.push({ value: UNKNOWN, label: 'Unidentified', count: unknown });
-            }
-
-            // Selection no longer exists (e.g. its last card got identified).
-            if (selected && !options.some(function (o) { return o.value === selected; })) {
-                selected = '';
-                syncUrl();
-            }
-
-            pillsEl.innerHTML = '';
-            options.forEach(function (opt) {
-                const btn = document.createElement('button');
-                btn.type = 'button';
-                btn.className = 'btn btn-sm publisher-pill '
-                    + (opt.value === selected ? 'btn-primary' : 'btn-outline-secondary');
-                btn.dataset.publisher = opt.value;
-                btn.textContent = opt.label;
-
-                const badge = document.createElement('span');
-                badge.className = 'badge '
-                    + (opt.value === selected ? 'text-bg-light' : 'text-bg-secondary');
-                badge.textContent = opt.count;
-                btn.appendChild(badge);
-
-                btn.addEventListener('click', function () {
-                    selected = opt.value === selected ? '' : opt.value;
-                    syncUrl();
-                    applyFilter();
-                    render();
-                });
-                pillsEl.appendChild(btn);
             });
         }
 
-        render();
-        applyFilter();
+        function update() {
+            syncUrl();
+            render();
+            applyFilter();
+        }
+
+        const clearBtn = document.getElementById('clear-filters');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function () {
+                FILTERS.forEach(function (f) { selected[f.key] = ''; });
+                update();
+            });
+        }
+
+        update();
 
         // Poll for the rest of the map while the server is still resolving it.
         if (pendingWarm) {
@@ -747,10 +861,10 @@
                     .then(function (data) {
                         if (!data.success) return;
                         Object.assign(publisherMap, data.publishers || {});
+                        if (!data.pending) warming = false;
                         syncPublisherCells();
                         applySort();
-                        render();
-                        applyFilter();
+                        update();
                         if (!data.pending) {
                             clearInterval(handle);
                             loadingEl.classList.add('d-none');

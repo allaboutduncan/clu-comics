@@ -1530,6 +1530,47 @@ class TestReleasesPublisherFilter:
         assert html.count('<span class="badge bg-success ms-1">Subscribed</span>') == 1
         assert html.count("release-card stagger-load tracked") == 1
 
+    def test_cards_and_rows_carry_their_subscription_state(self, client, app):
+        # The Subscription filter reads data-subscribed client-side, on both
+        # views, so it has to agree with the ribbon/badge for every release.
+        with patch("core.database.get_mapped_series_ids", return_value={11}), \
+                patch("core.database.get_tracked_series_lookup", return_value=set()):
+            html = self._render_releases_page(client, app)
+
+        assert html.count('data-subscribed="1"') == 2  # series 11: card + row
+        assert html.count('data-subscribed="0"') == 2  # series 99: card + row
+
+    def test_page_renders_every_filter_group(self, client, app):
+        html = self._render_releases_page(client, app)
+
+        # One group per FILTERS entry; the script finds each group by its key
+        # and reads/writes the matching URL param.
+        for key in ("subscribed", "publisher"):
+            assert f'data-filter-group="{key}"' in html
+            assert f"key: '{key}',\n                param: '{key}'," in html
+        # Subscription is known server-side, so its group is never hidden; the
+        # publisher group waits for the map.
+        assert '<div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="subscribed">' in html
+        assert 'id="publisher-filter" hidden' in html
+        # .d-flex is !important and beats Bootstrap's bare [hidden] rule, so
+        # without this override `group.hidden = true` would hide nothing.
+        assert ".filter-group[hidden] {\n        display: none !important;" in html
+        # A publisher carried over from another week must survive until the
+        # map has finished loading, rather than being cleared on first render.
+        assert "if (selected[f.key] && !warming" in html
+        assert "if (!data.pending) warming = false;" in html
+        # Filtering everything away says so, with a way back.
+        assert 'id="releases-no-match"' in html
+        assert 'id="clear-filters"' in html
+
+    def test_week_navigation_links_are_tagged_to_keep_filters(self, client, app):
+        # syncUrl() rewrites a.week-nav so Previous/Next keeps the filters on.
+        html = self._render_releases_page(client, app)
+
+        header = html[:html.index('id="release-filters"')]
+        assert header.count("week-nav") == 3
+        assert "document.querySelectorAll('a.week-nav')" in html
+
     def test_page_renders_both_views_with_a_toggle(self, client, app):
         # Cards and the table are rendered together and swapped client-side, so
         # the table needs no pagination and the toggle no round trip.
