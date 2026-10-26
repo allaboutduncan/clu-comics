@@ -38,6 +38,10 @@ One column serves every provider:
 
 Things that look arbitrary and are not:
 
+- **The Metron probes purge mokkari's cache first** (`purge_reading_list_cache`,
+  `purge_arc_issues_cache`). Its 1-day TTL would otherwise answer "no changes"
+  for a list that moved, and for a reading list `apply` could pair fresh detail
+  with stale items and stamp the token anyway.
 - **An arc cannot use `modified`.** An arc's own `modified` advances when the
   arc *record* is edited; adding an issue to an arc modifies the **issue**. So
   an arc is fingerprinted by its membership, read from a call the sync has to

@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from core.version import __version__
 
 import requests as requests_lib
@@ -643,6 +644,52 @@ def purge_series_cache(series_id, api=None) -> int:
             f"Purged {removed} cached Metron responses for series {series_id}"
         )
     return removed
+
+
+# mokkari has no per-call cache bypass, so a call that asks "what changed?"
+# has to drop its own cached answer first -- otherwise a second sweep within
+# the TTL replays the first one's and misses everything edited in between. A
+# paged list is only served from the cache when every page is cached, so
+# dropping the first page is enough to make the whole list re-fetch.
+
+
+def purge_modified_since_cache(resource: str, since_date: str, api=None) -> int:
+    """Drop the cached ``/<resource>/?modified_gt=<since_date>`` listing.
+
+    The key is the one ``Session._fetch`` builds: the URL plus the sorted,
+    urlencoded params. Only valid for resources that are not per-user.
+    """
+    query = urlencode(sorted({"modified_gt": since_date}.items()))
+    return _purge_cached(
+        api,
+        f"{resource} modified since {since_date}",
+        lambda url: [f"{url.format(resource)}?{query}"],
+    )
+
+
+def purge_reading_list_cache(api=None) -> int:
+    """Drop every cached Metron reading-list response.
+
+    ``reading_list`` is a per-user resource: mokkari suffixes its keys with a
+    hash of the token, so an exact ``delete(url)`` never matches. Invalidating
+    the resource wholesale is cheap -- reading lists are only read by import
+    and sync -- and it takes the detail *and* its items together, so a sync
+    can never pair a fresh ``modified`` with stale items and stamp the token.
+    """
+    return _purge_cached(
+        api, "reading lists", lambda url: [], resources=[("reading_list", None)]
+    )
+
+
+def purge_arc_issues_cache(arc_id, api=None) -> int:
+    """Drop the cached ``/arc/<id>/issue_list/`` (cached as an ``issue`` list)."""
+    try:
+        arc_id = int(arc_id)
+    except (TypeError, ValueError):
+        return 0
+    return _purge_cached(
+        api, f"arc {arc_id}", lambda url: [url.format(f"arc/{arc_id}/issue_list")]
+    )
 
 
 def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
@@ -1566,6 +1613,8 @@ def list_issues_modified_since(api, since_date: str, context: str = "") -> Dict[
     if not api or not since_date:
         return {}
 
+    # A same-day re-run must re-list the day, not replay the cached answer.
+    purge_modified_since_cache("issue", since_date, api=api)
     params = {"modified_gt": since_date}
     label = f"listing issues modified since {since_date}{(' ' + context) if context else ''}"
     issues = _api_call(lambda: api.issues_list(params), label, default=[]) or []
@@ -2114,6 +2163,9 @@ def list_reading_lists_modified_since(api, since_date: str) -> Optional[Dict[int
     if not api or not since_date:
         return None
 
+    # A cached answer still carries a list's old ``modified``, which matches
+    # the stored token, so the sweep would skip a list that has moved.
+    purge_reading_list_cache(api=api)
     params = {"modified_gt": since_date}
     results = _api_call(
         lambda: api.reading_lists_list(params),

@@ -409,7 +409,10 @@ def probe(row, force=False, app=None):
             if not api:
                 return ProbeResult(kind=kind, ident=ident,
                                    error="Metron is not configured")
-            from models.metron import fetch_reading_list_detail
+            from models.metron import fetch_reading_list_detail, purge_reading_list_cache
+            # The probe exists to ask "did it move?", so never let mokkari's
+            # cache answer it; this also drops the items ``apply`` reads next.
+            purge_reading_list_cache(api=api)
             detail = fetch_reading_list_detail(api, ident)
             if not detail:
                 return ProbeResult(kind=kind, ident=ident,
@@ -422,7 +425,9 @@ def probe(row, force=False, app=None):
             if not api:
                 return ProbeResult(kind=kind, ident=ident,
                                    error="Metron is not configured")
-            from models.metron import fetch_arc_issues
+            from models.metron import fetch_arc_issues, purge_arc_issues_cache
+            # ``apply`` reuses this payload, so only the probe needs to be live.
+            purge_arc_issues_cache(ident, api=api)
             issues = fetch_arc_issues(api, ident)
             token = metron_arc_token(issues)
             payload = {"api": api, "issues": issues}

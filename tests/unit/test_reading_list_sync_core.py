@@ -225,6 +225,32 @@ class TestProbe:
         assert result.changed is True
         assert result.payload["issues"] == [{"id": 1}, {"id": 2}]
 
+    @patch("models.metron.fetch_reading_list_detail")
+    @patch("models.metron.purge_reading_list_cache")
+    @patch("core.reading_list_sync._metron_api")
+    def test_metron_list_probe_purges_mokkari_cache_first(self, mock_api, purge, mock_detail):
+        """A cached detail would answer "no changes" for a list that moved."""
+        api = mock_api.return_value = MagicMock()
+        order = MagicMock()
+        order.attach_mock(purge, "purge")
+        order.attach_mock(mock_detail, "fetch")
+        mock_detail.return_value = {"id": 3, "modified": "2026-10-26"}
+        probe({"id": 1, "source": "metron://reading-list/3"})
+        assert [c[0] for c in order.mock_calls] == ["purge", "fetch"]
+        purge.assert_called_once_with(api=api)
+
+    @patch("models.metron.fetch_arc_issues", return_value=[])
+    @patch("models.metron.purge_arc_issues_cache")
+    @patch("core.reading_list_sync._metron_api")
+    def test_metron_arc_probe_purges_mokkari_cache_first(self, mock_api, purge, mock_issues):
+        api = mock_api.return_value = MagicMock()
+        order = MagicMock()
+        order.attach_mock(purge, "purge")
+        order.attach_mock(mock_issues, "fetch")
+        probe({"id": 1, "source": "metron://arc/7"})
+        assert [c[0] for c in order.mock_calls] == ["purge", "fetch"]
+        purge.assert_called_once_with(7, api=api)
+
     @patch("core.reading_list_sync.requests.get", side_effect=OSError("boom"))
     def test_a_dead_source_is_reported_not_raised(self, _get):
         result = probe({"id": 1, "name": "x",

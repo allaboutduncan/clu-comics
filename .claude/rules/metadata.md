@@ -42,6 +42,16 @@ mokkari at 5.0 rather than pinning below it.
   same file path is reused, and mokkari discards a 4.x `responses` table on open.
   The purge helpers use the public `delete(key)` (exact detail URLs, built from
   `session.api_url`) and `invalidate("issue", "list")`; never raw SQL on the table.
+- **mokkari has no per-call cache bypass**, so a call that asks "what changed?"
+  purges its own cached answer first, or a second run within the TTL replays the
+  first: `purge_modified_since_cache` (credit backfill's `modified_gt` list),
+  `purge_reading_list_cache` (reading-list sweep and probe) and
+  `purge_arc_issues_cache` (arc probe). Dropping a list's first page is enough:
+  mokkari serves a paged list from cache only when every page is cached.
+  `reading_list` is a **per-user** resource whose keys carry a token hash, so it
+  is `invalidate()`d, never `delete()`d by URL. Empty lists are not cached
+  (`empty_list_ttl` left at its `NO_CACHE` default), so a "not on Metron yet"
+  lookup is not replayed. No per-resource `ttl=` map is configured.
 
 **A 401 or 403 latches a lockout that stops all Metron traffic.** A user mistyped
 their credentials, CLU retried until Metron's fail2ban banned their IP, and a

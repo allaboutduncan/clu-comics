@@ -439,6 +439,96 @@ class TestListIssuesModifiedSince:
         assert list_issues_modified_since(api, "2026-08-25") == {7: ""}
 
 
+def _page(results):
+    return {"count": len(results), "next": None, "previous": None, "results": results}
+
+
+class TestChangedSinceIsNeverServedFromCache:
+    """mokkari 5 honours its TTL but has no per-call bypass, so a call asking
+    "what changed?" must drop its own cached answer first. Driven through a real
+    Session so the keys are mokkari's, not a copy of its key-building."""
+
+    def _session(self, tmp_path):
+        from mokkari.session import Session
+
+        _, cache = _cache_session(tmp_path)
+        return Session("tok", cache=cache), cache
+
+    def test_same_day_rerun_reaches_metron_again(self, tmp_path):
+        from mokkari.session import Session
+
+        from models.metron import list_issues_modified_since
+
+        real, cache = self._session(tmp_path)
+        bodies = [_page([{"id": 1, "modified": "a"}]),
+                  _page([{"id": 1, "modified": "a"}, {"id": 2, "modified": "b"}])]
+        with patch.object(Session, "_request_data", side_effect=bodies) as http, \
+             patch.object(Session, "issues_list",
+                          lambda self, p: self._get_results(["issue"], p)["results"]):
+            assert list_issues_modified_since(real, "2026-10-25") == {1: "a"}
+            assert list_issues_modified_since(real, "2026-10-25") == {1: "a", 2: "b"}
+        assert http.call_count == 2
+
+    def test_leaves_other_issue_lists_cached(self, tmp_path):
+        from mokkari.session import Session
+
+        from models.metron import purge_modified_since_cache
+
+        real, cache = self._session(tmp_path)
+        with patch.object(Session, "_request_data", return_value=_page([{"id": 1}])):
+            real._get_results(["issue"], {"modified_gt": "2026-10-25"})
+            real._get_results(["issue"], {"series_id": 8859})
+
+        assert purge_modified_since_cache("issue", "2026-10-25", api=real) == 1
+        assert cache.get(real._url(["issue"]) + "?series_id=8859") is not None
+
+    def test_reading_list_purge_reaches_per_user_keys(self, tmp_path):
+        """reading_list keys carry a hash of the token, so the bare URL a
+        ``delete()`` would need never matches -- the purge has to invalidate."""
+        from mokkari.session import Session
+
+        from models.metron import purge_reading_list_cache
+
+        real, cache = self._session(tmp_path)
+        with patch.object(Session, "_request_data",
+                          side_effect=[{"id": 3, "modified": "old"}, _page([{"id": 9}])]):
+            real._get(["reading_list", 3])
+            real._get_results(["reading_list", 3, "items"])
+
+        assert cache.delete(real._url(["reading_list", 3])) is False
+        assert purge_reading_list_cache(api=real) == 2
+
+        with patch.object(Session, "_request_data",
+                          return_value={"id": 3, "modified": "new"}) as http:
+            assert real._get(["reading_list", 3])["modified"] == "new"
+        http.assert_called_once()
+
+    def test_reading_list_sweep_purges_before_listing(self):
+        from models.metron import list_reading_lists_modified_since
+
+        api = MagicMock()
+        api.reading_lists_list.return_value = []
+        with patch("models.metron.purge_reading_list_cache") as purge:
+            purge.side_effect = lambda **kw: api.reading_lists_list.assert_not_called()
+            assert list_reading_lists_modified_since(api, "2026-10-25") == {}
+        purge.assert_called_once_with(api=api)
+
+    def test_arc_purge_drops_only_that_arc(self, tmp_path):
+        from mokkari.session import Session
+
+        from models.metron import purge_arc_issues_cache
+
+        real, cache = self._session(tmp_path)
+        with patch.object(Session, "_request_data", return_value=_page([{"id": 1}])):
+            real._get_results(["arc", 7, "issue_list"], resource="issue")
+            real._get_results(["arc", 70, "issue_list"], resource="issue")
+
+        assert purge_arc_issues_cache(7, api=real) == 1
+        assert cache.get(real._url(["arc", 7, "issue_list"])) is None
+        assert cache.get(real._url(["arc", 70, "issue_list"])) is not None
+        assert purge_arc_issues_cache("nope", api=real) == 0
+
+
 class TestIsConnectionError:
 
     def test_timeout_detected(self):
