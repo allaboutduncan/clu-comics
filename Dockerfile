@@ -3,7 +3,7 @@
 # -----------------------
 # Stage 1: Builder
 # -----------------------
-FROM python:3.14-slim-bookworm AS builder
+FROM python:3.15-slim-bookworm AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -40,7 +40,7 @@ RUN wget -q https://www.rarlab.com/rar/unrarsrc-7.2.5.tar.gz -O /tmp/unrarsrc.ta
 # -----------------------
 # Stage 2: Final
 # -----------------------
-FROM python:3.14-slim-bookworm
+FROM python:3.15-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
