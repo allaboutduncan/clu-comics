@@ -219,6 +219,21 @@ class TestBrowse:
         assert data["truncated"] is True
 
 
+def _allow_tmp_mounts(monkeypatch, tmp_path):
+    """Let fake mounts under ``tmp_path`` through the system-dirs filter.
+
+    ``SYSTEM_DIRS`` rightly excludes ``/tmp`` (Docker's own territory in the
+    container), but on Linux pytest's ``tmp_path`` lives there, so the fake
+    volumes vanished on CI while passing on Windows.
+    """
+    from core import setup_browse
+
+    tmp = str(tmp_path).replace("\\", "/")
+    monkeypatch.setattr(setup_browse, "SYSTEM_DIRS", tuple(
+        d for d in setup_browse.SYSTEM_DIRS
+        if not (tmp == d or tmp.startswith(d.rstrip("/") + "/"))))
+
+
 class TestBrowseMounts:
     """Volumes mapped outside /data and /downloads (``/comics``) are roots too."""
 
@@ -244,6 +259,7 @@ class TestBrowseMounts:
         ]
         monkeypatch.setattr("core.db_health._read_mountinfo",
                             lambda *a, **k: table)
+        _allow_tmp_mounts(monkeypatch, tmp_path)
         return {k: os.path.realpath(tmp_path / k)
                 for k in ("data", "downloads", "comics", "config")}
 

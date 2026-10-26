@@ -124,6 +124,14 @@ class TestDataMount:
         vol.mkdir()
         monkeypatch.setattr("core.db_health._read_mountinfo",
                             lambda *a, **k: [(str(vol), "ext4", "/dev/sdb1")])
+        # SYSTEM_DIRS rightly excludes /tmp, but pytest's tmp_path lives there
+        # on Linux, so the fake volume vanished on CI while passing on Windows.
+        from core import setup_browse
+
+        tmp = str(tmp_path).replace("\\", "/")
+        monkeypatch.setattr(setup_browse, "SYSTEM_DIRS", tuple(
+            d for d in setup_browse.SYSTEM_DIRS
+            if not (tmp == d or tmp.startswith(d.rstrip("/") + "/"))))
         return os.path.realpath(vol)
 
     def test_missing_data_with_volume_elsewhere_is_ok(self, dirs, monkeypatch, tmp_path):
