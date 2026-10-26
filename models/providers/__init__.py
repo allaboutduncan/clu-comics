@@ -163,6 +163,26 @@ def get_registered_providers() -> List[Type[BaseProvider]]:
     return list(_PROVIDER_REGISTRY.values())
 
 
+def client_library_version(distribution: Optional[str]) -> Optional[str]:
+    """Installed version of a provider's client library, or None.
+
+    None both when the provider wraps no library and when the library is not
+    installed -- the settings page shows nothing rather than guessing.
+    """
+    if not distribution:
+        return None
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover - stdlib since 3.8
+        return None
+    try:
+        return version(distribution)
+    except PackageNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
 def get_available_providers() -> List[Dict]:
     """
     Get list of available providers with their configuration details.
@@ -178,7 +198,9 @@ def get_available_providers() -> List[Dict]:
             "auth_fields": p.auth_fields,
             "auth_modes": p.auth_modes,
             "rate_limit": p.rate_limit,
-            "rate_limit_window_seconds": p.rate_limit_window_seconds
+            "rate_limit_window_seconds": p.rate_limit_window_seconds,
+            "client_library": p.client_library,
+            "client_library_version": client_library_version(p.client_library),
         }
         for p in _PROVIDER_REGISTRY.values()
     ]

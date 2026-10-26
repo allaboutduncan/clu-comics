@@ -892,11 +892,20 @@ def _apply_auth_mode(provider_class, data):
 
     A provider offering several auth methods posts which one the user chose.
     The stored blob is replaced wholesale, and blank inputs never reach us, so
-    without this a switch from username/password to a token would leave the
-    old password behind and mokkari would keep using whichever it prefers.
+    without this a switch from one method to another would leave the old
+    method's secret behind. Fields the provider has retired (Metron's
+    username/password) are dropped whatever was posted.
     Returns an error message, or None.
     """
     auth_mode = data.pop("auth_mode", None)
+    retired = getattr(provider_class, "retired_auth_fields", None) or []
+    if retired:
+        for field in retired:
+            data.pop(field, None)
+        if not any(v not in (None, "") for v in data.values()):
+            fields = getattr(provider_class, "auth_fields", None) or []
+            label = " and ".join(f.replace("_", " ") for f in fields) or "credentials"
+            return f"Enter your {label}"
     auth_modes = getattr(provider_class, "auth_modes", None) or []
     if auth_mode and auth_modes:
         chosen = next((m for m in auth_modes if m.get("id") == auth_mode), None)

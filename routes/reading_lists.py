@@ -1025,7 +1025,7 @@ def metron_browse():
     if not is_metron_configured():
         return jsonify({
             'success': False,
-            'message': 'Metron credentials not configured. Go to Settings to add your Metron username and password.'
+            'message': 'Metron credentials not configured. Go to Settings to add your Metron API token.'
         })
 
     api = get_flask_api()
@@ -1201,7 +1201,7 @@ def metron_browse_arcs():
     if not is_metron_configured():
         return jsonify({
             'success': False,
-            'message': 'Metron credentials not configured. Go to Settings to add your Metron username and password.'
+            'message': 'Metron credentials not configured. Go to Settings to add your Metron API token.'
         })
 
     api = get_flask_api()

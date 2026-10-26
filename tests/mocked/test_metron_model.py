@@ -20,7 +20,7 @@ class TestGetApi:
         from models.metron import get_api
 
         mock_session_class.return_value = MagicMock()
-        api = get_api("user", "pass")
+        api = get_api(api_token="tok")
         assert api is not None
         mock_session_class.assert_called_once()
 
@@ -30,25 +30,25 @@ class TestGetApi:
         assert get_api(None, None) is None
 
     @patch("models.metron.MokkariSession")
-    def test_reuses_session_for_same_credentials(self, mock_session_class):
-        """Repeated calls with the same creds must not construct a new
+    def test_reuses_session_for_same_token(self, mock_session_class):
+        """Repeated calls with the same token must not construct a new
         Session each time -- concurrent threads sharing credentials rely on
         this to share mokkari's rate-limit tracking."""
         from models.metron import get_api
 
         mock_session_class.return_value = MagicMock()
-        first = get_api("user", "pass")
-        second = get_api("user", "pass")
+        first = get_api(api_token="tok")
+        second = get_api(api_token="tok")
         assert first is second
         mock_session_class.assert_called_once()
 
     @patch("models.metron.MokkariSession")
-    def test_separate_sessions_for_different_credentials(self, mock_session_class):
+    def test_separate_sessions_for_different_tokens(self, mock_session_class):
         from models.metron import get_api
 
         mock_session_class.side_effect = [MagicMock(), MagicMock()]
-        first = get_api("user1", "pass1")
-        second = get_api("user2", "pass2")
+        first = get_api(api_token="tok-1")
+        second = get_api(api_token="tok-2")
         assert first is not second
         assert mock_session_class.call_count == 2
 
@@ -66,15 +66,14 @@ class TestSessionCache:
         from models.metron import get_api
 
         mock_session_class.return_value = MagicMock()
-        get_api("user", "pass")
+        get_api(api_token="tok")
 
         _, kwargs = mock_session_class.call_args
         cache = kwargs.get("cache")
         assert cache is not None
-        assert cache.expire == 1
-        assert str(tmp_path / "mokkari") in cache.con.execute(
-            "PRAGMA database_list"
-        ).fetchone()[2]
+        assert cache.ttl_policy.ttl_for("series", "detail") == timedelta(days=1)
+        assert cache.ttl_policy.ttl_for("issue", "list") == timedelta(days=1)
+        assert str(tmp_path / "mokkari") in str(cache._db_name)
 
     @patch("models.metron.MokkariSession")
     def test_expiry_env_override(self, mock_session_class, tmp_path, monkeypatch):
@@ -83,13 +82,13 @@ class TestSessionCache:
         from models.metron import get_api
 
         mock_session_class.return_value = MagicMock()
-        get_api("user", "pass")
+        get_api(api_token="tok")
 
         _, kwargs = mock_session_class.call_args
-        assert kwargs["cache"].expire == 7
+        assert kwargs["cache"].ttl_policy.ttl_for("issue", "detail") == timedelta(days=7)
 
     def test_expiry_never_falsy(self, monkeypatch):
-        """mokkari treats a falsy expire as 'never expire' -- a cache that never
+        """mokkari treats a None TTL as 'never expire' -- a cache that never
         drops a row would pin stale metadata forever."""
         from models.metron import _metron_cache_expire_days
 
@@ -97,6 +96,25 @@ class TestSessionCache:
         assert _metron_cache_expire_days() >= 1
         monkeypatch.setenv("METRON_CACHE_EXPIRE_DAYS", "garbage")
         assert _metron_cache_expire_days() >= 1
+
+    def test_a_mokkari_4_cache_file_is_reused(self, tmp_path, monkeypatch):
+        """Upgrading keeps the same path; mokkari 5 must discard a 4.x
+        ``responses`` table rather than refuse the file, which would leave
+        every upgraded install running uncached."""
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        from helpers.provider_cache import provider_cache_dir
+        from models.metron import _metron_cache
+
+        path = f"{provider_cache_dir('mokkari')}/mokkari_cache.db"
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE responses (key, json, expire)")
+        con.execute("INSERT INTO responses VALUES ('k', '{}', 0)")
+        con.commit()
+        con.close()
+
+        cache = _metron_cache()
+        assert cache is not None
+        cache.close()
 
     @patch("models.metron.MokkariSession")
     @patch("models.metron.SqliteCache", side_effect=OSError(30, "Read-only file system"))
@@ -106,7 +124,7 @@ class TestSessionCache:
         from models.metron import get_api
 
         mock_session_class.return_value = MagicMock()
-        api = get_api("user", "pass")
+        api = get_api(api_token="tok")
 
         assert api is not None
         _, kwargs = mock_session_class.call_args
@@ -114,13 +132,12 @@ class TestSessionCache:
 
     @patch("models.metron.MokkariSession")
     def test_invalidate_runs_cache_cleanup(self, mock_session_class):
-        """mokkari only expires rows in SqliteCache.__init__, so on a long-lived
-        shared session this is the only thing that ever drops stale responses."""
+        """Expired rows are never served, but only cleanup() reclaims them."""
         from models.metron import get_api, invalidate_session_cache
 
         session = MagicMock()
         mock_session_class.return_value = session
-        get_api("user", "pass")
+        get_api(api_token="tok")
 
         invalidate_session_cache()
 
@@ -133,72 +150,60 @@ class TestSessionCache:
         session = MagicMock()
         session.cache = None
         mock_session_class.return_value = session
-        get_api("user", "pass")
+        get_api(api_token="tok")
 
         invalidate_session_cache()  # must not raise
 
 
-class TestPurgeSeriesCache:
-    """A user-initiated refresh has to reach Metron, not mokkari's cache.
+def _cache_session(tmp_path):
+    """A stand-in Session holding a real mokkari 5 cache."""
+    from mokkari.sqlite_cache import SqliteCache
 
-    ``SqliteCache.get()`` never checks the expire column and ``store()`` is a
-    plain INSERT whose row ``get()`` returns first, so a body cached once is
-    replayed for the life of the process unless its rows are deleted.
-    """
+    cache = SqliteCache(str(tmp_path / "mokkari_cache.db"), default_ttl=timedelta(days=1))
+    session = SimpleNamespace(cache=cache, api_url="https://metron.cloud/api/{}/")
+    return session, cache
+
+
+def _store(cache, key, value, resource, kind="detail"):
+    cache.store(key, value, resource=resource, kind=kind)
+
+
+class TestPurgeSeriesCache:
+    """A user-initiated refresh has to reach Metron, not mokkari's cache, or a
+    Summary edited on Metron would not appear until the TTL ran out."""
 
     SERIES_URL = "https://metron.cloud/api/series/8859/"
     ISSUES_URL = "https://metron.cloud/api/issue/?page=1&series_id=8859"
 
-    def _session_with_cache(self, tmp_path):
-        from mokkari.sqlite_cache import SqliteCache
-
-        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
-        return SimpleNamespace(cache=cache), cache
-
     def test_drops_series_and_issue_rows(self, tmp_path):
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
-        cache.store(self.ISSUES_URL, {"results": []})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
+        _store(cache, self.ISSUES_URL, {"results": []}, "issue", "list")
 
         assert purge_series_cache(8859, api=session) == 2
         assert cache.get(self.SERIES_URL) is None
         assert cache.get(self.ISSUES_URL) is None
 
-    def test_leaves_other_series_alone(self, tmp_path):
-        """LIKE '%series_id=8859%' also matches 88591 -- only the regex saves us."""
+    def test_leaves_other_series_detail_alone(self, tmp_path):
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
+        session, cache = _cache_session(tmp_path)
         other_detail = "https://metron.cloud/api/series/88591/"
-        other_issues = "https://metron.cloud/api/issue/?page=1&series_id=88591"
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
-        cache.store(other_detail, {"desc": "different series"})
-        cache.store(other_issues, {"results": []})
+        _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
+        _store(cache, other_detail, {"desc": "different series"}, "series")
 
         assert purge_series_cache(8859, api=session) == 1
         assert cache.get(other_detail) == {"desc": "different series"}
-        assert cache.get(other_issues) == {"results": []}
-
-    def test_drops_every_duplicate_row_for_a_key(self, tmp_path):
-        """store() appends, so one leftover row keeps serving the stale body."""
-        from models.metron import purge_series_cache
-
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
-        cache.store(self.SERIES_URL, {"desc": "older still"})
-
-        assert purge_series_cache(8859, api=session) == 2
-        assert cache.get(self.SERIES_URL) is None
 
     def test_next_fetch_sees_the_new_body(self, tmp_path):
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
         purge_series_cache(8859, api=session)
-        cache.store(self.SERIES_URL, {"desc": "new summary"})
+        _store(cache, self.SERIES_URL, {"desc": "new summary"}, "series")
 
         assert cache.get(self.SERIES_URL) == {"desc": "new summary"}
 
@@ -210,23 +215,34 @@ class TestPurgeSeriesCache:
     def test_non_numeric_series_id_is_a_no_op(self, tmp_path):
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
 
         assert purge_series_cache("not-an-id", api=session) == 0
         assert cache.get(self.SERIES_URL) == {"desc": "old summary"}
+
+    def test_a_failing_cache_never_raises(self):
+        from models.metron import purge_series_cache
+
+        cache = MagicMock()
+        cache.delete.side_effect = sqlite3.OperationalError("database is locked")
+        session = SimpleNamespace(cache=cache, api_url="https://metron.cloud/api/{}/")
+
+        with patch("core.database.get_issues_for_series", return_value=[]):
+            assert purge_series_cache(8859, api=session) == 0
 
     @patch("models.metron.MokkariSession")
     def test_defaults_to_every_cached_session(self, mock_session_class, tmp_path):
         from models.metron import get_api, invalidate_session_cache, purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.SERIES_URL, {"desc": "old summary"})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
         mock_session_class.return_value = session
         invalidate_session_cache()
-        get_api("user", "pass")
+        get_api(api_token="tok")
 
-        assert purge_series_cache(8859) == 1
+        with patch("core.database.get_issues_for_series", return_value=[]):
+            assert purge_series_cache(8859) == 1
         assert cache.get(self.SERIES_URL) is None
         invalidate_session_cache()
 
@@ -235,53 +251,50 @@ class TestPurgeIssueCache:
     """The ``/issue/<id>/`` body is the one carrying credits.
 
     Metron records are finished after a comic ships, so an issue fetched on
-    release morning can be cached without creators. ``purge_series_cache``
-    never touched these keys, which made every re-tag replay the incomplete
-    body for the life of the process.
+    release morning can be cached without creators, and a re-tag would replay
+    that incomplete body until the TTL ran out.
     """
 
     ISSUE_URL = "https://metron.cloud/api/issue/172615/"
 
-    def _session_with_cache(self, tmp_path):
-        from mokkari.sqlite_cache import SqliteCache
-
-        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
-        return SimpleNamespace(cache=cache), cache
-
     def test_drops_the_issue_detail_row(self, tmp_path):
         from models.metron import purge_issue_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.ISSUE_URL, {"credits": []})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
 
         assert purge_issue_cache(172615, api=session) == 1
         assert cache.get(self.ISSUE_URL) is None
 
     def test_leaves_other_issues_alone(self, tmp_path):
-        """LIKE '%/issue/172615%' also matches 1726150 and ?issue_id=172615."""
         from models.metron import purge_issue_cache
 
-        session, cache = self._session_with_cache(tmp_path)
+        session, cache = _cache_session(tmp_path)
         other_issue = "https://metron.cloud/api/issue/1726150/"
         filtered = "https://metron.cloud/api/credit/?issue_id=172615"
-        cache.store(self.ISSUE_URL, {"credits": []})
-        cache.store(other_issue, {"credits": ["someone"]})
-        cache.store(filtered, {"results": []})
+        _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
+        _store(cache, other_issue, {"credits": ["someone"]}, "issue")
+        _store(cache, filtered, {"results": []}, "credit", "list")
 
         assert purge_issue_cache(172615, api=session) == 1
         assert cache.get(other_issue) == {"credits": ["someone"]}
         assert cache.get(filtered) == {"results": []}
 
-    def test_drops_every_duplicate_row_for_a_key(self, tmp_path):
-        """store() appends, so one leftover row keeps serving the stale body."""
+    def test_key_matches_what_mokkari_stores(self, tmp_path):
+        """The purge rebuilds the key, so it must be the one Session writes:
+        drive a real Session against a stubbed HTTP layer and purge after."""
+        from mokkari.session import Session
+
         from models.metron import purge_issue_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.ISSUE_URL, {"credits": []})
-        cache.store(self.ISSUE_URL, {"credits": []})
+        _, cache = _cache_session(tmp_path)
+        real = Session("tok", cache=cache)
+        body = {"id": 172615}
+        with patch.object(Session, "_request_data", return_value=body):
+            real._get(["issue", 172615])
+        assert cache.get(real._url(["issue", 172615])) == body
 
-        assert purge_issue_cache(172615, api=session) == 2
-        assert cache.get(self.ISSUE_URL) is None
+        assert purge_issue_cache(172615, api=real) == 1
 
     def test_session_without_a_cache_is_a_no_op(self):
         from models.metron import purge_issue_cache
@@ -291,8 +304,8 @@ class TestPurgeIssueCache:
     def test_non_numeric_issue_id_is_a_no_op(self, tmp_path):
         from models.metron import purge_issue_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store(self.ISSUE_URL, {"credits": []})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
 
         assert purge_issue_cache("not-an-id", api=session) == 0
         assert cache.get(self.ISSUE_URL) == {"credits": []}
@@ -302,9 +315,9 @@ class TestPurgeIssueCache:
         refreshes while every issue keeps its stale credits."""
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store("https://metron.cloud/api/series/8859/", {"desc": "old"})
-        cache.store(self.ISSUE_URL, {"credits": []})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, "https://metron.cloud/api/series/8859/", {"desc": "old"}, "series")
+        _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
 
         with patch(
             "core.database.get_issues_for_series",
@@ -317,8 +330,8 @@ class TestPurgeIssueCache:
     def test_series_purge_survives_a_database_failure(self, tmp_path):
         from models.metron import purge_series_cache
 
-        session, cache = self._session_with_cache(tmp_path)
-        cache.store("https://metron.cloud/api/series/8859/", {"desc": "old"})
+        session, cache = _cache_session(tmp_path)
+        _store(cache, "https://metron.cloud/api/series/8859/", {"desc": "old"}, "series")
 
         with patch("core.database.get_issues_for_series", side_effect=RuntimeError("db down")):
             assert purge_series_cache(8859, api=session) == 1
@@ -330,18 +343,17 @@ class TestFetchIssueDetail:
     ISSUE_URL = "https://metron.cloud/api/issue/172615/"
 
     def _session_with_cache(self, tmp_path):
-        from mokkari.sqlite_cache import SqliteCache
-
-        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
+        _, cache = _cache_session(tmp_path)
         api = MagicMock()
         api.cache = cache
+        api.api_url = "https://metron.cloud/api/{}/"
         return api, cache
 
     def test_drops_the_cached_body_before_fetching(self, tmp_path):
         from models.metron import fetch_issue_detail
 
         api, cache = self._session_with_cache(tmp_path)
-        cache.store(self.ISSUE_URL, {"credits": []})
+        _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
         api.issue.return_value = SimpleNamespace(id=172615)
 
         result = fetch_issue_detail(api, 172615)
@@ -362,7 +374,7 @@ class TestFetchIssueDetail:
         from models.metron import get_issue_metadata
 
         api, cache = self._session_with_cache(tmp_path)
-        cache.store(self.ISSUE_URL, {"credits": [], "number": "3"})
+        _store(cache, self.ISSUE_URL, {"credits": [], "number": "3"}, "issue")
         api.issues_list.return_value = [SimpleNamespace(id=172615)]
         api.issue.return_value = {"number": "3", "credits": [{"creator": "Bengal"}]}
 
@@ -1188,10 +1200,7 @@ class TestGetFlaskApi:
         from models.metron import get_flask_api
 
         mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "user",
-            "METRON_PASSWORD": "pass",
-        }
+        mock_app.config = {"METRON_API_TOKEN": "tok"}
         mock_session_class.return_value = MagicMock()
 
         api = get_flask_api(mock_app)
@@ -1204,8 +1213,7 @@ class TestGetFlaskApi:
         from models.metron import get_flask_api
 
         test_app = Flask(__name__)
-        test_app.config["METRON_USERNAME"] = "user"
-        test_app.config["METRON_PASSWORD"] = "pass"
+        test_app.config["METRON_API_TOKEN"] = "tok"
         mock_session_class.return_value = MagicMock()
 
         with test_app.app_context():
@@ -1216,72 +1224,55 @@ class TestGetFlaskApi:
         from models.metron import get_flask_api
 
         mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "",
-            "METRON_PASSWORD": "",
-        }
+        mock_app.config = {"METRON_API_TOKEN": ""}
         assert get_flask_api(mock_app) is None
 
-    def test_whitespace_only_credentials(self):
+    def test_whitespace_only_token(self):
         from models.metron import get_flask_api
 
         mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "  ",
-            "METRON_PASSWORD": "  ",
-        }
+        mock_app.config = {"METRON_API_TOKEN": "  "}
         assert get_flask_api(mock_app) is None
 
-    def test_missing_username_only(self):
+    @patch("models.metron.MokkariSession")
+    def test_username_and_password_alone_build_no_client(self, mock_session_class):
+        """mokkari 5.0 removed basic auth: a pre-upgrade install with only a
+        username saved gets no client, and never reaches Session at all."""
         from models.metron import get_flask_api
-
-        mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "",
-            "METRON_PASSWORD": "pass",
-        }
-        assert get_flask_api(mock_app) is None
-
-
-class TestIsMetronConfigured:
-
-    def test_both_credentials_present(self):
-        from models.metron import is_metron_configured
 
         mock_app = MagicMock()
         mock_app.config = {
             "METRON_USERNAME": "user",
             "METRON_PASSWORD": "pass",
+            "METRON_API_TOKEN": "",
         }
+        assert get_flask_api(mock_app) is None
+        mock_session_class.assert_not_called()
+
+
+class TestIsMetronConfigured:
+
+    def test_token_present(self):
+        from models.metron import is_metron_configured
+
+        mock_app = MagicMock()
+        mock_app.config = {"METRON_API_TOKEN": "tok"}
         assert is_metron_configured(mock_app) is True
 
     def test_no_credentials(self):
         from models.metron import is_metron_configured
 
         mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "",
-            "METRON_PASSWORD": "",
-        }
+        mock_app.config = {"METRON_API_TOKEN": ""}
         assert is_metron_configured(mock_app) is False
 
-    def test_only_password(self):
-        from models.metron import is_metron_configured
-
-        mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "",
-            "METRON_PASSWORD": "pass",
-        }
-        assert is_metron_configured(mock_app) is False
-
-    def test_only_username(self):
+    def test_username_and_password_no_longer_count(self):
         from models.metron import is_metron_configured
 
         mock_app = MagicMock()
         mock_app.config = {
             "METRON_USERNAME": "user",
-            "METRON_PASSWORD": "",
+            "METRON_PASSWORD": "pass",
         }
         assert is_metron_configured(mock_app) is False
 
@@ -1289,19 +1280,15 @@ class TestIsMetronConfigured:
         from models.metron import is_metron_configured
 
         mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "  user  ",
-            "METRON_PASSWORD": "  pass  ",
-        }
-        assert is_metron_configured(mock_app) is True
+        mock_app.config = {"METRON_API_TOKEN": "  "}
+        assert is_metron_configured(mock_app) is False
 
     def test_with_current_app(self):
         from flask import Flask
         from models.metron import is_metron_configured
 
         test_app = Flask(__name__)
-        test_app.config["METRON_USERNAME"] = "user"
-        test_app.config["METRON_PASSWORD"] = "pass"
+        test_app.config["METRON_API_TOKEN"] = "tok"
 
         with test_app.app_context():
             assert is_metron_configured() is True
@@ -1509,7 +1496,7 @@ class TestAuthLockout:
 
         latch_auth_failure(401, "Invalid token.")
         with patch("models.metron.MokkariSession") as session_class:
-            assert get_api("user", "pass") is None
+            assert get_api(api_token="tok") is None
             session_class.assert_not_called()
 
     def test_the_connection_test_may_still_build_a_client(self, prefs):
@@ -1519,7 +1506,7 @@ class TestAuthLockout:
         latch_auth_failure(401, "Invalid token.")
         with patch("models.metron.MokkariSession") as session_class:
             session_class.return_value = MagicMock()
-            assert get_api("user", "pass", ignore_auth_lock=True) is not None
+            assert get_api(api_token="tok", ignore_auth_lock=True) is not None
 
     def test_api_call_may_be_told_to_run_while_blocked(self, prefs):
         from models.metron import _api_call, latch_auth_failure
@@ -1545,7 +1532,7 @@ class TestAuthLockout:
         from models.metron import is_metron_configured, latch_auth_failure
 
         mock_app = MagicMock()
-        mock_app.config = {"METRON_USERNAME": "user", "METRON_PASSWORD": "pass"}
+        mock_app.config = {"METRON_API_TOKEN": "tok"}
         assert is_metron_configured(mock_app) is True
 
         latch_auth_failure(401, "Invalid username/password.")
@@ -1591,7 +1578,9 @@ class TestAuthLockout:
         assert _metron_pacer.daily_limit_reached() is True
 
 
-class TestApiTokenSupport:
+class TestTokenOnlyAuth:
+    """mokkari 5.0 removed username/password: ``Session(api_token, *, ...)``.
+    Passing ``username=`` is a TypeError inside every Metron call (#673)."""
 
     @patch("models.metron.MokkariSession")
     def test_token_is_passed_to_mokkari(self, session_class):
@@ -1599,39 +1588,39 @@ class TestApiTokenSupport:
 
         session_class.return_value = MagicMock()
         assert get_api(api_token="tok-123") is not None
-        assert session_class.call_args.kwargs["api_token"] == "tok-123"
+        assert session_class.call_args.args == ("tok-123",)
 
     @patch("models.metron.MokkariSession")
-    def test_basic_auth_sends_no_token_argument(self, session_class):
+    def test_username_and_password_are_never_passed(self, session_class):
         from models.metron import get_api
 
         session_class.return_value = MagicMock()
-        get_api("user", "pass")
-        assert "api_token" not in session_class.call_args.kwargs
+        get_api("user", "pass", "tok-123")
+        kwargs = session_class.call_args.kwargs
+        assert "username" not in kwargs and "passwd" not in kwargs
 
     @patch("models.metron.MokkariSession")
-    def test_token_sessions_are_cached_separately_from_basic_auth(self, session_class):
+    def test_basic_auth_alone_builds_no_client(self, session_class):
         from models.metron import get_api
 
-        session_class.side_effect = lambda **kw: MagicMock()
-        basic = get_api("user", "pass")
-        token = get_api(api_token="tok-123")
-        assert basic is not token
-        assert get_api(api_token="tok-123") is token
+        assert get_api("user", "pass") is None
+        session_class.assert_not_called()
 
-    def test_a_token_alone_is_enough_to_be_configured(self):
-        from models.metron import is_metron_configured
+    def test_basic_auth_warning_is_logged_once(self, caplog):
+        import models.metron as metron
 
-        mock_app = MagicMock()
-        mock_app.config = {
-            "METRON_USERNAME": "",
-            "METRON_PASSWORD": "",
-            "METRON_API_TOKEN": "tok-123",
-        }
-        assert is_metron_configured(mock_app) is True
+        metron._BASIC_AUTH_WARNED = False
+        try:
+            with caplog.at_level("WARNING"):
+                metron.get_api("user", "pass")
+                metron.get_api("user", "pass")
+            hits = [r for r in caplog.records if "no longer supported" in r.getMessage()]
+            assert len(hits) == 1
+        finally:
+            metron._BASIC_AUTH_WARNED = False
 
     @patch("models.metron.MokkariSession")
-    def test_get_flask_api_prefers_the_token(self, session_class):
+    def test_get_flask_api_uses_the_token(self, session_class):
         from models.metron import get_flask_api
 
         session_class.return_value = MagicMock()
@@ -1642,77 +1631,65 @@ class TestApiTokenSupport:
             "METRON_API_TOKEN": "  tok-123  ",
         }
         assert get_flask_api(mock_app) is not None
-        assert session_class.call_args.kwargs["api_token"] == "tok-123"
+        assert session_class.call_args.args == ("tok-123",)
 
     def test_no_credentials_at_all(self):
         from models.metron import get_api
 
         assert get_api("", "", "") is None
 
-    @patch("models.metron.supports_api_token", return_value=False)
-    @patch("models.metron.MokkariSession")
-    def test_an_old_mokkari_declines_rather_than_raising(self, session_class, _supports):
-        """mokkari gained api_token in 4.4.0; on an older one, passing it would
-        be a TypeError deep inside a worker thread."""
-        from models.metron import get_api
-
-        assert get_api(api_token="tok-123") is None
-        session_class.assert_not_called()
-
-    def test_the_real_mokkari_is_measured_not_assumed(self):
-        """Guards the version floor in requirements.txt: this reports False on
-        the mokkari that shipped before token auth."""
+    def test_the_real_mokkari_takes_a_token_only(self):
+        """Guards the version floor in requirements.txt: CLU builds Session the
+        mokkari 5 way, so a 4.x install would fail every call."""
         import inspect as _inspect
 
         from mokkari.session import Session
-        from models.metron import supports_api_token
 
         try:
             params = _inspect.signature(Session.__init__).parameters
         except (TypeError, ValueError):
             pytest.skip("mokkari is shimmed in this environment")
-        if "passwd" not in params:
+        if "api_token" not in params:
             pytest.skip("mokkari is shimmed in this environment")
-        assert supports_api_token() == ("api_token" in params)
+        assert "username" not in params and "passwd" not in params
 
 
 class TestFetchArcsPageAuth:
     """fetch_arcs_page builds its own HTTP request to escape mokkari's
     auto-pagination, so it has to carry the auth rules by hand."""
 
-    def test_a_token_session_sends_no_basic_auth_tuple(self, prefs):
+    def test_the_token_is_sent_as_a_bearer_header(self, prefs):
+        """mokkari 5 keeps the token out of ``api.header``; without adding it
+        here every arc page is a 401, which latches the lockout for all of
+        Metron."""
         from models.metron import fetch_arcs_page
 
-        api = MagicMock()
-        api.username = None
-        api.passwd = None
-        api.header = {"Authorization": "Bearer tok-123"}
-
+        api = SimpleNamespace(api_token="tok-123", header={"User-Agent": "CLU"})
         response = MagicMock(status_code=200)
         response.json.return_value = {"results": [], "next": None, "count": 0}
 
         with patch("models.metron.requests_lib.get", return_value=response) as get:
             fetch_arcs_page(api, page=1)
 
-        assert get.call_args.kwargs["auth"] is None
-        assert get.call_args.kwargs["headers"]["Authorization"] == "Bearer tok-123"
+        headers = get.call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer tok-123"
+        assert headers["User-Agent"] == "CLU"
+        assert "auth" not in get.call_args.kwargs
+        # The session's own header dict is not mutated.
+        assert "Authorization" not in api.header
 
-    def test_basic_auth_is_still_sent_when_there_is_a_pair(self, prefs):
-        from models.metron import fetch_arcs_page
+    def test_the_real_session_header_has_no_token(self):
+        """Pins the mokkari 5 behaviour the hand-built request compensates for."""
+        from mokkari.session import Session
 
-        api = MagicMock(username="user", passwd="pass", header={})
-        response = MagicMock(status_code=200)
-        response.json.return_value = {"results": [], "next": None, "count": 0}
-
-        with patch("models.metron.requests_lib.get", return_value=response) as get:
-            fetch_arcs_page(api, page=1)
-
-        assert get.call_args.kwargs["auth"] == ("user", "pass")
+        session = Session("tok-123")
+        assert "Authorization" not in session.header
+        assert session.api_token == "tok-123"
 
     def test_a_401_latches_the_lockout_and_stops_retrying(self, prefs):
         from models.metron import auth_blocked, fetch_arcs_page
 
-        api = MagicMock(username="user", passwd="pass", header={})
+        api = SimpleNamespace(api_token="tok-123", header={})
         response = MagicMock(status_code=401, text='{"detail": "Invalid token."}')
 
         with patch("models.metron.requests_lib.get", return_value=response) as get:

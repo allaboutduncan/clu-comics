@@ -455,29 +455,14 @@
     return document.querySelector('.setup-step[data-step="metadata"] [data-provider="' + type + '"]');
   }
 
-  function metronMode() {
-    const checked = document.querySelector('input[name="metron-mode"]:checked');
-    return checked ? checked.value : 'token';
-  }
-
-  function syncMetronMode() {
-    const box = providerBox('metron');
-    box.querySelectorAll('[data-mode]').forEach(function (d) {
-      d.classList.toggle('d-none', d.dataset.mode !== metronMode());
-    });
-  }
-
-  /** The credential fields the user typed (visible auth mode only). */
+  /** The credential fields the user typed. */
   function collectFields(type) {
     const box = providerBox(type);
     const body = {};
     box.querySelectorAll('[data-field]').forEach(function (input) {
-      const mode = input.closest('[data-mode]');
-      if (mode && mode.classList.contains('d-none')) return;
       const v = input.value.trim();
       if (v) body[input.dataset.field] = v;
     });
-    if (type === 'metron' && Object.keys(body).length) body.auth_mode = metronMode();
     return body;
   }
 
@@ -508,9 +493,9 @@
         if (input.dataset.field === 'database_path') { if (!input.value) input.value = v; }
         else input.placeholder = 'Saved (' + v + ')';
       });
-      if (type === 'metron' && masked.username && !masked.api_token) {
-        $('metron-mode-basic').checked = true;
-        syncMetronMode();
+      if (type === 'metron') {
+        // A username saved before mokkari 5 no longer signs in; say why.
+        $('metron-basic-auth-note').classList.toggle('d-none', !(masked.username && !masked.api_token));
       }
     });
   }
@@ -670,9 +655,6 @@
   }
 
   function initMetadata() {
-    document.querySelectorAll('input[name="metron-mode"]').forEach(function (r) {
-      r.addEventListener('change', syncMetronMode);
-    });
     document.querySelectorAll('.setup-step[data-step="metadata"] [data-provider]').forEach(function (box) {
       const type = box.dataset.provider;
       const test = box.querySelector('.provider-test');
@@ -700,7 +682,6 @@
         showError('Could not save: ' + err.message);
       }
     });
-    syncMetronMode();
   }
 
   function enterMetadata() {

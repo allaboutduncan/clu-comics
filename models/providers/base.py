@@ -241,6 +241,16 @@ class BaseProvider(ABC):
     # of the other modes' fields to clear. Empty means "one way only".
     auth_modes: List[Dict[str, Any]] = []
 
+    # Credential fields this provider used to accept and no longer does. They
+    # are stripped from every save and probe, so a value left over from before
+    # the change can never be written back. See MetronProvider.
+    retired_auth_fields: List[str] = []
+
+    # The PyPI distribution of the client library this provider wraps, if any.
+    # Its installed version is shown on the settings page, because a library
+    # upgrade can break a provider outright (mokkari 5.0 dropped basic auth).
+    client_library: Optional[str] = None
+
     # Verify the credentials against the provider as part of saving them.
     # Only worth it where a rejection has a lasting cost; see MetronProvider.
     validate_on_save: bool = False

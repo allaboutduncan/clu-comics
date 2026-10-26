@@ -81,7 +81,7 @@ def _reset_provider_instance_cache():
 
 @pytest.fixture
 def metron_creds():
-    return ProviderCredentials(username="testuser", password="testpass")
+    return ProviderCredentials(api_token="test-token")
 
 
 @pytest.fixture

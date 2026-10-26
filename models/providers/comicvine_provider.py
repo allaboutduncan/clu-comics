@@ -18,6 +18,7 @@ class ComicVineProvider(BaseProvider):
     display_name = "ComicVine"
     requires_auth = True
     auth_fields = ["api_key"]
+    client_library = "simyan"
     rate_limit = 200  # ComicVine allows ~200 requests per resource per hour
     rate_limit_window_seconds = 3600
 

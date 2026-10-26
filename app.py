@@ -4839,14 +4839,9 @@ def inject_global_vars():
 @app.context_processor
 def inject_metron_available():
     """Inject metron_available flag for templates (e.g., to show/hide Pull List menu)."""
-    # Check if Metron credentials exist in the database
+    # Token only: a username/password saved before mokkari 5 no longer signs in.
     metron_creds = get_provider_credentials("metron") or {}
-    return {
-        "metron_available": bool(
-            metron_creds.get("api_token")
-            or (metron_creds.get("username") and metron_creds.get("password"))
-        )
-    }
+    return {"metron_available": bool(metron_creds.get("api_token"))}
 
 
 #########################
@@ -6908,15 +6903,6 @@ def save_download_api_config():
         try:
             from core.database import save_provider_credentials
 
-            metron_u = sanitize_config_value(data.get("metronUsername", ""))
-            metron_p = sanitize_config_value(data.get("metronPassword", ""))
-            if metron_u and metron_p:
-                # Merge: save_provider_credentials replaces the whole encrypted
-                # blob, so writing only the pair here would silently drop a
-                # saved API token.
-                existing = get_provider_credentials("metron") or {}
-                existing.update({"username": metron_u, "password": metron_p})
-                save_provider_credentials("metron", existing)
             cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
             if cv_key:
                 save_provider_credentials("comicvine", {"api_key": cv_key})
@@ -7108,10 +7094,8 @@ def config_page():
 
     # Load credential display values from DB if available
     try:
-        _metron_creds = get_provider_credentials("metron")
         _cv_creds = get_provider_credentials("comicvine")
     except Exception:
-        _metron_creds = None
         _cv_creds = None
 
     from core.config import get_watch_dir, get_target_dir
@@ -7159,8 +7143,6 @@ def config_page():
         largeFileThreshold=str(st["LARGE_FILE_THRESHOLD"]),
         pixeldrainApiKey=st["PIXELDRAIN_API_KEY"],
         comicvineApiKey=(_cv_creds.get("api_key", "") if _cv_creds else ""),
-        metronUsername=_metron_creds.get("username", "") if _metron_creds else "",
-        metronPassword=_metron_creds.get("password", "") if _metron_creds else "",
         enableCustomRename=st["ENABLE_CUSTOM_RENAME"],
         customRenamePattern=st["CUSTOM_RENAME_PATTERN"],
         issuePadWidth=str(get_user_preference("issue_pad_width", default="3") or "3"),

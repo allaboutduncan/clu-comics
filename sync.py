@@ -29,11 +29,11 @@ def get_metron_api():
     from core.database import get_provider_credentials
 
     creds = get_provider_credentials('metron')
-    if not creds or not creds.get('username') or not creds.get('password'):
-        app_logger.error("Metron credentials not configured")
+    if not creds or not creds.get('api_token'):
+        app_logger.error("Metron API token not configured")
         return None
 
-    return metron.get_api(creds['username'], creds['password'])
+    return metron.get_api(api_token=creds['api_token'])
 
 
 def sync_series_from_api(api, series_id: int) -> dict:

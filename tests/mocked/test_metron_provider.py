@@ -15,19 +15,15 @@ class TestMetronProviderInit:
         assert p.provider_type == ProviderType.METRON
         assert p.display_name == "Metron"
         assert p.requires_auth is True
-        assert p.auth_fields == ["api_token", "username", "password"]
+        assert p.auth_fields == ["api_token"]
 
-    def test_auth_modes_only_name_declared_auth_fields(self):
-        """The settings page renders the mode picker from auth_modes and posts
-        the chosen id back; a field it names but auth_fields omits would be
-        rendered and then dropped on save."""
+    def test_token_is_the_only_auth_method(self):
+        """mokkari 5.0 removed username/password, so the settings page must not
+        offer it, and a save must never write one back."""
         from models.providers.metron_provider import MetronProvider
 
-        assert [m["id"] for m in MetronProvider.auth_modes] == ["token", "basic"]
-        for mode in MetronProvider.auth_modes:
-            assert mode["label"]
-            for field in mode["fields"]:
-                assert field in MetronProvider.auth_fields
+        assert MetronProvider.auth_modes == []
+        assert set(MetronProvider.retired_auth_fields) == {"username", "password"}
 
     def test_validates_on_save(self):
         """A rejected Metron credential costs the user real requests, so the
@@ -53,7 +49,7 @@ class TestMetronProviderInit:
         api = p._get_api()
         assert api is mock_api
         mock_get_api.assert_called_once_with(
-            "testuser", "testpass", "", ignore_auth_lock=False
+            api_token="test-token", ignore_auth_lock=False
         )
 
     @patch("models.metron.get_api")
@@ -65,7 +61,7 @@ class TestMetronProviderInit:
 
         p = MetronProvider(credentials=ProviderCredentials(api_token="tok-123"))
         assert p._get_api() is mock_api
-        mock_get_api.assert_called_once_with("", "", "tok-123", ignore_auth_lock=False)
+        mock_get_api.assert_called_once_with(api_token="tok-123", ignore_auth_lock=False)
 
     def test_token_alone_counts_as_configured(self):
         from models.providers.metron_provider import MetronProvider
@@ -102,6 +98,17 @@ class TestMetronProviderTestConnection:
 
         p = MetronProvider()
         assert p.test_connection() is False
+
+    @patch("models.metron.get_api")
+    def test_a_saved_username_without_a_token_says_why(self, mock_get_api):
+        """An install upgraded past mokkari 5 still holds its old username; the
+        Test button has to say a token is now required, not just "failed"."""
+        from models.providers.metron_provider import MetronProvider
+
+        p = MetronProvider(credentials=ProviderCredentials(username="u", password="p"))
+        assert p.test_connection() is False
+        assert "API token" in p.last_error
+        mock_get_api.assert_not_called()
 
     @patch("models.metron.latch_auth_failure")
     @patch("models.metron.auth_failure_status", return_value=401)
@@ -324,11 +331,13 @@ class TestMetronProviderToComicinfo:
         from mokkari.sqlite_cache import SqliteCache
         from models.providers.metron_provider import MetronProvider
 
-        cache = SqliteCache(db_name=str(tmp_path / "mokkari_cache.db"), expire=1)
-        cache.store("https://metron.cloud/api/issue/500/", {"credits": []})
+        cache = SqliteCache(str(tmp_path / "mokkari_cache.db"))
+        cache.store("https://metron.cloud/api/issue/500/", {"credits": []},
+                    resource="issue", kind="detail")
 
         mock_api = MagicMock()
         mock_api.cache = cache
+        mock_api.api_url = "https://metron.cloud/api/{}/"
         mock_api.issue.return_value = make_mock_issue()
         mock_get_api.return_value = mock_api
         mock_map.return_value = {"Series": "Batman", "Writer": "Joe Kelly"}

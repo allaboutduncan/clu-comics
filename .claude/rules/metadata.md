@@ -24,12 +24,24 @@ paths:
 
 ### Metron Authentication
 
-Metron accepts either an **API token** (mokkari >= 4.4.0, `api_token=`, sent as
-`Authorization: Bearer`) or a username and password. Both are supported;
-`models/providers/metron_provider.py` declares them as two `auth_modes`, and the
-settings page renders the picker from that list alone — adding a mode is a data
-change, not a template change. Every field a mode names must also be in
-`auth_fields`, or it is rendered and then dropped on save.
+Metron is **API token only**. mokkari 5.0 removed username/password: the
+constructor is `Session(api_token, *, cache=, user_agent=, ...)`, and passing
+`username=` raised inside every Metron call (#673). `requirements.txt` floors
+mokkari at 5.0 rather than pinning below it.
+
+- `get_api()` keeps its `(username, password, api_token)` signature for its
+  ~100 positional callers but ignores the first two. With no token it returns
+  `None` and warns **once** that basic auth is no longer supported.
+- `MetronProvider` has `auth_fields = ["api_token"]`, no `auth_modes`, and
+  `retired_auth_fields = ["username", "password"]`. `_apply_auth_mode` strips
+  retired fields from every save and probe, so a stale username from an old
+  install or a cached page can never be written back. A payload left empty is
+  a 400. `test_connection` tells a username-only install it needs a token.
+- **The cache is the mokkari 5 `SqliteCache`** (`default_ttl=`, table `cache`).
+  `get()` honours expiry now, so `METRON_CACHE_EXPIRE_DAYS` is a real TTL. The
+  same file path is reused, and mokkari discards a 4.x `responses` table on open.
+  The purge helpers use the public `delete(key)` (exact detail URLs, built from
+  `session.api_url`) and `invalidate("issue", "list")`; never raw SQL on the table.
 
 **A 401 or 403 latches a lockout that stops all Metron traffic.** A user mistyped
 their credentials, CLU retried until Metron's fail2ban banned their IP, and a
@@ -63,8 +75,10 @@ only 429 and 5xx are worth retrying. So:
 > no rate-limit slot *and* ignores the lockout, so a loop holding a client keeps
 > calling with credentials Metron has already rejected. `fetch_arcs_page` is the
 > deliberate exception — it builds its own request to escape mokkari's
-> auto-pagination — and therefore carries the auth rules by hand, including
-> sending no basic-auth tuple when only a token is configured.
+> auto-pagination — and therefore carries the auth rules by hand. That includes
+> adding `Authorization: Bearer <api.api_token>` itself: mokkari 5 keeps the
+> token out of `api.header`, so an arc page sent with `api.header` alone is a
+> 401, and that latches the lockout for *all* Metron traffic.
 
 Saving Metron credentials verifies them in the same request
 (`BaseProvider.validate_on_save`, Metron only). The credentials are stored either

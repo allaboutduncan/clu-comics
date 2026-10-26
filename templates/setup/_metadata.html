@@ -20,21 +20,10 @@
         <span class="badge ms-2 provider-badge"></span>
         <a class="ms-auto small" href="https://metron.cloud/" target="_blank" rel="noopener">Create a free account</a>
       </div>
-      <div class="btn-group btn-group-sm mb-2" role="group" aria-label="Metron sign-in method">
-        <input type="radio" class="btn-check" name="metron-mode" id="metron-mode-token" value="token" checked>
-        <label class="btn btn-outline-secondary" for="metron-mode-token">API Token</label>
-        <input type="radio" class="btn-check" name="metron-mode" id="metron-mode-basic" value="basic">
-        <label class="btn btn-outline-secondary" for="metron-mode-basic">Username &amp; Password</label>
-      </div>
-      <div data-mode="token">
-        <input type="password" class="form-control form-control-sm" data-field="api_token"
-          placeholder="API token" autocomplete="off">
-      </div>
-      <div data-mode="basic" class="row g-2 d-none">
-        <div class="col-sm-6"><input type="text" class="form-control form-control-sm" data-field="username"
-          placeholder="Username" autocomplete="off"></div>
-        <div class="col-sm-6"><input type="password" class="form-control form-control-sm" data-field="password"
-          placeholder="Password" autocomplete="off"></div>
+      <input type="password" class="form-control form-control-sm" data-field="api_token"
+        placeholder="API token" autocomplete="off">
+      <div class="small text-warning mt-1 d-none" id="metron-basic-auth-note">
+        Username and password sign-in is no longer supported. Add an API token from your Metron account.
       </div>
       <div class="d-flex gap-2 mt-2">
         <button type="button" class="btn btn-sm btn-outline-primary provider-test">Test</button>

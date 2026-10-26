@@ -2524,11 +2524,24 @@ class TestProviderAuthBlockRoutes:
         # Every other card must report a clear state rather than undefined.
         assert providers['comicvine']['auth_blocked'] is False
 
+    def test_listing_reports_client_library_versions(self, client):
+        with patch("models.providers.client_library_version",
+                   side_effect=lambda name: {"mokkari": "5.0.0",
+                                             "simyan": "3.0.0"}.get(name)):
+            resp = client.get('/api/providers')
+
+        assert resp.status_code == 200
+        providers = {p['type']: p for p in resp.get_json()['providers']}
+        assert providers['metron']['client_library'] == 'mokkari'
+        assert providers['metron']['client_library_version'] == '5.0.0'
+        assert providers['comicvine']['client_library_version'] == '3.0.0'
+        assert providers['gcd']['client_library_version'] is None
+
 
 class TestSaveProviderCredentialsAuthModes:
     """Saving replaces the stored blob wholesale and blank inputs never reach
-    the server, so the chosen auth mode is what tells it which of the other
-    method's fields to drop."""
+    the server. Metron is token-only since mokkari 5.0, so its retired
+    username/password fields are dropped whatever the client posts."""
 
     def _save(self, client, payload):
         with patch("core.database.save_provider_credentials",
@@ -2540,7 +2553,7 @@ class TestSaveProviderCredentialsAuthModes:
             resp = client.post('/api/providers/metron/credentials', json=payload)
         return resp, save
 
-    def test_token_mode_drops_a_previously_stored_username_and_password(self, client):
+    def test_a_token_save_drops_a_stale_username_and_password(self, client):
         resp, save = self._save(
             client,
             {"auth_mode": "token", "api_token": "tok-123",
@@ -2550,15 +2563,16 @@ class TestSaveProviderCredentialsAuthModes:
         assert resp.status_code == 200
         assert save.call_args[0][1] == {"api_token": "tok-123"}
 
-    def test_basic_mode_drops_a_previously_stored_token(self, client):
-        resp, save = self._save(
-            client,
-            {"auth_mode": "basic", "username": "user", "password": "pass",
-             "api_token": "stale"},
-        )
+    def test_a_username_and_password_alone_are_refused(self, client):
+        """A cached settings page from before the upgrade can still post the
+        old pair; storing it would only produce a client that cannot sign in."""
+        with patch("core.database.save_provider_credentials") as save:
+            resp = client.post('/api/providers/metron/credentials',
+                               json={"username": "user", "password": "pass"})
 
-        assert resp.status_code == 200
-        assert save.call_args[0][1] == {"username": "user", "password": "pass"}
+        assert resp.status_code == 400
+        assert "api token" in resp.get_json()["error"].lower()
+        save.assert_not_called()
 
     def test_auth_mode_is_never_stored_as_a_credential(self, client):
         _, save = self._save(client, {"auth_mode": "token", "api_token": "tok"})
@@ -2572,14 +2586,13 @@ class TestSaveProviderCredentialsAuthModes:
         assert resp.status_code == 400
         save.assert_not_called()
 
-    def test_an_unknown_mode_is_rejected(self, client):
-        with patch("core.database.save_provider_credentials") as save:
-            resp = client.post('/api/providers/metron/credentials',
-                               json={"auth_mode": "carrier-pigeon",
-                                     "api_token": "tok"})
+    def test_a_mode_from_an_old_page_is_ignored(self, client):
+        """Metron has no modes any more; a stale ``auth_mode`` is dropped, not
+        stored and not an error."""
+        resp, save = self._save(client, {"auth_mode": "basic", "api_token": "tok"})
 
-        assert resp.status_code == 400
-        save.assert_not_called()
+        assert resp.status_code == 200
+        assert save.call_args[0][1] == {"api_token": "tok"}
 
     def test_saving_lifts_an_existing_block_before_revalidating(self, client):
         """New credentials deserve to be judged on their own evidence."""
@@ -2672,7 +2685,7 @@ class TestProviderTestUnsavedCredentials:
         assert provider.probe_only is False
         record.assert_called_once_with("comicvine", True)
 
-    def test_probe_applies_the_auth_mode(self, client):
+    def test_probe_drops_retired_metron_fields(self, client):
         _, build, _, _, _ = self._test(
             client, "metron",
             {"auth_mode": "token", "api_token": "tok", "username": "stale", "password": "x"})
@@ -2681,9 +2694,9 @@ class TestProviderTestUnsavedCredentials:
         assert creds.api_token == "tok"
         assert creds.username is None and creds.password is None
 
-    def test_probe_with_an_unknown_mode_is_refused(self, client):
+    def test_probe_with_only_a_username_is_refused(self, client):
         resp, build, *_ = self._test(client, "metron",
-                                     {"auth_mode": "carrier-pigeon", "api_token": "tok"})
+                                     {"username": "user", "password": "pass"})
         assert resp.status_code == 400
         build.assert_not_called()
 

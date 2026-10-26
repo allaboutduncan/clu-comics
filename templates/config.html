@@ -2503,8 +2503,6 @@
             customHeaders: document.getElementById('customHeaders')?.value || '',
             pixeldrainApiKey: document.getElementById('pixeldrainApiKey')?.value || '',
             comicvineApiKey: document.getElementById('comicvineApiKey')?.value || '',
-            metronUsername: document.getElementById('metronUsername')?.value || '',
-            metronPassword: document.getElementById('metronPassword')?.value || '',
             downloadProviderPriority: getProviderPriorityValue(),
             // Search Variant Settings. A missing element is left out of the
             // payload (undefined), and the server keeps the stored value.
@@ -4058,11 +4056,17 @@
                         </div>
                     </div>`;
                 } else {
+                    // Mokkari 5.0 broke Metron outright, so the client library's
+                    // version is worth seeing at a glance when diagnosing one.
+                    const libraryVersion = provider.client_library ? `
+                                    <div class="small text-muted">${escapeHtml(provider.client_library.charAt(0).toUpperCase() + provider.client_library.slice(1))} ${escapeHtml(provider.client_library_version || 'not installed')}</div>` : '';
                     html += `
                     <div class="col-md-6 mb-3">
                         <div class="card h-100">
                             <div class="card-header d-flex justify-content-between align-items-center">
-                                <strong>${escapeHtml(provider.name)}</strong>
+                                <div>
+                                    <strong>${escapeHtml(provider.name)}</strong>${libraryVersion}
+                                </div>
                                 ${statusBadge}
                             </div>
                             <div class="card-body">

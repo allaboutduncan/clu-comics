@@ -24,11 +24,10 @@ class MetronProvider(BaseProvider):
     provider_type = ProviderType.METRON
     display_name = "Metron"
     requires_auth = True
-    auth_fields = ["api_token", "username", "password"]
-    auth_modes = [
-        {"id": "token", "label": "API Token", "fields": ["api_token"]},
-        {"id": "basic", "label": "Username & Password", "fields": ["username", "password"]},
-    ]
+    # Token only: mokkari 5.0 removed username/password authentication.
+    auth_fields = ["api_token"]
+    retired_auth_fields = ["username", "password"]
+    client_library = "mokkari"
     # A rejected Metron credential is not a free mistake: the retries it
     # provokes are what got one user's IP banned. Verify at save time so the
     # user finds out immediately instead of via a silent lockout.
@@ -44,7 +43,12 @@ class MetronProvider(BaseProvider):
         creds = self.credentials
         if not creds:
             return False
-        return bool(creds.api_token or (creds.username and creds.password))
+        return bool(creds.api_token)
+
+    def _has_basic_auth_only(self) -> bool:
+        """True for a pre-mokkari-5 install that saved a username, no token."""
+        creds = self.credentials
+        return bool(creds and creds.username and not creds.api_token)
 
     def _get_api(self, ignore_auth_lock: bool = False):
         """Get or create the Mokkari API client.
@@ -63,9 +67,7 @@ class MetronProvider(BaseProvider):
             from models import metron as metron_module
 
             api = metron_module.get_api(
-                self.credentials.username or "",
-                self.credentials.password or "",
-                self.credentials.api_token or "",
+                api_token=self.credentials.api_token or "",
                 ignore_auth_lock=ignore_auth_lock,
             )
             if not ignore_auth_lock:
@@ -90,7 +92,14 @@ class MetronProvider(BaseProvider):
             from models import metron as metron_module
 
             if not self._has_credentials():
-                self.last_error = "No Metron credentials configured"
+                if self._has_basic_auth_only():
+                    self.last_error = (
+                        "Metron now requires an API token: username/password "
+                        "sign-in is no longer supported. Add a token from your "
+                        "Metron account settings."
+                    )
+                else:
+                    self.last_error = "No Metron credentials configured"
                 return False
 
             api = self._get_api(ignore_auth_lock=True)

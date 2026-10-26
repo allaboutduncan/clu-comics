@@ -3,8 +3,7 @@ Metron API integration for comic metadata retrieval using Mokkari library.
 """
 
 from core.app_logging import app_logger
-from typing import Optional, Dict, Any, List, Tuple
-import inspect
+from typing import Optional, Dict, Any, List
 import json
 import os
 import re
@@ -18,7 +17,7 @@ import requests.exceptions as requests_exceptions
 from helpers.rate_limit import SlidingWindowRateLimiter, get_limiter
 from mokkari.session import Session as MokkariSession
 from mokkari.sqlite_cache import SqliteCache
-from mokkari.exceptions import ApiError, RateLimitError
+from mokkari.exceptions import ApiError, AuthenticationError, RateLimitError
 from mokkari.schemas.collection import ScrobbleRequest
 
 # User agent for Metron API requests
@@ -36,16 +35,17 @@ _DAILY_RATE_LIMIT_THRESHOLD = (
 # tracks rate-limit state from response headers and pre-emptively raises
 # RateLimitError, that check is advisory only -- it isn't
 # synchronized with request dispatch, so concurrent callers can race past it.
-# We therefore (1) share one Session per credential pair so mokkari's header
+# We therefore (1) share one Session per API token so mokkari's header
 # tracking actually accumulates real state across all callers in this
 # process, and (2) throttle at the process level to a sliding-window request
 # rate safely under the burst limit.
-_SESSION_CACHE: Dict[Tuple[str, str, str], MokkariSession] = {}
+_SESSION_CACHE: Dict[str, MokkariSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 
-# Whether the installed mokkari accepts ``api_token`` (added in 4.4.0).
-# Resolved once, lazily, by ``supports_api_token()``.
-_SUPPORTS_API_TOKEN: Optional[bool] = None
+# mokkari 5.0 removed username/password auth: a token is the only credential.
+# Set once the "username is no longer supported" warning has been logged, so a
+# basic-auth-only install says so once rather than on every call.
+_BASIC_AUTH_WARNED = False
 
 
 def _metron_cache_expire_days() -> int:
@@ -59,7 +59,7 @@ def _metron_cache_expire_days() -> int:
     the same series and issue endpoints from ``_sync_and_match``, the scan tail,
     the re-match job and the wanted-cache refresh -- down to one request each.
 
-    Never ``None``: mokkari treats a falsy ``expire`` as "never expire".
+    Never ``None``: mokkari treats a ``None`` TTL as "never expire".
     """
     try:
         days = int(os.environ.get("METRON_CACHE_EXPIRE_DAYS", "1"))
@@ -75,19 +75,18 @@ def _metron_cache() -> Optional[SqliteCache]:
     neither an HTTP request nor a rate-limit slot -- the cheapest reduction in
     Metron quota burn available to us.
 
-    Caveat worth knowing when reading this code: mokkari's ``SqliteCache.get()``
-    never checks the ``expire`` column. Expiry is only ever applied by
-    ``cleanup()``, which mokkari itself runs just once, in ``__init__``. With a
-    process-shared, long-lived Session the effective TTL is therefore
-    ``expire + process uptime``, which is why ``invalidate_session_cache()``
-    also calls ``cleanup()`` and why the default expiry is kept small.
+    ``get()`` honours each row's expiry, so ``default_ttl`` is a real TTL.
+    It covers every resource CLU reads; mokkari's own ``DEFAULT_TTLS`` only
+    disable caching for the per-user collection, pull list and wish list.
+    A database written by mokkari 4.x (``responses`` table) is discarded on
+    open, so the same file path is reused across the upgrade.
     """
     try:
         from helpers.provider_cache import provider_cache_dir
 
         return SqliteCache(
             db_name=os.path.join(provider_cache_dir("mokkari"), "mokkari_cache.db"),
-            expire=_metron_cache_expire_days(),
+            default_ttl=timedelta(days=_metron_cache_expire_days()),
         )
     except Exception as e:
         # A read-only volume must degrade to "uncached", never to "no Metron".
@@ -483,9 +482,8 @@ def _cached_sessions() -> List[MokkariSession]:
 def invalidate_session_cache() -> None:
     """Clear the cached Metron sessions and rate-limiter window (used by tests).
 
-    Also runs each session's cache ``cleanup()``. mokkari only expires rows in
-    ``SqliteCache.__init__``, so on a long-lived shared session this is the only
-    thing that ever drops stale responses before the process restarts.
+    Also runs each session's cache ``cleanup()``. mokkari never returns an
+    expired row, so this only reclaims the space they take on disk.
     """
     with _SESSION_CACHE_LOCK:
         sessions = list(_SESSION_CACHE.values())
@@ -504,49 +502,47 @@ def invalidate_session_cache() -> None:
     _auth_block.forget()
 
 
-def _purge_cached_keys(like_patterns, matches, context: str, api=None) -> int:
-    """Delete cached mokkari responses whose key satisfies ``matches``.
+# mokkari's default; a Session built by a test stand-in may not carry one.
+_METRON_API_URL = "https://metron.cloud/api/{}/"
 
-    ``like_patterns`` narrows the scan in SQL; ``matches(key)`` decides, because
-    LIKE can't tell 8859 from 88591. Every duplicate row for a key goes:
-    ``store()`` is a plain INSERT and ``get()`` returns the first row, so one
-    leftover row keeps serving the stale body forever.
+
+def _purge_cached(api, context: str, keys_for, resources=()) -> int:
+    """Drop cached mokkari responses through the cache's public API.
+
+    mokkari keys a response by its full URL plus sorted query string, and
+    ``SqliteCache.get()`` already ignores expired rows, so the only reason to
+    purge is to make the *next* call reach Metron now rather than when the TTL
+    runs out.
 
     Args:
-        like_patterns: SQL LIKE patterns used to narrow the candidate rows.
-        matches: Predicate called with each candidate key; truthy means delete.
-        context: Human-readable subject, used only in log messages.
         api: Optional Session to purge; defaults to every cached session.
+        context: Human-readable subject, used only in log messages.
+        keys_for: Called with a session's ``api_url`` template; returns the
+            exact keys to delete.
+        resources: ``(resource, kind)`` pairs to invalidate wholesale -- for
+            lists, whose keys carry paging and filter params that can't be
+            rebuilt. A list is served from the cache only when every page is
+            cached, so dropping its pages is enough to force a refetch.
 
     Returns:
         Number of cached rows removed.
     """
-    if not like_patterns:
-        return 0
-
     removed = 0
     seen: List[Any] = []
-    where = " OR ".join(["key LIKE ?"] * len(like_patterns))
     for session in [api] if api is not None else _cached_sessions():
         cache = getattr(session, "cache", None)
-        con = getattr(cache, "con", None)
-        if con is None or any(cache is c for c in seen):
+        if cache is None or any(cache is c for c in seen):
             continue
         seen.append(cache)
-        lock = getattr(cache, "_lock", None) or threading.Lock()
+        api_url = getattr(session, "api_url", None)
+        if not isinstance(api_url, str):
+            api_url = _METRON_API_URL
         try:
-            with lock:
-                rows = con.execute(
-                    f"SELECT key FROM responses WHERE {where}",
-                    tuple(like_patterns),
-                ).fetchall()
-                keys = [row[0] for row in rows if matches(row[0])]
-                if keys:
-                    con.executemany(
-                        "DELETE FROM responses WHERE key = ?", [(k,) for k in keys]
-                    )
-                    con.commit()
-            removed += len(keys)
+            for key in keys_for(api_url):
+                if cache.delete(key):
+                    removed += 1
+            for resource, kind in resources:
+                removed += int(cache.invalidate(resource, kind) or 0)
         except Exception as e:
             app_logger.warning(
                 f"Could not purge Metron response cache for {context}: {e}"
@@ -559,10 +555,9 @@ def purge_issue_cache(issue_id, api=None) -> int:
 
     That response is the one carrying ``credits`` and ``characters``, and Metron
     records are routinely completed *after* release day -- an issue tagged on
-    release morning can be indexed hours later. Because the cache has no working
-    expiry (see ``_metron_cache``), the incomplete body would otherwise be
-    replayed for the life of the process, so a re-tag would rewrite exactly the
-    metadata the user is trying to repair.
+    release morning can be indexed hours later. Within the cache TTL the
+    incomplete body would otherwise be replayed, so a re-tag would rewrite
+    exactly the metadata the user is trying to repair.
 
     Args:
         issue_id: Metron issue id whose cached detail response should be dropped.
@@ -576,10 +571,8 @@ def purge_issue_cache(issue_id, api=None) -> int:
     except (TypeError, ValueError):
         return 0
 
-    # Anchored so 172615 can't take out 1726150 or ``?issue_id=172615``.
-    detail_re = re.compile(rf"/issue/{issue_id}/?(?:\?|$)")
-    removed = _purge_cached_keys(
-        [f"%/issue/{issue_id}%"], detail_re.search, f"issue {issue_id}", api=api
+    removed = _purge_cached(
+        api, f"issue {issue_id}", lambda url: [url.format(f"issue/{issue_id}")]
     )
     if removed:
         app_logger.debug(
@@ -610,13 +603,10 @@ def _known_issue_ids(series_id) -> List[int]:
 def purge_series_cache(series_id, api=None) -> int:
     """Drop mokkari's cached responses for one series so the next call re-fetches.
 
-    ``Session._get`` consults ``SqliteCache`` *before* dispatching, and
-    ``SqliteCache.get()`` never checks the ``expire`` column (see
-    ``_metron_cache``), so a user-initiated "refresh from Metron" that only
-    bypasses CLU's own database still gets whatever Metron returned the first
-    time this process asked. A Summary edited on Metron would then never appear.
-    Worse, ``store()`` is a plain INSERT and ``get()`` returns the first row, so
-    a later fetch cannot overwrite the stale one -- it has to be deleted.
+    ``Session._get`` consults ``SqliteCache`` *before* dispatching, so a
+    user-initiated "refresh from Metron" that only bypasses CLU's own database
+    would still get whatever Metron returned within the cache TTL. A Summary
+    edited on Metron would then not appear.
 
     Args:
         series_id: Metron series id whose cached responses should be dropped.
@@ -630,20 +620,19 @@ def purge_series_cache(series_id, api=None) -> int:
     except (TypeError, ValueError):
         return 0
 
-    # The series detail response, plus the paged issue lists filtered by it.
-    detail_re = re.compile(rf"/series/{series_id}/?(?:\?|$)")
-    issues_re = re.compile(rf"[?&]series_id={series_id}(?:&|$)")
-    removed = _purge_cached_keys(
-        [f"%/series/{series_id}%", f"%series_id={series_id}%"],
-        lambda key: detail_re.search(key) or issues_re.search(key),
+    # The series detail body, plus every cached issue *list*: those are keyed
+    # by filter and page (``series_id=``, ``number=``, ``page=``...), so they
+    # can't be singled out. Issue lists are cheap to refetch.
+    removed = _purge_cached(
+        api,
         f"series {series_id}",
-        api=api,
+        lambda url: [url.format(f"series/{series_id}")],
+        resources=[("issue", "list")],
     )
 
-    # Those two only cover the series body and the issue *lists*. The per-issue
-    # detail bodies hold the credits, and their keys say nothing about the
-    # series -- ask CLU's own issue cache which ids belong to it. Guarded, so an
-    # uncached session never pays for the database round trip.
+    # The per-issue detail bodies hold the credits, and their keys say nothing
+    # about the series -- ask CLU's own issue cache which ids belong to it.
+    # Guarded, so an uncached session never pays for the database round trip.
     if any(getattr(s, "cache", None) is not None
            for s in ([api] if api is not None else _cached_sessions())):
         for issue_id in _known_issue_ids(series_id):
@@ -759,21 +748,16 @@ def is_connection_error(exc: Exception) -> bool:
     return False
 
 
-def supports_api_token() -> bool:
-    """True when the installed mokkari accepts ``api_token`` (>= 4.4.0)."""
-    global _SUPPORTS_API_TOKEN
-    if _SUPPORTS_API_TOKEN is not None:
-        return _SUPPORTS_API_TOKEN
-    try:
-        params = inspect.signature(MokkariSession.__init__).parameters
-    except (TypeError, ValueError):
-        return True
-    if "passwd" not in params:
-        # Not the real Session -- a mock or a stand-in. Answer without caching,
-        # so a patched class in one test cannot decide this for the process.
-        return True
-    _SUPPORTS_API_TOKEN = "api_token" in params
-    return _SUPPORTS_API_TOKEN
+def _warn_basic_auth_unsupported() -> None:
+    """Say once that a username/password without a token no longer works."""
+    global _BASIC_AUTH_WARNED
+    if _BASIC_AUTH_WARNED:
+        return
+    _BASIC_AUTH_WARNED = True
+    app_logger.warning(
+        "Metron username/password authentication is no longer supported "
+        "(mokkari 5.0 removed it); add a Metron API token in Settings."
+    )
 
 
 def get_api(
@@ -783,12 +767,12 @@ def get_api(
     ignore_auth_lock: bool = False,
 ):
     """
-    Return a shared Metron API client (Mokkari Session) for these credentials.
+    Return a shared Metron API client (Mokkari Session) for this API token.
 
-    Sessions are cached per (username, password, api_token) and reused across
-    calls and threads, rather than created fresh each time, so mokkari's own
-    rate-limit header tracking accumulates real state across the whole process
-    instead of being discarded after every call.
+    Sessions are cached per token and reused across calls and threads, rather
+    than created fresh each time, so mokkari's own rate-limit header tracking
+    accumulates real state across the whole process instead of being
+    discarded after every call.
 
     Returns None while Metron has rejected our credentials. This gate sits
     *before* the session cache on purpose: several callers fetch a client once
@@ -796,9 +780,10 @@ def get_api(
     client is the only thing that reliably stops them.
 
     Args:
-        username: Metron username (basic auth)
-        password: Metron password (basic auth)
-        api_token: Metron API token; takes precedence over username/password
+        username: Ignored. Kept so existing positional callers still work;
+            mokkari 5.0 supports token authentication only.
+        password: Ignored, as ``username``.
+        api_token: Metron API token.
         ignore_auth_lock: Build a client even while the lockout is latched.
             Only the connection test may pass this -- without it a user could
             never verify the credentials that would clear the lockout.
@@ -806,39 +791,27 @@ def get_api(
     Returns:
         Mokkari Session client or None if unavailable
     """
-    if not api_token and not (username and password):
-        app_logger.warning("Metron credentials not configured")
+    if not api_token:
+        if username and password:
+            _warn_basic_auth_unsupported()
+        else:
+            app_logger.warning("Metron credentials not configured")
         return None
 
     if not ignore_auth_lock and _auth_block.blocked():
         app_logger.debug("Metron authentication is blocked; not issuing a client")
         return None
 
-    if api_token and not supports_api_token():
-        app_logger.error(
-            "Metron API token authentication needs mokkari >= 4.4.0; "
-            "please upgrade mokkari or use a username and password."
-        )
-        return None
-
-    cache_key = (username, password, api_token)
     with _SESSION_CACHE_LOCK:
-        session = _SESSION_CACHE.get(cache_key)
+        session = _SESSION_CACHE.get(api_token)
         if session is not None:
             return session
 
-    kwargs = {
-        "username": username or None,
-        "passwd": password or None,
-        "user_agent": CLU_USER_AGENT,
-        "cache": _metron_cache(),
-    }
-    if api_token:
-        kwargs["api_token"] = api_token
-
     try:
-        session = MokkariSession(**kwargs)
-    except ApiError as e:
+        session = MokkariSession(
+            api_token, user_agent=CLU_USER_AGENT, cache=_metron_cache()
+        )
+    except (ApiError, AuthenticationError) as e:
         app_logger.error(f"Metron API error initializing session: {e}")
         return None
     except Exception as e:
@@ -847,8 +820,8 @@ def get_api(
 
     with _SESSION_CACHE_LOCK:
         # Another thread may have raced us to create a session for the same
-        # credentials; keep whichever one won so only one is ever cached.
-        session = _SESSION_CACHE.setdefault(cache_key, session)
+        # token; keep whichever one won so only one is ever cached.
+        session = _SESSION_CACHE.setdefault(api_token, session)
     return session
 
 
@@ -859,30 +832,31 @@ def get_flask_api(app=None):
         app: Flask app instance. If None, uses current_app (requires app context).
 
     Returns:
-        Mokkari Session client or None if credentials missing/invalid.
+        Mokkari Session client or None if no token is configured or it is invalid.
     """
     if app is None:
         from flask import current_app
         config = current_app.config
     else:
         config = app.config
-    username = (config.get("METRON_USERNAME") or "").strip()
-    password = (config.get("METRON_PASSWORD") or "").strip()
     api_token = (config.get("METRON_API_TOKEN") or "").strip()
-    if not api_token and not (username and password):
+    if not api_token:
+        if (config.get("METRON_USERNAME") or "").strip():
+            _warn_basic_auth_unsupported()
         return None
-    return get_api(username, password, api_token)
+    return get_api(api_token=api_token)
 
 
 def is_metron_configured(app=None):
-    """Check if Metron credentials are present in Flask app config.
+    """Check if a Metron API token is present in Flask app config.
 
     Args:
         app: Flask app instance. If None, uses current_app (requires app context).
 
     Returns:
-        True if an API token, or both a username and password, are configured
-        and Metron has not rejected them.
+        True if an API token is configured and Metron has not rejected it.
+        A username and password alone no longer count: mokkari 5.0 dropped
+        basic authentication.
     """
     if app is None:
         from flask import current_app
@@ -894,10 +868,7 @@ def is_metron_configured(app=None):
         # wrong: every ``metron_available`` gate in the app reads this, and the
         # cheapest request is the one nobody attempts.
         return False
-    username = (config.get("METRON_USERNAME") or "").strip()
-    password = (config.get("METRON_PASSWORD") or "").strip()
-    api_token = (config.get("METRON_API_TOKEN") or "").strip()
-    return bool(api_token or (username and password))
+    return bool((config.get("METRON_API_TOKEN") or "").strip())
 
 
 def parse_cvinfo_for_metron_id(cvinfo_path: str) -> Optional[int]:
@@ -1105,10 +1076,9 @@ def fetch_issue_detail(api, issue_id, context: str = ""):
 
     The single entry point for fetching an issue *in order to write it into a
     file*. Metadata written into an archive must never come from a cached body:
-    mokkari's cache has no working expiry (see ``_metron_cache``), and Metron
-    records are routinely completed hours after release day, so a body fetched
-    while the record was half-entered would be replayed for the life of the
-    process -- and a re-tag meant to repair the file would rewrite the very
+    Metron records are routinely completed hours after release day, so a body
+    fetched while the record was half-entered would be replayed until the cache
+    TTL ran out -- and a re-tag meant to repair the file would rewrite the very
     metadata being repaired.
 
     Display-only reads deliberately keep using the cache; only writes pay for a
@@ -2255,14 +2225,14 @@ def fetch_arcs_page(api, params=None, page=1):
     if params:
         query_params.update(params)
 
-    # ``api.header`` already carries the Bearer header on a token session, so
-    # basic auth is only sent when there is a real pair to send. Passing
-    # ``(None, None)`` here would strip the token session's only credential and
-    # turn every arc page into a 401.
-    headers = getattr(api, "header", {})
-    username = getattr(api, "username", None)
-    passwd = getattr(api, "passwd", None)
-    auth = (username, passwd) if username and passwd else None
+    # mokkari 5 keeps the Bearer token out of ``api.header`` (so it isn't
+    # logged with the request headers), so this hand-built request has to add
+    # it. Without it every arc page is a 401 -- which latches the lockout below
+    # and stops *all* Metron traffic.
+    headers = dict(getattr(api, "header", None) or {})
+    api_token = getattr(api, "api_token", None)
+    if isinstance(api_token, str) and api_token:
+        headers["Authorization"] = f"Bearer {api_token}"
 
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
         if _auth_block.blocked():
@@ -2270,7 +2240,7 @@ def fetch_arcs_page(api, params=None, page=1):
         _metron_rate_limiter.acquire()
         try:
             resp = requests_lib.get(
-                url, params=query_params, auth=auth, headers=headers, timeout=30
+                url, params=query_params, headers=headers, timeout=30
             )
             if resp.status_code in _AUTH_FAILURE_STATUSES:
                 # This request is built by hand, so it never passes through

@@ -1,5 +1,6 @@
 """Tests for models/providers/__init__.py -- provider registration and factory."""
 import pytest
+from unittest.mock import patch
 from models.providers.base import ProviderType, ProviderCredentials
 
 
@@ -192,6 +193,38 @@ class TestGetAvailableProviders:
             assert "requires_auth" in p
             assert "auth_fields" in p
             assert "rate_limit" in p
+            assert "client_library" in p
+            assert "client_library_version" in p
+
+    def test_metron_and_comicvine_name_their_client_library(self):
+        """The settings page shows these versions; a library upgrade is how
+        Metron broke outright (mokkari 5.0 dropped basic auth)."""
+        from models.providers import get_available_providers
+        providers = {p["type"]: p for p in get_available_providers()}
+        assert providers["metron"]["client_library"] == "mokkari"
+        assert providers["comicvine"]["client_library"] == "simyan"
+        assert providers["gcd"]["client_library"] is None
+        assert providers["gcd"]["client_library_version"] is None
+
+
+class TestClientLibraryVersion:
+
+    def test_reads_the_installed_version(self):
+        from models.providers import client_library_version
+        with patch("importlib.metadata.version", return_value="5.0.0") as version:
+            assert client_library_version("mokkari") == "5.0.0"
+        version.assert_called_once_with("mokkari")
+
+    def test_not_installed_is_none(self):
+        from importlib.metadata import PackageNotFoundError
+        from models.providers import client_library_version
+        with patch("importlib.metadata.version", side_effect=PackageNotFoundError("x")):
+            assert client_library_version("mokkari") is None
+
+    def test_no_library_is_none(self):
+        from models.providers import client_library_version
+        assert client_library_version(None) is None
+        assert client_library_version("") is None
 
 
 class TestGetProviderClass:
