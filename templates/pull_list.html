@@ -96,7 +96,9 @@
                 <div class="col-md-5 mt-3 mt-md-0 d-flex flex-wrap align-items-center justify-content-md-end gap-2 column-gap-3">
                     <span class="text-muted text-nowrap" id="resultCount">
                         {%- set _start = (pager.page - 1) * pager.per_page -%}
-                        {%- if pager.total == 0 -%}
+                        {%- if pager.error -%}
+                        <span class="text-danger">{{ pager.error }}</span>
+                        {%- elif pager.total == 0 -%}
                         No series match ({{ total_series }} total)
                         {%- elif pager.total == total_series -%}
                         Showing {{ _start + 1 }}–{{ _start + series_list|length }} of {{ pager.total }} series
@@ -204,7 +206,7 @@
                         </tr>
                     </thead>
                     <tbody>
-                        {% include "partials/pull_list_rows.html" %}
+                        {% with load_error = pager.error %}{% include "partials/pull_list_rows.html" %}{% endwith %}
                     </tbody>
                 </table>
             </div>
@@ -821,6 +823,7 @@
                 dir: currentSort.column && !currentSort.ascending ? 'desc' : '',
             }),
             onData: data => {
+                tbody.classList.remove('opacity-50');
                 tbody.innerHTML = data.html;
                 matchingTotal = data.total;
                 // A shift-click anchor belonged to the rows just replaced.
@@ -829,7 +832,12 @@
                 renderCount(data);
                 updateBulkUI();
             },
-            onError: err => notifyError('Could not load the pull list', err),
+            // The filters may already show what failed to load; dim the
+            // rows still on screen until a load lands.
+            onError: err => {
+                tbody.classList.add('opacity-50');
+                notifyError('Could not load the pull list, showing the previous results', err);
+            },
         });
 
         // A filter change: back to page 1, and drop selected series the new
@@ -934,7 +942,7 @@
             const original = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-            fetch('/api/series/bulk-monitored', {
+            fetch({{ url_for('series.bulk_toggle_series_monitored')|tojson }}, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ series_ids: ids, enabled: enabled }),

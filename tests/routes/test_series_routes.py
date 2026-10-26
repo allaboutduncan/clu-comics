@@ -1087,6 +1087,34 @@ class TestPullListPaging:
         assert data["success"] is True
         assert data["ids"] == list(range(5000, 5030))
 
+    def test_a_database_error_is_an_error_not_no_match(self, app, client_with_data):
+        """A failed query used to answer an empty page: "No series match"."""
+        from unittest.mock import patch
+        TestPullListPage._register_slug_global(app)
+        failed = {"rows": [], "total": 0, "page": 1, "per_page": 50,
+                  "total_pages": 1, "error": "Could not read the pull list"}
+        with patch("core.database.get_pull_list_page", return_value=failed):
+            resp = client_with_data.get("/api/pull-list/rows")
+            assert resp.status_code == 500 and resp.get_json()["success"] is False
+            html = client_with_data.get("/pull-list").get_data(as_text=True)
+            assert "Could not read the pull list" in html
+            assert "No series match these filters" not in html
+            count = html.split('id="resultCount">', 1)[1].split("</span>", 1)[0]
+            assert "No series match" not in count
+        with patch("core.database.get_pull_list_matching_ids", return_value=None):
+            resp = client_with_data.get("/api/pull-list/ids")
+            assert resp.status_code == 500 and resp.get_json()["success"] is False
+
+    def test_bulk_monitored_url_follows_the_script_root(self, app, client_with_data):
+        """CLU runs behind ProxyFix(x_prefix=1); a hardcoded /api/ 404s
+        under a subpath."""
+        TestPullListPage._register_slug_global(app)
+        html = client_with_data.get(
+            "/pull-list", environ_overrides={"SCRIPT_NAME": "/clu"}
+        ).get_data(as_text=True)
+        assert '"/clu/api/series/bulk-monitored"' in html
+        assert "'/api/series/bulk-monitored'" not in html
+
     def test_a_stale_letter_or_publisher_is_dropped(self, app, client_with_data):
         """A bookmark naming a letter or publisher the bar no longer offers
         would filter on something the page shows as "All"."""

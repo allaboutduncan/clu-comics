@@ -568,6 +568,8 @@ def pull_list_rows():
     a = _pull_list_args()
     today = datetime.now().strftime("%Y-%m-%d")
     result = get_pull_list_page(today, **a)
+    if result.get("error"):
+        return jsonify({"success": False, "error": result["error"]}), 500
     html = render_template("partials/pull_list_rows.html", series_list=result["rows"])
     return jsonify({
         "success": True,
@@ -587,10 +589,10 @@ def pull_list_ids():
 
     a = _pull_list_args()
     today = datetime.now().strftime("%Y-%m-%d")
-    return jsonify({
-        "success": True,
-        "ids": get_pull_list_matching_ids(today, **_pull_list_filters(a)),
-    })
+    ids = get_pull_list_matching_ids(today, **_pull_list_filters(a))
+    if ids is None:
+        return jsonify({"success": False, "error": "Could not read the pull list from the database"}), 500
+    return jsonify({"success": True, "ids": ids})
 
 
 _PULL_LIST_EXPORT_FIELDS = (

@@ -143,12 +143,16 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         state: listFilterState,
         onData: data => {
+            grid.classList.remove('opacity-50');
             grid.innerHTML = data.html;
             initListCards();
         },
+        // The tag chips may already show what failed to load; dim the cards
+        // still on screen until a load lands.
         onError: err => {
             console.error('Error loading reading lists:', err);
-            showToast('Could not load reading lists', 'error');
+            grid.classList.add('opacity-50');
+            showToast('Could not load reading lists, showing the previous results', 'error');
         },
     });
 });

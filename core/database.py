@@ -8833,7 +8833,7 @@ def get_to_read_reading_lists(user_id=None):
     Get the reading lists the current (or given) user has bookmarked, shaped for
     the Want to Read dashboard cards.
 
-    Same aggregate as get_all_reading_lists() so the card matches the Reading
+    Same aggregate as get_reading_lists_page() so the card matches the Reading
     Lists page: entry_count/read_count (read_count scoped to this user) plus a
     cover stack.
 
@@ -10937,6 +10937,8 @@ def get_series_monitored(series_id):
 # (owned and skipped both count as present, mirroring the per-row logic in
 # templates/series.html), split on store_date into past/unknown and future.
 # ISO date strings compare lexically. {where} narrows it to some series.
+# Never format or bind this directly: _pull_list_counts_sql() owns the
+# placeholder order.
 _PULL_LIST_COUNTS_SQL = """
     SELECT i.series_id AS series_id,
            COUNT(i.id) AS total,
@@ -10945,11 +10947,11 @@ _PULL_LIST_COUNTS_SQL = """
            SUM(CASE WHEN (cs.found IS NULL OR cs.found = 0)
                      AND ims.status IS NULL
                      AND (i.store_date IS NULL OR i.store_date = ''
-                          OR i.store_date <= :today)
+                          OR i.store_date <= ?)
                     THEN 1 ELSE 0 END) AS missing_past,
            SUM(CASE WHEN (cs.found IS NULL OR cs.found = 0)
                      AND ims.status IS NULL
-                     AND i.store_date > :today
+                     AND i.store_date > ?
                     THEN 1 ELSE 0 END) AS missing_future
     FROM series s
     JOIN issues i ON i.series_id = s.id
@@ -10964,7 +10966,8 @@ _PULL_LIST_COUNTS_SQL = """
 # The Pull List row colour, over series `s` LEFT JOINed to the counts `c`.
 # Grey overrides everything: a series the user isn't monitoring is not searched
 # for new/missing issues (monitored NULL on legacy rows => on). "unknown" = no
-# issue data, or never matched against the collection yet.
+# issue data, or never matched against the collection yet. The one definition:
+# the status filter and the row colour both select it.
 _PULL_LIST_ROW_STATUS_SQL = """
     CASE
         WHEN s.monitored IS NOT NULL AND s.monitored = 0 THEN 'unmonitored'
@@ -10991,9 +10994,31 @@ _PULL_LIST_SORTS = {
     "synced": "COALESCE(s.last_synced_at, '')",
 }
 
+# sqlite3 binds 64-bit integers only, so ?page=99999999999999999999 would
+# raise OverflowError. Anything past the end is clamped to the last page in
+# SQL anyway; this only keeps the number bindable.
+_MAX_PAGE = 2 ** 31
+
 
 def _in_placeholders(ids):
     return ",".join("?" * len(ids))
+
+
+def _pull_list_counts_sql(today, series_ids=None):
+    """The counts aggregate as (sql, params), ready to run or to join.
+
+    The only place that knows the aggregate's placeholders, so adding or
+    reordering one cannot silently bind the wrong value at some caller.
+    series_ids narrows it to those series (an empty list matches none).
+    """
+    where, ids = "", []
+    if series_ids is not None:
+        ids = [int(i) for i in series_ids]
+        where = f"AND s.id IN ({_in_placeholders(ids)})"
+    sql = _PULL_LIST_COUNTS_SQL.format(where=where)
+    params = [today, today] + ids
+    assert sql.count("?") == len(params), "_PULL_LIST_COUNTS_SQL placeholders changed"
+    return sql, params
 
 
 def get_pull_list_collection_counts(today, series_ids=None):
@@ -11002,30 +11027,22 @@ def get_pull_list_collection_counts(today, series_ids=None):
 
     Args:
         today: "YYYY-MM-DD" string used as the past/future boundary.
-        series_ids: optional iterable; only these series are aggregated. The
-            page passes the ids it is about to show, so it never pays for the
-            whole library.
+        series_ids: optional iterable; only these series are aggregated.
 
     Returns:
         Dict mapping series_id -> {total, scanned, found, missing_past, missing_future}
     """
-    params = {"today": today}
-    where = ""
     if series_ids is not None:
-        ids = [int(i) for i in series_ids]
-        if not ids:
+        series_ids = list(series_ids)
+        if not series_ids:
             return {}
-        names = []
-        for n, sid in enumerate(ids):
-            params[f"id{n}"] = sid
-            names.append(f":id{n}")
-        where = f"AND s.id IN ({','.join(names)})"
+    sql, params = _pull_list_counts_sql(today, series_ids)
     try:
         with db_conn() as conn:
             if not conn:
                 return {}
             c = conn.cursor()
-            c.execute(_PULL_LIST_COUNTS_SQL.format(where=where), params)
+            c.execute(sql, params)
             rows = c.fetchall()
 
         return {
@@ -11044,11 +11061,25 @@ def get_pull_list_collection_counts(today, series_ids=None):
         return {}
 
 
+def _casefold(value):
+    return value.casefold() if isinstance(value, str) else value
+
+
+def _register_casefold(conn):
+    """clu_casefold(x): Python's Unicode case folding, for the name search.
+
+    SQLite's LIKE and LOWER() fold ASCII only, so "élite" would not find
+    "Élite"; the page this replaced searched with JS toLowerCase().
+    """
+    conn.create_function("clu_casefold", 1, _casefold, deterministic=True)
+
+
 def _pull_list_where(q="", publisher_id=None, letter="", status=""):
     """WHERE clause + params for the Pull List filters, over `s`/`p`/`c`.
 
     Returns (sql, params, needs_counts): needs_counts says the clause reads
-    `c`, i.e. the caller must join the whole-library aggregate.
+    `c`, i.e. the caller must join the whole-library aggregate. A search
+    calls clu_casefold, so the connection needs _register_casefold.
     """
     clauses = ["s.mapped_path IS NOT NULL", "s.mapped_path != ''"]
     params = []
@@ -11056,9 +11087,9 @@ def _pull_list_where(q="", publisher_id=None, letter="", status=""):
 
     q = (q or "").strip()
     if q:
-        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        clauses.append("s.name LIKE ? ESCAPE '\\'")
-        params.append(f"%{escaped}%")
+        # instr, not LIKE: no wildcards to escape, and no ASCII-only folding.
+        clauses.append("instr(clu_casefold(s.name), ?) > 0")
+        params.append(q.casefold())
 
     if publisher_id is not None:
         clauses.append("s.publisher_id = ?")
@@ -11088,17 +11119,22 @@ def get_pull_list_page(today, q="", publisher_id=None, letter="", status="",
 
     The page used to load every mapped series, aggregate every issue of every
     one of them and render them all, then hide all but 50 in the browser.
-    Here the filters, sort and LIMIT run in SQL; the whole-library counts
+    Here the filters, sort and paging run in SQL; the whole-library counts
     aggregate is joined only when the status filter or the Collection sort
-    needs it, and otherwise computed for the rows on the page alone.
+    needs it, and then exactly once per request: one statement numbers the
+    matches and takes the requested page, clamped to the last one, so a stale
+    ?page= costs no second pass. The rows' own counts and colour are then
+    aggregated for the page's series alone.
 
     Returns:
         {"rows": [...], "total": matching, "page": n (clamped), "per_page",
-         "total_pages"}. Each row carries the series columns the table shows,
-        publisher_name, missing_count, missing_future and row_status.
+         "total_pages", "error": None or a message}. Each row carries the
+        series columns the table shows, publisher_name, missing_count,
+        missing_future and row_status. On a database error rows is empty and
+        error is set, so the page can say so rather than "No series match".
     """
     per_page = max(1, int(per_page or 50))
-    page = max(1, int(page or 1))
+    page = min(max(1, int(page or 1)), _MAX_PAGE)
     where, params, needs_counts = _pull_list_where(q, publisher_id, letter, status)
     sort_sql = _PULL_LIST_SORTS.get(sort)
     if sort == "collection":
@@ -11106,135 +11142,98 @@ def get_pull_list_page(today, q="", publisher_id=None, letter="", status="",
     direction = "DESC" if descending else "ASC"
     order = (f"{sort_sql} {direction}, " if sort_sql else "") + "s.name COLLATE NOCASE, s.id"
 
-    counts_join = ""
-    count_params = []
+    counts_join, counts_params = "", []
     if needs_counts:
-        counts_join = (
-            f"LEFT JOIN ({_PULL_LIST_COUNTS_SQL.format(where='')}) c "
-            "ON c.series_id = s.id"
-        )
-        # The aggregate's :today, as a positional parameter in this query.
-        counts_join = counts_join.replace(":today", "?")
-        count_params = [today, today]
+        counts_sql, counts_params = _pull_list_counts_sql(today)
+        counts_join = f"LEFT JOIN ({counts_sql}) c ON c.series_id = s.id"
 
-    empty = {"rows": [], "total": 0, "page": 1, "per_page": per_page, "total_pages": 1}
     try:
         with db_conn() as conn:
             if not conn:
-                return empty
+                raise RuntimeError("database unavailable")
+            _register_casefold(conn)
             cur = conn.cursor()
-            base = f"""
-                FROM series s
-                LEFT JOIN publishers p ON p.id = s.publisher_id
-                {counts_join}
-                WHERE {where}
-            """
-            # One pass gives the page and the matching total, so the
-            # whole-library aggregate (when joined) runs once, not twice.
-            def fetch_page(n):
-                cur.execute(
-                    f"SELECT s.id, COUNT(*) OVER () {base} "
-                    f"ORDER BY {order} LIMIT ? OFFSET ?",
-                    count_params + params + [per_page, (n - 1) * per_page],
+            cur.execute(
+                f"""
+                WITH m AS (
+                    SELECT s.id AS id,
+                           ROW_NUMBER() OVER (ORDER BY {order}) AS rn,
+                           COUNT(*) OVER () AS total
+                    FROM series s
+                    LEFT JOIN publishers p ON p.id = s.publisher_id
+                    {counts_join}
+                    WHERE {where}
                 )
-                return cur.fetchall()
-
-            found = fetch_page(page)
-            if found:
-                total = found[0][1]
-            else:
-                # Empty: no match at all, or a page past the end (a stale
-                # ?page= after a delete). Count, then show the last page.
-                cur.execute(f"SELECT COUNT(*) {base}", count_params + params)
-                total = cur.fetchone()[0]
-                last = max(1, -(-total // per_page))
-                if total and page > last:
-                    page = last
-                    found = fetch_page(page)
-                else:
-                    page = 1
-            total_pages = max(1, -(-total // per_page))
-            ids = [row[0] for row in found]
+                SELECT id, rn, total FROM m
+                WHERE rn > (MIN(?, (total + ? - 1) / ?) - 1) * ?
+                ORDER BY rn
+                LIMIT ?
+                """,
+                counts_params + params + [page, per_page, per_page, per_page, per_page],
+            )
+            found = cur.fetchall()
+            ids = [row["id"] for row in found]
+            total = found[0]["total"] if found else 0
+            page = (found[0]["rn"] - 1) // per_page + 1 if found else 1
 
             rows = []
             if ids:
+                page_counts_sql, page_counts_params = _pull_list_counts_sql(today, ids)
                 cur.execute(
                     f"""
                     SELECT s.id, s.name, s.volume, s.status, s.issue_count,
                            s.last_synced_at, s.monitored, s.publisher_id,
-                           p.name AS publisher_name
+                           p.name AS publisher_name,
+                           COALESCE(c.missing_past, 0) AS missing_past,
+                           COALESCE(c.missing_future, 0) AS missing_future,
+                           ({_PULL_LIST_ROW_STATUS_SQL}) AS row_status
                     FROM series s
                     LEFT JOIN publishers p ON p.id = s.publisher_id
+                    LEFT JOIN ({page_counts_sql}) c ON c.series_id = s.id
                     WHERE s.id IN ({_in_placeholders(ids)})
                     """,
-                    ids,
+                    page_counts_params + ids,
                 )
                 by_id = {row["id"]: dict(row) for row in cur.fetchall()}
                 rows = [by_id[i] for i in ids if i in by_id]
     except Exception as e:
         app_logger.error(f"Failed to get pull list page: {e}")
-        return empty
+        return {"rows": [], "total": 0, "page": 1, "per_page": per_page,
+                "total_pages": 1, "error": "Could not read the pull list from the database"}
 
-    counts = get_pull_list_collection_counts(today, series_ids=ids) if ids else {}
     for row in rows:
-        c = counts.get(row["id"], {})
-        missing_past = c.get("missing_past", 0)
-        missing_future = c.get("missing_future", 0)
-        row["missing_count"] = missing_past + missing_future
-        row["missing_future"] = missing_future
-        row["row_status"] = pull_list_row_status(row.get("monitored"), c)
+        row["missing_count"] = row["missing_past"] + row["missing_future"]
 
     return {"rows": rows, "total": total, "page": page, "per_page": per_page,
-            "total_pages": total_pages}
-
-
-def pull_list_row_status(monitored, counts):
-    """Python twin of _PULL_LIST_ROW_STATUS_SQL, for rows already fetched.
-
-    The status filter runs the SQL one; both must agree or a row filtered as
-    "missing" would render in another colour. Pinned together in
-    tests/integration/test_pull_list_status.py.
-    """
-    if monitored is not None and not monitored:
-        return "unmonitored"
-    if not counts.get("total") or (not counts.get("scanned") and not counts.get("found")):
-        return "unknown"
-    missing_past = counts.get("missing_past", 0)
-    if missing_past + counts.get("missing_future", 0) == 0:
-        return "complete"
-    if missing_past > 0:
-        return "missing"
-    return "upcoming"
+            "total_pages": max(1, -(-total // per_page)), "error": None}
 
 
 def get_pull_list_matching_ids(today, q="", publisher_id=None, letter="", status=""):
     """Every series id matching the Pull List filters, on every page.
 
     Backs "Select all N matching": a page holds only its own rows, so the
-    selection across pages has to come from the server.
+    selection across pages has to come from the server. Returns None on a
+    database error, so the caller cannot mistake it for "nothing matches".
     """
     where, params, needs_counts = _pull_list_where(q, publisher_id, letter, status)
-    counts_join = ""
-    count_params = []
+    counts_join, counts_params = "", []
     if needs_counts:
-        counts_join = (
-            f"LEFT JOIN ({_PULL_LIST_COUNTS_SQL.format(where='')}) c "
-            "ON c.series_id = s.id"
-        ).replace(":today", "?")
-        count_params = [today, today]
+        counts_sql, counts_params = _pull_list_counts_sql(today)
+        counts_join = f"LEFT JOIN ({counts_sql}) c ON c.series_id = s.id"
     try:
         with db_conn() as conn:
             if not conn:
-                return []
+                raise RuntimeError("database unavailable")
+            _register_casefold(conn)
             cur = conn.cursor()
             cur.execute(
                 f"SELECT s.id FROM series s {counts_join} WHERE {where} ORDER BY s.id",
-                count_params + params,
+                counts_params + params,
             )
             return [row[0] for row in cur.fetchall()]
     except Exception as e:
         app_logger.error(f"Failed to get pull list ids: {e}")
-        return []
+        return None
 
 
 def get_pull_list_facets():
@@ -11436,61 +11435,6 @@ def _reading_list_covers(cursor, list_id, thumbnail_path):
     return covers[:5]
 
 
-def get_all_reading_lists(viewer_id=None):
-    """
-    Get every reading list (global), with read_count scoped to the viewing user.
-
-    Mirrors get_reading_lists() but drops the ``WHERE rl.user_id = ?`` owner filter so
-    every user sees every list, while keeping the ``ir.user_id = ?`` read-count join so
-    the progress badge reflects the viewer's own reads. Used by the Reading Lists grid
-    page so readers can browse lists an admin/clerk imported. List mutations remain
-    clerk-gated at the route layer, and per-user readers (get_reading_lists) are left
-    intact for isolation-sensitive callers (e.g. bulk "Delete All").
-
-    Returns:
-        List of dictionaries containing reading list info
-    """
-    try:
-        uid = _resolve_user_id(viewer_id)
-        conn = get_db_connection()
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-
-        # All lists, but read_count is scoped to the viewing user so one user's
-        # progress doesn't inflate another's badge.
-        c.execute("""
-            SELECT rl.*,
-                   COUNT(DISTINCT rle.id) as entry_count,
-                   COUNT(DISTINCT ir.id) as read_count
-            FROM reading_lists rl
-            LEFT JOIN reading_list_entries rle ON rl.id = rle.reading_list_id
-            LEFT JOIN issues_read ir ON COALESCE(rle.manual_override_path, rle.matched_file_path) = ir.issue_path
-                                    AND ir.user_id = ?
-            GROUP BY rl.id
-            ORDER BY rl.created_at DESC
-        """, (uid,))
-
-        lists = [dict(row) for row in c.fetchall()]
-
-        import json
-
-        # Get covers for each list
-        for lst in lists:
-            lst["covers"] = _reading_list_covers(c, lst["id"], lst["thumbnail_path"])
-
-            # Parse tags JSON
-            try:
-                lst["tags"] = json.loads(lst.get("tags") or "[]")
-            except (json.JSONDecodeError, TypeError):
-                lst["tags"] = []
-
-        conn.close()
-        return lists
-    except Exception as e:
-        app_logger.error(f"Error getting all reading lists: {str(e)}")
-        return []
-
-
 # Sort keys the Reading Lists page offers -> ORDER BY. Ties end on id so a
 # page boundary is stable between requests.
 _READING_LIST_SORTS = {
@@ -11502,17 +11446,37 @@ _READING_LIST_SORTS = {
 READING_LIST_DEFAULT_SORT = "date-desc"
 
 
+def _reading_list_tags(raw):
+    """The string tags in a reading_lists.tags value.
+
+    Only a JSON array's string elements count. A non-array (an object, a bare
+    string) or a non-string element (2024) is ignored rather than iterated or
+    shown: _reading_list_tag_where reads the column the same way, so every
+    tag the bar offers filters to the lists that carry it.
+    """
+    import json
+
+    try:
+        tags = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(tags, list):
+        return []
+    return [t for t in tags if isinstance(t, str)]
+
+
 def _reading_list_tag_where(tags):
     """WHERE + params: the list carries every one of ``tags`` (AND, as the
     tag chips always have). A tags column that is not a JSON array counts as
     no tags rather than failing the whole query (json_each raises on bad
-    JSON, and would walk an object's values)."""
+    JSON, and would walk an object's values), and only text elements count,
+    as in _reading_list_tags."""
     clauses, params = [], []
     for tag in tags or []:
         clauses.append(
             "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(rl.tags) "
             "AND json_type(rl.tags) = 'array' THEN rl.tags ELSE '[]' END) "
-            "WHERE value = ?)"
+            "WHERE type = 'text' AND value = ?)"
         )
         params.append(tag)
     return (" AND ".join(clauses) or "1"), params
@@ -11522,16 +11486,16 @@ def get_reading_lists_page(viewer_id=None, tags=None, sort=READING_LIST_DEFAULT_
                            page=1, per_page=40):
     """One page of the Reading Lists grid, filtered and sorted in SQL.
 
-    Same rows as get_all_reading_lists() -- every list is visible to every
-    user, read_count is the viewer's own -- but the entry/read counts and
-    the cover lookups run only for the lists on this page. The old page did
-    both for every list, then hid all but 40 in the browser.
+    Every list is visible to every user (so a reader can browse lists an
+    admin/clerk imported; list mutations stay clerk-gated at the route
+    layer, and get_reading_lists() keeps the per-owner view), while
+    read_count is the viewer's own. The entry/read counts and the cover
+    lookups run only for the lists on this page. The old page did both for
+    every list, then hid all but 40 in the browser.
 
     Returns {"lists", "total" (matching), "page" (clamped), "per_page",
     "total_pages"}.
     """
-    import json
-
     per_page = max(1, int(per_page or 40))
     page = max(1, int(page or 1))
     order = _READING_LIST_SORTS.get(sort) or _READING_LIST_SORTS[READING_LIST_DEFAULT_SORT]
@@ -11577,10 +11541,7 @@ def get_reading_lists_page(viewer_id=None, tags=None, sort=READING_LIST_DEFAULT_
             lists = [by_id[i] for i in ids if i in by_id]
             for lst in lists:
                 lst["covers"] = _reading_list_covers(c, lst["id"], lst["thumbnail_path"])
-                try:
-                    lst["tags"] = json.loads(lst.get("tags") or "[]")
-                except (json.JSONDecodeError, TypeError):
-                    lst["tags"] = []
+                lst["tags"] = _reading_list_tags(lst.get("tags"))
         return {"lists": lists, "total": total, "page": page, "per_page": per_page,
                 "total_pages": total_pages}
     except Exception as e:
@@ -12167,8 +12128,6 @@ def get_all_reading_list_tags():
     Returns:
         List of unique tag strings
     """
-    import json
-
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -12180,11 +12139,7 @@ def get_all_reading_list_tags():
 
         all_tags = set()
         for row in rows:
-            try:
-                tags = json.loads(row[0]) if row[0] else []
-                all_tags.update(tags)
-            except json.JSONDecodeError:
-                pass
+            all_tags.update(_reading_list_tags(row[0]))
 
         return sorted(list(all_tags))
     except Exception as e:

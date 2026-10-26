@@ -70,6 +70,10 @@
 </tr>
 {% else %}
 <tr class="pl-no-match">
+    {% if load_error %}
+    <td colspan="8" class="text-center text-danger py-4">{{ load_error }}</td>
+    {% else %}
     <td colspan="8" class="text-center text-muted py-4">No series match these filters.</td>
+    {% endif %}
 </tr>
 {% endfor %}

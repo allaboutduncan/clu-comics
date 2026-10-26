@@ -28,7 +28,10 @@
  *                        string next to `page` (an empty value or [] leaves
  *                        the key out, an array sends the key once per value)
  *         onData(data)   called with the endpoint's answer after every load
- *         onError(err)   optional, called when a load fails
+ *         onError(err)   optional, called when a load fails. The pager
+ *                        has already put its page, size and bar back to the
+ *                        rows still on screen; a filter the page changed
+ *                        before calling load() is the page's to flag.
  *
  *       returns { load({resetPage}), goTo(page), page(), query() }
  *
@@ -178,9 +181,27 @@
     }
 
     let inFlight = null;
+    // Which load is current. Not inFlight: that is null both after a load
+    // lands and where AbortController is missing.
+    let loadSeq = 0;
+
+    // What the rows on screen are: page, size and bar of the last load that
+    // landed. A failed load puts these back, so the bar and the URL never
+    // describe rows that were not drawn (the page's own filter controls are
+    // the page's to reconcile; its onError is told).
+    let shown = { page, perPage, totalPages };
+
+    function rollback() {
+      page = shown.page;
+      perPage = shown.perPage;
+      totalPages = shown.totalPages;
+      if (select) select.value = String(perPage);
+      drawBar();
+    }
 
     function load(options) {
       if (options && options.resetPage) page = 1;
+      const seq = ++loadSeq;
       if (inFlight) inFlight.abort();
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       inFlight = ctrl;
@@ -194,13 +215,14 @@
           return r.json();
         })
         .then(data => {
-          if (ctrl && ctrl.signal.aborted) return null;
+          if (seq !== loadSeq) return null;
           if (!data || !data.success) throw new Error((data && data.error) || 'Failed to load');
           inFlight = null;
           // The server clamps a page past the end; follow it.
           page = data.page || 1;
           perPage = data.per_page || perPage;
           totalPages = data.total_pages || 1;
+          shown = { page, perPage, totalPages };
           drawBar();
           writeUrl();
           opts.onData(data);
@@ -208,7 +230,10 @@
         })
         .catch(err => {
           if (err && err.name === 'AbortError') return null;
+          // A newer load replaced this one: it owns the state now.
+          if (seq !== loadSeq) return null;
           inFlight = null;
+          rollback();
           if (opts.onError) opts.onError(err);
           else console.error('Pager load failed:', err);
           return null;
@@ -216,12 +241,8 @@
     }
 
     function goTo(target) {
-      const previous = page;
       page = target;
       return load().then(data => {
-        // A failed load leaves the old rows on screen; keep the number that
-        // matches them, or the next reload would jump to the failed page.
-        if (!data && inFlight === null) page = previous;
         if (data && opts.scrollTarget) {
           opts.scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }

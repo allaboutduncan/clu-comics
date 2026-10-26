@@ -68,6 +68,44 @@ class TestReadingListGridPaging:
         assert data["total"] == 0
         assert "reading-list-no-match" in data["html"]
 
+    def test_non_string_tags_do_not_take_the_page_down(self, client, db_connection):
+        """A tag stored as a number made the tag-bar sort raise for everyone,
+        and a non-array tags value offered buttons that filtered to nothing."""
+        from core.database import create_reading_list
+        good = create_reading_list("Good")
+        odd = create_reading_list("Odd")
+        db_connection.execute("UPDATE reading_lists SET tags = ? WHERE id = ?",
+                              ('["dc", 2024, null]', good))
+        db_connection.execute("UPDATE reading_lists SET tags = ? WHERE id = ?",
+                              ('{"marvel": 1}', odd))
+        db_connection.commit()
+        resp = client.get("/reading-lists")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'data-tag="dc"' in html
+        assert 'data-tag="2024"' not in html and 'data-tag="marvel"' not in html
+
+    def test_covers_follow_the_script_root(self, client, db_connection):
+        """A hardcoded /api/thumbnail 404s behind a subpath proxy."""
+        from core.database import create_reading_list, update_reading_list_thumbnail
+        list_id = create_reading_list("Covered")
+        update_reading_list_thumbnail(list_id, "/data/x.cbz")
+        html = client.get(
+            "/reading-lists", environ_overrides={"SCRIPT_NAME": "/clu"}
+        ).get_data(as_text=True)
+        assert 'url("/clu/api/thumbnail?path=' in html
+
+    def test_a_cover_path_with_an_apostrophe_keeps_its_css_string(self, client):
+        """url_for leaves ' unencoded; inside a single-quoted CSS url('')
+        it would end the string and drop the cover."""
+        import re
+        from core.database import create_reading_list, update_reading_list_thumbnail
+        list_id = create_reading_list("Quinn")
+        update_reading_list_thumbnail(list_id, "/data/Harley Quinn's (2020)/a.cbz")
+        html = client.get("/reading-lists").get_data(as_text=True)
+        styles = re.findall(r"style='background-image: url\(\"([^\"]*)\"\);'", html)
+        assert any("Harley+Quinn&#39;s" in s for s in styles)
+
     def test_ids_endpoint_spans_pages(self, client):
         ids = self._seed()
         data = client.get("/api/reading-lists/ids?tag=even").get_json()
@@ -561,7 +599,7 @@ class TestReaderViewOnlyGating:
     """Readers browse shared lists but see no management controls.
 
     Backs the "let readers view any reading list" change: the grid is global
-    (get_all_reading_lists), while create/import/edit/delete/map/reorder controls
+    (get_reading_lists_page), while create/import/edit/delete/map/reorder controls
     are Clerk/Owner-only in the templates. Mutations stay clerk-gated at the route
     layer (covered in test_rbac.py); this asserts the rendered UI.
     """

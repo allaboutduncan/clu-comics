@@ -100,6 +100,28 @@ class TestSortAndFilter:
         assert _names(get_reading_lists_page(tags=["dc"])) == ["beta", "Alpha"]
 
 
+    def test_only_string_elements_are_tags(self, lists, db_connection):
+        """The tag bar and the filter must read the column the same way, or
+        a button filters to an empty grid."""
+        from core.database import get_all_reading_list_tags
+        db_connection.execute(
+            """UPDATE reading_lists SET tags = '["solo", 2024, null]' WHERE id = ?""",
+            (lists["Delta"],),
+        )
+        db_connection.execute(
+            """UPDATE reading_lists SET tags = '{"objtag": 1}' WHERE id = ?""",
+            (lists["beta"],),
+        )
+        db_connection.commit()
+        tags = get_all_reading_list_tags()
+        assert "solo" in tags and "objtag" not in tags
+        assert all(isinstance(t, str) for t in tags)
+        for tag in tags:
+            assert get_reading_lists_page(tags=[tag])["total"] > 0
+        delta = next(rl for rl in get_reading_lists_page()["lists"] if rl["name"] == "Delta")
+        assert delta["tags"] == ["solo"]
+
+
 class TestPaging:
 
     def test_limit_and_offset(self, lists):

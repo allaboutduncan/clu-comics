@@ -26,8 +26,10 @@ drift. Role gating mirrors reading_lists.html. #}
         </button>
         {% if list.covers and list.covers|length > 0 %}
         {% for cover in list.covers %}
+        {# A double-quoted CSS string: url_for leaves ' unencoded (a common
+        character in comic paths) but encodes ". #}
         <div class="card-stack-item"
-            style="background-image: url('/api/thumbnail?path={{ cover|urlencode }}');"></div>
+            style='background-image: url("{{ url_for('get_thumbnail', path=cover) }}");'></div>
         {% endfor %}
         {% else %}
         <!-- Fallback -->

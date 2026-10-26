@@ -54,11 +54,13 @@ vm.runInContext(src, sandbox);
 
 let q = 'bat';
 const seen = [];
+const errors = [];
 const pager = sandbox.CLU.createServerPager({
   endpoint: '/api/pull-list/rows', nav: null, defaultPerPage: 50,
   initial: { page: 3, perPage: 50, totalPages: 9 },
   state: () => ({ q, tag: [] }),
   onData: data => seen.push(data.html),
+  onError: err => errors.push(err.message),
 });
 const answer = (page, html) => ({ success: true, html, total: 500, page, per_page: 50, total_pages: 9 });
 const tick = () => new Promise(r => setImmediate(r));
@@ -110,6 +112,26 @@ const out = {};
     await tick(); await tick();
     out.page = pager.page();
     out.seen = seen;
+  }
+  if (scenario === 'failed_reset') {
+    // A filter change resets to page 1; when it fails, the rows on screen
+    // are still page 3's, so the page number and URL must say so.
+    q = 'x';
+    pager.load({ resetPage: true });
+    requests[0].resolve({ success: false, error: 'boom' });
+    await tick(); await tick();
+    timers.splice(0).forEach(fn => fn());
+    out.page = pager.page();
+    out.search = sandbox.location.search;
+    out.errors = errors.slice();
+    out.seen = seen.slice();
+    // The next load that lands re-syncs everything to the current filter.
+    pager.load({ resetPage: true });
+    requests[1].resolve(answer(1, 'x1'));
+    await tick(); await tick();
+    timers.splice(0).forEach(fn => fn());
+    out.page_after = pager.page();
+    out.search_after = sandbox.location.search;
   }
   if (scenario === 'clamp') {
     pager.goTo(9);
@@ -167,3 +189,10 @@ def test_follows_the_page_the_server_clamped_to(tmp_path):
     assert out["page"] == 4
     assert out["search"] == "?q=bat&page=4"
     assert out["query"] == "q=bat"
+
+
+def test_a_failed_filter_change_rolls_back_to_the_rows_on_screen(tmp_path):
+    out = _run("failed_reset", tmp_path)
+    assert out["page"] == 3 and out["search"] == "?page=3&q=bat"
+    assert out["errors"] == ["boom"] and out["seen"] == []
+    assert out["page_after"] == 1 and out["search_after"] == "?q=x"

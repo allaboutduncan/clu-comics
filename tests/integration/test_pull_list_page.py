@@ -95,8 +95,8 @@ class TestFiltersAndSort:
         ("unmonitored", ["X-Men"]),
     ])
     def test_status_filter_agrees_with_the_row_colour(self, library, status, expected):
-        """The filter runs the SQL CASE, the row colour the Python twin: a row
-        filtered as "missing" must also render as missing."""
+        """A row filtered as "missing" must also render as missing (both
+        select _PULL_LIST_ROW_STATUS_SQL)."""
         r = _page(status=status)
         assert _names(r) == expected
         assert all(row["row_status"] == status for row in r["rows"])
@@ -106,6 +106,15 @@ class TestFiltersAndSort:
 
     def test_search_is_a_case_blind_substring(self, library):
         assert _names(_page(q="MAN")) == ["Aquaman", "Batman", "Spider-Man"]
+
+    def test_search_folds_non_ascii_case(self, library):
+        """SQLite's LIKE folds ASCII only; the old in-browser search used
+        toLowerCase(), so "élite" found "Élite"."""
+        create_series(series_id=6, name="Élite Strike Force")
+        create_series(series_id=7, name="STRASSE")
+        assert _names(_page(q="élite")) == ["Élite Strike Force"]
+        assert _names(_page(q="ÉLITE")) == ["Élite Strike Force"]
+        assert _names(_page(q="straße")) == ["STRASSE"]
 
     def test_search_treats_like_wildcards_literally(self, library):
         assert _page(q="%")["total"] == 0
@@ -151,25 +160,52 @@ class TestPaging:
         r = _page(status="missing", page=5, per_page=2)
         assert r["page"] == 1 and _names(r) == ["Aquaman"]
 
+    @pytest.mark.parametrize("status", ["", "missing"])
+    def test_a_huge_page_number_is_the_last_page(self, library, status):
+        """sqlite3 binds int64 only: an unclamped OFFSET raised OverflowError
+        and the page said "No series match"."""
+        r = _page(status=status, page=10 ** 20, per_page=2)
+        assert r["error"] is None
+        assert r["page"] == r["total_pages"] and r["rows"]
+
     def test_no_match_is_page_one_of_one(self, library):
         r = _page(q="nothing like this", page=4)
-        assert r == {"rows": [], "total": 0, "page": 1, "per_page": 50, "total_pages": 1}
+        assert r == {"rows": [], "total": 0, "page": 1, "per_page": 50,
+                     "total_pages": 1, "error": None}
 
-    def test_counts_are_computed_for_the_page_only(self, library):
-        """The cheap path aggregates the 50 rows on screen, not the library."""
+    @pytest.mark.parametrize("kw", [
+        {"per_page": 2},
+        {"status": "missing", "page": 99, "per_page": 2},
+        {"sort": "collection", "page": 99, "per_page": 2},
+    ])
+    def test_the_whole_library_aggregate_runs_at_most_once(self, library, kw):
+        """It was the 2.8 s this page set out to remove, and a stale ?page=
+        under a status filter ran it three times. Only the page's own series
+        may be aggregated a second time."""
         from unittest.mock import patch
         import core.database as db
 
-        seen = []
-        real = db.get_pull_list_collection_counts
+        calls = []
+        real = db._pull_list_counts_sql
 
         def spy(today, series_ids=None):
-            seen.append(None if series_ids is None else list(series_ids))
-            return real(today, series_ids=series_ids)
+            calls.append(None if series_ids is None else list(series_ids))
+            return real(today, series_ids)
 
-        with patch.object(db, "get_pull_list_collection_counts", spy):
-            db.get_pull_list_page(TODAY, per_page=2)
-        assert seen == [[5, 2]]
+        with patch.object(db, "_pull_list_counts_sql", spy):
+            r = db.get_pull_list_page(TODAY, **kw)
+        whole = [c for c in calls if c is None]
+        expected = 1 if (kw.get("status") or kw.get("sort")) else 0
+        assert len(whole) == expected
+        assert [c for c in calls if c is not None] == [[row["id"] for row in r["rows"]]]
+
+    def test_a_database_error_is_reported_not_shown_as_no_match(self, library):
+        from unittest.mock import patch
+        import core.database as db
+
+        with patch.object(db, "_PULL_LIST_ROW_STATUS_SQL", "no_such_column"):
+            r = db.get_pull_list_page(TODAY)
+        assert r["rows"] == [] and r["error"]
 
     def test_unmapped_series_are_not_listed(self, library, db_connection):
         db_connection.execute("UPDATE series SET mapped_path = NULL WHERE id = 1")
@@ -193,6 +229,23 @@ class TestMatchingIdsAndFacets:
         assert get_pull_list_matching_ids(TODAY) == [1, 2, 3, 4, 5]
         assert get_pull_list_matching_ids(TODAY, publisher_id=library["dc"]) == [1, 2]
         assert get_pull_list_matching_ids(TODAY, status="upcoming") == [3]
+
+    def test_ids_on_a_database_error_are_none_not_empty(self, library):
+        from unittest.mock import patch
+        import core.database as db
+
+        with patch.object(db, "_PULL_LIST_ROW_STATUS_SQL", "no_such_column"):
+            assert db.get_pull_list_matching_ids(TODAY, status="missing") is None
+
+
+class TestCountsSqlHelper:
+
+    def test_placeholders_match_params(self):
+        from core.database import _pull_list_counts_sql
+        for ids in (None, [], [1, 2, 3]):
+            sql, params = _pull_list_counts_sql(TODAY, ids)
+            assert sql.count("?") == len(params)
+            assert params[:2] == [TODAY, TODAY]
 
     def test_facets(self, library):
         from core.database import get_pull_list_facets
