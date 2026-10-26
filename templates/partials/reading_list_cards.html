@@ -1,0 +1,106 @@
+{# One page of reading-list cards. Rendered by /reading-lists for the first
+page and by /api/reading-lists/page for every later one, so the two cannot
+drift. Role gating mirrors reading_lists.html. #}
+{% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
+{% for list in lists %}
+<div class="reading-list-card stagger-load" data-list-id="{{ list.id }}"
+    onclick="window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
+
+    <!-- Background / Stack -->
+    <div class="card-stack-container">
+        {% if _can_manage %}
+        <div class="card-select-checkbox" onclick="event.stopPropagation();">
+            <input type="checkbox" class="form-check-input list-select-cb" data-list-id="{{ list.id }}"
+                onchange="onListCheckboxChange(this)">
+        </div>
+        {% endif %}
+        {# Outside the _can_manage gate on purpose: bookmarking a list is
+        personal data, so Readers get it too (the endpoint sits under
+        /api/favorites, which core/auth.py allows Readers to write). #}
+        {# Single-quoted onclick: tojson escapes ' but not ", so a list
+        name containing a quote would break a double-quoted attribute. #}
+        <button type="button" class="want-to-read-button want-to-read-toggle" data-list-id="{{ list.id }}"
+            onclick='event.stopPropagation(); toggleReadingListWantToRead({{ list.id }}, {{ list.name|tojson }}, this)'
+            title="Add to Want to Read" aria-label="Add to Want to Read">
+            <i class="bi bi-bookmark-plus"></i>
+        </button>
+        {% if list.covers and list.covers|length > 0 %}
+        {% for cover in list.covers %}
+        <div class="card-stack-item"
+            style="background-image: url('/api/thumbnail?path={{ cover|urlencode }}');"></div>
+        {% endfor %}
+        {% else %}
+        <!-- Fallback -->
+        <div class="card-stack-item">
+            <div class="no-image-placeholder">
+                <i class="bi bi-journal-album placeholder-icon"></i>
+            </div>
+        </div>
+        {% endif %}
+        {% if list.entry_count > 0 and list.read_count == list.entry_count %}
+        <div class="completion-badge" title="Completed!">
+            <i class="bi bi-check-circle-fill"></i>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Content -->
+    <div class="card-content text-primary">
+        <h3 class="card-title-lg text-truncate" {% if _can_manage
+            %}onclick="event.stopPropagation(); editTitle({{ list.id }}, this)" title="Click to edit" {% endif
+            %}>
+            {% if list.source %}<i class="bi bi-cloud-download me-1"
+                title="Imported from {{ list.source }}"></i>{% else %}<i class="bi bi-pencil me-1"
+                title="User-created"></i>{% endif %}
+            {{ list.name }}
+        </h3>
+
+        <div class="card-meta">
+            <span class="card-count" title="Read {{ list.read_count }} of {{ list.entry_count }} issues">
+                <i class="bi bi-collection-fill me-1"></i>{{ list.read_count }}/{{ list.entry_count }}
+            </span>
+            {% if list.tags %}
+            {# One line, always: fitCardTags() in reading_list.js hides
+            what does not fit behind the "+N" chip. #}
+            <div class="card-tags" title="{{ list.tags|join(', ') }}">
+                {% for tag in list.tags %}
+                <span class="tag-badge" data-tag="{{ tag }}">{{ tag }}</span>
+                {% endfor %}
+                <span class="tag-badge tag-more" hidden></span>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="card-actions">
+            <button class="btn btn-primary btn-sm flex-grow-1"
+                onclick="event.stopPropagation(); window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
+                View Details
+            </button>
+            {% if _can_manage %}
+            <button class="btn btn-secondary btn-sm"
+                onclick='event.stopPropagation(); openTagsModal({{ list.id }}, {{ list.tags|tojson|safe }})'
+                title="Manage Tags">
+                <i class="bi bi-tags"></i>
+            </button>
+            <button class="btn btn-danger btn-sm"
+                onclick="event.stopPropagation(); deleteReadingList({{ list.id }})">
+                <i class="bi bi-trash"></i>
+            </button>
+            {% endif %}
+        </div>
+
+        {% if list.entry_count > 0 %}
+        {% set percent = (list.read_count / list.entry_count * 100)|round %}
+        <div class="progress-bar-container">
+            <div class="progress-bar-fill {% if percent == 100 %}progress-complete{% elif percent >= 66 %}progress-high{% elif percent >= 33 %}progress-medium{% else %}progress-low{% endif %}"
+                style="width: {{ percent }}%"></div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% else %}
+<div class="reading-list-no-match text-center text-muted py-5" style="grid-column: 1 / -1;">
+    <i class="bi bi-funnel display-6 d-block mb-2 opacity-50"></i>
+    No reading lists carry every selected tag.
+</div>
+{% endfor %}

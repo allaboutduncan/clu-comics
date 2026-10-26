@@ -12,7 +12,10 @@ from core.database import (
     create_reading_list,
     add_reading_list_entry,
     get_reading_lists,
-    get_all_reading_lists,
+    get_reading_lists_page,
+    get_reading_list_matching_ids,
+    count_reading_lists,
+    READING_LIST_DEFAULT_SORT,
     get_reading_list,
     update_reading_list_entry_match,
     delete_reading_list,
@@ -81,16 +84,83 @@ _github_tree_lock = threading.Lock()
 _import_semaphore = threading.Semaphore(5)
 
 
+# Multiples of 4 (and 5) so the last row of cards is full; the select in
+# templates/reading_lists.html offers exactly these.
+READING_LIST_PAGE_SIZES = (20, 40, 80, 160, 300)
+READING_LIST_DEFAULT_PER_PAGE = 40
+
+
+def _reading_list_grid_args():
+    """The grid's filter, sort and page from the query string. Anything the
+    page does not offer falls back to its default."""
+    args = request.args
+    tags = [t for t in args.getlist('tag') if t and t != 'all']
+    sort = args.get('sort') or READING_LIST_DEFAULT_SORT
+    try:
+        page = max(1, int(args.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(args.get('per_page', READING_LIST_DEFAULT_PER_PAGE))
+    except (TypeError, ValueError):
+        per_page = READING_LIST_DEFAULT_PER_PAGE
+    if per_page not in READING_LIST_PAGE_SIZES:
+        per_page = READING_LIST_DEFAULT_PER_PAGE
+    return tags, sort, page, per_page
+
+
 @reading_lists_bp.route('/reading-lists')
 def index():
-    """View all reading lists.
+    """View all reading lists, one page at a time.
 
-    Uses the global reader so every role (including readers) sees lists an
-    admin/clerk imported; management actions stay clerk-gated in the template
-    and at the route layer.
+    Every role (including readers) sees lists an admin/clerk imported;
+    management actions stay clerk-gated in the template and at the route
+    layer. The tag filter, sort and page come from the query string, and
+    later changes fetch /api/reading-lists/page.
     """
-    lists = get_all_reading_lists()
-    return render_template('reading_lists.html', lists=lists)
+    tags, sort, page, per_page = _reading_list_grid_args()
+    total_lists = count_reading_lists()
+    all_tags = sorted(get_all_reading_list_tags(), key=lambda t: (t.lower(), t))
+    # A tag no list carries any more would filter on something invisible.
+    tags = [t for t in tags if t in all_tags]
+    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page)
+    return render_template(
+        'reading_lists.html',
+        lists=result['lists'],
+        grid=result,
+        total_lists=total_lists,
+        all_tags=all_tags,
+        active_tags=tags,
+        active_sort=sort,
+        page_sizes=READING_LIST_PAGE_SIZES,
+        default_per_page=READING_LIST_DEFAULT_PER_PAGE,
+    )
+
+
+@reading_lists_bp.route('/api/reading-lists/page')
+def grid_page():
+    """One page of reading-list cards as HTML, for a filter/sort/page change.
+
+    Rendered from the same partial as the full page so the two cannot drift.
+    """
+    tags, sort, page, per_page = _reading_list_grid_args()
+    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page)
+    html = render_template('partials/reading_list_cards.html', lists=result['lists'])
+    return jsonify({
+        'success': True,
+        'html': html,
+        'total': result['total'],
+        'page': result['page'],
+        'per_page': result['per_page'],
+        'total_pages': result['total_pages'],
+    })
+
+
+@reading_lists_bp.route('/api/reading-lists/ids')
+def grid_ids():
+    """Every list id matching the tag filter, on every page: "Select All"."""
+    tags, _sort, _page, _per_page = _reading_list_grid_args()
+    return jsonify({'success': True, 'ids': get_reading_list_matching_ids(tags)})
 
 @reading_lists_bp.route('/reading-lists/<int:list_id>')
 def view_list(list_id):

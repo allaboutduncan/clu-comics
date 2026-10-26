@@ -81,26 +81,35 @@
                 <div class="col-md-4">
                     <div class="input-group">
                         <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
-                        <input type="text" class="form-control" id="searchInput" placeholder="Search series...">
+                        <input type="text" class="form-control" id="searchInput" placeholder="Search series..."
+                            value="{{ filters.q }}">
                     </div>
                 </div>
                 <div class="col-md-3 mt-3 mt-md-0">
                     <select class="form-select" id="publisherFilter">
                         <option value="">All Publishers</option>
                         {% for pub in publishers %}
-                        <option value="{{ pub.name|lower }}">{{ pub.name }}</option>
+                        <option value="{{ pub.id }}" {% if filters.publisher_id == pub.id %}selected{% endif %}>{{ pub.name }}</option>
                         {% endfor %}
                     </select>
                 </div>
                 <div class="col-md-5 mt-3 mt-md-0 d-flex flex-wrap align-items-center justify-content-md-end gap-2 column-gap-3">
-                    <span class="text-muted text-nowrap" id="resultCount">Showing {{ total_series }} series</span>
+                    <span class="text-muted text-nowrap" id="resultCount">
+                        {%- set _start = (pager.page - 1) * pager.per_page -%}
+                        {%- if pager.total == 0 -%}
+                        No series match ({{ total_series }} total)
+                        {%- elif pager.total == total_series -%}
+                        Showing {{ _start + 1 }}–{{ _start + series_list|length }} of {{ pager.total }} series
+                        {%- else -%}
+                        Showing {{ _start + 1 }}–{{ _start + series_list|length }} of {{ pager.total }} matching ({{ total_series }} total)
+                        {%- endif -%}
+                    </span>
                     <div class="input-group input-group-sm flex-nowrap" style="width: auto;">
                         <label class="input-group-text bg-body border-0" for="plPerPage">Per page</label>
                         <select class="form-select border-0 shadow-none bg-body text-body" id="plPerPage" style="width: auto;">
-                            <option value="24">24</option>
-                            <option value="50" selected>50</option>
-                            <option value="100">100</option>
-                            <option value="250">250</option>
+                            {% for n in page_sizes %}
+                            <option value="{{ n }}" {% if n == pager.per_page %}selected{% endif %}>{{ n }}</option>
+                            {% endfor %}
                         </select>
                     </div>
                 </div>
@@ -109,17 +118,18 @@
             <div class="d-flex flex-wrap align-items-center gap-2" id="statusFilter"
                  role="group" aria-label="Collection status filter">
                 <small class="text-muted me-1">Status:</small>
-                <button type="button" class="btn btn-sm btn-outline-secondary active" data-status="all">All</button>
-                <button type="button" class="btn btn-sm btn-outline-success" data-status="complete">
+                {% set _st = filters.status if filters.status in ['complete', 'missing', 'upcoming', 'unmonitored'] else 'all' %}
+                <button type="button" class="btn btn-sm btn-outline-secondary {{ 'active' if _st == 'all' }}" data-status="all">All</button>
+                <button type="button" class="btn btn-sm btn-outline-success {{ 'active' if _st == 'complete' }}" data-status="complete">
                     <i class="bi bi-square-fill me-1"></i>Complete
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-danger" data-status="missing">
+                <button type="button" class="btn btn-sm btn-outline-danger {{ 'active' if _st == 'missing' }}" data-status="missing">
                     <i class="bi bi-square-fill me-1"></i>Missing
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-info" data-status="upcoming">
+                <button type="button" class="btn btn-sm btn-outline-info {{ 'active' if _st == 'upcoming' }}" data-status="upcoming">
                     <i class="bi bi-square-fill me-1"></i>Upcoming
                 </button>
-                <button type="button" class="btn btn-sm btn-outline-secondary" data-status="unmonitored">
+                <button type="button" class="btn btn-sm btn-outline-secondary {{ 'active' if _st == 'unmonitored' }}" data-status="unmonitored">
                     <i class="bi bi-square-fill me-1"></i>Not monitored
                 </button>
             </div>
@@ -130,7 +140,11 @@
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body py-2">
             <div class="btn-group d-flex flex-wrap gap-1" id="alphabetFilter" role="group" aria-label="Alphabet Filter">
-                <!-- Dynamically populated by JavaScript -->
+                {% set _letter = filters.letter if filters.letter in letters else 'all' %}
+                <button type="button" class="btn btn-sm btn-outline-secondary {{ 'active' if _letter == 'all' }}" data-letter="all">All</button>
+                {% for letter in letters %}
+                <button type="button" class="btn btn-sm btn-outline-secondary {{ 'active' if _letter == letter }}" data-letter="{{ letter }}">{{ letter }}</button>
+                {% endfor %}
             </div>
         </div>
     </div>
@@ -139,6 +153,7 @@
     <div id="bulkToolbar" class="card border-0 shadow-sm mb-3 d-none">
         <div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">
             <span class="fw-bold me-2"><span id="bulkCount">0</span> selected<span id="bulkOffPage" class="fw-normal text-muted"></span></span>
+            <button type="button" class="btn btn-sm btn-link d-none" id="bulkSelectMatchingBtn"></button>
             <button type="button" class="btn btn-sm btn-success" id="bulkMonitorBtn">
                 <i class="bi bi-eye me-1"></i>Set Monitored
             </button>
@@ -153,116 +168,57 @@
     <div class="card border-0 shadow-sm">
         <div class="card-body p-0">
             <div class="table-responsive">
+                {% macro sort_icon(key) -%}
+                {%- if filters.sort == key -%}
+                bi bi-chevron-{{ 'down' if filters.descending else 'up' }} text-primary ms-1
+                {%- else -%}
+                bi bi-chevron-expand text-muted ms-1
+                {%- endif -%}
+                {%- endmacro %}
                 <table class="table table-hover align-middle mb-0" id="seriesTable">
                     <thead class="table-light">
                         <tr>
                             <th scope="col" class="ps-4" style="width:2.5rem;">
                                 <input class="form-check-input" type="checkbox" id="selectAll"
-                                    title="Select all visible">
+                                    title="Select every series on this page">
                             </th>
                             <th scope="col" class="sortable" data-sort="name" style="cursor: pointer;">
-                                Series <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Series <i class="{{ sort_icon('name') }}"></i>
                             </th>
                             <th scope="col" class="sortable" data-sort="status" style="cursor: pointer;">
-                                Status <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Status <i class="{{ sort_icon('status') }}"></i>
                             </th>
                             <th scope="col" class="sortable" data-sort="publisher" style="cursor: pointer;">
-                                Publisher <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Publisher <i class="{{ sort_icon('publisher') }}"></i>
                             </th>
                             <th scope="col" class="text-center sortable" data-sort="issues" style="cursor: pointer;">
-                                Issues <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Issues <i class="{{ sort_icon('issues') }}"></i>
                             </th>
                             <th scope="col" class="sortable" data-sort="collection" style="cursor: pointer;">
-                                Collection <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Collection <i class="{{ sort_icon('collection') }}"></i>
                             </th>
                             <th scope="col" class="sortable" data-sort="synced" style="cursor: pointer;">
-                                Last Synced <i class="bi bi-chevron-expand text-muted ms-1"></i>
+                                Last Synced <i class="{{ sort_icon('synced') }}"></i>
                             </th>
                             <th scope="col" class="text-end pe-4">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {% for series in series_list %}
-                        <tr data-name="{{ series.name|lower }}"
-                            data-series-id="{{ series.id }}"
-                            data-status="{{ (series.status or '')|lower }}"
-                            data-publisher="{{ (series.publisher_name or '')|lower }}"
-                            data-issues="{{ series.issue_count or 0 }}" data-synced="{{ series.last_synced_at or '' }}"
-                            data-status-color="{{ series.row_status }}"
-                            data-missing="{{ series.missing_count or 0 }}"
-                            class="{{ {'complete':'table-success','missing':'table-danger','upcoming':'table-info','unmonitored':'table-secondary'}.get(series.row_status, '') }}">
-                            <td class="ps-4">
-                                <input class="form-check-input row-select" type="checkbox">
-                            </td>
-                            <td>
-                                <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
-                                    class="text-decoration-none fw-bold">
-                                    {{ series.name }}
-                                    {% if series.volume %}
-                                    <span class="text-muted fw-normal">Vol. {{ series.volume }}</span>
-                                    {% endif %}
-                                </a>
-                            </td>
-                            <td>
-                                {% if series.status %}
-                                <small class="text-muted">{{ series.status }}</small>
-                                {% else %}
-                                <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if series.publisher_name %}
-                                <span class="badge bg-secondary">{{ series.publisher_name }}</span>
-                                {% else %}
-                                <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
-                            <td class="text-center">
-                                {% if series.issue_count %}
-                                <span class="badge bg-info">{{ series.issue_count }}</span>
-                                {% else %}
-                                <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if series.row_status == 'unmonitored' %}
-                                <span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>
-                                {% elif series.row_status == 'complete' %}
-                                <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Complete</span>
-                                {% elif series.row_status == 'missing' %}
-                                <span class="badge bg-danger"><i class="bi bi-exclamation-circle me-1"></i>{{ series.missing_count }} missing</span>
-                                {% elif series.row_status == 'upcoming' %}
-                                <span class="badge bg-info"><i class="bi bi-calendar-event me-1"></i>{{ series.missing_count }} upcoming</span>
-                                {% else %}
-                                <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if series.last_synced_at %}
-                                <small class="text-muted">
-                                    <i class="bi bi-clock me-1"></i>{{ series.last_synced_at[:16] }}
-                                </small>
-                                {% else %}
-                                <small class="text-muted">Never</small>
-                                {% endif %}
-                            </td>
-                            <td class="text-end pe-4">
-                                <div class="btn-group" role="group">
-                                    <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
-                                        class="btn btn-sm btn-outline-primary" title="View Series">
-                                        <i class="bi bi-eye"></i>
-                                    </a>
-                                </div>
-                            </td>
-                        </tr>
-                        {% endfor %}
+                        {% include "partials/pull_list_rows.html" %}
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <nav id="plPagination" class="mt-4" aria-label="Pull list pagination" style="display:none;">
+    <nav id="plPagination" class="mt-4" aria-label="Pull list pagination" style="display:none;"
+         data-endpoint="{{ url_for('series.pull_list_rows') }}"
+         data-ids-endpoint="{{ url_for('series.pull_list_ids') }}"
+         data-page="{{ pager.page }}" data-per-page="{{ pager.per_page }}"
+         data-default-per-page="{{ default_per_page }}"
+         data-total-pages="{{ pager.total_pages }}" data-total="{{ pager.total }}"
+         data-total-series="{{ total_series }}"
+         data-sort="{{ filters.sort }}" data-dir="{{ 'desc' if filters.descending else '' }}">
         <ul class="pagination justify-content-center"></ul>
     </nav>
 
@@ -387,6 +343,8 @@
     </div>
 </div>
 
+{% include 'partials/toast_container.html' %}
+<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
@@ -668,268 +626,311 @@
 
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('seriesTable');
+        const nav = document.getElementById('plPagination');
         const resultCount = document.getElementById('resultCount');
         const alphabetFilter = document.getElementById('alphabetFilter');
         const publisherFilter = document.getElementById('publisherFilter');
+        const statusFilter = document.getElementById('statusFilter');
 
-        if (!searchInput || !table) return;
+        if (!searchInput || !table || !nav) return;
 
+        // Only the page on screen is in the DOM: the server filters, sorts
+        // and pages (core.database.get_pull_list_page). Everything below
+        // keeps the filter state, asks for a page, and swaps the rows in.
         const tbody = table.querySelector('tbody');
-        const rows = Array.from(tbody.querySelectorAll('tr'));
-        const totalCount = rows.length;
+        const totalSeries = parseInt(nav.dataset.totalSeries, 10) || 0;
+        let matchingTotal = parseInt(nav.dataset.total, 10) || 0;
 
-        // Current filter and sort state
-        let currentLetterFilter = 'all';
-        let currentPublisherFilter = '';
-        let currentStatusFilter = 'all';
-        let currentSort = { column: null, ascending: true };
+        const activeOf = (group, attr, fallback) => {
+            const btn = group && group.querySelector(`button.active[data-${attr}]`);
+            return btn ? btn.dataset[attr] : fallback;
+        };
+        let currentLetterFilter = activeOf(alphabetFilter, 'letter', 'all');
+        let currentStatusFilter = activeOf(statusFilter, 'status', 'all');
+        let currentSort = {
+            column: nav.dataset.sort || null,
+            ascending: nav.dataset.dir !== 'desc',
+        };
+
+        // ── Selection: a Set of series ids, so it survives page changes ──
+        // It only ever holds ids that match the current filters: a filter
+        // change intersects it with the new matching set (see applyFilters).
+        const selected = new Set();
         let lastCheckedRow = null;
 
-        // Pagination (same bar as /library). Filters mark rows with
-        // data-match; the pager alone decides which rows are displayed.
-        const pager = CLU.createClientPager({
-            items: () => Array.from(tbody.querySelectorAll('tr')),
-            nav: document.getElementById('plPagination'),
-            perPageSelect: document.getElementById('plPerPage'),
-            scrollTarget: table,
-            // Sort and filters go in the URL with the page, so a reload or
-            // Back restores page N of the same list (see restoreFromUrl).
-            urlState: () => ({
-                q: searchInput.value.trim(),
-                publisher: currentPublisherFilter,
-                letter: currentLetterFilter === 'all' ? '' : currentLetterFilter,
-                status: currentStatusFilter === 'all' ? '' : currentStatusFilter,
-                sort: currentSort.column || '',
-                dir: currentSort.column && !currentSort.ascending ? 'desc' : '',
-            }),
-            onRender: ({ total, start, end }) => {
-                if (!resultCount) return;
-                if (total === 0) {
-                    resultCount.textContent = `No series match (${totalCount} total)`;
-                } else if (total === totalCount) {
-                    resultCount.textContent = `Showing ${start + 1}–${end} of ${total} series`;
-                } else {
-                    resultCount.textContent =
-                        `Showing ${start + 1}–${end} of ${total} matching (${totalCount} total)`;
-                }
-                // A shift-click range is drawn on the page you can see; an
-                // anchor left on another page starts a new range instead.
-                if (lastCheckedRow && !pager.isOnPage(lastCheckedRow)) lastCheckedRow = null;
-                updateBulkUI();
-            },
-        });
-
-        // Build alphabet filter buttons
-        function buildAlphabetFilter() {
-            const availableLetters = new Set();
-            let hasNonAlpha = false;
-
-            rows.forEach(row => {
-                const name = row.dataset.name || '';
-                if (name.length > 0) {
-                    const firstChar = name.charAt(0).toUpperCase();
-                    if (firstChar >= 'A' && firstChar <= 'Z') {
-                        availableLetters.add(firstChar);
-                    } else {
-                        hasNonAlpha = true;
-                    }
-                }
-            });
-
-            let buttonsHtml = `<button type="button" class="btn btn-sm btn-outline-secondary active" data-letter="all">All</button>`;
-
-            if (hasNonAlpha) {
-                buttonsHtml += `<button type="button" class="btn btn-sm btn-outline-secondary" data-letter="#">#</button>`;
-            }
-
-            for (let i = 65; i <= 90; i++) {
-                const letter = String.fromCharCode(i);
-                if (availableLetters.has(letter)) {
-                    buttonsHtml += `<button type="button" class="btn btn-sm btn-outline-secondary" data-letter="${letter}">${letter}</button>`;
-                }
-            }
-
-            alphabetFilter.innerHTML = buttonsHtml;
-
-            // Add click handlers
-            alphabetFilter.querySelectorAll('button').forEach(btn => {
-                btn.addEventListener('click', function () {
-                    const clickedLetter = this.dataset.letter;
-
-                    // If clicking the same letter (not 'all'), reset to 'all'
-                    if (clickedLetter === currentLetterFilter && clickedLetter !== 'all') {
-                        currentLetterFilter = 'all';
-                        alphabetFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-                        alphabetFilter.querySelector('[data-letter="all"]').classList.add('active');
-                    } else {
-                        // Update active state
-                        alphabetFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-                        this.classList.add('active');
-                        currentLetterFilter = clickedLetter;
-                    }
-
-                    applyFilters();
-                });
-            });
-        }
-
-        // Combined filter function (search + alphabet + publisher)
-        function applyFilters(options) {
-            const resetPage = !(options && options.resetPage === false);
-            const searchTerm = searchInput.value.toLowerCase().trim();
-
-            rows.forEach(row => {
-                const name = row.dataset.name || '';
-                const publisher = row.dataset.publisher || '';
-
-                // Check search match (series name only)
-                const matchesSearch = !searchTerm || name.includes(searchTerm);
-
-                // Check publisher filter match
-                const matchesPublisher = !currentPublisherFilter || publisher === currentPublisherFilter;
-
-                // Check collection-status filter match
-                const statusColor = row.dataset.statusColor || '';
-                const matchesStatus = currentStatusFilter === 'all' || statusColor === currentStatusFilter;
-
-                // Check letter filter match
-                let matchesLetter = true;
-                if (currentLetterFilter !== 'all') {
-                    const firstChar = name.charAt(0).toUpperCase();
-                    if (currentLetterFilter === '#') {
-                        matchesLetter = !(firstChar >= 'A' && firstChar <= 'Z');
-                    } else {
-                        matchesLetter = firstChar === currentLetterFilter;
-                    }
-                }
-
-                const isVisible = matchesSearch && matchesPublisher && matchesLetter && matchesStatus;
-                row.dataset.match = isVisible ? '1' : '0';
-            });
-
-            // Deselect rows that filtering just hid. Rows that are merely on
-            // another page keep their selection.
-            rows.forEach(row => {
-                if (row.dataset.match === '0') {
-                    const cb = row.querySelector('.row-select');
-                    if (cb) cb.checked = false;
-                }
-            });
-            // Renders the page, the count and the bulk toolbar.
-            pager.refresh({ resetPage });
-        }
-
-        // ── Multi-select (checkboxes + SHIFT/CTRL) ──
         const bulkToolbar = document.getElementById('bulkToolbar');
         const bulkCount = document.getElementById('bulkCount');
+        const bulkOffPage = document.getElementById('bulkOffPage');
+        const selectMatchingBtn = document.getElementById('bulkSelectMatchingBtn');
         const selectAll = document.getElementById('selectAll');
 
-        // Select-all and the header checkbox cover every row that matches
-        // the filters, on every page. style.display only says "on this page".
-        function matchingRows() {
-            return pager.matching();
-        }
-
-        // Rows on the current page, in live DOM order (sorting re-appends
-        // rows, so the cached `rows` array is not the on-screen order).
         function pageRows() {
-            return Array.from(tbody.querySelectorAll('tr')).filter(row => pager.isOnPage(row));
+            return Array.from(tbody.querySelectorAll('tr[data-series-id]'));
         }
-
-        function selectedRows() {
-            return rows.filter(row => {
-                const cb = row.querySelector('.row-select');
-                return cb && cb.checked;
-            });
-        }
+        const rowId = row => parseInt(row.dataset.seriesId, 10);
 
         function updateBulkUI() {
-            const selected = selectedRows();
-            const n = selected.length;
+            const rows = pageRows();
+            const n = selected.size;
             if (bulkCount) bulkCount.textContent = n;
-            // Bulk actions reach every selected row; say how many are off-screen.
-            const offPage = selected.filter(r => !pager.isOnPage(r)).length;
-            const bulkOffPage = document.getElementById('bulkOffPage');
+            // Bulk actions reach every selected series; say how many are off-screen.
+            const onPage = rows.filter(r => selected.has(rowId(r))).length;
+            const offPage = n - onPage;
             if (bulkOffPage) bulkOffPage.textContent = offPage ? ` (${offPage} on other pages)` : '';
             if (bulkToolbar) bulkToolbar.classList.toggle('d-none', n === 0);
+            // The whole page is selected but more series match: offer them all.
+            if (selectMatchingBtn) {
+                const offer = rows.length > 0 && onPage === rows.length && n < matchingTotal;
+                selectMatchingBtn.classList.toggle('d-none', !offer);
+                selectMatchingBtn.textContent = `Select all ${matchingTotal} matching series`;
+            }
             if (selectAll) {
-                const scope = matchingRows();
-                const sel = scope.filter(r => r.querySelector('.row-select').checked);
-                selectAll.checked = scope.length > 0 && sel.length === scope.length;
-                selectAll.indeterminate = sel.length > 0 && sel.length < scope.length;
-                selectAll.title = `Select all ${scope.length} matching series`;
+                selectAll.checked = rows.length > 0 && onPage === rows.length;
+                selectAll.indeterminate = onPage > 0 && onPage < rows.length;
             }
         }
 
-        rows.forEach(row => {
-            const cb = row.querySelector('.row-select');
-            if (!cb) return;
-            cb.addEventListener('click', function (e) {
-                if (e.shiftKey && lastCheckedRow) {
-                    const vis = pageRows();
-                    const start = vis.indexOf(lastCheckedRow);
-                    const end = vis.indexOf(row);
-                    if (start !== -1 && end !== -1) {
-                        const [lo, hi] = start < end ? [start, end] : [end, start];
-                        for (let i = lo; i <= hi; i++) {
-                            vis[i].querySelector('.row-select').checked = cb.checked;
-                        }
-                    }
-                }
-                lastCheckedRow = row;
-                updateBulkUI();
+        function syncRowCheckboxes() {
+            pageRows().forEach(row => {
+                const cb = row.querySelector('.row-select');
+                if (cb) cb.checked = selected.has(rowId(row));
             });
+        }
+
+        function setRowSelected(row, on) {
+            const id = rowId(row);
+            if (isNaN(id)) return;
+            if (on) selected.add(id); else selected.delete(id);
+            const cb = row.querySelector('.row-select');
+            if (cb) cb.checked = on;
+        }
+
+        // Rows are replaced on every page, so listen on the tbody.
+        tbody.addEventListener('click', function (e) {
+            const cb = e.target.closest('.row-select');
+            if (!cb) return;
+            const row = cb.closest('tr');
+            if (e.shiftKey && lastCheckedRow) {
+                const rows = pageRows();
+                const start = rows.indexOf(lastCheckedRow);
+                const end = rows.indexOf(row);
+                if (start !== -1 && end !== -1) {
+                    const [lo, hi] = start < end ? [start, end] : [end, start];
+                    for (let i = lo; i <= hi; i++) setRowSelected(rows[i], cb.checked);
+                }
+            }
+            setRowSelected(row, cb.checked);
+            lastCheckedRow = row;
+            updateBulkUI();
         });
 
         if (selectAll) {
             selectAll.addEventListener('change', function () {
-                matchingRows().forEach(row => {
-                    row.querySelector('.row-select').checked = selectAll.checked;
-                });
+                pageRows().forEach(row => setRowSelected(row, selectAll.checked));
                 lastCheckedRow = null;
                 updateBulkUI();
+            });
+        }
+
+        function filterParams() {
+            return {
+                q: searchInput.value.trim(),
+                publisher: publisherFilter ? publisherFilter.value : '',
+                letter: currentLetterFilter === 'all' ? '' : currentLetterFilter,
+                status: currentStatusFilter === 'all' ? '' : currentStatusFilter,
+            };
+        }
+
+        function fetchMatchingIds() {
+            const p = new URLSearchParams();
+            const f = filterParams();
+            Object.keys(f).forEach(k => { if (f[k]) p.set(k, f[k]); });
+            return fetch(nav.dataset.idsEndpoint + '?' + p.toString(), { headers: { Accept: 'application/json' } })
+                .then(r => {
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    return r.json();
+                })
+                .then(data => {
+                    if (!data.success) throw new Error(data.error || 'Failed to load series ids');
+                    return data.ids || [];
+                });
+        }
+
+        if (selectMatchingBtn) {
+            selectMatchingBtn.addEventListener('click', function () {
+                selectMatchingBtn.disabled = true;
+                // A filter change while this is in flight makes its answer stale.
+                const seq = filterSeq;
+                fetchMatchingIds()
+                    .then(ids => {
+                        if (seq !== filterSeq) return;
+                        ids.forEach(id => selected.add(id));
+                        syncRowCheckboxes();
+                        updateBulkUI();
+                    })
+                    .catch(err => notifyError('Could not select every matching series', err))
+                    .finally(() => { selectMatchingBtn.disabled = false; });
             });
         }
 
         const bulkClearBtn = document.getElementById('bulkClearBtn');
         if (bulkClearBtn) {
             bulkClearBtn.addEventListener('click', function () {
-                rows.forEach(row => {
-                    const cb = row.querySelector('.row-select');
-                    if (cb) cb.checked = false;
-                });
+                selected.clear();
+                syncRowCheckboxes();
                 lastCheckedRow = null;
                 updateBulkUI();
             });
         }
 
-        const rowStatusClasses = {
-            complete: 'table-success', missing: 'table-danger',
-            upcoming: 'table-info', unmonitored: 'table-secondary',
-        };
+        function notifyError(message, err) {
+            const detail = err && err.message ? err.message : String(err || '');
+            if (window.CLU && CLU.showError) CLU.showError(message + (detail ? ': ' + detail : ''));
+            else console.error(message, err);
+        }
 
-        function applyMonitoredToRow(row, enabled) {
-            // Remove any existing status class, then set the new one.
-            Object.values(rowStatusClasses).forEach(c => row.classList.remove(c));
-            const badgeCell = row.children[5];  // Collection column
-            if (enabled) {
-                // Can't fully re-derive complete/missing/upcoming client-side; show neutral.
-                row.dataset.statusColor = 'unknown';
-                if (badgeCell) badgeCell.innerHTML = '<span class="text-muted">-</span>';
+        function renderCount(data) {
+            if (!resultCount) return;
+            const start = (data.page - 1) * data.per_page;
+            const end = start + pageRows().length;
+            if (data.total === 0) {
+                resultCount.textContent = `No series match (${totalSeries} total)`;
+            } else if (data.total === totalSeries) {
+                resultCount.textContent = `Showing ${start + 1}–${end} of ${data.total} series`;
             } else {
-                row.dataset.statusColor = 'unmonitored';
-                row.classList.add('table-secondary');
-                if (badgeCell) {
-                    badgeCell.innerHTML =
-                        '<span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>';
-                }
+                resultCount.textContent =
+                    `Showing ${start + 1}–${end} of ${data.total} matching (${totalSeries} total)`;
             }
         }
 
+        const pager = CLU.createServerPager({
+            endpoint: nav.dataset.endpoint,
+            nav,
+            perPageSelect: document.getElementById('plPerPage'),
+            defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 50,
+            scrollTarget: table,
+            initial: {
+                page: parseInt(nav.dataset.page, 10) || 1,
+                perPage: parseInt(nav.dataset.perPage, 10) || 50,
+                totalPages: parseInt(nav.dataset.totalPages, 10) || 1,
+            },
+            // Sort and filters go in the URL with the page, so a reload or
+            // Back renders page N of the same list.
+            state: () => Object.assign(filterParams(), {
+                sort: currentSort.column || '',
+                dir: currentSort.column && !currentSort.ascending ? 'desc' : '',
+            }),
+            onData: data => {
+                tbody.innerHTML = data.html;
+                matchingTotal = data.total;
+                // A shift-click anchor belonged to the rows just replaced.
+                lastCheckedRow = null;
+                syncRowCheckboxes();
+                renderCount(data);
+                updateBulkUI();
+            },
+            onError: err => notifyError('Could not load the pull list', err),
+        });
+
+        // A filter change: back to page 1, and drop selected series the new
+        // filters exclude, so a bulk action never reaches a row you cannot
+        // find. A page or sort change keeps the selection as it is.
+        let filterSeq = 0;
+        function applyFilters() {
+            const seq = ++filterSeq;
+            if (selected.size) {
+                fetchMatchingIds()
+                    .then(ids => {
+                        if (seq !== filterSeq) return;
+                        const keep = new Set(ids);
+                        Array.from(selected).forEach(id => { if (!keep.has(id)) selected.delete(id); });
+                        syncRowCheckboxes();
+                        updateBulkUI();
+                    })
+                    .catch(err => {
+                        // Unknown which selected series still match, so keep
+                        // none rather than risk a bulk action on a hidden one.
+                        if (seq !== filterSeq) return;
+                        selected.clear();
+                        syncRowCheckboxes();
+                        updateBulkUI();
+                        notifyError('Could not check the selection against the filters, so it was cleared', err);
+                    });
+            }
+            pager.load({ resetPage: true });
+        }
+
+        // Search is debounced: each keystroke would otherwise be a request.
+        let searchTimer = null;
+        searchInput.addEventListener('input', function () {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(applyFilters, 250);
+        });
+
+        if (publisherFilter) publisherFilter.addEventListener('change', applyFilters);
+
+        function setActive(group, btn) {
+            group.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        }
+
+        if (alphabetFilter) {
+            alphabetFilter.querySelectorAll('button[data-letter]').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    const clicked = this.dataset.letter;
+                    // Clicking the active letter again goes back to All.
+                    if (clicked === currentLetterFilter && clicked !== 'all') {
+                        currentLetterFilter = 'all';
+                        setActive(alphabetFilter, alphabetFilter.querySelector('[data-letter="all"]'));
+                    } else {
+                        currentLetterFilter = clicked;
+                        setActive(alphabetFilter, this);
+                    }
+                    applyFilters();
+                });
+            });
+        }
+
+        if (statusFilter) {
+            statusFilter.querySelectorAll('button[data-status]').forEach(btn => {
+                btn.addEventListener('click', function () {
+                    currentStatusFilter = this.dataset.status;
+                    setActive(statusFilter, this);
+                    applyFilters();
+                });
+            });
+        }
+
+        function paintSortIcons() {
+            document.querySelectorAll('.sortable').forEach(header => {
+                const icon = header.querySelector('i');
+                if (!icon) return;
+                if (header.dataset.sort === currentSort.column) {
+                    icon.className = currentSort.ascending
+                        ? 'bi bi-chevron-up text-primary ms-1'
+                        : 'bi bi-chevron-down text-primary ms-1';
+                } else {
+                    icon.className = 'bi bi-chevron-expand text-muted ms-1';
+                }
+            });
+        }
+
+        document.querySelectorAll('.sortable').forEach(header => {
+            header.addEventListener('click', function () {
+                const sortKey = this.dataset.sort;
+                // Same column again flips the direction.
+                const ascending = currentSort.column === sortKey ? !currentSort.ascending : true;
+                currentSort = { column: sortKey, ascending };
+                paintSortIcons();
+                pager.load({ resetPage: true });
+            });
+        });
+
+        // Bulk Monitored / Not monitored, then reload the page: the server
+        // recomputes each row's colour, which the browser cannot.
         function bulkSetMonitored(enabled, btn) {
-            const targets = selectedRows();
-            if (!targets.length) return;
-            const ids = targets.map(r => parseInt(r.dataset.seriesId, 10)).filter(n => !isNaN(n));
+            const ids = Array.from(selected);
+            if (!ids.length) return;
             const original = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -941,15 +942,12 @@
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) throw new Error(data.error || 'Update failed');
-                    targets.forEach(row => {
-                        applyMonitoredToRow(row, enabled);
-                        row.querySelector('.row-select').checked = false;
-                    });
+                    selected.clear();
                     lastCheckedRow = null;
-                    updateBulkUI();
+                    return pager.load();
                 })
-                .catch(err => alert('Failed to update monitoring: ' + err.message))
-                .finally(() => { btn.disabled = false; btn.innerHTML = original; });
+                .catch(err => notifyError('Failed to update monitoring', err))
+                .finally(() => { btn.disabled = false; btn.innerHTML = original; updateBulkUI(); });
         }
 
         const bulkMonitorBtn = document.getElementById('bulkMonitorBtn');
@@ -961,148 +959,7 @@
             bulkUnmonitorBtn.addEventListener('click', () => bulkSetMonitored(false, bulkUnmonitorBtn));
         }
 
-        // Build the alphabet filter on load
-        buildAlphabetFilter();
-
-        // Search/Filter functionality. Debounced: each pass re-filters every
-        // row and re-renders the page.
-        let searchTimer = null;
-        searchInput.addEventListener('input', function () {
-            clearTimeout(searchTimer);
-            searchTimer = setTimeout(applyFilters, 150);
-        });
-
-        // Publisher filter functionality
-        if (publisherFilter) {
-            publisherFilter.addEventListener('change', function () {
-                currentPublisherFilter = this.value;
-                applyFilters();
-            });
-        }
-
-        // Collection-status filter (chips double as the color key)
-        const statusFilter = document.getElementById('statusFilter');
-        if (statusFilter) {
-            statusFilter.querySelectorAll('button[data-status]').forEach(btn => {
-                btn.addEventListener('click', function () {
-                    currentStatusFilter = this.dataset.status;
-                    statusFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-                    this.classList.add('active');
-                    applyFilters();
-                });
-            });
-        }
-
-        // Sorting functionality
-
-        const SORT_KEYS = ['name', 'status', 'publisher', 'issues', 'collection', 'synced'];
-
-        // Order the rows; the caller decides whether to re-render.
-        function sortRows(sortKey, ascending) {
-            currentSort = { column: sortKey, ascending };
-
-            // Update header icons
-            document.querySelectorAll('.sortable i').forEach(icon => {
-                icon.className = 'bi bi-chevron-expand text-muted ms-1';
-            });
-            const header = document.querySelector(`.sortable[data-sort="${sortKey}"]`);
-            const icon = header && header.querySelector('i');
-            if (icon) {
-                icon.className = ascending
-                    ? 'bi bi-chevron-up text-primary ms-1'
-                    : 'bi bi-chevron-down text-primary ms-1';
-            }
-
-            const sortedRows = rows.slice().sort((a, b) => {
-                let aVal, bVal;
-
-                switch (sortKey) {
-                    case 'name':
-                        aVal = a.dataset.name || '';
-                        bVal = b.dataset.name || '';
-                        break;
-                    case 'status':
-                        aVal = a.dataset.status || '';
-                        bVal = b.dataset.status || '';
-                        break;
-                    case 'publisher':
-                        aVal = a.dataset.publisher || '';
-                        bVal = b.dataset.publisher || '';
-                        break;
-                    case 'issues':
-                        aVal = parseInt(a.dataset.issues) || 0;
-                        bVal = parseInt(b.dataset.issues) || 0;
-                        return ascending ? aVal - bVal : bVal - aVal;
-                    case 'collection':
-                        aVal = parseInt(a.dataset.missing) || 0;
-                        bVal = parseInt(b.dataset.missing) || 0;
-                        return ascending ? aVal - bVal : bVal - aVal;
-                    case 'synced':
-                        aVal = a.dataset.synced || '';
-                        bVal = b.dataset.synced || '';
-                        break;
-                    default:
-                        return 0;
-                }
-
-                const comparison = aVal.localeCompare(bVal);
-                return ascending ? comparison : -comparison;
-            });
-
-            sortedRows.forEach(row => tbody.appendChild(row));
-        }
-
-        document.querySelectorAll('.sortable').forEach(header => {
-            header.addEventListener('click', function () {
-                const sortKey = this.dataset.sort;
-                // Toggle sort direction if clicking same column
-                const ascending = currentSort.column === sortKey ? !currentSort.ascending : true;
-                sortRows(sortKey, ascending);
-                // Show page 1 of the new order
-                pager.refresh({ resetPage: true });
-            });
-        });
-
-        // Put back the sort and filters a page number was taken from, then
-        // draw that page. A value the page no longer offers falls back to
-        // its default rather than filtering on something invisible.
-        function restoreFromUrl() {
-            const params = new URLSearchParams(window.location.search);
-
-            searchInput.value = params.get('q') || '';
-
-            const publisher = params.get('publisher') || '';
-            if (publisherFilter && Array.from(publisherFilter.options).some(o => o.value === publisher)) {
-                publisherFilter.value = publisher;
-                currentPublisherFilter = publisher;
-            }
-
-            const letter = params.get('letter') || '';
-            const letterBtn = Array.from(alphabetFilter.querySelectorAll('button'))
-                .find(b => b.dataset.letter === letter);
-            if (letterBtn) {
-                alphabetFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-                letterBtn.classList.add('active');
-                currentLetterFilter = letter;
-            }
-
-            const status = params.get('status') || '';
-            const statusChip = statusFilter && Array.from(statusFilter.querySelectorAll('button[data-status]'))
-                .find(b => b.dataset.status === status);
-            if (statusChip) {
-                statusFilter.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-                statusChip.classList.add('active');
-                currentStatusFilter = status;
-            }
-
-            const sortKey = params.get('sort') || '';
-            if (SORT_KEYS.includes(sortKey)) sortRows(sortKey, params.get('dir') !== 'desc');
-
-            // First render keeps the page from the URL, as on /library
-            applyFilters({ resetPage: false });
-        }
-
-        restoreFromUrl();
+        updateBulkUI();
     });
 </script>
 {% endblock %}

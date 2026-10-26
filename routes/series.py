@@ -477,51 +477,120 @@ def wanted():
     )
 
 
+# The "Per page" select in templates/pull_list.html offers exactly these.
+PULL_LIST_PAGE_SIZES = (24, 50, 100, 250)
+PULL_LIST_DEFAULT_PER_PAGE = 50
+_PULL_LIST_SORT_KEYS = ("name", "status", "publisher", "issues", "collection", "synced")
+
+
+def _pull_list_args():
+    """The Pull List's filters, sort and page from the query string.
+
+    Anything the page does not offer falls back to its default rather than
+    filtering on something invisible.
+    """
+    args = request.args
+    try:
+        publisher_id = int(args.get("publisher") or "")
+    except ValueError:
+        publisher_id = None
+    sort = args.get("sort") or ""
+    if sort not in _PULL_LIST_SORT_KEYS:
+        sort = ""
+    status = args.get("status") or ""
+    try:
+        page = max(1, int(args.get("page", 1)))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        per_page = int(args.get("per_page", PULL_LIST_DEFAULT_PER_PAGE))
+    except (TypeError, ValueError):
+        per_page = PULL_LIST_DEFAULT_PER_PAGE
+    if per_page not in PULL_LIST_PAGE_SIZES:
+        per_page = PULL_LIST_DEFAULT_PER_PAGE
+    return {
+        "q": (args.get("q") or "").strip(),
+        "publisher_id": publisher_id,
+        "letter": (args.get("letter") or "").strip().upper(),
+        "status": status,
+        "sort": sort,
+        "descending": bool(sort) and args.get("dir") == "desc",
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+def _pull_list_filters(a):
+    return {k: a[k] for k in ("q", "publisher_id", "letter", "status")}
+
+
 @series_bp.route("/pull-list")
 def pull_list():
     """
-    Pull List page - shows all tracked series in the database.
+    Pull List page - every tracked series, one page at a time.
+
+    Filters, sort and page come from the query string and run in SQL
+    (core.database.get_pull_list_page); later changes fetch
+    /api/pull-list/rows, rendered from the same row partial.
     """
-    from core.database import (
-        get_all_mapped_series,
-        get_all_publishers,
-        get_pull_list_collection_counts,
-    )
+    from core.database import get_pull_list_facets, get_pull_list_page
 
-    series_list = get_all_mapped_series()
-    publishers = get_all_publishers()
-
+    a = _pull_list_args()
+    facets = get_pull_list_facets()
+    # A letter or publisher the bar no longer offers (a bookmark from before
+    # the last such series was unmapped) would filter on something the page
+    # shows as "All".
+    if a["letter"] and a["letter"] not in facets["letters"]:
+        a["letter"] = ""
+    if a["publisher_id"] not in {p["id"] for p in facets["publishers"]}:
+        a["publisher_id"] = None
     today = datetime.now().strftime("%Y-%m-%d")
-    counts = get_pull_list_collection_counts(today)
-
-    for series in series_list:
-        c = counts.get(series["id"], {})
-        missing_past = c.get("missing_past", 0)
-        missing_future = c.get("missing_future", 0)
-        series["missing_count"] = missing_past + missing_future
-        series["missing_future"] = missing_future
-
-        # Grey overrides everything: a series the user isn't monitoring is not
-        # searched for new/missing issues (monitored NULL on legacy rows => on).
-        monitored = series.get("monitored")
-        if monitored is not None and not monitored:
-            series["row_status"] = "unmonitored"
-        elif not c.get("total") or (not c.get("scanned") and not c.get("found")):
-            # No issue data, or never matched against the collection yet.
-            series["row_status"] = "unknown"
-        elif missing_past + missing_future == 0:
-            series["row_status"] = "complete"
-        elif missing_past > 0:
-            series["row_status"] = "missing"
-        else:
-            series["row_status"] = "upcoming"
+    result = get_pull_list_page(today, **a)
 
     return render_template(
         "pull_list.html",
-        series_list=series_list,
-        total_series=len(series_list),
-        publishers=publishers,
+        series_list=result["rows"],
+        pager=result,
+        total_series=facets["total"],
+        publishers=facets["publishers"],
+        letters=facets["letters"],
+        filters=a,
+        page_sizes=PULL_LIST_PAGE_SIZES,
+        default_per_page=PULL_LIST_DEFAULT_PER_PAGE,
     )
+
+
+@series_bp.route("/api/pull-list/rows")
+def pull_list_rows():
+    """One page of Pull List rows as HTML, for a filter/sort/page change."""
+    from core.database import get_pull_list_page
+
+    a = _pull_list_args()
+    today = datetime.now().strftime("%Y-%m-%d")
+    result = get_pull_list_page(today, **a)
+    html = render_template("partials/pull_list_rows.html", series_list=result["rows"])
+    return jsonify({
+        "success": True,
+        "html": html,
+        "total": result["total"],
+        "page": result["page"],
+        "per_page": result["per_page"],
+        "total_pages": result["total_pages"],
+    })
+
+
+@series_bp.route("/api/pull-list/ids")
+def pull_list_ids():
+    """Every series id matching the filters, on every page: backs "Select
+    all N matching" and keeps a selection inside a new filter."""
+    from core.database import get_pull_list_matching_ids
+
+    a = _pull_list_args()
+    today = datetime.now().strftime("%Y-%m-%d")
+    return jsonify({
+        "success": True,
+        "ids": get_pull_list_matching_ids(today, **_pull_list_filters(a)),
+    })
 
 
 _PULL_LIST_EXPORT_FIELDS = (

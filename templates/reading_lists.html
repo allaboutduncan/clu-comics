@@ -57,12 +57,12 @@ owner, so everything shows exactly as before. #}
                 <span>ComicVine Import</span>
             </button>
             <button class="btn btn-outline-secondary d-flex align-items-center gap-2" id="toggleSelectModeBtn"
-                onclick="toggleSelectMode()" {% if not lists %}disabled{% endif %}>
+                onclick="toggleSelectMode()" {% if not total_lists %}disabled{% endif %}>
                 <i class="bi bi-check2-square"></i>
                 <span>Select</span>
             </button>
             <button class="btn btn-outline-danger d-flex align-items-center gap-2" onclick="confirmDeleteAll()" {% if
-                not lists %}disabled{% endif %}>
+                not total_lists %}disabled{% endif %}>
                 <i class="bi bi-trash3"></i>
                 <span>Delete All</span>
             </button>
@@ -89,31 +89,29 @@ owner, so everything shows exactly as before. #}
     {% endwith %}
 
     <!-- Sort Bar -->
-    {% if lists %}
+    {% if total_lists %}
     <div class="sort-bar mb-3">
         <div class="d-flex align-items-center gap-2 flex-wrap">
             <span class="text-muted me-2"><i class="bi bi-sort-down"></i> Sort:</span>
-            <button class="sort-btn active" data-sort="date-desc">
+            <button class="sort-btn {{ 'active' if active_sort == 'date-desc' }}" data-sort="date-desc">
                 <i class="bi bi-calendar3 me-1"></i>Newest First
             </button>
-            <button class="sort-btn" data-sort="date-asc">
+            <button class="sort-btn {{ 'active' if active_sort == 'date-asc' }}" data-sort="date-asc">
                 <i class="bi bi-calendar3 me-1"></i>Oldest First
             </button>
-            <button class="sort-btn" data-sort="name-asc">
+            <button class="sort-btn {{ 'active' if active_sort == 'name-asc' }}" data-sort="name-asc">
                 <i class="bi bi-sort-alpha-down me-1"></i>Name (A-Z)
             </button>
-            <button class="sort-btn" data-sort="name-desc">
+            <button class="sort-btn {{ 'active' if active_sort == 'name-desc' }}" data-sort="name-desc">
                 <i class="bi bi-sort-alpha-up me-1"></i>Name (Z-A)
             </button>
             <div class="input-group input-group-sm flex-nowrap ms-auto" style="width: auto;">
                 <label class="input-group-text bg-body border-0" for="rlPerPage">Per page</label>
                 <select class="form-select border-0 shadow-none bg-body text-body" id="rlPerPage" style="width: auto;">
                     {# Multiples of 4 (and 5): a full last row of cards #}
-                    <option value="20">20</option>
-                    <option value="40" selected>40</option>
-                    <option value="80">80</option>
-                    <option value="160">160</option>
-                    <option value="300">300</option>
+                    {% for n in page_sizes %}
+                    <option value="{{ n }}" {% if n == grid.per_page %}selected{% endif %}>{{ n }}</option>
+                    {% endfor %}
                 </select>
             </div>
         </div>
@@ -121,15 +119,14 @@ owner, so everything shows exactly as before. #}
     {% endif %}
 
     <!-- Tag Filter -->
-    {% if lists %}
-    {% set all_tags = lists|map(attribute='tags')|sum(start=[])|unique|sort %}
+    {% if total_lists %}
     {% if all_tags|length > 0 %}
     <div class="tag-filter-bar mb-4">
         <div class="d-flex align-items-center gap-2 flex-wrap">
             <span class="text-muted me-2"><i class="bi bi-funnel"></i> Filter:</span>
-            <button class="tag-filter-btn active" data-tag="all">All</button>
+            <button class="tag-filter-btn {{ 'active' if not active_tags }}" data-tag="all">All</button>
             {% for tag in all_tags %}
-            <button class="tag-filter-btn" data-tag="{{ tag }}">{{ tag }}</button>
+            <button class="tag-filter-btn {{ 'active' if tag in active_tags }}" data-tag="{{ tag }}">{{ tag }}</button>
             {% endfor %}
         </div>
     </div>
@@ -137,108 +134,16 @@ owner, so everything shows exactly as before. #}
     {% endif %}
 
     <!-- Reading Lists Grid -->
-    {% if lists %}
-    <div class="reading-list-grid">
-        {% for list in lists %}
-        <div class="reading-list-card stagger-load" data-tags='{{ list.tags|tojson|safe }}'
-            data-name="{{ list.name|lower }}" data-created="{{ list.created_at or '' }}"
-            onclick="window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
-
-            <!-- Background / Stack -->
-            <div class="card-stack-container">
-                {% if _can_manage %}
-                <div class="card-select-checkbox" onclick="event.stopPropagation();">
-                    <input type="checkbox" class="form-check-input list-select-cb" data-list-id="{{ list.id }}"
-                        onchange="onListCheckboxChange(this)">
-                </div>
-                {% endif %}
-                {# Outside the _can_manage gate on purpose: bookmarking a list is
-                personal data, so Readers get it too (the endpoint sits under
-                /api/favorites, which core/auth.py allows Readers to write). #}
-                {# Single-quoted onclick: tojson escapes ' but not ", so a list
-                name containing a quote would break a double-quoted attribute. #}
-                <button type="button" class="want-to-read-button want-to-read-toggle" data-list-id="{{ list.id }}"
-                    onclick='event.stopPropagation(); toggleReadingListWantToRead({{ list.id }}, {{ list.name|tojson }}, this)'
-                    title="Add to Want to Read" aria-label="Add to Want to Read">
-                    <i class="bi bi-bookmark-plus"></i>
-                </button>
-                {% if list.covers and list.covers|length > 0 %}
-                {% for cover in list.covers %}
-                <div class="card-stack-item"
-                    style="background-image: url('/api/thumbnail?path={{ cover|urlencode }}');"></div>
-                {% endfor %}
-                {% else %}
-                <!-- Fallback -->
-                <div class="card-stack-item">
-                    <div class="no-image-placeholder">
-                        <i class="bi bi-journal-album placeholder-icon"></i>
-                    </div>
-                </div>
-                {% endif %}
-                {% if list.entry_count > 0 and list.read_count == list.entry_count %}
-                <div class="completion-badge" title="Completed!">
-                    <i class="bi bi-check-circle-fill"></i>
-                </div>
-                {% endif %}
-            </div>
-
-            <!-- Content -->
-            <div class="card-content text-primary">
-                <h3 class="card-title-lg text-truncate" {% if _can_manage
-                    %}onclick="event.stopPropagation(); editTitle({{ list.id }}, this)" title="Click to edit" {% endif
-                    %}>
-                    {% if list.source %}<i class="bi bi-cloud-download me-1"
-                        title="Imported from {{ list.source }}"></i>{% else %}<i class="bi bi-pencil me-1"
-                        title="User-created"></i>{% endif %}
-                    {{ list.name }}
-                </h3>
-
-                <div class="card-meta">
-                    <span class="card-count" title="Read {{ list.read_count }} of {{ list.entry_count }} issues">
-                        <i class="bi bi-collection-fill me-1"></i>{{ list.read_count }}/{{ list.entry_count }}
-                    </span>
-                    {% if list.tags %}
-                    {# One line, always: fitCardTags() in reading_list.js hides
-                    what does not fit behind the "+N" chip. #}
-                    <div class="card-tags" title="{{ list.tags|join(', ') }}">
-                        {% for tag in list.tags %}
-                        <span class="tag-badge" data-tag="{{ tag }}">{{ tag }}</span>
-                        {% endfor %}
-                        <span class="tag-badge tag-more" hidden></span>
-                    </div>
-                    {% endif %}
-                </div>
-
-                <div class="card-actions">
-                    <button class="btn btn-primary btn-sm flex-grow-1"
-                        onclick="event.stopPropagation(); window.location.href='{{ url_for('reading_lists.view_list', list_id=list.id) }}'">
-                        View Details
-                    </button>
-                    {% if _can_manage %}
-                    <button class="btn btn-secondary btn-sm"
-                        onclick='event.stopPropagation(); openTagsModal({{ list.id }}, {{ list.tags|tojson|safe }})'
-                        title="Manage Tags">
-                        <i class="bi bi-tags"></i>
-                    </button>
-                    <button class="btn btn-danger btn-sm"
-                        onclick="event.stopPropagation(); deleteReadingList({{ list.id }})">
-                        <i class="bi bi-trash"></i>
-                    </button>
-                    {% endif %}
-                </div>
-
-                {% if list.entry_count > 0 %}
-                {% set percent = (list.read_count / list.entry_count * 100)|round %}
-                <div class="progress-bar-container">
-                    <div class="progress-bar-fill {% if percent == 100 %}progress-complete{% elif percent >= 66 %}progress-high{% elif percent >= 33 %}progress-medium{% else %}progress-low{% endif %}"
-                        style="width: {{ percent }}%"></div>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-        {% endfor %}
+    {% if total_lists %}
+    <div class="reading-list-grid" data-total-lists="{{ total_lists }}">
+        {% include "partials/reading_list_cards.html" %}
     </div>
-    <nav id="rlPagination" class="mt-4" aria-label="Reading list pagination" style="display:none;">
+    <nav id="rlPagination" class="mt-4" aria-label="Reading list pagination" style="display:none;"
+         data-endpoint="{{ url_for('reading_lists.grid_page') }}"
+         data-ids-endpoint="{{ url_for('reading_lists.grid_ids') }}"
+         data-page="{{ grid.page }}" data-per-page="{{ grid.per_page }}"
+         data-default-per-page="{{ default_per_page }}"
+         data-total-pages="{{ grid.total_pages }}" data-total="{{ grid.total }}">
         <ul class="pagination justify-content-center"></ul>
     </nav>
     {% else %}

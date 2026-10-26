@@ -6,8 +6,7 @@ from io import BytesIO
 
 class TestReadingListIndex:
 
-    @patch("routes.reading_lists.get_all_reading_lists", return_value=[])
-    def test_index_page(self, mock_get, client):
+    def test_index_page(self, client):
         resp = client.get("/reading-lists")
         assert resp.status_code == 200
 
@@ -16,6 +15,64 @@ class TestReadingListIndex:
         resp = client.get("/reading-lists/999")
         # Should redirect when list not found
         assert resp.status_code == 302
+
+
+class TestReadingListGridPaging:
+    """/reading-lists renders one page of cards, tag-filtered and sorted on
+    the server; /api/reading-lists/page and /ids serve later pages and
+    "Select All"."""
+
+    @staticmethod
+    def _seed(n=45):
+        from core.database import create_reading_list, update_reading_list_tags
+        ids = []
+        for i in range(n):
+            list_id = create_reading_list(f"List {i:02d}")
+            update_reading_list_tags(list_id, ["even"] if i % 2 == 0 else ["odd"])
+            ids.append(list_id)
+        return ids
+
+    def test_first_page_only(self, client):
+        self._seed()
+        html = client.get("/reading-lists").get_data(as_text=True)
+        assert html.count('class="reading-list-card') == 40
+        assert 'data-total-pages="2"' in html
+        assert 'data-total-lists="45"' in html
+
+    def test_tag_and_sort_from_the_query_string(self, client):
+        self._seed()
+        html = client.get("/reading-lists?tag=odd&sort=name-asc").get_data(as_text=True)
+        assert html.count('class="reading-list-card') == 22
+        assert 'class="tag-filter-btn active" data-tag="odd"' in html
+        assert 'class="sort-btn active" data-sort="name-asc"' in html
+        assert html.index("List 01") < html.index("List 03")
+
+    def test_unknown_tag_and_bad_params_fall_back(self, client):
+        self._seed(3)
+        resp = client.get("/reading-lists?tag=gone&per_page=13&page=x")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert html.count('class="reading-list-card') == 3
+        assert 'data-per-page="40"' in html
+
+    def test_page_endpoint(self, client):
+        self._seed()
+        data = client.get("/api/reading-lists/page?page=2").get_json()
+        assert data["success"] is True
+        assert (data["page"], data["total"], data["total_pages"]) == (2, 45, 2)
+        assert data["html"].count('class="reading-list-card') == 5
+
+    def test_page_endpoint_no_match(self, client):
+        self._seed(2)
+        data = client.get("/api/reading-lists/page?tag=even&tag=odd").get_json()
+        assert data["total"] == 0
+        assert "reading-list-no-match" in data["html"]
+
+    def test_ids_endpoint_spans_pages(self, client):
+        ids = self._seed()
+        data = client.get("/api/reading-lists/ids?tag=even").get_json()
+        assert data["success"] is True
+        assert data["ids"] == sorted(ids[0::2])
 
 
 class TestUploadList:

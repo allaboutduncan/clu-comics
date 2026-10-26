@@ -1,0 +1,75 @@
+{# One page of Pull List rows. Rendered by /pull-list for the first page and by
+/api/pull-list/rows for every later one, so the two cannot drift. #}
+{% for series in series_list %}
+<tr data-series-id="{{ series.id }}"
+    data-status-color="{{ series.row_status }}"
+    class="{{ {'complete':'table-success','missing':'table-danger','upcoming':'table-info','unmonitored':'table-secondary'}.get(series.row_status, '') }}">
+    <td class="ps-4">
+        <input class="form-check-input row-select" type="checkbox" aria-label="Select {{ series.name }}">
+    </td>
+    <td>
+        <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
+            class="text-decoration-none fw-bold">
+            {{ series.name }}
+            {% if series.volume %}
+            <span class="text-muted fw-normal">Vol. {{ series.volume }}</span>
+            {% endif %}
+        </a>
+    </td>
+    <td>
+        {% if series.status %}
+        <small class="text-muted">{{ series.status }}</small>
+        {% else %}
+        <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if series.publisher_name %}
+        <span class="badge bg-secondary">{{ series.publisher_name }}</span>
+        {% else %}
+        <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td class="text-center">
+        {% if series.issue_count %}
+        <span class="badge bg-info">{{ series.issue_count }}</span>
+        {% else %}
+        <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if series.row_status == 'unmonitored' %}
+        <span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>
+        {% elif series.row_status == 'complete' %}
+        <span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Complete</span>
+        {% elif series.row_status == 'missing' %}
+        <span class="badge bg-danger"><i class="bi bi-exclamation-circle me-1"></i>{{ series.missing_count }} missing</span>
+        {% elif series.row_status == 'upcoming' %}
+        <span class="badge bg-info"><i class="bi bi-calendar-event me-1"></i>{{ series.missing_count }} upcoming</span>
+        {% else %}
+        <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td>
+        {% if series.last_synced_at %}
+        <small class="text-muted">
+            <i class="bi bi-clock me-1"></i>{{ series.last_synced_at[:16] }}
+        </small>
+        {% else %}
+        <small class="text-muted">Never</small>
+        {% endif %}
+    </td>
+    <td class="text-end pe-4">
+        <div class="btn-group" role="group">
+            <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
+                class="btn btn-sm btn-outline-primary" title="View Series">
+                <i class="bi bi-eye"></i>
+            </a>
+        </div>
+    </td>
+</tr>
+{% else %}
+<tr class="pl-no-match">
+    <td colspan="8" class="text-center text-muted py-4">No series match these filters.</td>
+</tr>
+{% endfor %}

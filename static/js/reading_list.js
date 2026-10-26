@@ -4,10 +4,14 @@ console.log('reading_list.js loaded');
 // Tag Filter System
 // ==========================================
 
+// Seeded from the buttons the server rendered active (the URL's ?tag=).
 let activeTagFilters = new Set();
 
 function initTagFilters() {
     document.querySelectorAll('.tag-filter-btn').forEach(btn => {
+        if (btn.classList.contains('active') && btn.dataset.tag !== 'all') {
+            activeTagFilters.add(btn.dataset.tag);
+        }
         btn.addEventListener('click', () => toggleTagFilter(btn));
     });
 }
@@ -42,30 +46,43 @@ function toggleTagFilter(btn) {
     applyTagFilters();
 }
 
-function applyTagFilters(options) {
-    const resetPage = !(options && options.resetPage === false);
-    const cards = document.querySelectorAll('.reading-list-card');
-
-    cards.forEach(card => {
-        const cardTags = JSON.parse(card.dataset.tags || '[]');
-        // Show if card has ALL of the active filter tags (AND logic). The
-        // pager decides what is displayed -- see CLU.createClientPager.
-        const matches = activeTagFilters.size === 0 ||
-            [...activeTagFilters].every(t => cardTags.includes(t));
-        card.dataset.match = matches ? '1' : '0';
-        // A list the filter just hid must not stay in a bulk delete.
-        const cb = card.querySelector('.list-select-cb');
-        if (!matches && cb && cb.checked) {
-            cb.checked = false;
-            onListCheckboxChange(cb);
-        }
-    });
-    if (readingListPager) readingListPager.refresh({ resetPage });
+// The server filters (a list must carry ALL active tags), sorts and pages;
+// this asks for page 1 of the new filter. A selected list the new filter
+// excludes is dropped, so a bulk delete never reaches a card you cannot see.
+let tagFilterSeq = 0;
+function applyTagFilters() {
+    if (!readingListPager) return;
+    const seq = ++tagFilterSeq;
+    if (selectedListIds.size) {
+        fetchMatchingListIds()
+            .then(ids => {
+                if (seq !== tagFilterSeq) return;
+                const keep = new Set(ids.map(String));
+                Array.from(selectedListIds).forEach(id => {
+                    if (!keep.has(id)) selectedListIds.delete(id);
+                });
+                syncListCheckboxes();
+                updateBulkBar();
+            })
+            .catch(err => {
+                // Unknown which selected lists still match, so keep none
+                // rather than risk deleting one the filter hides.
+                console.error('Error updating selection:', err);
+                if (seq !== tagFilterSeq) return;
+                selectedListIds.clear();
+                syncListCheckboxes();
+                updateBulkBar();
+                showToast('Could not check the selection against the filter, so it was cleared', 'warning');
+            });
+    }
+    readingListPager.load({ resetPage: true });
 }
 
 // ==========================================
 // Pagination (same bar as /library)
 // ==========================================
+// Only the page on screen is in the DOM: /api/reading-lists/page renders
+// it from the same partial as the first page.
 
 let readingListPager = null;
 const DEFAULT_LIST_SORT = 'date-desc';
@@ -75,56 +92,67 @@ function activeListSort() {
     return btn ? btn.dataset.sort : DEFAULT_LIST_SORT;
 }
 
-// Put back the tag filter and sort a page number was taken from, so a
-// reload or Back shows page N of the same list. Tags and sorts the page no
-// longer offers are ignored.
-function restoreListStateFromUrl() {
-    const params = new URLSearchParams(window.location.search);
+function listFilterState() {
+    return {
+        tag: [...activeTagFilters],
+        sort: activeListSort() === DEFAULT_LIST_SORT ? '' : activeListSort(),
+    };
+}
 
-    const tagButtons = Array.from(document.querySelectorAll('.tag-filter-btn'));
-    params.getAll('tag').forEach(tag => {
-        const btn = tagButtons.find(b => b.dataset.tag === tag && tag !== 'all');
-        if (btn) {
-            activeTagFilters.add(tag);
-            btn.classList.add('active');
-        }
-    });
-    if (activeTagFilters.size) {
-        tagButtons.filter(b => b.dataset.tag === 'all').forEach(b => b.classList.remove('active'));
-    }
+function fetchMatchingListIds() {
+    const nav = document.getElementById('rlPagination');
+    const p = new URLSearchParams();
+    activeTagFilters.forEach(t => p.append('tag', t));
+    return fetch(nav.dataset.idsEndpoint + '?' + p.toString(), { headers: { Accept: 'application/json' } })
+        .then(r => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
+        .then(data => {
+            if (!data.success) throw new Error(data.error || 'Failed to load list ids');
+            return data.ids || [];
+        });
+}
 
-    const sort = params.get('sort');
-    const sortBtn = sort && Array.from(document.querySelectorAll('.sort-btn'))
-        .find(b => b.dataset.sort === sort);
-    if (sortBtn) applySort(sortBtn, { render: false });
-
-    // First render keeps the page from the URL, as on /library
-    applyTagFilters({ resetPage: false });
+// Everything a freshly rendered card needs that its markup cannot carry.
+function initListCards() {
+    syncListCheckboxes();
+    observeCardTags();
+    loadWantToReadState();
+    updateBulkBar();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Before the pager: its state() reads the active tags, and it writes
+    // them to the URL as soon as it is created.
+    initTagFilters();
     const grid = document.querySelector('.reading-list-grid');
     const nav = document.getElementById('rlPagination');
-    if (!grid || !nav || !window.CLU || !CLU.createClientPager) return;
-    readingListPager = CLU.createClientPager({
-        items: () => Array.from(grid.querySelectorAll('.reading-list-card')),
+    if (!grid || !nav || !window.CLU || !CLU.createServerPager) return;
+    readingListPager = CLU.createServerPager({
+        endpoint: nav.dataset.endpoint,
         nav,
         perPageSelect: document.getElementById('rlPerPage'),
         // The grid is 4 cards wide on a typical screen; 50 left a gap.
-        defaultPerPage: 40,
+        defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 40,
         scrollTarget: document.querySelector('.sort-bar') || grid,
-        urlState: () => ({
-            tag: [...activeTagFilters],
-            sort: activeListSort() === DEFAULT_LIST_SORT ? '' : activeListSort(),
-        }),
-        // The bulk bar counts selected lists on other pages.
-        onRender: () => updateBulkBar(),
+        initial: {
+            page: parseInt(nav.dataset.page, 10) || 1,
+            perPage: parseInt(nav.dataset.perPage, 10) || 40,
+            totalPages: parseInt(nav.dataset.totalPages, 10) || 1,
+        },
+        state: listFilterState,
+        onData: data => {
+            grid.innerHTML = data.html;
+            initListCards();
+        },
+        onError: err => {
+            console.error('Error loading reading lists:', err);
+            showToast('Could not load reading lists', 'error');
+        },
     });
-    restoreListStateFromUrl();
 });
 
-// Initialize tag filters on page load
-document.addEventListener('DOMContentLoaded', initTagFilters);
 
 // ==========================================
 // Card tag row: one line, overflow as "+N"
@@ -158,18 +186,24 @@ function fitCardTags(box) {
     if (overflowing() && tags[0]) tags[0].classList.add('tag-squeeze');
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+let cardTagObserver = null;
+
+// Fit every card's tag row. Called on load and after each page swap.
+function observeCardTags() {
     const boxes = document.querySelectorAll('.reading-list-card .card-tags');
+    if (cardTagObserver) cardTagObserver.disconnect();
     if (!boxes.length) return;
     if ('ResizeObserver' in window) {
-        // Fires on first layout, on window resize, and when a tag filter
-        // shows a card again -- every case where the room changes.
-        const ro = new ResizeObserver(entries => entries.forEach(e => fitCardTags(e.target)));
-        boxes.forEach(b => ro.observe(b));
+        // Fires on first layout and on window resize -- every case where
+        // the room changes.
+        cardTagObserver = new ResizeObserver(entries => entries.forEach(e => fitCardTags(e.target)));
+        boxes.forEach(b => cardTagObserver.observe(b));
     } else {
         boxes.forEach(fitCardTags);
     }
-});
+}
+
+document.addEventListener('DOMContentLoaded', observeCardTags);
 
 // ==========================================
 // Sort System
@@ -181,34 +215,11 @@ function initSortButtons() {
     });
 }
 
-function applySort(btn, options) {
+function applySort(btn) {
     document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-
-    const grid = document.querySelector('.reading-list-grid');
-    if (!grid) return;
-
-    const cards = Array.from(grid.querySelectorAll('.reading-list-card'));
-    const mode = btn.dataset.sort;
-
-    cards.sort((a, b) => {
-        switch (mode) {
-            case 'name-asc':
-                return (a.dataset.name || '').localeCompare(b.dataset.name || '');
-            case 'name-desc':
-                return (b.dataset.name || '').localeCompare(a.dataset.name || '');
-            case 'date-asc':
-                return (a.dataset.created || '').localeCompare(b.dataset.created || '');
-            case 'date-desc':
-            default:
-                return (b.dataset.created || '').localeCompare(a.dataset.created || '');
-        }
-    });
-
-    cards.forEach(card => grid.appendChild(card));
-    if (readingListPager && !(options && options.render === false)) {
-        readingListPager.refresh({ resetPage: true });
-    }
+    // The server sorts; show page 1 of the new order.
+    if (readingListPager) readingListPager.load({ resetPage: true });
 }
 
 document.addEventListener('DOMContentLoaded', initSortButtons);
@@ -734,39 +745,46 @@ function updateBulkBar() {
     }
 }
 
-// Selected lists the pager has put on another page.
+// Selected lists that are not on the page on screen.
 function selectedListsOffPage() {
-    if (!readingListPager) return 0;
-    return Array.from(document.querySelectorAll('.reading-list-card'))
-        .filter(card => {
-            const cb = card.querySelector('.list-select-cb');
-            return cb && cb.checked && !readingListPager.isOnPage(card);
-        }).length;
+    const onPage = new Set(Array.from(document.querySelectorAll('.list-select-cb'))
+        .map(cb => cb.dataset.listId));
+    return Array.from(selectedListIds).filter(id => !onPage.has(id)).length;
+}
+
+// Tick the cards of this page that are in the selection (a page swap
+// renders them unticked).
+function syncListCheckboxes() {
+    document.querySelectorAll('.list-select-cb').forEach(cb => {
+        const on = selectedListIds.has(cb.dataset.listId);
+        cb.checked = on;
+        cb.closest('.reading-list-card')?.classList.toggle('selected', on);
+    });
 }
 
 // "Select All" means every list matching the tag filter, on every page --
-// style.display only says which page a card is on.
+// only this page is in the DOM, so the ids come from the server.
 function selectAllVisibleLists() {
-    const cards = readingListPager
-        ? readingListPager.matching()
-        : Array.from(document.querySelectorAll('.reading-list-card'))
-            .filter(card => card.dataset.match !== '0');
-    cards.forEach(card => {
-        const cb = card.querySelector('.list-select-cb');
-        if (cb && !cb.checked) {
-            cb.checked = true;
-            onListCheckboxChange(cb);
-        }
-    });
+    if (!readingListPager) return;
+    // A tag change while this is in flight makes its answer stale.
+    const seq = tagFilterSeq;
+    fetchMatchingListIds()
+        .then(ids => {
+            if (seq !== tagFilterSeq) return;
+            ids.forEach(id => selectedListIds.add(String(id)));
+            syncListCheckboxes();
+            updateBulkBar();
+        })
+        .catch(err => {
+            console.error('Error selecting lists:', err);
+            showToast('Could not select every matching list', 'error');
+        });
 }
 
 function clearListSelection() {
-    document.querySelectorAll('.list-select-cb').forEach(cb => {
-        if (cb.checked) {
-            cb.checked = false;
-            onListCheckboxChange(cb);
-        }
-    });
+    selectedListIds.clear();
+    syncListCheckboxes();
+    updateBulkBar();
 }
 
 function bulkDeleteSelected() {
@@ -803,7 +821,9 @@ function bulkDeleteSelected() {
 }
 
 function confirmDeleteAll() {
-    const total = document.querySelectorAll('.reading-list-card').length;
+    // Every list, not just this page's cards.
+    const grid = document.querySelector('.reading-list-grid');
+    const total = grid ? (parseInt(grid.dataset.totalLists, 10) || 0) : 0;
     if (total === 0) {
         showToast('No reading lists to delete', 'warning');
         return;

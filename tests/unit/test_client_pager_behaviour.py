@@ -1,6 +1,7 @@
-"""Runs static/js/clu-pager.js under node against a minimal fake DOM, so the
-pager's behaviour (not just its wiring) is pinned. Skipped where node is not
-installed; tests/unit/test_client_pagination_wiring.py covers the wiring."""
+"""Runs CLU.createServerPager (static/js/clu-pager.js) under node with a stub
+fetch, so the pager's behaviour (not just its wiring) is pinned. Skipped
+where node is not installed; tests/unit/test_client_pagination_wiring.py
+covers the wiring."""
 
 import json
 import os
@@ -22,9 +23,12 @@ const scenario = process.argv[3];
 
 let replaceCalls = 0;
 const timers = [];
+const requests = [];   // {url, resolve, signal}
 const sandbox = {
   URLSearchParams,
+  AbortController,
   Date,
+  console,
   setTimeout: (fn, ms) => { timers.push(fn); return timers.length; },
   location: { pathname: '/pull-list', search: '?page=3&q=bat', hash: '' },
   history: {
@@ -34,38 +38,90 @@ const sandbox = {
       sandbox.location.search = q === -1 ? '' : url.slice(q);
     },
   },
+  fetch(url, opts) {
+    return new Promise((resolve, reject) => {
+      const signal = opts && opts.signal;
+      if (signal) signal.addEventListener('abort', () => {
+        const e = new Error('aborted'); e.name = 'AbortError'; reject(e);
+      });
+      requests.push({ url, signal, resolve: body => resolve({ ok: true, json: () => Promise.resolve(body) }) });
+    });
+  },
 };
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox);
 
-const items = Array.from({ length: 10 }, (_, i) => ({
-  id: i, dataset: { match: i % 2 ? '0' : '1' }, style: { display: '' },
-}));
 let q = 'bat';
-const pager = sandbox.CLU.createClientPager({
-  items: () => items, nav: null, defaultPerPage: 2,
-  urlState: () => ({ q, tag: [] }),
+const seen = [];
+const pager = sandbox.CLU.createServerPager({
+  endpoint: '/api/pull-list/rows', nav: null, defaultPerPage: 50,
+  initial: { page: 3, perPage: 50, totalPages: 9 },
+  state: () => ({ q, tag: [] }),
+  onData: data => seen.push(data.html),
 });
-pager.refresh();
+const answer = (page, html) => ({ success: true, html, total: 500, page, per_page: 50, total_pages: 9 });
+const tick = () => new Promise(r => setImmediate(r));
 const out = {};
 
-if (scenario === 'scope') {
-  out.page_shown = items.filter(i => i.style.display === '').map(i => i.id);
-  out.matching = pager.matching().map(i => i.id);
-  out.on_page = items.filter(i => pager.isOnPage(i)).map(i => i.id);
-}
-if (scenario === 'writes') {
-  out.after_first = replaceCalls;          // URL already says page=3, q=bat
-  for (let n = 0; n < 50; n++) pager.refresh();
-  out.after_unchanged = replaceCalls;
-  for (let n = 0; n < 50; n++) { q = 'bat' + n; pager.refresh(); }
-  out.during_burst = replaceCalls;
-  timers.splice(0).forEach(fn => fn());
-  out.after_flush = replaceCalls;
-  out.search = sandbox.location.search;
-}
-console.log(JSON.stringify(out));
+(async () => {
+  if (scenario === 'writes') {
+    // The server-rendered page already matches the URL: nothing to write.
+    for (let n = 0; n < 50; n++) {
+      pager.load();
+      requests[requests.length - 1].resolve(answer(3, 'p3'));
+      await tick();
+    }
+    out.after_unchanged = replaceCalls;
+    for (let n = 0; n < 50; n++) {
+      q = 'bat' + n;
+      pager.load({ resetPage: true });
+      requests[requests.length - 1].resolve(answer(1, 'p1'));
+      await tick();
+    }
+    out.during_burst = replaceCalls;
+    timers.splice(0).forEach(fn => fn());
+    out.after_flush = replaceCalls;
+    out.search = sandbox.location.search;
+  }
+  if (scenario === 'abort') {
+    // A slow answer to an older load must not land after a newer one.
+    q = 'b';  pager.load({ resetPage: true });
+    q = 'ba'; pager.load({ resetPage: true });
+    out.first_aborted = requests[0].signal.aborted;
+    requests[1].resolve(answer(1, 'new'));
+    await tick();
+    requests[0].resolve(answer(1, 'old'));
+    await tick();
+    out.seen = seen;
+    out.urls = requests.map(r => r.url);
+  }
+  if (scenario === 'foreign') {
+    sandbox.location.search = '?q=bat&page=3&automap_op=x';
+    pager.load({ resetPage: true });
+    requests[requests.length - 1].resolve(answer(1, 'p1'));
+    await tick(); await tick();
+    timers.splice(0).forEach(fn => fn());
+    out.search = sandbox.location.search;
+  }
+  if (scenario === 'failed') {
+    pager.goTo(5);
+    requests[0].resolve({ success: false, error: 'boom' });
+    await tick(); await tick();
+    out.page = pager.page();
+    out.seen = seen;
+  }
+  if (scenario === 'clamp') {
+    pager.goTo(9);
+    requests[0].resolve(answer(4, 'last'));   // fewer pages than asked for
+    await tick(); await tick();
+    timers.splice(0).forEach(fn => fn());
+    out.page = pager.page();
+    out.search = sandbox.location.search;
+    out.query = pager.query();
+  }
+  console.log(JSON.stringify(out));
+})();
 """
 
 
@@ -80,19 +136,34 @@ def _run(scenario, tmp_path):
     return json.loads(res.stdout)
 
 
-def test_matching_spans_pages_while_display_shows_one(tmp_path):
-    out = _run("scope", tmp_path)
-    # Even ids match; 2 per page; page 3 of [0,2,4,6,8] is [8]
-    assert out["page_shown"] == [8]
-    assert out["on_page"] == [8]
-    assert out["matching"] == [0, 2, 4, 6, 8]
-
-
 def test_url_written_only_when_it_changes_and_coalesced(tmp_path):
     out = _run("writes", tmp_path)
-    assert out["after_first"] == 0, "the URL already held this state"
-    assert out["after_unchanged"] == 0
+    assert out["after_unchanged"] == 0, "the URL already held this state"
     # A burst of 50 changes writes at most once now plus one trailing write
     assert out["during_burst"] <= 1
     assert out["after_flush"] <= 2
-    assert "q=bat49" in out["search"]
+    assert out["search"] == "?q=bat49", "page 1 and the default per_page stay out of the URL"
+
+
+def test_a_newer_load_aborts_an_older_one(tmp_path):
+    out = _run("abort", tmp_path)
+    assert out["first_aborted"] is True
+    assert out["seen"] == ["new"]
+    assert out["urls"] == ["/api/pull-list/rows?q=b", "/api/pull-list/rows?q=ba"]
+
+
+def test_parameters_the_pager_does_not_own_are_kept(tmp_path):
+    out = _run("foreign", tmp_path)
+    assert out["search"] == "?automap_op=x&q=bat"
+
+
+def test_a_failed_page_change_keeps_the_page_on_screen(tmp_path):
+    out = _run("failed", tmp_path)
+    assert out["page"] == 3 and out["seen"] == []
+
+
+def test_follows_the_page_the_server_clamped_to(tmp_path):
+    out = _run("clamp", tmp_path)
+    assert out["page"] == 4
+    assert out["search"] == "?q=bat&page=4"
+    assert out["query"] == "q=bat"
