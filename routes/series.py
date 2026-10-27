@@ -480,6 +480,8 @@ def wanted():
 # The "Per page" select in templates/pull_list.html offers exactly these.
 PULL_LIST_PAGE_SIZES = (24, 50, 100, 250)
 PULL_LIST_DEFAULT_PER_PAGE = 50
+# The size last picked in the select; used when the URL does not say.
+PULL_LIST_PER_PAGE_COOKIE = "clu_per_page_pull_list"
 _PULL_LIST_SORT_KEYS = ("name", "status", "publisher", "issues", "collection", "synced")
 
 
@@ -503,7 +505,9 @@ def _pull_list_args():
     except (TypeError, ValueError):
         page = 1
     try:
-        per_page = int(args.get("per_page", PULL_LIST_DEFAULT_PER_PAGE))
+        per_page = int(args.get("per_page")
+                       or request.cookies.get(PULL_LIST_PER_PAGE_COOKIE)
+                       or PULL_LIST_DEFAULT_PER_PAGE)
     except (TypeError, ValueError):
         per_page = PULL_LIST_DEFAULT_PER_PAGE
     if per_page not in PULL_LIST_PAGE_SIZES:
@@ -557,6 +561,7 @@ def pull_list():
         filters=a,
         page_sizes=PULL_LIST_PAGE_SIZES,
         default_per_page=PULL_LIST_DEFAULT_PER_PAGE,
+        per_page_cookie=PULL_LIST_PER_PAGE_COOKIE,
     )
 
 

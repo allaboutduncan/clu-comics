@@ -48,6 +48,19 @@ const sandbox = {
     });
   },
 };
+// A cookie jar shaped like document.cookie: writes set one cookie and
+// remember its attributes, reads list name=value pairs.
+const jar = {};
+const written = [];
+sandbox.document = {
+  get cookie() { return Object.keys(jar).map(k => k + '=' + jar[k]).join('; '); },
+  set cookie(v) {
+    written.push(v);
+    const pair = v.split(';')[0];
+    const i = pair.indexOf('=');
+    jar[pair.slice(0, i)] = pair.slice(i + 1);
+  },
+};
 sandbox.window = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(src, sandbox);
@@ -133,6 +146,25 @@ const out = {};
     out.page_after = pager.page();
     out.search_after = sandbox.location.search;
   }
+  if (scenario === 'remember') {
+    let onChange = null;
+    const select = { value: '', addEventListener: (_e, fn) => { onChange = fn; } };
+    sandbox.CLU.createServerPager({
+      endpoint: '/api/pull-list/rows', nav: null, defaultPerPage: 50,
+      perPageSelect: select, rememberAs: 'clu_per_page_pull_list',
+      initial: { page: 3, perPage: 50, totalPages: 9 },
+      state: () => ({ q }), onData: () => {},
+    });
+    out.before = sandbox.CLU.rememberedPerPage('clu_per_page_pull_list');
+    select.value = '100';
+    onChange();
+    out.after = sandbox.CLU.rememberedPerPage('clu_per_page_pull_list');
+    out.written = written.slice();
+    out.url = requests[requests.length - 1].url;
+    out.other = sandbox.CLU.rememberedPerPage('clu_per_page_reading_lists');
+    jar.clu_per_page_library = 'junk';
+    out.junk = sandbox.CLU.rememberedPerPage('clu_per_page_library');
+  }
   if (scenario === 'clamp') {
     pager.goTo(9);
     requests[0].resolve(answer(4, 'last'));   // fewer pages than asked for
@@ -196,3 +228,15 @@ def test_a_failed_filter_change_rolls_back_to_the_rows_on_screen(tmp_path):
     assert out["page"] == 3 and out["search"] == "?page=3&q=bat"
     assert out["errors"] == ["boom"] and out["seen"] == []
     assert out["page_after"] == 1 and out["search_after"] == "?q=x"
+
+
+def test_a_picked_page_size_is_remembered_in_a_cookie(tmp_path):
+    out = _run("remember", tmp_path)
+    assert out["before"] is None
+    assert out["after"] == 100
+    assert out["written"] == [
+        "clu_per_page_pull_list=100; path=/; max-age=31536000; SameSite=Lax"
+    ]
+    assert out["url"] == "/api/pull-list/rows?q=bat&per_page=100"
+    assert out["other"] is None, "each page keeps its own size"
+    assert out["junk"] is None

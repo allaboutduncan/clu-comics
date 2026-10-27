@@ -135,6 +135,7 @@ document.addEventListener('DOMContentLoaded', () => {
         perPageSelect: document.getElementById('rlPerPage'),
         // The grid is 4 cards wide on a typical screen; 50 left a gap.
         defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 40,
+        rememberAs: nav.dataset.perPageCookie,
         scrollTarget: document.querySelector('.sort-bar') || grid,
         initial: {
             page: parseInt(nav.dataset.page, 10) || 1,

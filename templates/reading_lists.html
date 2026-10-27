@@ -143,6 +143,7 @@ owner, so everything shows exactly as before. #}
          data-ids-endpoint="{{ url_for('reading_lists.grid_ids') }}"
          data-page="{{ grid.page }}" data-per-page="{{ grid.per_page }}"
          data-default-per-page="{{ default_per_page }}"
+         data-per-page-cookie="{{ per_page_cookie }}"
          data-total-pages="{{ grid.total_pages }}" data-total="{{ grid.total }}">
         <ul class="pagination justify-content-center"></ul>
     </nav>

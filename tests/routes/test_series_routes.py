@@ -1065,6 +1065,23 @@ class TestPullListPaging:
         assert html.count("data-series-id=") == 2
         assert 'data-per-page="50"' in html
 
+    def test_page_size_falls_back_to_the_remembered_one(self, app, client_with_data):
+        TestPullListPage._register_slug_global(app)
+        self._seed()
+        client_with_data.set_cookie("clu_per_page_pull_list", "24")
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        assert html.count("data-series-id=") == 24
+        assert '<option value="24" selected>' in html
+        assert 'data-per-page-cookie="clu_per_page_pull_list"' in html
+        data = client_with_data.get("/api/pull-list/rows?page=2").get_json()
+        assert (data["per_page"], data["page"]) == (24, 2)
+        # The URL wins over the cookie, and a junk cookie is ignored.
+        html = client_with_data.get("/pull-list?per_page=100").get_data(as_text=True)
+        assert 'data-per-page="100"' in html
+        client_with_data.set_cookie("clu_per_page_pull_list", "7")
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        assert 'data-per-page="50"' in html
+
     def test_rows_endpoint(self, app, client_with_data):
         TestPullListPage._register_slug_global(app)
         self._seed()

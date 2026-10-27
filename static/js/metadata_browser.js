@@ -27,6 +27,10 @@
         currentLevel: 'publisher',
     };
 
+    // The size last picked in the select; used when the URL does not say.
+    const PER_PAGE_COOKIE = 'clu_per_page_library';
+    const PAGE_SIZES = [24, 50, 100, 250];
+
     let browseAbort = null;
     let searchTimer = null;
 
@@ -38,7 +42,9 @@
         state.sort = p.get('sort') || 'alpha';
         state.search = p.get('search') || '';
         state.page = parseInt(p.get('page') || '1', 10) || 1;
-        state.perPage = parseInt(p.get('per_page') || '50', 10) || 50;
+        const perPage = parseInt(p.get('per_page') || '', 10) ||
+            (window.CLU && CLU.rememberedPerPage ? CLU.rememberedPerPage(PER_PAGE_COOKIE) : null);
+        state.perPage = PAGE_SIZES.includes(perPage) ? perPage : 50;
         state.publisher = p.get('publisher') || '';
         state.series = p.get('series') || '';
         const yf = p.get('year_from'); const yt = p.get('year_to');
@@ -472,7 +478,9 @@
         });
         const per = document.getElementById('mbPerPage');
         if (per) per.addEventListener('change', () => {
-            state.perPage = parseInt(per.value, 10) || 50; state.page = 1; reload();
+            state.perPage = parseInt(per.value, 10) || 50; state.page = 1;
+            if (window.CLU && CLU.rememberPerPage) CLU.rememberPerPage(PER_PAGE_COOKIE, state.perPage);
+            reload();
         });
         const refresh = document.getElementById('mbRefreshBtn');
         if (refresh) refresh.onclick = () => reload();

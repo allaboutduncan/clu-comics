@@ -218,6 +218,7 @@
          data-ids-endpoint="{{ url_for('series.pull_list_ids') }}"
          data-page="{{ pager.page }}" data-per-page="{{ pager.per_page }}"
          data-default-per-page="{{ default_per_page }}"
+         data-per-page-cookie="{{ per_page_cookie }}"
          data-total-pages="{{ pager.total_pages }}" data-total="{{ pager.total }}"
          data-total-series="{{ total_series }}"
          data-sort="{{ filters.sort }}" data-dir="{{ 'desc' if filters.descending else '' }}">
@@ -810,6 +811,7 @@
             nav,
             perPageSelect: document.getElementById('plPerPage'),
             defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 50,
+            rememberAs: nav.dataset.perPageCookie,
             scrollTarget: table,
             initial: {
                 page: parseInt(nav.dataset.page, 10) || 1,

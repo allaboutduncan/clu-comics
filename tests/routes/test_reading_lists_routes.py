@@ -55,6 +55,19 @@ class TestReadingListGridPaging:
         assert html.count('class="reading-list-card') == 3
         assert 'data-per-page="40"' in html
 
+    def test_page_size_falls_back_to_the_remembered_one(self, client):
+        self._seed()
+        client.set_cookie("clu_per_page_reading_lists", "20")
+        html = client.get("/reading-lists").get_data(as_text=True)
+        assert html.count('class="reading-list-card') == 20
+        assert 'data-per-page-cookie="clu_per_page_reading_lists"' in html
+        assert client.get("/api/reading-lists/page").get_json()["per_page"] == 20
+        html = client.get("/reading-lists?per_page=80").get_data(as_text=True)
+        assert 'data-per-page="80"' in html
+        client.set_cookie("clu_per_page_reading_lists", "abc")
+        html = client.get("/reading-lists").get_data(as_text=True)
+        assert 'data-per-page="40"' in html
+
     def test_page_endpoint(self, client):
         self._seed()
         data = client.get("/api/reading-lists/page?page=2").get_json()

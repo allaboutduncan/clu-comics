@@ -88,6 +88,8 @@ _import_semaphore = threading.Semaphore(5)
 # templates/reading_lists.html offers exactly these.
 READING_LIST_PAGE_SIZES = (20, 40, 80, 160, 300)
 READING_LIST_DEFAULT_PER_PAGE = 40
+# The size last picked in the select; used when the URL does not say.
+READING_LIST_PER_PAGE_COOKIE = 'clu_per_page_reading_lists'
 
 
 def _reading_list_grid_args():
@@ -101,7 +103,9 @@ def _reading_list_grid_args():
     except (TypeError, ValueError):
         page = 1
     try:
-        per_page = int(args.get('per_page', READING_LIST_DEFAULT_PER_PAGE))
+        per_page = int(args.get('per_page')
+                       or request.cookies.get(READING_LIST_PER_PAGE_COOKIE)
+                       or READING_LIST_DEFAULT_PER_PAGE)
     except (TypeError, ValueError):
         per_page = READING_LIST_DEFAULT_PER_PAGE
     if per_page not in READING_LIST_PAGE_SIZES:
@@ -134,6 +138,7 @@ def index():
         active_sort=sort,
         page_sizes=READING_LIST_PAGE_SIZES,
         default_per_page=READING_LIST_DEFAULT_PER_PAGE,
+        per_page_cookie=READING_LIST_PER_PAGE_COOKIE,
     )
 
 
