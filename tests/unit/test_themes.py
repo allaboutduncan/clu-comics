@@ -257,15 +257,15 @@ class TestCatppuccin:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_theme_label_is_the_display_name(self):
+    def test_theme_display_name(self):
         """The account page's "Use site default (...)" button used to
         title-case the id: "Catppuccin-Frappe"."""
-        from core.themes import theme_label
-        assert theme_label("catppuccin-frappe") == "Catppuccin Frappé"
-        assert theme_label("gruvbox-dark") == "Gruvbox"
-        assert theme_label("cyborg") == "Cyborg"
-        assert theme_label("default") == "Default (Bootstrap)"
-        assert theme_label(None) == "Default (Bootstrap)"
+        from core.themes import theme_display_name
+        assert theme_display_name("catppuccin-frappe") == "Catppuccin Frappé"
+        assert theme_display_name("gruvbox-dark") == "Gruvbox"
+        assert theme_display_name("cyborg") == "Cyborg"
+        assert theme_display_name("default") == "Default (Bootstrap)"
+        assert theme_display_name(None) == "Default (Bootstrap)"
 
     def test_offered_with_latte_as_the_light_one(self):
         labels = dict(BOOTSWATCH_THEMES)
@@ -338,19 +338,114 @@ class TestCatppuccin:
             for colour in tool.ROLES.values():
                 assert tool.role_colour(p, colour, True) == p[colour], (flavour, colour)
 
-    def test_year_in_review_uses_the_generated_colours(self):
-        """wrapped.py keeps its own copy of each theme's colours; this one
-        must follow the generator, not a hand edit."""
+    @staticmethod
+    def _rules():
+        static = os.path.join(os.path.dirname(TEMPLATE_DIR), "static", "css", "themes")
+        with open(os.path.join(static, "catppuccin.css"), encoding="utf-8") as fh:
+            return fh.read()
+
+    @staticmethod
+    def _palette_css(flavour):
+        """The flavour's generated --ctp-* colours as {name: '#hex'}, with
+        var(--ctp-x) aliases resolved. Read from the stylesheet the browser
+        gets, not from the generator, so the checks below are independent."""
+        import re
+        static = os.path.join(os.path.dirname(TEMPLATE_DIR), "static", "css", "themes")
+        with open(os.path.join(static, f"catppuccin-{flavour}.css"), encoding="utf-8") as fh:
+            text = fh.read()
+        raw = dict(re.findall(r"--(ctp-[a-z0-9-]+):\s*(#[0-9a-f]{6}|var\(--ctp-[a-z0-9-]+\))", text))
+        def resolve(name):
+            value = raw[name]
+            return resolve(value[6:-1]) if value.startswith("var(") else value
+        return {name[4:]: resolve(name) for name in raw if not name.endswith("-rgb")}
+
+    def test_year_in_review_uses_the_stylesheet_colours(self):
+        """wrapped.py draws the year-in-review images with each theme's
+        colours; Catppuccin's must be the ones its stylesheet uses."""
         import wrapped
-        tool = self._tool()
         for flavour in self.FLAVOURS:
-            p, dark = tool.PALETTE[flavour], tool.DARK[flavour]
+            css = self._palette_css(flavour)
             colours = wrapped.THEME_COLORS[f"catppuccin-{flavour}"]
-            for key, colour in (("primary", "mauve"), ("success", "green"), ("info", "teal"),
-                                ("warning", "yellow"), ("danger", "red")):
-                assert colours[key] == tool.role_colour(p, colour, dark), (flavour, key)
-            assert colours["bg"] == p["base"] and colours["text"] == p["text"]
-            assert colours["text_muted"] == p[tool.muted_colour(p)]
+            for key in ("primary", "secondary", "success", "info", "warning", "danger"):
+                assert colours[key] == css[key], (flavour, key)
+            assert colours["bg"] == css["base"], flavour
+            # bg_secondary is the raised surface: crust on Latte, not surface0
+            assert colours["bg_secondary"] == css["raised"], flavour
+            assert colours["text"] == css["text"], flavour
+            assert colours["text_muted"] == css["muted"], flavour
+            assert colours["is_dark"] == (flavour != "latte"), flavour
+
+    def test_button_states_read(self):
+        """Every state of the neutral buttons carries its text at 4.5:1, not
+        just the button at rest (hover once sat on surface2, active on
+        overlay0, both below 4.5:1)."""
+        tool = self._tool()
+        rules = self._rules()
+        hover = round(tool.NEUTRAL_HOVER_SHARE * 100)
+        active = round(tool.NEUTRAL_ACTIVE_SHARE * 100)
+        for fill in ("secondary", "surface0"):
+            assert f"color-mix(in srgb, var(--ctp-{fill}) {hover}%, var(--ctp-base))" in rules
+            assert f"color-mix(in srgb, var(--ctp-{fill}) {active}%, var(--ctp-base))" in rules
+        for flavour in self.FLAVOURS:
+            css = self._palette_css(flavour)
+            text = css["text"]
+            fills = {
+                "secondary rest": css["secondary"],
+                "light rest": css["surface0"],
+                "dark rest": css["crust"],
+                "dark hover": css["mantle"],
+                "dark active": css["surface0"],
+            }
+            for name, share in (("hover", tool.NEUTRAL_HOVER_SHARE), ("active", tool.NEUTRAL_ACTIVE_SHARE)):
+                fills[f"secondary {name}"] = tool.mix(css["secondary"], css["base"], share)
+                fills[f"light {name}"] = tool.mix(css["surface0"], css["base"], share)
+            # Outline secondary/dark fill on hover (60%) and active (the fill itself)
+            fills["outline hover"] = tool.mix(css["secondary"], css["base"], 0.6)
+            fills["outline active"] = css["secondary"]
+            for state, fill in fills.items():
+                assert tool.contrast(text, fill) >= 4.5, (flavour, state, fill)
+
+    # Surfaces that are dark on every theme: the reader's header (black at
+    # 80% over the black reader) and the bulk-action bars' gradient stops.
+    ALWAYS_DARK = ("#000000", "#1a1a2e", "#16213e", "#1a1d21", "#0d0f12")
+
+    def test_light_and_dark_stay_light_and_dark_on_every_flavour(self):
+        """Latte once mapped .text-light to its dark text and --bs-dark to a
+        light grey, so the reader's controls and the bulk bars vanished."""
+        tool = self._tool()
+        rules = self._rules()
+        assert ".text-light     { color: var(--ctp-on-dark) !important; }" in rules
+        assert "--bs-dark: var(--ctp-dark-fill);" in rules
+        assert "--bs-black-rgb: var(--ctp-dark-fill-rgb);" in rules
+        assert "--bs-white-rgb: var(--ctp-on-dark-rgb);" in rules
+        for flavour in self.FLAVOURS:
+            css = self._palette_css(flavour)
+            for surface in self.ALWAYS_DARK:
+                assert tool.contrast(css["on-dark"], surface) >= 4.5, (flavour, surface)
+            # .sw-bulk-action-bar: white on var(--bs-dark); .text-bg-dark and
+            # outline-light's hover: on-dark and dark-fill against each other.
+            assert tool.contrast("#ffffff", css["dark-fill"]) >= 4.5, flavour
+            assert tool.contrast(css["on-dark"], css["dark-fill"]) >= 4.5, flavour
+
+    def test_no_per_page_patches_for_dark_bars(self):
+        """Dark bars read light from the variables above; a per-page rule is
+        how the source-wall and reading-list bars were missed."""
+        assert "bulk-action-bar" not in self._rules()
+
+    def test_close_button_on_a_fill_is_drawn_in_base(self):
+        """A white X on a pastel fill was about 2:1. Drawn in base, at full
+        opacity, it reads as the fill's text does (test above)."""
+        rules = self._rules()
+        assert "--bs-btn-close-bg: var(--ctp-close-on-fill);" in rules
+        assert "--bs-btn-close-filter: none;" in rules
+        assert "--bs-btn-close-opacity: 1;" in rules
+        for flavour in self.FLAVOURS:
+            static = os.path.join(os.path.dirname(TEMPLATE_DIR), "static", "css", "themes")
+            with open(os.path.join(static, f"catppuccin-{flavour}.css"), encoding="utf-8") as fh:
+                text = fh.read()
+            base = self._palette_css(flavour)["base"]
+            close = next(line for line in text.splitlines() if "--ctp-close-on-fill:" in line)
+            assert f"fill='%23{base[1:]}'" in close, flavour
 
     def test_rules_never_branch_on_dark_mode(self):
         """The navbar is data-bs-theme="dark" on every theme, so a rule keyed

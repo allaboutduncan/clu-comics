@@ -32,9 +32,11 @@
     --bs-warning: var(--ctp-warning);     --bs-warning-rgb: var(--ctp-warning-rgb);
     --bs-danger: var(--ctp-danger);       --bs-danger-rgb: var(--ctp-danger-rgb);
     --bs-light: var(--ctp-raised);        --bs-light-rgb: var(--ctp-raised-rgb);
-    --bs-dark: var(--ctp-crust);          --bs-dark-rgb: var(--ctp-crust-rgb);
-    --bs-white-rgb: var(--ctp-mantle-rgb);   /* .bg-white is a pane, see Surfaces */
-    --bs-black-rgb: var(--ctp-crust-rgb);
+    /* Dark and light stay dark and light on Latte too: templates pair
+       var(--bs-dark) and .bg-dark with white text, on every theme. */
+    --bs-dark: var(--ctp-dark-fill);      --bs-dark-rgb: var(--ctp-dark-fill-rgb);
+    --bs-white-rgb: var(--ctp-on-dark-rgb);  /* .bg-white has its own rule, see Surfaces */
+    --bs-black-rgb: var(--ctp-dark-fill-rgb);
 
     /* Text on the *-bg-subtle washes below (alerts, subtle badges); the
        generator checks each against its wash. */
@@ -111,7 +113,9 @@ body {
    the ones it hardcodes, or that mean something else on a dark page. */
 .text-muted     { color: var(--ctp-muted) !important; }
 .text-secondary { color: rgba(var(--ctp-subtext1-rgb), var(--bs-text-opacity, 1)) !important; }
-.text-light     { color: var(--ctp-text) !important; }
+/* Light text for surfaces that are dark on every theme (the reader's chrome,
+   the bulk-action bars); on a dark flavour that is just the text colour. */
+.text-light     { color: var(--ctp-on-dark) !important; }
 .text-white     { color: var(--ctp-white-text) !important; }
 .text-body      { color: var(--ctp-text) !important; }
 /* "text-dark" is for text on a light fill; light/white fills are panes here. */
@@ -135,12 +139,40 @@ body {
     --bs-card-color: var(--ctp-base);
     --bs-heading-color: var(--ctp-base);   /* an <h5> count inside the card */
 }
-.text-bg-secondary, .text-bg-light, .text-bg-dark,
-.badge.bg-secondary, .badge.bg-light, .badge.bg-dark,
-.bg-secondary.text-white, .bg-dark.text-white {
+/* A child's own .text-white inside the fill ("card-header bg-primary
+   text-white" > icon) would otherwise be the light text colour on a pastel.
+   Not in the navbar: it is "bg-primary" but painted crust (Components). */
+.bg-primary:not(.navbar) .text-white, .bg-success:not(.navbar) .text-white,
+.bg-info:not(.navbar) .text-white, .bg-warning:not(.navbar) .text-white,
+.bg-danger:not(.navbar) .text-white,
+.text-bg-primary .text-white, .text-bg-success .text-white, .text-bg-info .text-white,
+.text-bg-warning .text-white, .text-bg-danger .text-white {
+    color: var(--ctp-base) !important;
+}
+/* The close X on a fill: base too. Bootstrap draws it black at half opacity,
+   and .btn-close-white (or the dark flavours' data-bs-theme) turns it white,
+   which on a pastel fill is about 2:1. Full opacity, as base text has. */
+.bg-primary:not(.navbar) .btn-close, .bg-success:not(.navbar) .btn-close,
+.bg-info:not(.navbar) .btn-close, .bg-warning:not(.navbar) .btn-close,
+.bg-danger:not(.navbar) .btn-close,
+.text-bg-primary .btn-close, .text-bg-success .btn-close, .text-bg-info .btn-close,
+.text-bg-warning .btn-close, .text-bg-danger .btn-close {
+    --bs-btn-close-bg: var(--ctp-close-on-fill);
+    --bs-btn-close-filter: none;
+    --bs-btn-close-opacity: 1;
+    --bs-btn-close-hover-opacity: 1;
+}
+.text-bg-secondary, .text-bg-light,
+.badge.bg-secondary, .badge.bg-light,
+.bg-secondary.text-white {
     color: var(--ctp-text) !important;
     --bs-card-color: var(--ctp-text);
     --bs-heading-color: var(--ctp-text);
+}
+.text-bg-dark, .badge.bg-dark, .bg-dark.text-white {
+    color: var(--ctp-on-dark) !important;
+    --bs-card-color: var(--ctp-on-dark);
+    --bs-heading-color: var(--ctp-on-dark);
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
@@ -175,16 +207,23 @@ body {
     --bs-btn-disabled-opacity: 0.55;
     --bs-btn-focus-shadow-rgb: var(--ctp-lavender-rgb);
 }
+/* Hover and active move the fill toward base, away from the text, so no
+   state reads worse than the button at rest (the lighter surfaces fall below
+   4.5:1 under the text). The shares are the generator's NEUTRAL_*_SHARE. */
 .btn-secondary {
     --bs-btn-bg: var(--ctp-secondary); --bs-btn-border-color: var(--ctp-secondary);
-    --bs-btn-hover-bg: var(--ctp-surface2); --bs-btn-hover-border-color: var(--ctp-surface2);
-    --bs-btn-active-bg: var(--ctp-overlay0); --bs-btn-active-border-color: var(--ctp-overlay0);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--ctp-secondary) 80%, var(--ctp-base));
+    --bs-btn-hover-border-color: var(--ctp-secondary);
+    --bs-btn-active-bg: color-mix(in srgb, var(--ctp-secondary) 60%, var(--ctp-base));
+    --bs-btn-active-border-color: var(--ctp-secondary);
     --bs-btn-disabled-bg: var(--ctp-secondary); --bs-btn-disabled-border-color: var(--ctp-secondary);
 }
 .btn-light {
     --bs-btn-bg: var(--ctp-surface0); --bs-btn-border-color: var(--ctp-surface1);
-    --bs-btn-hover-bg: var(--ctp-surface1); --bs-btn-hover-border-color: var(--ctp-surface2);
-    --bs-btn-active-bg: var(--ctp-surface2); --bs-btn-active-border-color: var(--ctp-surface2);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--ctp-surface0) 80%, var(--ctp-base));
+    --bs-btn-hover-border-color: var(--ctp-surface1);
+    --bs-btn-active-bg: color-mix(in srgb, var(--ctp-surface0) 60%, var(--ctp-base));
+    --bs-btn-active-border-color: var(--ctp-surface1);
     --bs-btn-disabled-bg: var(--ctp-surface0); --bs-btn-disabled-border-color: var(--ctp-surface1);
 }
 .btn-dark {
@@ -215,17 +254,33 @@ body {
 .btn-outline-warning { --ctp-btn-fill: var(--ctp-warning); --bs-btn-focus-shadow-rgb: var(--ctp-warning-rgb); }
 .btn-outline-danger  { --ctp-btn-fill: var(--ctp-danger);  --bs-btn-focus-shadow-rgb: var(--ctp-danger-rgb); }
 
-.btn-outline-secondary, .btn-outline-light, .btn-outline-dark {
+/* Filled on hover with the neutral button's own fills (see .btn-secondary). */
+.btn-outline-secondary, .btn-outline-dark {
     --bs-btn-color: var(--ctp-subtext1);
     --bs-btn-border-color: var(--ctp-surface2);
     --bs-btn-hover-color: var(--ctp-text);
-    --bs-btn-hover-bg: var(--ctp-surface1);
+    --bs-btn-hover-bg: color-mix(in srgb, var(--ctp-secondary) 60%, var(--ctp-base));
     --bs-btn-hover-border-color: var(--ctp-surface2);
     --bs-btn-active-color: var(--ctp-text);
-    --bs-btn-active-bg: var(--ctp-surface2);
-    --bs-btn-active-border-color: var(--ctp-overlay0);
+    --bs-btn-active-bg: var(--ctp-secondary);
+    --bs-btn-active-border-color: var(--ctp-surface2);
     --bs-btn-disabled-color: var(--ctp-overlay1);
     --bs-btn-disabled-border-color: var(--ctp-surface1);
+    --bs-btn-focus-shadow-rgb: var(--ctp-lavender-rgb);
+}
+/* Outline-light sits on surfaces that are dark on every theme (the reader's
+   header, the bulk-action bars), so it stays light on Latte as well. */
+.btn-outline-light {
+    --bs-btn-color: var(--ctp-on-dark);
+    --bs-btn-border-color: rgba(var(--ctp-on-dark-rgb), 0.75);
+    --bs-btn-hover-color: var(--ctp-dark-fill);
+    --bs-btn-hover-bg: var(--ctp-on-dark);
+    --bs-btn-hover-border-color: var(--ctp-on-dark);
+    --bs-btn-active-color: var(--ctp-dark-fill);
+    --bs-btn-active-bg: var(--ctp-on-dark);
+    --bs-btn-active-border-color: var(--ctp-on-dark);
+    --bs-btn-disabled-color: rgba(var(--ctp-on-dark-rgb), 0.55);
+    --bs-btn-disabled-border-color: rgba(var(--ctp-on-dark-rgb), 0.35);
     --bs-btn-focus-shadow-rgb: var(--ctp-lavender-rgb);
 }
 .btn-link {
@@ -471,17 +526,6 @@ hr { color: var(--ctp-surface2); opacity: 0.6; }
     border-color: var(--ctp-surface1);
 }
 :root .book-meta { color: var(--ctp-muted); }
-/* The bulk-action bars on the collection and series pages are a hardcoded
-   dark gradient on every theme; their outline-light "Clear" must stay light,
-   which on Latte it otherwise would not. */
-:root .collection-bulk-action-bar .btn-outline-light,
-:root .bulk-action-bar .btn-outline-light {
-    --bs-btn-color: #ffffff;
-    --bs-btn-border-color: rgba(255, 255, 255, 0.75);
-    --bs-btn-hover-color: #1a1a2e;
-    --bs-btn-hover-bg: #ffffff;
-    --bs-btn-hover-border-color: #ffffff;
-}
 :root .search-result-item { border-bottom-color: var(--ctp-surface0); }
 :root .search-result-item:hover { background-color: var(--ctp-surface0); }
 :root .search-result-item.selected {

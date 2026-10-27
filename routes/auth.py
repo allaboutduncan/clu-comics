@@ -47,7 +47,7 @@ from core.themes import (
     BOOTSWATCH_THEMES,
     is_dark_theme,
     is_valid_theme,
-    theme_label,
+    theme_display_name,
     theme_previews,
     theme_stylesheets,
 )
@@ -98,7 +98,7 @@ def _inject_theme_assets():
         "theme_is_dark": is_dark_theme(theme),
         "bootswatch_themes": BOOTSWATCH_THEMES,
         "theme_stylesheets": theme_stylesheets,
-        "theme_label": theme_label,
+        "theme_display_name": theme_display_name,
         "theme_previews": theme_previews(
             lambda path: url_for("static", filename=path)),
     }

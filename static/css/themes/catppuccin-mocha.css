@@ -51,6 +51,9 @@
     --ctp-white-text: var(--ctp-text);
     --ctp-color-scheme: dark;
     --ctp-raised: var(--ctp-surface0); --ctp-raised-rgb: var(--ctp-surface0-rgb);
+    --ctp-on-dark: var(--ctp-text); --ctp-on-dark-rgb: var(--ctp-text-rgb);
+    --ctp-dark-fill: var(--ctp-crust); --ctp-dark-fill-rgb: var(--ctp-crust-rgb);
+    --ctp-close-on-fill: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%231e1e2e'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414'/%3e%3c/svg%3e");
     --ctp-select-chevron: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%23cdd6f4' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
     --ctp-switch-focus: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23b4befe'/%3e%3c/svg%3e");
     --ctp-check-mark: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%231e1e2e' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");

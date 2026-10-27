@@ -93,7 +93,7 @@ THEME_ORDER = (
 _LABEL_OVERRIDES = {"default": "Default (Bootstrap)"}
 
 
-def theme_label(theme_id):
+def theme_display_name(theme_id):
     """A theme's display name, without the picker's "(Dark)" suffix."""
     theme_id = theme_id or "default"
     return (LOCAL_THEMES.get(theme_id, {}).get("label")
@@ -101,7 +101,7 @@ def theme_label(theme_id):
 
 
 def _label(theme_id):
-    base = theme_label(theme_id)
+    base = theme_display_name(theme_id)
     return f"{base} (Dark)" if theme_id in DARK_THEMES else base
 
 

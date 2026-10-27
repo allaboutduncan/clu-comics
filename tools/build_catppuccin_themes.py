@@ -164,6 +164,60 @@ def muted_colour(palette):
     return "text"
 
 
+# Neutral buttons (secondary, light): hover and active move the fill toward
+# base, away from the text on it, so a state never reads worse than the
+# button at rest. catppuccin.css writes these shares into its color-mix().
+NEUTRAL_HOVER_SHARE = 0.8
+NEUTRAL_ACTIVE_SHARE = 0.6
+
+
+def secondary_fill(palette):
+    """Secondary fills carry text, not base: the darkest surface that still
+    holds text at MIN_CONTRAST."""
+    return next(
+        s for s in ("surface1", "surface0")
+        if contrast(palette["text"], palette[s]) >= MIN_CONTRAST
+    )
+
+
+def raised(dark):
+    """A "light" panel (.bg-light, bg-body-secondary): a raised surface on a
+    dark flavour; on Latte surface0 is a heavy grey, so crust instead."""
+    return "surface0" if dark else "crust"
+
+
+def on_dark(dark):
+    """Light text for surfaces that are dark on every theme (the reader's
+    chrome, the bulk-action bars): .text-light, .btn-outline-light. A dark
+    flavour's text already is light; Latte's is dark, so its base."""
+    return "text" if dark else "base"
+
+
+def dark_fill(dark):
+    """A fill that is dark on every theme (--bs-dark, .bg-dark), carrying
+    white or on_dark text. Latte's crust is a light grey, so its text."""
+    return "crust" if dark else "text"
+
+
+def year_in_review_colours(flavour):
+    """The flavour's entry in wrapped.THEME_COLORS, from the same choices as
+    its stylesheet, so the two cannot drift."""
+    p, dark = PALETTE[flavour], DARK[flavour]
+    return {
+        "primary": role_colour(p, ROLES["primary"], dark),
+        "secondary": p[secondary_fill(p)],
+        "success": role_colour(p, ROLES["success"], dark),
+        "info": role_colour(p, ROLES["info"], dark),
+        "warning": role_colour(p, ROLES["warning"], dark),
+        "danger": role_colour(p, ROLES["danger"], dark),
+        "bg": p["base"],
+        "bg_secondary": p[raised(dark)],
+        "text": p["text"],
+        "text_muted": p[muted_colour(p)],
+        "is_dark": dark,
+    }
+
+
 def _svg_url(svg):
     # Percent-encoded the way Bootstrap writes its own icons.
     encoded = (svg.replace("%", "%25").replace("#", "%23").replace("<", "%3c")
@@ -195,12 +249,7 @@ def render(flavour):
         if role in ALERT_ROLES:
             lines.append(f"    --ctp-{role}-emphasis: {emphasis_colour(p, value, dark)};")
     lines.append(f"    --ctp-muted: var(--ctp-{muted_colour(p)});")
-    # Secondary fills carry text, not base: the darkest surface that still
-    # holds text at MIN_CONTRAST.
-    secondary = next(
-        s for s in ("surface1", "surface0")
-        if contrast(p["text"], p[s]) >= MIN_CONTRAST
-    )
+    secondary = secondary_fill(p)
     r, g, b = _rgb(p[secondary])
     lines.append(f"    --ctp-secondary: {p[secondary]}; --ctp-secondary-rgb: {r}, {g}, {b};")
 
@@ -213,10 +262,19 @@ def render(flavour):
         # Bootstrap sets color-scheme: dark on every [data-bs-theme=dark],
         # which includes Latte's header.
         f"    --ctp-color-scheme: {'dark' if dark else 'light'};",
-        # A "light" panel (.bg-light, bg-body-secondary): a raised surface on a
-        # dark flavour; on Latte surface0 is a heavy grey, so crust instead.
-        f"    --ctp-raised: var(--ctp-{'surface0' if dark else 'crust'}); "
-        f"--ctp-raised-rgb: var(--ctp-{'surface0' if dark else 'crust'}-rgb);",
+        f"    --ctp-raised: var(--ctp-{raised(dark)}); "
+        f"--ctp-raised-rgb: var(--ctp-{raised(dark)}-rgb);",
+        f"    --ctp-on-dark: var(--ctp-{on_dark(dark)}); "
+        f"--ctp-on-dark-rgb: var(--ctp-{on_dark(dark)}-rgb);",
+        f"    --ctp-dark-fill: var(--ctp-{dark_fill(dark)}); "
+        f"--ctp-dark-fill-rgb: var(--ctp-{dark_fill(dark)}-rgb);",
+        # The close X on an accent fill, drawn in base like the text there.
+        "    --ctp-close-on-fill: " + _svg_url(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' "
+            f"fill='{p['base']}'><path d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 "
+            "14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 "
+            "1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 "
+            "1 0 0 1 0-1.414'/></svg>") + ";",
         "    --ctp-select-chevron: " + _svg_url(
             "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='none' "
             f"stroke='{p['text']}' stroke-linecap='round' stroke-linejoin='round' "

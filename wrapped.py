@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, 
 from core.database import get_db_connection, current_user_id
 from core.app_logging import app_logger
 from core.thumbnail_cache import thumbnail_cache_path, thumbnails_root
+from tools.build_catppuccin_themes import PALETTE as CATPPUCCIN_PALETTE, year_in_review_colours
 import math
 
 # Image dimensions (9:16 aspect ratio for social sharing)
@@ -27,10 +28,6 @@ THEME_COLORS = {
     'cyborg': {'primary': '#2a9fd6', 'secondary': '#555555', 'success': '#77b300', 'info': '#93c', 'warning': '#f80', 'danger': '#c00', 'bg': '#060606', 'bg_secondary': '#222222', 'text': '#ffffff', 'text_muted': '#888888', 'is_dark': True},
     'darkly': {'primary': '#375a7f', 'secondary': '#444444', 'success': '#00bc8c', 'info': '#3498db', 'warning': '#f39c12', 'danger': '#e74c3c', 'bg': '#222222', 'bg_secondary': '#303030', 'text': '#ffffff', 'text_muted': '#aaaaaa', 'is_dark': True},
     'gruvbox-dark': {'primary': '#458588', 'secondary': '#504945', 'success': '#98971a', 'info': '#689d6a', 'warning': '#d79921', 'danger': '#cc241d', 'bg': '#282828', 'bg_secondary': '#3c3836', 'text': '#ebdbb2', 'text_muted': '#a89984', 'is_dark': True},
-    'catppuccin-latte': {'primary': '#7f2bee', 'secondary': '#ccd0da', 'success': '#2d701e', 'info': '#116e73', 'warning': '#895712', 'danger': '#c60e36', 'bg': '#eff1f5', 'bg_secondary': '#ccd0da', 'text': '#4c4f69', 'text_muted': '#5c5f77', 'is_dark': False},
-    'catppuccin-frappe': {'primary': '#ca9ee6', 'secondary': '#51576d', 'success': '#a6d189', 'info': '#81c8be', 'warning': '#e5c890', 'danger': '#e78284', 'bg': '#303446', 'bg_secondary': '#414559', 'text': '#c6d0f5', 'text_muted': '#a5adce', 'is_dark': True},
-    'catppuccin-macchiato': {'primary': '#c6a0f6', 'secondary': '#494d64', 'success': '#a6da95', 'info': '#8bd5ca', 'warning': '#eed49f', 'danger': '#ed8796', 'bg': '#24273a', 'bg_secondary': '#363a4f', 'text': '#cad3f5', 'text_muted': '#a5adcb', 'is_dark': True},
-    'catppuccin-mocha': {'primary': '#cba6f7', 'secondary': '#45475a', 'success': '#a6e3a1', 'info': '#94e2d5', 'warning': '#f9e2af', 'danger': '#f38ba8', 'bg': '#1e1e2e', 'bg_secondary': '#313244', 'text': '#cdd6f4', 'text_muted': '#a6adc8', 'is_dark': True},
     'flatly': {'primary': '#2c3e50', 'secondary': '#95a5a6', 'success': '#18bc9c', 'info': '#3498db', 'warning': '#f39c12', 'danger': '#e74c3c', 'bg': '#ffffff', 'bg_secondary': '#ecf0f1', 'text': '#212529', 'text_muted': '#6c757d', 'is_dark': False},
     'journal': {'primary': '#eb6864', 'secondary': '#aaaaaa', 'success': '#22b24c', 'info': '#336699', 'warning': '#f5e625', 'danger': '#f57a00', 'bg': '#ffffff', 'bg_secondary': '#f8f9fa', 'text': '#212529', 'text_muted': '#6c757d', 'is_dark': False},
     'litera': {'primary': '#4582ec', 'secondary': '#adb5bd', 'success': '#02b875', 'info': '#17a2b8', 'warning': '#f0ad4e', 'danger': '#d9534f', 'bg': '#ffffff', 'bg_secondary': '#f8f9fa', 'text': '#343a40', 'text_muted': '#6c757d', 'is_dark': False},
@@ -53,6 +50,11 @@ THEME_COLORS = {
     'yeti': {'primary': '#008cba', 'secondary': '#adb5bd', 'success': '#43ac6a', 'info': '#5bc0de', 'warning': '#e99002', 'danger': '#f04124', 'bg': '#ffffff', 'bg_secondary': '#f8f9fa', 'text': '#222222', 'text_muted': '#6c757d', 'is_dark': False},
     'zephyr': {'primary': '#3459e6', 'secondary': '#ffffff', 'success': '#2fb380', 'info': '#287bb5', 'warning': '#f4bd61', 'danger': '#da292e', 'bg': '#ffffff', 'bg_secondary': '#f8f9fa', 'text': '#495057', 'text_muted': '#6c757d', 'is_dark': False}
 }
+# Catppuccin's colours come from the generator that writes its stylesheets.
+THEME_COLORS.update({
+    f'catppuccin-{flavour}': year_in_review_colours(flavour)
+    for flavour in CATPPUCCIN_PALETTE
+})
 
 
 def get_theme_colors(theme_name: str) -> dict:
