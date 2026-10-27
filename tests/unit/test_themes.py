@@ -216,9 +216,13 @@ class TestLocalThemes:
 
     def test_head_partial_without_the_context_processor(self, env):
         """A bare Jinja env (no auth_bp) still gets a stylesheet, not an
-        UndefinedError."""
+        UndefinedError. It is what the "default" theme loads, so the
+        literal in the template must follow DEFAULT_BOOTSTRAP_CSS; it never
+        loads a local sheet, so BOOTSTRAP_CSS (5.3.8) would be the wrong pin."""
+        from core.themes import DEFAULT_BOOTSTRAP_CSS
         html = env.get_template("partials/theme_css.html").render()
-        assert "bootstrap@5.3.0-alpha1" in html
+        assert f'<link href="{DEFAULT_BOOTSTRAP_CSS}" rel="stylesheet">' in html
+        assert "css/themes/" not in html
 
     def test_head_partial_loads_bootstrap_then_the_local_sheet(self, env):
         from flask import Flask
