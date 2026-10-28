@@ -118,10 +118,15 @@ error, and status messages).
 - Confirmations: `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
   (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`), or a
   purpose-built modal in the page template.
-- Messages: `CLU.showToast(title, message, type)`, `CLU.showSuccess()`,
-  `CLU.showError()` from `static/js/clu-utils.js`.
-- A page using toasts must include `partials/toast_container.html`, otherwise
-  `CLU.showToast` falls back to `alert()`.
+- Messages: `CLU.toast(message, type)`, `CLU.showToast(title, message, type)`,
+  `CLU.showSuccess()`, `CLU.showError()` from `static/js/clu-toast.js`.
+  `base.html` loads it and renders the one container
+  (`partials/toast_container.html`) on every page, so a page never includes the
+  container or defines its own `showToast`. Messages are text, not HTML.
+- Empty states: `empty_state()` from `partials/empty_state.html`
+  (`CLU.emptyState()` in page scripts).
+- `tests/unit/test_feedback.py` is the ratchet: no local toast, no page-built
+  toast container, no `alert()`.
 
 ## Configuration
 
