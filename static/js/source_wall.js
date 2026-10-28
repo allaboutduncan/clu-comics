@@ -333,7 +333,7 @@ function renderTable() {
         table.style.display = 'none';
         const empty = document.getElementById('swEmptyState');
         empty.style.display = '';
-        empty.querySelector('p').textContent = swView === 'provider'
+        empty.querySelector('.clu-empty-title').textContent = swView === 'provider'
             ? 'No files in this library are tagged by that provider'
             : 'Select a library to browse metadata';
         return;
@@ -1756,6 +1756,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectLibrary(lib.path, lib.name, lib.id);
             }
         } catch (e) { /* ignore */ }
+    }
+    // First visit (or a saved library that is gone): say what to do instead of
+    // leaving the page blank under the toolbar.
+    if (!swCurrentLibrary) {
+        const empty = document.getElementById('swEmptyState');
+        empty.querySelector('.clu-empty-title').textContent = 'Select a library to browse metadata';
+        empty.style.display = '';
     }
 });
 

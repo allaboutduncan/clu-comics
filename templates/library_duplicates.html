@@ -1,25 +1,24 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: Duplicate Files{% endblock %}
 
 {% block content %}
-{% include 'partials/toast_container.html' %}
 
-<div class="container py-4" id="duplicates-app"
+<div id="duplicates-app"
      data-trash-enabled="{{ '1' if trash_enabled else '0' }}"
      data-trash-max-bytes="{{ trash_max_bytes }}">
-  <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-    <h2 class="mb-0"><i class="bi bi-files me-2"></i>Duplicate Files</h2>
-    <div class="d-flex gap-2 align-items-center">
-      <div class="form-check form-switch mb-0">
+  {% call(slot) page_header('Duplicate Files', 'bi-files') %}
+    {% if slot == 'actions' %}
+      <div class="form-check form-switch mb-0 align-self-center">
         <input class="form-check-input" type="checkbox" id="dup-show-dismissed">
         <label class="form-check-label small" for="dup-show-dismissed">Show dismissed</label>
       </div>
-      <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('problem_files.page') }}">
-        <i class="bi bi-arrow-left me-1"></i>Problem Files
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('problem_files.page') }}">
+        <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Problem Files
       </a>
-    </div>
-  </div>
+    {% endif %}
+  {% endcall %}
 
   <p class="text-muted small mb-3">
     <strong>Exact</strong> groups are byte-for-byte identical files, found by the library health

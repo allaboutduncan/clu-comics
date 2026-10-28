@@ -66,10 +66,10 @@
 
   function stepNode(id) { return document.querySelector('.setup-step[data-step="' + id + '"]'); }
 
-  // CLU.showToast renders its message as HTML; these carry server text and paths.
-  function showError(msg) { CLU.showError(CLU.escapeHtml(String(msg))); }
-  function showSuccess(msg) { CLU.showSuccess(CLU.escapeHtml(String(msg))); }
-  function showWarning(msg) { CLU.showToast('Saved', CLU.escapeHtml(String(msg)), 'warning'); }
+  // Toast messages are text (clu-toast.js), so server text and paths go in as-is.
+  function showError(msg) { CLU.showError(String(msg)); }
+  function showSuccess(msg) { CLU.showSuccess(String(msg)); }
+  function showWarning(msg) { CLU.showToast('Saved', String(msg), 'warning'); }
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);

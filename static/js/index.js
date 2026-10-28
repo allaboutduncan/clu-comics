@@ -337,7 +337,7 @@ function runScript(scriptType) {
 function executeScript(scriptType) {
     const directoryInput = document.getElementById('selected-directory').value.trim();
     if (!directoryInput) {
-        showToast("Please select a directory or file first.", "warning");
+        CLU.toast("Please select a directory or file first.", "warning");
         return;
     }
     if (currentEventSource) {
@@ -644,12 +644,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     window.location.href = '/';
                 } else {
-                    showToast("Error: " + data.error, "error");
+                    CLU.toast("Error: " + data.error, "error");
                 }
             })
             .catch(error => {
                 console.error(error);
-                showToast("An error occurred during processing.", "error");
+                CLU.toast("An error occurred during processing.", "error");
             });
         });
     }
@@ -681,12 +681,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     document.getElementById('edit').classList.add('collapse');
                     document.getElementById('single').classList.remove('collapse');
                 } else {
-                    showToast("Error: " + data.error, "error");
+                    CLU.toast("Error: " + data.error, "error");
                 }
             })
             .catch(error => {
                 console.error(error);
-                showToast("An error occurred during processing.", "error");
+                CLU.toast("An error occurred during processing.", "error");
             });
         });
     }
@@ -796,12 +796,12 @@ function performRename(input) {
             // After updating the filename, re-sort the inline edit cards.
             sortInlineEditCards();
         } else {
-            showToast('Error renaming file: ' + data.error, "error");
+            CLU.toast('Error renaming file: ' + data.error, "error");
         }
     })
     .catch(error => {
         console.error('Error:', error);
-        showToast('An error occurred while renaming the file.', "error");
+        CLU.toast('An error occurred while renaming the file.', "error");
     });
 }
 
@@ -837,12 +837,12 @@ function deleteCardImage(buttonElement) {
                 colElement.remove();
             }, 300);
         } else {
-            showToast("Error deleting image: " + data.error, "error");
+            CLU.toast("Error deleting image: " + data.error, "error");
         }
     })
     .catch(error => {
         console.error("Error:", error);
-        showToast("An error occurred while deleting the image.", "error");
+        CLU.toast("An error occurred while deleting the image.", "error");
     });
 }
 
@@ -913,12 +913,12 @@ function processCropImage(buttonElement, cropType) {
             sortInlineEditCards();
 
         } else {
-            showToast("Error cropping image: " + data.error, "error");
+            CLU.toast("Error cropping image: " + data.error, "error");
         }
     })
     .catch(error => {
         console.error("Error:", error);
-        showToast("An error occurred while cropping the image.", "error");
+        CLU.toast("An error occurred while cropping the image.", "error");
     });
 }
 
@@ -953,7 +953,7 @@ function generateCardHTML(imagePath, imageData) {
                                 <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cropImageRight(this)" title="Crop Image Right">
                                     Right <i class="bi bi-arrow-bar-right"></i>
                                 </button>
-                                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCardImage(this)">
+                                <button aria-label="Delete image" title="Delete image" type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCardImage(this)">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </div>
@@ -975,56 +975,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
-
-// Toast notification system for index.html
-function showToast(message, type = 'info', duration = 5000) {
-    // Create toast container if it doesn't exist
-    let container = document.getElementById('toast-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'toast-container';
-        container.className = 'toast-container position-fixed top-0 end-0 p-3';
-        container.style.zIndex = '9999';
-        document.body.appendChild(container);
-    }
-
-    const toastId = 'toast-' + Date.now();
-    const iconMap = {
-        'success': 'bi-check-circle-fill text-success',
-        'error': 'bi-exclamation-triangle-fill text-danger',
-        'warning': 'bi-exclamation-triangle-fill text-warning',
-        'info': 'bi-info-circle-fill text-info'
-    };
-
-    const toastHtml = `
-        <div id="${toastId}" class="toast bg-white border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
-            <div class="toast-header">
-                <i class="bi ${iconMap[type]} me-2"></i>
-                <strong class="me-auto">${type.charAt(0).toUpperCase() + type.slice(1)}</strong>
-                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-            </div>
-            <div class="toast-body">
-                ${message}
-            </div>
-        </div>
-    `;
-
-    container.insertAdjacentHTML('beforeend', toastHtml);
-    const toastElement = document.getElementById(toastId);
-    const toast = new bootstrap.Toast(toastElement, {
-        delay: duration,
-        autohide: duration > 0
-    });
-
-    toast.show();
-
-    // Remove from DOM after hiding
-    toastElement.addEventListener('hidden.bs.toast', () => {
-        toastElement.remove();
-    });
-
-    return toast;
-}
 
 // Free Form Crop functionality
 let cropData = {
@@ -1111,12 +1061,12 @@ function cropImageFreeForm(buttonElement) {
                 cropModal.show();
             };
         } else {
-            showToast("Error loading image: " + data.error, "error");
+            CLU.toast("Error loading image: " + data.error, "error");
         }
     })
     .catch(error => {
         console.error("Error:", error);
-        showToast("An error occurred while loading the image.", "error");
+        CLU.toast("An error occurred while loading the image.", "error");
     });
 }
 
@@ -1543,13 +1493,13 @@ function confirmFreeFormCrop() {
                 sortInlineEditCards();
             }
 
-            showToast("Free form crop completed successfully!", "success");
+            CLU.toast("Free form crop completed successfully!", "success");
         } else {
-            showToast("Error cropping image: " + data.error, "error");
+            CLU.toast("Error cropping image: " + data.error, "error");
         }
     })
     .catch(error => {
         console.error("Error:", error);
-        showToast("An error occurred while cropping the image.", "error");
+        CLU.toast("An error occurred while cropping the image.", "error");
     });
 }

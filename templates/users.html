@@ -1,16 +1,18 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: Users{% endblock %}
 
 {% block content %}
-<div class="container py-4" id="users-app">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <h2 class="mb-0"><i class="bi bi-people me-2"></i>Users</h2>
-    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#userModal"
-            onclick="openCreate()">
-      <i class="bi bi-person-plus me-1"></i>Add User
-    </button>
-  </div>
+<div id="users-app">
+  {% call(slot) page_header('Users', 'bi-people') %}
+    {% if slot == 'actions' %}
+      <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#userModal"
+              onclick="openCreate()">
+        <i class="bi bi-person-plus me-1" aria-hidden="true"></i>Add User
+      </button>
+    {% endif %}
+  {% endcall %}
 
   <div id="alert-area"></div>
 
@@ -169,9 +171,9 @@ async function loadUsers() {
       <td>${status}</td>
       <td>${libs}</td>
       <td class="text-end">
-        <button class="btn btn-sm btn-outline-secondary" onclick='openEdit(${JSON.stringify(u)})'>
+        <button aria-label="Edit user" title="Edit user" class="btn btn-sm btn-outline-secondary" onclick='openEdit(${JSON.stringify(u)})'>
           <i class="bi bi-pencil"></i></button>
-        <button class="btn btn-sm btn-outline-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">
+        <button aria-label="Delete user" title="Delete user" class="btn btn-sm btn-outline-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">
           <i class="bi bi-trash"></i></button>
       </td></tr>`;
   }).join("");
@@ -238,6 +240,8 @@ function _makeFolderNode(path, label, depth) {
   caret.type = "button";
   caret.className = "btn btn-sm btn-link p-0 text-muted";
   caret.style.width = "1.1rem";
+  caret.setAttribute("aria-label", "Show subfolders of " + label);
+  caret.setAttribute("aria-expanded", "false");
   caret.innerHTML = '<i class="bi bi-chevron-right"></i>';
 
   const cb = document.createElement("input");
@@ -275,10 +279,12 @@ function _makeFolderNode(path, label, depth) {
     if (open) {
       childBox.style.display = "none";
       caret.firstChild.className = "bi bi-chevron-right";
+      caret.setAttribute("aria-expanded", "false");
       return;
     }
     childBox.style.display = "block";
     caret.firstChild.className = "bi bi-chevron-down";
+    caret.setAttribute("aria-expanded", "true");
     if (!childBox.dataset.loaded) {
       childBox.dataset.loaded = "1";
       const dirs = await _fetchChildDirs(path);

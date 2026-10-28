@@ -1,40 +1,14 @@
 <!-- templates/to_read.html -->
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}To Read - Comic Library Utilities{% endblock %}
+{% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}">
 <style>
-  .to-read-container {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 20px;
-  }
-
-  .to-read-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 30px;
-    padding-bottom: 15px;
-    border-bottom: 2px solid #e9ecef;
-  }
-
-  .to-read-header h2 {
-    color: #ffc107;
-    margin: 0;
-  }
-
-  .to-read-header h2 i {
-    margin-right: 10px;
-  }
-
-  .to-read-stats {
-    color: #6c757d;
-    font-size: 0.9rem;
-  }
-
   .to-read-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -131,28 +105,6 @@
     background: rgba(220, 53, 69, 1);
   }
 
-  .empty-state {
-    text-align: center;
-    padding: 60px 20px;
-    color: #6c757d;
-  }
-
-  .empty-state i {
-    font-size: 64px;
-    margin-bottom: 20px;
-    color: #ffc107;
-    opacity: 0.5;
-  }
-
-  .empty-state h3 {
-    margin-bottom: 10px;
-    color: #adb5bd;
-  }
-
-  .empty-state p {
-    max-width: 400px;
-    margin: 0 auto;
-  }
 
   .loading-state {
     text-align: center;
@@ -163,13 +115,10 @@
 {% endblock %}
 
 {% block content %}
-<div class="to-read-container">
-  <div class="to-read-header">
-    <h2><i class="bi bi-bookmark"></i>Want to Read</h2>
-    <div class="to-read-stats">
-      <span id="item-count">Loading...</span>
-    </div>
-  </div>
+<div>
+  {# The page script writes "N items" into #item-count (value and label together). #}
+  {{ page_header('Want to Read', 'bi-bookmark',
+                 stats=[{'value': 'Loading...', 'label': '', 'id': 'item-count'}]) }}
 
   <div id="loading-state" class="loading-state">
     <div class="spinner-border text-warning" role="status">
@@ -178,29 +127,15 @@
     <p class="mt-3">Loading your reading list...</p>
   </div>
 
-  <div id="empty-state" class="empty-state" style="display: none;">
-    <i class="bi bi-bookmark-plus"></i>
-    <h3>No items in your reading list</h3>
-    <p>Browse your collection and click the bookmark icon to add items you want to read later.</p>
-    <a href="/collection" class="btn btn-warning mt-3">
-      <i class="bi bi-grid me-2"></i>Browse Collection
-    </a>
-  </div>
+  {% call empty_state('Nothing on your Want to Read list', 'Use the bookmark on any cover in your collection to add it here.', 'bi-bookmark-plus', id='empty-state', hidden=True) %}
+      <a href="{{ url_for('collection.collection') }}" class="btn btn-primary">
+          <i class="bi bi-grid me-1" aria-hidden="true"></i>Browse collection
+      </a>
+  {% endcall %}
 
   <div id="to-read-grid" class="to-read-grid"></div>
 </div>
 
-<!-- Toast for notifications -->
-<div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1100">
-  <div id="toReadToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
-    <div class="toast-header">
-      <i class="bi bi-bookmark me-2 text-warning"></i>
-      <strong class="me-auto">To Read</strong>
-      <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-    </div>
-    <div class="toast-body" id="toReadToastBody"></div>
-  </div>
-</div>
 {% endblock %}
 
 {% block scripts %}
@@ -277,7 +212,7 @@
             <span>${isFolder ? 'Folder' : 'File'}</span>
           </div>
         </div>
-        <button class="remove-btn" title="Remove from To Read" onclick="removeFromToRead(event, '${item.path.replace(/'/g, "\\'")}')">
+        <button aria-label="Remove from To Read" class="remove-btn" title="Remove from To Read" onclick="removeFromToRead(event, '${item.path.replace(/'/g, "\\'")}')">
           <i class="bi bi-x-lg"></i>
         </button>
       `;
@@ -330,13 +265,13 @@
           }, 300);
         }
 
-        showToast('Item removed from reading list', 'success');
+        CLU.toast('Item removed from reading list', 'success');
       } else {
-        showToast('Failed to remove item', 'error');
+        CLU.toast('Failed to remove item', 'error');
       }
     } catch (error) {
       console.error('Error removing from to-read:', error);
-      showToast('Error removing item', 'error');
+      CLU.toast('Error removing item', 'error');
     }
   }
 
@@ -353,22 +288,5 @@
     }
   }
 
-  function showToast(message, type = 'info') {
-    const toast = document.getElementById('toReadToast');
-    const toastBody = document.getElementById('toReadToastBody');
-
-    toastBody.textContent = message;
-
-    // Set color based on type
-    toast.classList.remove('bg-success', 'bg-danger', 'bg-warning');
-    if (type === 'success') {
-      toast.classList.add('bg-success', 'text-white');
-    } else if (type === 'error') {
-      toast.classList.add('bg-danger', 'text-white');
-    }
-
-    const bsToast = new bootstrap.Toast(toast);
-    bsToast.show();
-  }
 </script>
 {% endblock %}

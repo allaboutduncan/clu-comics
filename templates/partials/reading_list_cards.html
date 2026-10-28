@@ -79,12 +79,12 @@ drift. Role gating mirrors reading_lists.html. #}
                 View Details
             </button>
             {% if _can_manage %}
-            <button class="btn btn-secondary btn-sm"
+            <button aria-label="Manage Tags" class="btn btn-secondary btn-sm"
                 onclick='event.stopPropagation(); openTagsModal({{ list.id }}, {{ list.tags|tojson|safe }})'
                 title="Manage Tags">
                 <i class="bi bi-tags"></i>
             </button>
-            <button class="btn btn-danger btn-sm"
+            <button aria-label="Delete list" title="Delete list" class="btn btn-danger btn-sm"
                 onclick="event.stopPropagation(); deleteReadingList({{ list.id }})">
                 <i class="bi bi-trash"></i>
             </button>

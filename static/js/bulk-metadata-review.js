@@ -311,7 +311,7 @@ window.BulkMetadataReview = (function () {
                                     placeholder="Search series name…" value="${_escape(item.parsed_series || '')}">
                                 <input type="number" class="form-control manual-year" style="max-width: 6rem;"
                                     placeholder="Year" value="${item.parsed_year || ''}">
-                                <button class="btn btn-outline-primary action-manual-search" type="button">
+                                <button aria-label="Search" title="Search" class="btn btn-outline-primary action-manual-search" type="button">
                                     <i class="bi bi-search"></i>
                                 </button>
                             </div>

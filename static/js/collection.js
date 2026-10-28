@@ -3293,14 +3293,24 @@ function initSwiperThumbnails(container) {
 }
 
 /**
- * Update the breadcrumb navigation.
- * @param {string} path - The current directory path.
+ * Set the page header title (the h1 rendered by partials/page_header.html).
+ * Only the text span changes, so the icon stays.
+ * @param {string} text - The current folder or view name.
  */
+function setCollectionTitle(text) {
+    const title = document.getElementById('collectionTitle');
+    if (!title) return;
+    const span = title.querySelector('.clu-page-title-text');
+    if (span) span.textContent = text;
+    title.title = text;
+}
+
 /**
  * Update breadcrumb with a simple title (for special views like Recently Added)
  * @param {string} title - The title to display
  */
 function updateBreadcrumb(title) {
+    setCollectionTitle(title);
     const breadcrumb = document.getElementById('breadcrumb');
     breadcrumb.innerHTML = '';
 
@@ -3310,9 +3320,26 @@ function updateBreadcrumb(title) {
     breadcrumb.appendChild(li);
 }
 
+/**
+ * Update the breadcrumb navigation.
+ * @param {string} path - The current directory path.
+ */
 function renderBreadcrumbs(path) {
     const breadcrumb = document.getElementById('breadcrumb');
     breadcrumb.innerHTML = '';
+
+    // Title: the current folder; at a library root, that library's name
+    // (window.libraryData is set by the selector when there are several).
+    const pathSegments = (path || '').split(/[/\\]/).filter(Boolean);
+    let pageTitle = pathSegments.length ? pathSegments[pathSegments.length - 1] : 'Home';
+    if (!path || currentIsLibraryRoot) {
+        // window.libraryData is only filled when there are several libraries;
+        // otherwise the folder name keeps the title matching the breadcrumb's
+        // last item instead of saying "Home" under "Home / data".
+        const lib = (window.libraryData || []).find(l => l.path === path);
+        pageTitle = lib ? lib.name : (pathSegments[pathSegments.length - 1] || 'Home');
+    }
+    setCollectionTitle(pageTitle);
 
     // Always add Home/Root
     const homeLi = document.createElement('li');
@@ -4325,7 +4352,7 @@ async function loadFavoritePublishers() {
                         <div class="icon-overlay" style="${pub.hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button class="favorite-button favorited" onclick="event.stopPropagation(); removeFavoriteFromDashboard('${pub.path}', '${escapedName}', this)" title="Remove from Favorites">
+                        <button aria-label="Remove from Favorites" class="favorite-button favorited" onclick="event.stopPropagation(); removeFavoriteFromDashboard('${pub.path}', '${escapedName}', this)" title="Remove from Favorites">
                             <i class="bi bi-bookmark-heart-fill"></i>
                         </button>
                     </div>
@@ -4473,7 +4500,7 @@ function renderWantToReadListSlide(list) {
                     <div class="progress-bar bg-warning" role="progressbar" style="width: ${percent}%"
                          aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
-                <button class="to-read-button marked"
+                <button aria-label="Remove from Want to Read" class="to-read-button marked"
                         onclick="event.stopPropagation(); removeReadingListFromWantToRead(${list.id}, '${escapedName}', this)"
                         title="Remove from Want to Read">
                     <i class="bi bi-bookmark"></i>
@@ -4582,7 +4609,7 @@ async function loadWantToRead() {
                         <div class="icon-overlay" style="${hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button class="to-read-button marked" onclick="event.stopPropagation(); removeFromWantToRead('${escapedPath}', '${escapedName}', this)" title="Remove from To Read">
+                        <button aria-label="Remove from To Read" class="to-read-button marked" onclick="event.stopPropagation(); removeFromWantToRead('${escapedPath}', '${escapedName}', this)" title="Remove from To Read">
                             <i class="bi bi-bookmark"></i>
                         </button>
                     </div>
@@ -4720,7 +4747,7 @@ async function loadContinueReadingSwiper() {
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
-                        <button class="mark-unread-btn" onclick="event.stopPropagation(); markAsUnread('${path.replace(/'/g, "\\'")}')" title="Mark as Unread">
+                        <button aria-label="Mark as Unread" class="mark-unread-btn" onclick="event.stopPropagation(); markAsUnread('${path.replace(/'/g, "\\'")}')" title="Mark as Unread">
                             <i class="bi bi-x-circle-fill"></i>
                         </button>
                     </div>

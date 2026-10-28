@@ -1,5 +1,8 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 {% block title %}Library{% endblock %}
+{% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/metadata_browser.css') }}?v={{ range(1, 10000) | random }}">
@@ -7,15 +10,20 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 {% endblock %}
 {% block content %}
-<div class="container-fluid mt-4 metadata-browser">
-    <div class="bg-body-tertiary p-3 rounded-3 shadow-sm mb-3 d-flex flex-column gap-3">
-        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
-            <nav aria-label="breadcrumb" class="flex-grow-1">
-                <ol class="breadcrumb mb-0" id="mbBreadcrumb">
-                    <li class="breadcrumb-item active"><i class="bi bi-collection me-1"></i>Library</li>
-                </ol>
-            </nav>
-            <div class="d-flex flex-wrap align-items-center gap-2">
+<div class="metadata-browser">
+    {# metadata_browser.js rebuilds #mbBreadcrumb and sets the title to the
+       current level (Library / publisher / series) on every reload. #}
+    {% call(slot) page_header('Library', 'bi-collection', title_id='mbTitle', crumbs_id='mbBreadcrumb') %}
+        {% if slot == 'crumbs' %}
+            <li class="breadcrumb-item active"><i class="bi bi-collection me-1" aria-hidden="true"></i>Library</li>
+        {% endif %}
+    {% endcall %}
+
+    {# One toolbar row on desktop (view, sort, page size, refresh, then search
+       pushed right); it wraps on narrower screens. The letter filter is its
+       own row because metadata_browser.js fills it with up to 27 letters. #}
+    <div class="mb-toolbar bg-body-tertiary p-3 rounded-3 shadow-sm mb-3">
+        <div class="d-flex flex-wrap align-items-center gap-2" role="toolbar" aria-label="Library view">
                 <div class="btn-group btn-group-sm" role="group" aria-label="Primary axis">
                     <input type="radio" class="btn-check" name="mbAxis" id="mbAxisPublisher" value="publisher" autocomplete="off" checked>
                     <label class="btn btn-outline-primary" for="mbAxisPublisher"><i class="bi bi-building me-1"></i>Publisher</label>
@@ -27,7 +35,7 @@
                     <label class="btn btn-outline-primary" for="mbAxisYear"><i class="bi bi-calendar3 me-1"></i>Year</label>
                 </div>
 
-                <div class="input-group input-group-sm">
+                <div class="input-group input-group-sm w-auto">
                     <label class="input-group-text bg-body border-0" for="mbSort">Sort</label>
                     <select class="form-select border-0 shadow-none bg-body text-body" id="mbSort">
                         <option value="alpha" selected>A–Z</option>
@@ -37,8 +45,8 @@
                     </select>
                 </div>
 
-                <div class="input-group input-group-sm">
-                    <label class="input-group-text bg-body border-0" for="mbPerPage">Per page</label>
+                <div class="input-group input-group-sm w-auto">
+                    <label class="input-group-text bg-body border-0" for="mbPerPage"><span class="d-none d-sm-inline">Per page</span><span class="d-sm-none">Show</span></label>
                     <select class="form-select border-0 shadow-none bg-body text-body" id="mbPerPage">
                         <option value="24">24</option>
                         <option value="50" selected>50</option>
@@ -47,27 +55,21 @@
                     </select>
                 </div>
 
-                <button class="btn btn-light border btn-sm" id="mbRefreshBtn" title="Refresh">
+                <button aria-label="Refresh" class="btn btn-light border btn-sm" id="mbRefreshBtn" title="Refresh">
                     <i class="bi bi-arrow-clockwise text-muted"></i>
                 </button>
+            <div class="mb-toolbar-search">
+                <label class="visually-hidden" for="mbSearch">Search title or series</label>
+                <input type="search" id="mbSearch" class="form-control form-control-sm" placeholder="Search title / series…">
             </div>
         </div>
-
-        <div class="d-flex flex-column flex-md-row gap-2 border-top pt-3">
-            <div id="mbLetterFilter" class="pb-1 pb-md-0" style="flex: 1 1 auto; overflow-x: auto;">
-                <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter"></div>
-            </div>
-            <div style="flex: 0 0 auto; width: 100%; max-width: 260px;">
-                <input type="text" id="mbSearch" class="form-control form-control-sm" placeholder="Search title / series…">
-            </div>
+        <div id="mbLetterFilter" class="mt-2" style="overflow-x: auto;">
+            <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter"></div>
         </div>
     </div>
 
     <div id="mbGrid" class="file-grid"></div>
-    <div id="mbEmpty" class="text-center py-5" style="display:none;">
-        <i class="bi bi-inbox display-1 text-muted"></i>
-        <p class="lead text-muted mt-3">No matches</p>
-    </div>
+    {{ empty_state('No matches', 'Try another letter or filter.', 'bi-inbox', id='mbEmpty', hidden=True) }}
     <div id="mbLoading" class="text-center py-5">
         <div class="spinner-border text-primary" role="status">
             <span class="visually-hidden">Loading…</span>
@@ -86,13 +88,13 @@
             <div class="icon-overlay">
                 <i class="bi"></i>
             </div>
-            <button class="info-button no-propagation" title="CBZ Information">
+            <button aria-label="CBZ Information" class="info-button no-propagation" title="CBZ Information">
                 <i class="bi bi-info-circle"></i>
             </button>
-            <button class="favorite-button no-propagation" title="Add to Favorites" style="display: none;">
+            <button aria-label="Add to Favorites" class="favorite-button no-propagation" title="Add to Favorites" style="display: none;">
                 <i class="bi bi-bookmark-heart"></i>
             </button>
-            <button class="to-read-button no-propagation" title="Add to To Read" style="display: none;">
+            <button aria-label="Add to To Read" class="to-read-button no-propagation" title="Add to To Read" style="display: none;">
                 <i class="bi bi-bookmark-plus"></i>
             </button>
             <span class="issue-badge" style="display: none;"><span class="issue-number"></span><i class="bi bi-book read-icon"></i></span>
@@ -106,7 +108,7 @@
                 <div class="item-meta text-muted small"></div>
             </div>
             <div class="item-actions dropdown ms-2">
-                <button class="btn btn-link btn-sm p-0 text-dark no-propagation" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                <button aria-label="More actions" title="More actions" class="btn btn-link btn-sm p-0 text-dark no-propagation" type="button" data-bs-toggle="dropdown" aria-expanded="false">
                     <i class="bi bi-three-dots-vertical"></i>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end shadow">
@@ -138,7 +140,6 @@
 {% include 'partials/modal_cbz_info.html' %}
 {% include 'partials/modal_update_xml.html' %}
 {% include 'partials/modal_add_to_reading_list.html' %}
-{% include 'partials/toast_container.html' %}
 {% include 'partials/progress_container.html' %}
 
 <!-- Comic Reader Modal (shared with collection) -->
@@ -155,10 +156,10 @@
             </div>
             <div class="comic-reader-controls">
                 <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
-                <button class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
+                <button aria-label="Save Position" class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
                     <i class="bi bi-bookmark text-primary"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                <button aria-label="Close" class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
                     <i class="bi bi-x-lg text-light"></i>
                 </button>
             </div>
@@ -197,10 +198,10 @@
         </div>
         <div class="comic-reader-footer">
             <div class="comic-reader-footer-controls">
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
+                <button aria-label="Zoom Out (Arrow Down)" class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
                     <i class="bi bi-zoom-out text-light"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
+                <button aria-label="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre" class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
                     <i class="bi bi-zoom-in text-light"></i>
                 </button>
                 <select class="form-select form-select-sm page-selector" id="pageSelector">

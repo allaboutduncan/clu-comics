@@ -1,72 +1,11 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Reading Timeline - Comic Library{% endblock %}
 
 {% block extra_css %}
 <style>
-    /* Timeline-specific styling that complements site theme */
-    .timeline-page {
-        padding: 2rem 0;
-    }
-
-    .timeline-header {
-        margin-bottom: 2rem;
-    }
-
-    /* Stats Row */
-    .stat-card {
-        background: var(--bs-secondary-bg, #f8f9fa);
-        border-radius: 12px;
-        padding: 1.5rem;
-        text-align: center;
-        border: 1px solid var(--bs-border-color);
-        height: 100%;
-    }
-
-    .stat-card .stat-icon {
-        width: 48px;
-        height: 48px;
-        border-radius: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin: 0 auto 0.75rem;
-        font-size: 1.5rem;
-    }
-
-    .stat-card .stat-icon.primary {
-        background: rgba(var(--bs-primary-rgb), 0.15);
-        color: var(--bs-primary);
-    }
-
-    .stat-card .stat-icon.success {
-        background: rgba(var(--bs-success-rgb), 0.15);
-        color: var(--bs-success);
-    }
-
-    .stat-card .stat-icon.warning {
-        background: rgba(var(--bs-warning-rgb), 0.15);
-        color: var(--bs-warning);
-    }
-
-    .stat-card .stat-icon.info {
-        background: rgba(var(--bs-info-rgb), 0.15);
-        color: var(--bs-info);
-    }
-
-    .stat-card .stat-value {
-        font-size: 2rem;
-        font-weight: 700;
-        line-height: 1.2;
-    }
-
-    .stat-card .stat-label {
-        font-size: 0.85rem;
-        color: var(--bs-secondary-color);
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
     /* Timeline Structure */
     .timeline-container {
         position: relative;
@@ -234,16 +173,6 @@
     }
 
     /* Empty State */
-    .empty-state {
-        text-align: center;
-        padding: 4rem 2rem;
-    }
-
-    .empty-state i {
-        font-size: 4rem;
-        color: var(--bs-secondary-color);
-        margin-bottom: 1rem;
-    }
 
     /* Section Card (matching insights.html pattern) */
     .section-card {
@@ -364,62 +293,23 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-lg timeline-page">
-    <!-- Page Header -->
-    <div class="timeline-header d-flex justify-content-between align-items-start flex-wrap gap-3">
-        <div>
-            <h1><i class="bi bi-clock-history me-2 text-primary"></i>Reading Timeline</h1>
-            <p class="lead mb-0">Chronological history of your comic journey</p>
-        </div>
-        <div class="d-flex gap-2">
-            <button class="btn btn-primary" id="monthlyWrappedBtn" data-bs-toggle="modal" data-bs-target="#monthlyWrappedModal">
-                <i class="bi bi-gift me-1"></i>Monthly Wrapped
+<div class="timeline-page">
+    {% call(slot) page_header('Reading Timeline', 'bi-clock-history',
+                              subtitle='Chronological history of your comic journey',
+                              stats=[{'value': stats.total_read, 'label': 'issues read', 'id': 'tlIssuesRead'},
+                                     {'value': stats.total_series, 'label': 'series read'},
+                                     {'value': stats.streak, 'label': 'day streak'},
+                                     {'value': stats.top_publisher if stats.top_publisher not in ('N/A', '') else None,
+                                      'label': 'top publisher'}]) %}
+        {% if slot == 'actions' %}
+            <button class="btn btn-sm btn-primary" id="monthlyWrappedBtn" data-bs-toggle="modal" data-bs-target="#monthlyWrappedModal">
+                <i class="bi bi-gift me-1" aria-hidden="true"></i>Monthly Wrapped
             </button>
-            <a href="{{ url_for('insights_page') }}" class="btn btn-outline-secondary">
-                <i class="bi bi-graph-up-arrow me-1"></i>Insights
+            <a href="{{ url_for('insights_page') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-graph-up-arrow me-1" aria-hidden="true"></i>Insights
             </a>
-        </div>
-    </div>
-
-    <!-- Stats Row -->
-    <div class="row g-3 mb-4">
-        <div class="col-6 col-lg-3">
-            <div class="stat-card">
-                <div class="stat-icon primary">
-                    <i class="bi bi-book"></i>
-                </div>
-                <div class="stat-value">{{ "{:,}".format(stats.total_read) }}</div>
-                <div class="stat-label">Issues Read</div>
-            </div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="stat-card">
-                <div class="stat-icon info">
-                    <i class="bi bi-collection"></i>
-                </div>
-                <div class="stat-value">{{ "{:,}".format(stats.total_series) }}</div>
-                <div class="stat-label">Series Read</div>
-            </div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="stat-card">
-                <div class="stat-icon success">
-                    <i class="bi bi-fire"></i>
-                </div>
-                <div class="stat-value">{{ stats.streak }} <small class="fs-6 fw-normal">Days</small></div>
-                <div class="stat-label">Current Streak</div>
-            </div>
-        </div>
-        <div class="col-6 col-lg-3">
-            <div class="stat-card">
-                <div class="stat-icon warning">
-                    <i class="bi bi-building"></i>
-                </div>
-                <div class="stat-value" style="font-size: 1.5rem;">{{ stats.top_publisher }}</div>
-                <div class="stat-label">Top Publisher</div>
-            </div>
-        </div>
-    </div>
+        {% endif %}
+    {% endcall %}
 
     <!-- Timeline Section -->
     <div class="section-card">
@@ -505,14 +395,11 @@
             <!-- Scroll Sentinel (invisible element to trigger loading) -->
             <div id="scrollSentinel" style="height: 1px;"></div>
             {% else %}
-            <div class="empty-state">
-                <i class="bi bi-journal-x d-block"></i>
-                <h4 class="text-muted">No reading history found yet.</h4>
-                <p class="text-muted">Start reading comics to see your timeline here!</p>
-                <a href="/" class="btn btn-primary mt-3">
-                    <i class="bi bi-collection me-1"></i>Go to Library
+            {% call empty_state('No reading history yet', 'Comics you read in CLU show up here, month by month.', 'bi-journal-x') %}
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    <i class="bi bi-collection me-1" aria-hidden="true"></i>Go to Library
                 </a>
-            </div>
+            {% endcall %}
             {% endif %}
         </div>
     </div>
@@ -826,7 +713,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 group.remove();
             }
             // Update stat counter
-            const statEl = document.querySelector('.stat-card .stat-value');
+            const statEl = document.getElementById('tlIssuesRead');
             if (statEl) {
                 const current = parseInt(statEl.textContent.replace(/,/g, '')) || 0;
                 if (current > 0) statEl.textContent = (current - 1).toLocaleString();
@@ -1034,7 +921,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         e.preventDefault();
         if (typeof JSZip === 'undefined') {
-            alert('JSZip not loaded. Please try again.');
+            CLU.toast('JSZip not loaded. Please try again.', 'error');
             return;
         }
 

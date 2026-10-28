@@ -1,23 +1,16 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: My Account{% endblock %}
 
 {% block content %}
-<div class="container py-4" id="account-app" style="max-width: 960px;">
-  <div class="d-flex align-items-center mb-3">
-    <h2 class="mb-0"><i class="bi bi-person-badge me-2"></i>My Account</h2>
-    {% if g.get('current_user') %}
-    <span class="badge bg-secondary ms-3 align-self-center">
-      {{ g.current_user.display_name or g.current_user.username }}
-      &middot; {{ g.current_user.role|title }}
-    </span>
-    {% endif %}
-  </div>
+<div id="account-app">
+  {% set _acct_sub = ((g.current_user.display_name or g.current_user.username) ~ ' · ' ~ (g.current_user.role|title)) if g.get('current_user') else None %}
+  {{ page_header('My Account', 'bi-person-badge', subtitle=_acct_sub) }}
   <p class="text-muted">
     These settings apply to you only. Site-wide defaults are set by the Store Owner.
   </p>
 
-  {% include 'partials/toast_container.html' %}
 
   <ul class="nav nav-tabs" id="accountTabs" role="tablist">
     <li class="nav-item" role="presentation">
@@ -142,7 +135,7 @@
         <strong>Copy this token now — it won't be shown again:</strong>
         <div class="input-group mt-2">
           <code id="new-token-value" class="form-control text-break bg-body"></code>
-          <button class="btn btn-outline-secondary" type="button" onclick="copyNewToken()"
+          <button aria-label="Copy to clipboard" class="btn btn-outline-secondary" type="button" onclick="copyNewToken()"
                   title="Copy to clipboard">
             <i class="bi bi-clipboard"></i>
           </button>

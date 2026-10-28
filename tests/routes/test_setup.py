@@ -460,7 +460,7 @@ class TestSetupPage:
         html = resp.get_data(as_text=True)
         assert URL in html
         assert STATE_URL in html
-        assert "errorToast" in html  # partials/toast_container.html
+        assert 'id="toast-container"' in html  # base.html's one toast container
 
     def test_direct_visit_starts_setup(self, client):
         _set_state("none")

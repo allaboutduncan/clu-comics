@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: /api/v1 Reference{% endblock %}
 
@@ -44,21 +45,15 @@
     }
 </style>
 
-<div class="container-lg my-4">
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-3 gap-2">
-        <div>
-            <h2 class="text-primary-emphasis mb-0">
-                <i class="bi bi-cloud-arrow-down me-2"></i>/api/v1 Reference
-            </h2>
-            <p class="text-muted mb-0 small">
-                Bearer-token JSON API for the offline mobile/desktop client.
-                Manage your token in <a href="/config">Settings → Client API Access</a>.
-            </p>
-        </div>
-        <a href="/config" class="btn btn-sm btn-outline-secondary">
-            <i class="bi bi-gear me-1"></i>Settings
-        </a>
-    </div>
+<div>
+    {% call(slot) page_header('/api/v1 Reference', 'bi-cloud-arrow-down',
+                              subtitle='Bearer-token JSON API for the offline mobile/desktop client. Manage your token in Settings → Client API Access.') %}
+        {% if slot == 'actions' %}
+            <a href="{{ url_for('config_page') }}" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-gear me-1" aria-hidden="true"></i>Settings
+            </a>
+        {% endif %}
+    {% endcall %}
 
     <!-- Auth banner -->
     <div class="alert alert-secondary border-start border-primary border-4 mb-4">

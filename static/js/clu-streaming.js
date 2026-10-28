@@ -208,7 +208,7 @@
         }
         window.missingFileData = null;
       } else if (progressData.warnings && progressData.warnings.length > 0) {
-        var warnMsg = 'Completed with warnings:<br>' + progressData.warnings.join('<br>');
+        var warnMsg = 'Completed with warnings:\n' + progressData.warnings.join('\n');
         CLU.showToast('Warning', warnMsg, 'warning');
         setTimeout(function () { CLU.hideProgressIndicator(); }, 5000);
       } else {

@@ -251,6 +251,15 @@ async function fetchDirectoryMetadataForPanel(dirPath, dirName, panel) {
 }
 
 // Helper function to create drop target item
+// An empty listing must say so: a blank panel reads as "still loading" or
+// "broken". The row is not a drop target or a selectable item.
+function appendEmptyListing(container, title, message, icon) {
+  const li = document.createElement('li');
+  li.className = 'list-group-item files-empty-listing';
+  li.appendChild(CLU.emptyState({ icon: icon || 'bi-folder2-open', title: title, message: message, compact: true }));
+  container.appendChild(li);
+}
+
 function createDropTargetItem(container, currentPath, panel) {
   let dropTargetItem = document.createElement("li");
   dropTargetItem.className = "list-group-item text-center drop-target-item";
@@ -299,13 +308,13 @@ function normalizeFile(file) {
 function renameItem(oldPath, newName, panel) {
   if (typeof oldPath !== "string" || typeof newName !== "string") {
     console.error("Invalid oldPath or newName:", { oldPath, newName });
-    alert("Rename failed: Internal path error (non-string input)");
+    CLU.toast("Rename failed: Internal path error (non-string input)", 'error');
     return;
   }
 
   const trimmedName = newName.trim();
   if (!trimmedName) {
-    alert("Filename cannot be empty.");
+    CLU.toast("Filename cannot be empty.", 'warning');
     return;
   }
 
@@ -332,12 +341,12 @@ function renameItem(oldPath, newName, panel) {
           loadDirectories(currentDestinationPath, 'destination');
         }
       } else {
-        alert("Error renaming item: " + result.error);
+        CLU.toast("Error renaming item: " + result.error, 'error');
       }
     })
     .catch(error => {
       console.error("Error in rename request:", error);
-      alert("Rename failed due to a network or server error.");
+      CLU.toast("Rename failed due to a network or server error.", 'error');
     });
 }
 
@@ -473,6 +482,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     infoBtn.className = "btn btn-sm btn-outline-info";
     infoBtn.innerHTML = '<i class="bi bi-eye"></i>';
     infoBtn.title = "CBZ Information";
+    infoBtn.setAttribute('aria-label', infoBtn.title);
     infoBtn.setAttribute("type", "button");
     infoBtn.onclick = function (e) {
       e.stopPropagation();
@@ -503,6 +513,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.className = "btn btn-sm btn-outline-success";
       metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
       metadataBtn.title = "Fetch Metadata (search providers by priority)";
+      metadataBtn.setAttribute('aria-label', metadataBtn.title);
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
@@ -517,6 +528,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       gcdBtn.className = "btn btn-sm btn-outline-info";
       gcdBtn.innerHTML = '<i class="bi bi-database-down"></i>';
       gcdBtn.title = "Search GCD Database Only";
+      gcdBtn.setAttribute('aria-label', gcdBtn.title);
       gcdBtn.setAttribute("type", "button");
       gcdBtn.onclick = function (e) {
         e.stopPropagation();
@@ -533,6 +545,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
         gcdBtn.className = "btn btn-sm btn-outline-success";
         gcdBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
         gcdBtn.title = "Search GCD for Metadata (legacy)";
+        gcdBtn.setAttribute('aria-label', gcdBtn.title);
         gcdBtn.setAttribute("type", "button");
         gcdBtn.onclick = function (e) {
           e.stopPropagation();
@@ -551,6 +564,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     infoIcon.className = "btn btn-sm btn-outline-info";
     infoIcon.innerHTML = '<i class="bi bi-info-circle"></i>';
     infoIcon.title = "Show folder information";
+    infoIcon.setAttribute('aria-label', infoIcon.title);
     infoIcon.setAttribute("type", "button");
 
     const sizeDisplay = document.createElement("span");
@@ -609,6 +623,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.className = "btn btn-sm btn-outline-success";
       metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
       metadataBtn.title = "Fetch Metadata for All Comics in Directory";
+      metadataBtn.setAttribute('aria-label', metadataBtn.title);
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
@@ -623,6 +638,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       gcdBtn.className = "btn btn-sm btn-outline-info";
       gcdBtn.innerHTML = '<i class="bi bi-database-down"></i>';
       gcdBtn.title = "Fetch GCD Metadata for All Comics";
+      gcdBtn.setAttribute('aria-label', gcdBtn.title);
       gcdBtn.setAttribute("type", "button");
       gcdBtn.onclick = function (e) {
         e.stopPropagation();
@@ -637,6 +653,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       metadataBtn.className = "btn btn-sm btn-outline-success";
       metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
       metadataBtn.title = "Fetch Metadata for All Comics (legacy)";
+      metadataBtn.setAttribute('aria-label', metadataBtn.title);
       metadataBtn.setAttribute("type", "button");
       metadataBtn.onclick = function (e) {
         e.stopPropagation();
@@ -651,6 +668,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       renameBtn.className = "btn btn-sm btn-outline-primary";
       renameBtn.innerHTML = '<i class="bi bi-input-cursor-text"></i>';
       renameBtn.title = "Rename files in this directory";
+      renameBtn.setAttribute('aria-label', renameBtn.title);
       renameBtn.setAttribute("type", "button");
       renameBtn.addEventListener("click", function (e) {
         if (e) e.stopPropagation();
@@ -696,6 +714,8 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       dropdownBtn.setAttribute("type", "button");
       dropdownBtn.setAttribute("data-bs-toggle", "dropdown");
       dropdownBtn.setAttribute("aria-expanded", "false");
+      dropdownBtn.setAttribute("aria-label", "More actions");
+      dropdownBtn.title = "More actions";
       dropdownBtn.innerHTML = '<i class="bi bi-three-dots-vertical"></i>';
       dropdownBtn.onclick = (e) => e.stopPropagation();
 
@@ -890,6 +910,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     pencil.className = "btn btn-sm btn-outline-dark";
     pencil.innerHTML = '<i class="bi bi-pencil"></i>';
     pencil.title = "Edit filename";
+    pencil.setAttribute('aria-label', pencil.title);
     pencil.setAttribute("type", "button");
 
     pencil.addEventListener("click", e => {
@@ -909,7 +930,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       input.addEventListener("keypress", ev => {
         if (ev.key === "Enter") {
           const newName = input.value.trim();
-          if (!newName) return alert("Filename cannot be empty.");
+          if (!newName) return CLU.toast("Filename cannot be empty.", 'warning');
           liElem.setAttribute("draggable", "true");
           liElem.classList.add("draggable");
           renameItem(oldPath, newName, panel);
@@ -930,6 +951,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
     trash.className = "btn btn-sm btn-outline-danger";
     trash.innerHTML = '<i class="bi bi-trash"></i>';
     trash.title = "Delete file";
+    trash.setAttribute('aria-label', trash.title);
     trash.setAttribute("type", "button");
     trash.onclick = function (e) {
       e.stopPropagation();
@@ -942,6 +964,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       eye.className = "btn btn-sm btn-outline-secondary";
       eye.innerHTML = '<i class="bi bi-eye"></i>';
       eye.title = `View ${fileData.name}`;
+      eye.setAttribute('aria-label', eye.title);
       eye.setAttribute("type", "button");
       eye.onclick = function (e) {
         e.stopPropagation();
@@ -975,6 +998,7 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
       dropdownBtn.setAttribute("aria-expanded", "false");
       dropdownBtn.innerHTML = '<i class="bi bi-three-dots-vertical"></i>';
       dropdownBtn.title = "More options";
+      dropdownBtn.setAttribute('aria-label', dropdownBtn.title);
       dropdownBtn.onclick = (e) => e.stopPropagation();
 
       const dropdownMenu = document.createElement("ul");
@@ -1584,11 +1608,20 @@ function renderDirectoryListing(data, panel) {
     });
   }
 
+  const folderEmpty = data.directories.length === 0 && (!data.files || data.files.length === 0);
   // For the destination panel, only add the drop target if the directory is truly empty.
-  if (panel === 'destination' &&
-    (!data.directories || data.directories.length === 0) &&
-    (!data.files || data.files.length === 0)) {
+  if (panel === 'destination' && folderEmpty) {
     createDropTargetItem(container, data.current_path, panel);
+  } else if (folderEmpty) {
+    appendEmptyListing(container, 'This folder is empty');
+  } else if (directoriesToShow.length === 0 && filter !== 'all') {
+    // Only folders are filtered; files are hidden while a letter is picked.
+    appendEmptyListing(container,
+      filter === '#' ? 'No folders starting with a number or symbol' : `No folders starting with ${filter}`,
+      'Choose All to see everything in this folder.', 'bi-funnel');
+  } else if (panel === 'destination' && directoriesToShow.length === 0 && destinationSearchTerm &&
+    (!data.files || data.files.length === 0 || filter !== 'all')) {
+    appendEmptyListing(container, 'No folders match your search', null, 'bi-search');
   }
 }
 
@@ -1654,6 +1687,9 @@ function loadDownloads(path, panel) {
     .then(response => response.json())
     .then(data => {
       console.log("Received data:", data);
+      if (data.error) {
+        throw new Error(data.error);
+      }
       container.innerHTML = "";
 
       if (panel === 'source') {
@@ -1690,12 +1726,21 @@ function loadDownloads(path, panel) {
           container.appendChild(fileItem);
         });
       }
+      const nothing = !(data.directories && data.directories.length) && !(data.files && data.files.length);
+      if (nothing && panel === 'destination') {
+        createDropTargetItem(container, data.current_path, panel);
+      } else if (nothing && data.parent) {
+        appendEmptyListing(container, 'This folder is empty');
+      } else if (nothing) {
+        appendEmptyListing(container, 'No downloads waiting',
+          'Finished downloads land here until they are moved into a library.', 'bi-cloud-check');
+      }
     })
     .catch(error => {
       console.error("Error loading downloads:", error);
-      container.innerHTML = `<div class="alert alert-danger" role="alert">
-                                    Error loading downloads.
-                                  </div>`;
+      container.replaceChildren();
+      appendEmptyListing(container, 'Could not load Downloads',
+        error && error.message ? error.message : 'The server did not answer.', 'bi-exclamation-triangle');
     });
 }
 
@@ -1809,6 +1854,7 @@ function loadRecentFiles(panel) {
           infoBtn.className = 'btn btn-sm btn-outline-info';
           infoBtn.innerHTML = '<i class="bi bi-eye"></i>';
           infoBtn.title = 'CBZ Information';
+          infoBtn.setAttribute('aria-label', infoBtn.title);
           infoBtn.setAttribute('type', 'button');
           infoBtn.onclick = function (e) {
             e.stopPropagation();
@@ -1830,6 +1876,7 @@ function loadRecentFiles(panel) {
             metadataBtn.className = 'btn btn-sm btn-outline-success';
             metadataBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
             metadataBtn.title = 'Fetch Metadata (search providers by priority)';
+            metadataBtn.setAttribute('aria-label', metadataBtn.title);
             metadataBtn.setAttribute('type', 'button');
             metadataBtn.onclick = function (e) {
               e.stopPropagation();
@@ -1844,6 +1891,7 @@ function loadRecentFiles(panel) {
             gcdBtn.className = 'btn btn-sm btn-outline-info';
             gcdBtn.innerHTML = '<i class="bi bi-database-down"></i>';
             gcdBtn.title = 'Search GCD Database Only';
+            gcdBtn.setAttribute('aria-label', gcdBtn.title);
             gcdBtn.setAttribute('type', 'button');
             gcdBtn.onclick = function (e) {
               e.stopPropagation();
@@ -1859,6 +1907,7 @@ function loadRecentFiles(panel) {
               gcdBtn.className = 'btn btn-sm btn-outline-success';
               gcdBtn.innerHTML = '<i class="bi bi-cloud-download"></i>';
               gcdBtn.title = 'Search GCD for Metadata (legacy)';
+              gcdBtn.setAttribute('aria-label', gcdBtn.title);
               gcdBtn.setAttribute('type', 'button');
               gcdBtn.onclick = function (e) {
                 e.stopPropagation();
@@ -1873,6 +1922,7 @@ function loadRecentFiles(panel) {
           pencilBtn.className = 'btn btn-sm btn-outline-dark';
           pencilBtn.innerHTML = '<i class="bi bi-pencil"></i>';
           pencilBtn.title = 'Edit filename';
+          pencilBtn.setAttribute('aria-label', pencilBtn.title);
           pencilBtn.setAttribute('type', 'button');
           pencilBtn.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -1888,7 +1938,7 @@ function loadRecentFiles(panel) {
             input.addEventListener('keypress', ev => {
               if (ev.key === 'Enter') {
                 const newName = input.value.trim();
-                if (!newName) return alert('Filename cannot be empty.');
+                if (!newName) return CLU.toast('Filename cannot be empty.', 'warning');
                 renameItem(oldPath, newName, panel);
               }
             });
@@ -1908,6 +1958,7 @@ function loadRecentFiles(panel) {
           trashBtn.className = 'btn btn-sm btn-outline-danger';
           trashBtn.innerHTML = '<i class="bi bi-trash"></i>';
           trashBtn.title = 'Delete file';
+          trashBtn.setAttribute('aria-label', trashBtn.title);
           trashBtn.setAttribute('type', 'button');
           trashBtn.onclick = function (e) {
             e.stopPropagation();
@@ -2133,6 +2184,7 @@ function loadTrash(panel) {
         restoreBtn.title = item.original_path
           ? `Restore to ${item.original_path}`
           : 'No original path recorded — use drag and drop';
+        restoreBtn.setAttribute('aria-label', restoreBtn.title);
         restoreBtn.disabled = !item.original_path;
         restoreBtn.setAttribute('type', 'button');
         restoreBtn.onclick = function (e) {
@@ -2147,6 +2199,7 @@ function loadTrash(panel) {
           infoBtn.className = 'btn btn-sm btn-outline-info';
           infoBtn.innerHTML = '<i class="bi bi-eye"></i>';
           infoBtn.title = 'CBZ Information';
+          infoBtn.setAttribute('aria-label', infoBtn.title);
           infoBtn.setAttribute('type', 'button');
           infoBtn.onclick = function (e) {
             e.stopPropagation();
@@ -2161,6 +2214,7 @@ function loadTrash(panel) {
         permDeleteBtn.className = 'btn btn-sm btn-outline-danger';
         permDeleteBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
         permDeleteBtn.title = 'Permanently delete';
+        permDeleteBtn.setAttribute('aria-label', permDeleteBtn.title);
         permDeleteBtn.setAttribute('type', 'button');
         permDeleteBtn.onclick = function (e) {
           e.stopPropagation();
@@ -2404,7 +2458,7 @@ function moveItem(source, destination) {
         loadDirectories(currentSourcePath, 'source');
         loadDirectories(currentDestinationPath, 'destination');
       } else {
-        alert("Error moving file: " + result.error);
+        CLU.toast("Error moving file: " + result.error, 'error');
       }
     })
     .catch(error => {
@@ -2863,7 +2917,7 @@ function openCreateFolderModal() {
 function createFolder() {
   let folderName = createFolderNameInput.value.trim();
   if (!folderName) {
-    alert('Folder name cannot be empty.');
+    CLU.toast('Folder name cannot be empty.', 'warning');
     createFolderNameInput.focus();
     return;
   }
@@ -2883,12 +2937,12 @@ function createFolder() {
         currentFilter['destination'] = 'all';
         loadDirectories(currentDestinationPath, 'destination');
       } else {
-        alert(data.error || 'Error creating folder.');
+        CLU.toast(data.error || 'Error creating folder.', 'error');
       }
     })
     .catch(err => {
       console.error('Error creating folder:', err);
-      alert('An unexpected error occurred.');
+      CLU.toast('An unexpected error occurred.', 'error');
     });
 }
 
@@ -2989,7 +3043,7 @@ function showDeletePrompt(fullPath, name, panel) {
       }
     },
     onDeleteError: function (path, error) {
-      alert("Error deleting item: " + error);
+      CLU.toast("Error deleting item: " + error, 'error');
     }
   };
   CLU.showDeleteConfirmation(fullPath, name);
@@ -3167,7 +3221,7 @@ function openCustomRenameModal(directoryPath, panel) {
   // Validate that we have a valid directory path
   if (!directoryPath || directoryPath === '') {
     console.error('Invalid directory path provided to openCustomRenameModal:', directoryPath);
-    alert('Error: No directory path provided for rename operation.');
+    CLU.toast('Error: No directory path provided for rename operation.', 'error');
     return;
   }
 
@@ -3197,12 +3251,12 @@ function previewCustomRename() {
   console.log('textToRemove:', textToRemove);
 
   if (!textToRemove.trim()) {
-    alert('Please enter text to remove from filenames.');
+    CLU.toast('Please enter text to remove from filenames.', 'warning');
     return;
   }
 
   if (!currentRenameDirectory || currentRenameDirectory === '') {
-    alert('Error: No directory selected for rename operation.');
+    CLU.toast('Error: No directory selected for rename operation.', 'error');
     console.error('currentRenameDirectory is empty');
     return;
   }
@@ -3262,13 +3316,13 @@ function previewCustomRename() {
     })
     .catch(error => {
       console.error('Error fetching directory contents:', error);
-      alert('Error fetching directory contents: ' + error.message);
+      CLU.toast('Error fetching directory contents: ' + error.message, 'error');
     });
 }
 
 function executeCustomRename() {
   if (fileList.length === 0) {
-    alert('No files to rename.');
+    CLU.toast('No files to rename.', 'warning');
     return;
   }
 
@@ -3336,7 +3390,7 @@ function openReplaceTextModal(directoryPath, panel) {
   // Validate that we have a valid directory path
   if (!directoryPath || directoryPath === '') {
     console.error('Invalid directory path provided to openReplaceTextModal:', directoryPath);
-    alert('Error: No directory path provided for replace operation.');
+    CLU.toast('Error: No directory path provided for replace operation.', 'error');
     return;
   }
 
@@ -3369,12 +3423,12 @@ function previewReplaceText() {
   console.log('replacementText:', replacementText);
 
   if (!textToReplace.trim()) {
-    alert('Please enter text to replace in filenames.');
+    CLU.toast('Please enter text to replace in filenames.', 'warning');
     return;
   }
 
   if (!currentReplaceDirectory || currentReplaceDirectory === '') {
-    alert('Error: No directory selected for replace operation.');
+    CLU.toast('Error: No directory selected for replace operation.', 'error');
     console.error('currentReplaceDirectory is empty');
     return;
   }
@@ -3434,13 +3488,13 @@ function previewReplaceText() {
     })
     .catch(error => {
       console.error('Error fetching directory contents:', error);
-      alert('Error fetching directory contents: ' + error.message);
+      CLU.toast('Error fetching directory contents: ' + error.message, 'error');
     });
 }
 
 function executeReplaceText() {
   if (replaceFileList.length === 0) {
-    alert('No files to rename.');
+    CLU.toast('No files to rename.', 'warning');
     return;
   }
 
@@ -3763,12 +3817,12 @@ function performSearch() {
   const query = document.getElementById('searchQuery').value.trim();
 
   if (!query) {
-    alert('Please enter a search term.');
+    CLU.toast('Please enter a search term.', 'warning');
     return;
   }
 
   if (query.length < 2) {
-    alert('Search term must be at least 2 characters.');
+    CLU.toast('Search term must be at least 2 characters.', 'warning');
     return;
   }
 
@@ -3806,7 +3860,7 @@ function performSearch() {
 
         // Check for timeout message
         if (data.timeout) {
-          alert(`Search timeout: ${data.message}`);
+          CLU.toast(`Search timeout: ${data.message}`, 'error');
         }
 
         displaySearchResults(data.results, query);
@@ -3817,7 +3871,7 @@ function performSearch() {
       if (error.name !== 'AbortError') {
         document.getElementById('searchLoading').style.display = 'none';
         console.error('Search error:', error);
-        alert('Search error: ' + error.message);
+        CLU.toast('Search error: ' + error.message, 'error');
       }
     });
 }
@@ -4055,102 +4109,26 @@ function searchGCDMetadata(filePath, fileName) {
       document.body.removeChild(loadingToast);
 
       if (data.success) {
-        // Show success message
-        const successToast = document.createElement('div');
-        successToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        successToast.style.zIndex = '1200';
-        successToast.innerHTML = `
-            <div class="toast-header bg-success text-white">
-              <strong class="me-auto">GCD Search</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-            </div>
-            <div class="toast-body">
-              Successfully added metadata to "${fileName}"<br>
-              <small class="text-muted">Series: ${data.metadata?.series || 'Unknown'}<br>
-              Issue: ${data.metadata?.issue || 'Unknown'}<br>
-              Found ${data.matches_found || 0} potential matches</small>
-            </div>
-          `;
-        document.body.appendChild(successToast);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-          if (document.body.contains(successToast)) {
-            document.body.removeChild(successToast);
-          }
-        }, 5000);
+        CLU.showToast('GCD Search',
+          `Added metadata to "${fileName}". Series: ${data.metadata?.series || 'Unknown'}, ` +
+          `issue ${data.metadata?.issue || 'Unknown'}; ${data.matches_found || 0} potential matches.`,
+          'success', 6000);
       } else if (data.requires_selection) {
         // Show series selection modal
         showGCDSeriesSelectionModal(data, filePath, fileName);
       } else if (data.notFound) {
-        // Show not found message as warning (not error)
-        const warningToast = document.createElement('div');
-        warningToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        warningToast.style.zIndex = '1200';
-        warningToast.innerHTML = `
-            <div class="toast-header bg-warning text-white">
-              <strong class="me-auto">GCD Search</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-            </div>
-            <div class="toast-body">
-              ${data.error || 'Issue not found in GCD database'}
-            </div>
-          `;
-        document.body.appendChild(warningToast);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-          if (document.body.contains(warningToast)) {
-            document.body.removeChild(warningToast);
-          }
-        }, 5000);
+        // Not found is a warning, not an error.
+        CLU.showToast('GCD Search', data.error || 'Issue not found in GCD database', 'warning');
       } else {
-        // Show error message
-        const errorToast = document.createElement('div');
-        errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        errorToast.style.zIndex = '1200';
-        errorToast.innerHTML = `
-            <div class="toast-header bg-danger text-white">
-              <strong class="me-auto">GCD Search Error</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-            </div>
-            <div class="toast-body">
-              Failed to add metadata: ${data.error || data.message || 'Server returned no error message'}
-            </div>
-          `;
-        document.body.appendChild(errorToast);
-
-        // Auto-remove after 8 seconds for errors
-        setTimeout(() => {
-          if (document.body.contains(errorToast)) {
-            document.body.removeChild(errorToast);
-          }
-        }, 8000);
+        CLU.showToast('GCD Search',
+          'Failed to add metadata: ' + (data.error || data.message || 'Server returned no error message'), 'error');
       }
     })
     .catch(error => {
       console.error('GCD Search Network Error:', error);
       document.body.removeChild(loadingToast);
 
-      const errorToast = document.createElement('div');
-      errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-      errorToast.style.zIndex = '1200';
-      errorToast.innerHTML = `
-          <div class="toast-header bg-danger text-white">
-            <strong class="me-auto">Network Error</strong>
-            <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-          </div>
-          <div class="toast-body">
-            Network error: ${error.message}
-          </div>
-        `;
-      document.body.appendChild(errorToast);
-
-      setTimeout(() => {
-        if (document.body.contains(errorToast)) {
-          document.body.removeChild(errorToast);
-        }
-      }, 8000);
+      CLU.showToast('Network Error', `Network error: ${error.message}`, 'error', 8000);
     });
 }
 
@@ -5057,77 +5035,17 @@ function selectGCDSeries(filePath, fileName, seriesId, issueNumber) {
 
       if (data.success) {
         // Show success message
-        const successToast = document.createElement('div');
-        successToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        successToast.style.zIndex = '1200';
-        successToast.innerHTML = `
-            <div class="toast-header bg-success text-white">
-              <strong class="me-auto">GCD Search Success</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-            </div>
-            <div class="toast-body">
-              Successfully added metadata to "${fileName}"<br>
-              <small class="text-muted">Series: ${data.metadata?.series || 'Unknown'}<br>
-              Issue: ${data.metadata?.issue || 'Unknown'}<br>
-              Title: ${data.metadata?.title || 'Unknown'}<br>
-              Publisher: ${data.metadata?.publisher || 'Unknown'}</small>
-            </div>
-          `;
-        document.body.appendChild(successToast);
-
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-          if (document.body.contains(successToast)) {
-            document.body.removeChild(successToast);
-          }
-        }, 5000);
+        CLU.showToast('GCD Search Success', `Added metadata to "${fileName}". Series: ${data.metadata?.series || 'Unknown'}, issue ${data.metadata?.issue || 'Unknown'}, title ${data.metadata?.title || 'Unknown'}, publisher ${data.metadata?.publisher || 'Unknown'}`, 'success', 5000);
       } else {
         // Show error message
-        const errorToast = document.createElement('div');
-        errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        errorToast.style.zIndex = '1200';
-        errorToast.innerHTML = `
-            <div class="toast-header bg-danger text-white">
-              <strong class="me-auto">GCD Search Error</strong>
-              <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-            </div>
-            <div class="toast-body">
-              Failed to add metadata: ${data.error || data.message || 'Server returned no error message'}
-            </div>
-          `;
-        document.body.appendChild(errorToast);
-
-        // Auto-remove after 8 seconds for errors
-        setTimeout(() => {
-          if (document.body.contains(errorToast)) {
-            document.body.removeChild(errorToast);
-          }
-        }, 8000);
+        CLU.showToast('GCD Search Error', `Failed to add metadata: ${data.error || data.message || 'Server returned no error message'}`, 'error', 8000);
       }
     })
     .catch(error => {
       console.error('GCD Search Network Error:', error);
       document.body.removeChild(loadingToast);
 
-      const errorToast = document.createElement('div');
-      errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-      errorToast.style.zIndex = '1200';
-      errorToast.innerHTML = `
-          <div class="toast-header bg-danger text-white">
-            <strong class="me-auto">Network Error</strong>
-            <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-          </div>
-          <div class="toast-body">
-            Network error: ${error.message}
-          </div>
-        `;
-      document.body.appendChild(errorToast);
-
-      setTimeout(() => {
-        if (document.body.contains(errorToast)) {
-          document.body.removeChild(errorToast);
-        }
-      }, 8000);
+      CLU.showToast('Network Error', `Network error: ${error.message}`, 'error', 8000);
     });
 }
 
@@ -5330,30 +5248,7 @@ function searchComicVineMetadata(filePath, fileName) {
       document.body.removeChild(loadingToast);
 
       if (data.success) {
-        // Show success message with cover image if available
-        const successToast = document.createElement('div');
-        successToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        successToast.style.zIndex = '1200';
-        let imageHtml = data.image_url ? ('<img src="' + data.image_url + '" class="img-thumbnail mt-2" style="max-width: 100px;" alt="Cover">') : '';
-        successToast.innerHTML = `
-        <div class="toast-header bg-success text-white">
-          <strong class="me-auto">ComicVine Search</strong>
-          <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-        </div>
-        <div class="toast-body">
-          Successfully added metadata to "${fileName}"<br>
-          <small class="text-muted">Series: ${data.metadata && data.metadata.Series || 'Unknown'}<br>
-          Issue: ${data.metadata && data.metadata.Number || 'Unknown'}</small>
-          ${imageHtml}
-        </div>
-      `;
-        document.body.appendChild(successToast);
-
-        setTimeout(() => {
-          if (document.body.contains(successToast)) {
-            document.body.removeChild(successToast);
-          }
-        }, 5000);
+        CLU.showToast('ComicVine Search', `Added metadata to "${fileName}". Series: ${data.metadata && data.metadata.Series || 'Unknown'}, issue ${data.metadata && data.metadata.Number || 'Unknown'}`, 'success', 5000);
 
         // Remove file from UI if it was moved to a new location
         if (data.moved) {
@@ -5381,46 +5276,10 @@ function searchComicVineMetadata(filePath, fileName) {
         }
       } else if (data.notFound) {
         // Show not found message as warning
-        const warningToast = document.createElement('div');
-        warningToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        warningToast.style.zIndex = '1200';
-        warningToast.innerHTML = `
-        <div class="toast-header bg-warning text-white">
-          <strong class="me-auto">ComicVine Search</strong>
-          <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-        </div>
-        <div class="toast-body">
-          ${data.error || 'Issue not found in ComicVine'}
-        </div>
-      `;
-        document.body.appendChild(warningToast);
-
-        setTimeout(() => {
-          if (document.body.contains(warningToast)) {
-            document.body.removeChild(warningToast);
-          }
-        }, 5000);
+        CLU.showToast('ComicVine Search', `${data.error || 'Issue not found in ComicVine'}`, 'warning', 5000);
       } else {
         // Show error message
-        const errorToast = document.createElement('div');
-        errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        errorToast.style.zIndex = '1200';
-        errorToast.innerHTML = `
-        <div class="toast-header bg-danger text-white">
-          <strong class="me-auto">ComicVine Search Error</strong>
-          <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-        </div>
-        <div class="toast-body">
-          Failed to add metadata: ${data.error || 'Unknown error'}
-        </div>
-      `;
-        document.body.appendChild(errorToast);
-
-        setTimeout(() => {
-          if (document.body.contains(errorToast)) {
-            document.body.removeChild(errorToast);
-          }
-        }, 8000);
+        CLU.showToast('ComicVine Search Error', `Failed to add metadata: ${data.error || 'Unknown error'}`, 'error', 8000);
       }
     })
     .catch(error => {
@@ -5429,25 +5288,7 @@ function searchComicVineMetadata(filePath, fileName) {
         document.body.removeChild(loadingToast);
       }
 
-      const errorToast = document.createElement('div');
-      errorToast.className = 'toast show position-fixed top-0 end-0 m-3';
-      errorToast.style.zIndex = '1200';
-      errorToast.innerHTML = `
-      <div class="toast-header bg-danger text-white">
-        <strong class="me-auto">Network Error</strong>
-        <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-      </div>
-      <div class="toast-body">
-        Network error: ${error.message}
-      </div>
-    `;
-      document.body.appendChild(errorToast);
-
-      setTimeout(() => {
-        if (document.body.contains(errorToast)) {
-          document.body.removeChild(errorToast);
-        }
-      }, 8000);
+      CLU.showToast('Network Error', `Network error: ${error.message}`, 'error', 8000);
     });
 }
 
@@ -5910,29 +5751,7 @@ function selectComicVineVolume(filePath, fileName, volumeId, publisherName, issu
 
       if (data.success) {
         // Show success with cover image
-        const successToast = document.createElement('div');
-        successToast.className = 'toast show position-fixed top-0 end-0 m-3';
-        successToast.style.zIndex = '1200';
-        let imageHtml = data.image_url ? `<img src="${data.image_url}" class="img-thumbnail mt-2" style="max-width: 100px;" alt="Cover">` : '';
-        successToast.innerHTML = `
-        <div class="toast-header bg-success text-white">
-          <strong class="me-auto">ComicVine Success</strong>
-          <button type="button" class="btn-close btn-close-white" onclick="this.closest('.toast').remove()"></button>
-        </div>
-        <div class="toast-body">
-          Successfully added metadata to "${fileName}"<br>
-          <small class="text-muted">Series: ${data.metadata?.Series || 'Unknown'}<br>
-          Issue: ${data.metadata?.Number || 'Unknown'}</small>
-          ${imageHtml}
-        </div>
-      `;
-        document.body.appendChild(successToast);
-
-        setTimeout(() => {
-          if (document.body.contains(successToast)) {
-            document.body.removeChild(successToast);
-          }
-        }, 5000);
+        CLU.showToast('ComicVine Success', `Added metadata to "${fileName}". Series: ${data.metadata?.Series || 'Unknown'}, issue ${data.metadata?.Number || 'Unknown'}`, 'success', 5000);
 
         // Remove file from UI if it was moved to a new location
         if (data.moved) {

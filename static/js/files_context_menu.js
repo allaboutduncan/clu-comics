@@ -98,7 +98,7 @@ function createFolderWithSelection() {
   hideFileContextMenu();
 
   if (selectedFiles.size === 0) {
-    alert('No files selected');
+    CLU.toast('No files selected', 'warning');
     return;
   }
 
@@ -106,7 +106,7 @@ function createFolderWithSelection() {
   const seriesInfo = getMostCommonSeriesName(filePaths);
 
   if (!seriesInfo.seriesName) {
-    alert('Could not determine series name from selected files');
+    CLU.toast('Could not determine series name from selected files', 'warning');
     return;
   }
 
@@ -197,13 +197,13 @@ function proceedWithFolderCreation(filePaths, folderName) {
           loadDirectories(currentDestinationPath, 'destination');
         }
       } else {
-        alert('Error creating folder: ' + result.error);
+        CLU.toast('Error creating folder: ' + result.error, 'error');
       }
     }
   })
   .catch(error => {
     console.error('Error creating folder:', error);
-    alert('Error creating folder: ' + error.message);
+    CLU.toast('Error creating folder: ' + error.message, 'error');
   });
 }
 
@@ -215,7 +215,7 @@ function showCombineFilesModal() {
   const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
 
   if (cbzFiles.length < 2) {
-    showToast('Error', 'Please select at least 2 CBZ files to combine', 'error');
+    CLU.showToast('Error', 'Please select at least 2 CBZ files to combine', 'error');
     return;
   }
 
@@ -238,14 +238,14 @@ function combineSelectedFiles() {
   const fileName = document.getElementById('combinedFileName').value.trim();
 
   if (!fileName) {
-    showToast('Error', 'Please enter a filename', 'error');
+    CLU.showToast('Error', 'Please enter a filename', 'error');
     return;
   }
 
   const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
 
   if (cbzFiles.length < 2) {
-    showToast('Error', 'Need at least 2 CBZ files', 'error');
+    CLU.showToast('Error', 'Need at least 2 CBZ files', 'error');
     return;
   }
 
@@ -262,7 +262,7 @@ function combineSelectedFiles() {
   if (modal) modal.hide();
 
   // Show progress toast
-  showToast('Processing', 'Combining files...', 'info');
+  CLU.showToast('Processing', 'Combining files...', 'info');
 
   fetch('/api/combine-cbz', {
     method: 'POST',
@@ -283,7 +283,7 @@ function combineSelectedFiles() {
   })
   .then(data => {
     if (data.success) {
-      showToast('Success', `Created ${data.output_file}`, 'success');
+      CLU.showToast('Success', `Created ${data.output_file}`, 'success');
       selectedFiles.clear();
       updateSelectionBadge();
 
@@ -294,12 +294,12 @@ function combineSelectedFiles() {
         loadDirectories(currentDestinationPath, 'destination');
       }
     } else {
-      showToast('Error', data.error || 'Failed to combine files', 'error');
+      CLU.showToast('Error', data.error || 'Failed to combine files', 'error');
     }
   })
   .catch(error => {
     console.error('Error combining files:', error);
-    showToast('Error', error.message || 'An error occurred while combining files', 'error');
+    CLU.showToast('Error', error.message || 'An error occurred while combining files', 'error');
   });
 }
 
@@ -310,7 +310,7 @@ function showRemoveXmlConfirmation() {
   const cbzFiles = Array.from(selectedFiles).filter(f => f.toLowerCase().endsWith('.cbz'));
 
   if (cbzFiles.length === 0) {
-    showToast('Error', 'No CBZ files selected', 'error');
+    CLU.showToast('Error', 'No CBZ files selected', 'error');
     return;
   }
 
@@ -353,15 +353,15 @@ function removeXmlFromSelected() {
   .then(r => r.json())
   .then(data => {
     if (data.success) {
-      showToast('Processing', removeXmlStartedMessage(data), 'info');
+      CLU.showToast('Processing', removeXmlStartedMessage(data), 'info');
       selectedFiles.clear();
       updateSelectionBadge();
     } else {
-      showToast('Error', data.error || 'Failed to remove XML', 'error');
+      CLU.showToast('Error', data.error || 'Failed to remove XML', 'error');
     }
   })
   .catch(err => {
-    showToast('Error', err.message || 'An error occurred', 'error');
+    CLU.showToast('Error', err.message || 'An error occurred', 'error');
   });
 }
 
@@ -370,7 +370,7 @@ function showDeleteMultipleConfirmation() {
   hideFileContextMenu();
 
   if (selectedFiles.size === 0) {
-    alert('No files selected');
+    CLU.toast('No files selected', 'warning');
     return;
   }
 
@@ -401,7 +401,7 @@ function showDeleteMultipleConfirmation() {
       });
 
       if (failures.length > 0) {
-        alert(failures.length + ' file(s) failed to delete. Check console for details.');
+        CLU.toast(failures.length + ' file(s) failed to delete. Check console for details.', 'error');
         console.error('Failed deletions:', failures);
       }
 
@@ -446,7 +446,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const folderName = document.getElementById('customFolderName').value.trim();
 
       if (!folderName) {
-        alert('Please enter a folder name');
+        CLU.toast('Please enter a folder name', 'warning');
         return;
       }
 
@@ -497,13 +497,13 @@ document.addEventListener('DOMContentLoaded', function() {
       .then(r => r.json())
       .then(data => {
         if (data.success) {
-          showToast('Processing', removeXmlStartedMessage(data), 'info');
+          CLU.showToast('Processing', removeXmlStartedMessage(data), 'info');
         } else {
-          showToast('Error', data.error || 'Failed to remove XML', 'error');
+          CLU.showToast('Error', data.error || 'Failed to remove XML', 'error');
         }
       })
       .catch(err => {
-        showToast('Error', err.message || 'An error occurred', 'error');
+        CLU.showToast('Error', err.message || 'An error occurred', 'error');
       });
     });
   }

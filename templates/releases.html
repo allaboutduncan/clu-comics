@@ -1,43 +1,42 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Weekly Releases{% endblock %}
 
+{% block page_shell %}container-fluid clu-shell-wide{% endblock %}
+
 {% block content %}
-<div class="container py-5">
-    <!-- Header Section -->
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-5 fade-in-down">
-        <div>
-            <h2 class="display-4 fw-bold mb-1">Weekly Releases</h2>
-            <p class="text-muted lead mb-0">{{ date_range }}</p>
-        </div>
-        <div class="d-flex flex-wrap gap-2">
+<div>
+    {% call(slot) page_header('Weekly Releases', 'bi-calendar-week', subtitle=(date_range if date_range and date_range != 'N/A' else None)) %}
+        {% if slot == 'actions' %}
             {% if releases %}
             <div class="btn-group" role="group" aria-label="View mode" id="view-toggle">
-                <button type="button" class="btn btn-outline-secondary" data-view="cards" title="Card view"
+                <button aria-label="Card view" type="button" class="btn btn-sm btn-outline-secondary" data-view="cards" title="Card view"
                     aria-pressed="false">
-                    <i class="bi bi-grid-3x3-gap-fill"></i>
+                    <i class="bi bi-grid-3x3-gap-fill" aria-hidden="true"></i>
                 </button>
-                <button type="button" class="btn btn-outline-secondary" data-view="table" title="Table view"
+                <button aria-label="Table view" type="button" class="btn btn-sm btn-outline-secondary" data-view="table" title="Table view"
                     aria-pressed="false">
-                    <i class="bi bi-list-ul"></i>
+                    <i class="bi bi-list-ul" aria-hidden="true"></i>
                 </button>
             </div>
             {% endif %}
-            <div class="btn-group" role="group">
-                {% if view_mode != 'error' %}
-                <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary week-nav">
-                    <i class="bi bi-chevron-left"></i> Previous Week
+            {% if view_mode != 'error' %}
+            <div class="btn-group" role="group" aria-label="Week">
+                <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-sm btn-outline-secondary week-nav">
+                    <i class="bi bi-chevron-left" aria-hidden="true"></i> Previous Week
                 </a>
-                <a href="{{ url_for('series.releases') }}" class="btn btn-outline-secondary week-nav">
-                    <i class="bi bi-calendar-check"></i> This Week
+                <a href="{{ url_for('series.releases') }}" class="btn btn-sm btn-outline-secondary week-nav">
+                    <i class="bi bi-calendar-check" aria-hidden="true"></i> This Week
                 </a>
-                <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary week-nav">
-                    Next Week <i class="bi bi-chevron-right"></i>
+                <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-sm btn-outline-secondary week-nav">
+                    Next Week <i class="bi bi-chevron-right" aria-hidden="true"></i>
                 </a>
-                {% endif %}
             </div>
-        </div>
-    </div>
+            {% endif %}
+        {% endif %}
+    {% endcall %}
 
     {% if error %}
     <div class="alert alert-warning alert-dismissible fade show shadow-sm mb-4" role="alert">
@@ -79,13 +78,12 @@
         </div>
     </div>
 
-    <div class="text-center text-muted py-5 d-none" id="releases-no-match">
-        <i class="bi bi-funnel display-4 opacity-25 d-block mb-3"></i>
-        <p class="lead mb-3">No releases match these filters.</p>
-        <button type="button" class="btn btn-outline-primary" id="clear-filters">
-            <i class="bi bi-x-circle me-1"></i>Clear filters
+    {# releases.html's filter script toggles .d-none on it. #}
+    {% call empty_state('No releases match these filters', icon='bi-funnel', id='releases-no-match', classes='d-none') %}
+        <button type="button" class="btn btn-outline-secondary" id="clear-filters">
+            <i class="bi bi-x-circle me-1" aria-hidden="true"></i>Clear filters
         </button>
-    </div>
+    {% endcall %}
 
     <div class="releases-grid" id="releases-cards">
         {% for issue in releases %}
@@ -183,22 +181,14 @@
         </div>
     </div>
     {% elif not error %}
-    <!-- Empty State -->
-    <div class="text-center py-5 fade-in-up">
-        <div class="mb-4">
-            <i class="bi bi-calendar-x display-1 text-muted opacity-25"></i>
-        </div>
-        <h3 class="h2 text-muted mb-3">No releases this week</h3>
-        <p class="text-muted mb-4 lead">Check back later or browse other weeks.</p>
-        <div class="d-flex justify-content-center gap-2">
-            <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-primary btn-lg week-nav">
-                <i class="bi bi-chevron-left me-1"></i>Previous Week
-            </a>
-            <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-primary btn-lg week-nav">
-                Next Week<i class="bi bi-chevron-right ms-1"></i>
-            </a>
-        </div>
-    </div>
+    {% call empty_state('No releases this week', 'Check back later or browse other weeks.', 'bi-calendar-x') %}
+        <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-secondary week-nav">
+            <i class="bi bi-chevron-left me-1" aria-hidden="true"></i>Previous week
+        </a>
+        <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-secondary week-nav">
+            Next week<i class="bi bi-chevron-right ms-1" aria-hidden="true"></i>
+        </a>
+    {% endcall %}
     {% endif %}
 </div>
 

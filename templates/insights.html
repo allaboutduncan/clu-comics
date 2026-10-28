@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Library Insights{% endblock %}
 
@@ -7,18 +9,16 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-lg insights-page">
-    <!-- Page Header -->
-    <div class="insights-header d-flex justify-content-between align-items-start flex-wrap gap-3">
-        <div>
-            <h1><i class="bi bi-graph-up-arrow me-2 text-primary"></i>Insights</h1>
-            <p class="lead mb-0">Explore your collection statistics and reading habits</p>
-        </div>
-        <button class="btn btn-primary btn-lg" id="generateWrappedBtn" data-bs-toggle="modal"
-            data-bs-target="#wrappedModal">
-            <i class="bi bi-gift me-2"></i>Year Wrapped
-        </button>
-    </div>
+<div class="insights-page">
+    {% call(slot) page_header('Insights', 'bi-graph-up-arrow',
+                              subtitle='Explore your collection statistics and reading habits') %}
+        {% if slot == 'actions' %}
+            <button class="btn btn-sm btn-primary" id="generateWrappedBtn" data-bs-toggle="modal"
+                data-bs-target="#wrappedModal">
+                <i class="bi bi-gift me-1" aria-hidden="true"></i>Year Wrapped
+            </button>
+        {% endif %}
+    {% endcall %}
 
     <!-- Collection Stats -->
     <div class="d-flex justify-content-between align-items-center mb-2">
@@ -168,10 +168,7 @@
                     <div id="recently-read-grid" class="recently-read-grid">
                         <!-- Loaded via JavaScript -->
                     </div>
-                    <div id="recently-read-empty" class="empty-state" style="display: none;">
-                        <i class="bi bi-journal-x d-block"></i>
-                        <p class="mb-0">No recently read comics</p>
-                    </div>
+                    {{ empty_state('No recently read comics', icon='bi-journal-x', id='recently-read-empty', hidden=True, compact=True) }}
                 </div>
             </div>
         </div>
@@ -332,26 +329,6 @@
                         <i class="bi bi-download me-1"></i>Download All
                     </a>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Toast Container -->
-    <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 9999;">
-        <div id="successToast" class="toast align-items-center text-bg-success border-0" role="alert"
-            aria-live="assertive" aria-atomic="true">
-            <div class="d-flex">
-                <div class="toast-body" id="successToastBody"></div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                    aria-label="Close"></button>
-            </div>
-        </div>
-        <div id="errorToast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive"
-            aria-atomic="true">
-            <div class="d-flex">
-                <div class="toast-body" id="errorToastBody"></div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                    aria-label="Close"></button>
             </div>
         </div>
     </div>
@@ -768,7 +745,7 @@
     function renderHeatmap() {
         const container = document.getElementById('reading-heatmap');
         if (!container || Object.keys(heatmapData).length === 0) {
-            container.innerHTML = '<div class="empty-state"><i class="bi bi-calendar-x d-block"></i><p class="mb-0">No reading history data</p></div>';
+            container.replaceChildren(CLU.emptyState({ icon: 'bi-calendar-x', title: 'No reading history yet', compact: true }));
             return;
         }
 
@@ -993,25 +970,8 @@
     initReadingStatsFilter();
 
     // ===== TOAST HELPERS =====
-    function showSuccess(message) {
-        const toastEl = document.getElementById('successToast');
-        const toastBody = document.getElementById('successToastBody');
-        if (toastEl && toastBody) {
-            toastBody.textContent = message;
-            const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
-            toast.show();
-        }
-    }
-
-    function showError(message) {
-        const toastEl = document.getElementById('errorToast');
-        const toastBody = document.getElementById('errorToastBody');
-        if (toastEl && toastBody) {
-            toastBody.textContent = message;
-            const toast = new bootstrap.Toast(toastEl, { delay: 5000 });
-            toast.show();
-        }
-    }
+    const showSuccess = message => CLU.showSuccess(message);
+    const showError = message => CLU.showError(message);
 
     // ===== READING TRENDS =====
     const trendsYearFilter = document.getElementById('trendsYearFilter');
@@ -1055,7 +1015,7 @@
                 const data = await response.json();
 
                 if (data.length === 0) {
-                    container.innerHTML = '<div class="text-center text-muted py-3"><i class="bi bi-inbox d-block mb-2" style="font-size: 1.5rem;"></i>No data yet</div>';
+                    container.replaceChildren(CLU.emptyState({ icon: 'bi-inbox', title: 'No data yet', compact: true }));
                 } else {
                     const maxCount = data[0].count;
                     container.innerHTML = data.map((item, index) => `

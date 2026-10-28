@@ -1,19 +1,25 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}Schedules{% endblock %}
 
 {% block content %}
-<div class="container-lg py-4">
-    <h1 class="mb-4"><i class="bi bi-clock-history me-2"></i>Scheduled Tasks</h1>
-    <p class="text-muted">
-        Configure recurring background jobs: file-index rebuilds, GetComics scraping and auto-download,
-        Metron series sync, and reading-list sync.
-        <br>
-        Every time on this page &mdash; the fields below, &ldquo;Next&rdquo; and &ldquo;Last run&rdquo;
-        &mdash; is shown in <strong>{{ timezone_label }}</strong>, the fixed offset set via
-        <a href="{{ url_for('config_page') }}">Settings &rarr; Personalization</a>. It is a fixed
-        offset, so it does not follow daylight saving. Jobs are stored and triggered in UTC.
-    </p>
+<div>
+    {% call(slot) page_header('Scheduled Tasks', 'bi-clock-history',
+                              subtitle='Recurring background jobs. Times are shown in ' ~ timezone_label ~ '.') %}
+        {% if slot == 'help' %}
+        <p>
+            Configure recurring background jobs: file-index rebuilds, GetComics scraping and auto-download,
+            Metron series sync, and reading-list sync.
+        </p>
+        <p>
+            Every time on this page &mdash; the fields below, &ldquo;Next&rdquo; and &ldquo;Last run&rdquo;
+            &mdash; is shown in <strong>{{ timezone_label }}</strong>, the fixed offset set via
+            <a href="{{ url_for('config_page') }}">Settings &rarr; Personalization</a>. It is a fixed
+            offset, so it does not follow daylight saving. Jobs are stored and triggered in UTC.
+        </p>
+        {% endif %}
+    {% endcall %}
 
     {# Hidden timezone holder so CLU.tzOffsetHours() can read the user's offset #}
     <input type="hidden" id="timezone" value="{{ timezone }}">
@@ -453,56 +459,6 @@
 {{ super() }}
 <script>
     // =========================================
-    // Toast helper (duplicated from config.html — also used elsewhere there)
-    // =========================================
-    function showToast(message, type = 'info', duration = 5000) {
-        let container = document.getElementById('toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'toast-container';
-            container.className = 'toast-container position-fixed top-0 end-0 p-3';
-            container.style.zIndex = '9999';
-            document.body.appendChild(container);
-        }
-
-        const toastId = 'toast-' + Date.now();
-        const iconMap = {
-            'success': 'bi-check-circle-fill text-success',
-            'error': 'bi-exclamation-triangle-fill text-danger',
-            'warning': 'bi-exclamation-triangle-fill text-warning',
-            'info': 'bi-info-circle-fill text-info'
-        };
-
-        const toastHtml = `
-            <div id="${toastId}" class="toast bg-white border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
-                <div class="toast-header">
-                    <i class="bi ${iconMap[type]} me-2"></i>
-                    <strong class="me-auto">${type.charAt(0).toUpperCase() + type.slice(1)}</strong>
-                    <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-                </div>
-                <div class="toast-body">
-                    ${message}
-                </div>
-            </div>
-        `;
-
-        container.insertAdjacentHTML('beforeend', toastHtml);
-        const toastElement = document.getElementById(toastId);
-        const toast = new bootstrap.Toast(toastElement, {
-            delay: duration,
-            autohide: duration > 0
-        });
-
-        toast.show();
-
-        toastElement.addEventListener('hidden.bs.toast', () => {
-            toastElement.remove();
-        });
-
-        return toast;
-    }
-
-    // =========================================
     // File Index Management Functions
     // =========================================
     function rebuildFileIndex() {
@@ -519,15 +475,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     updateIndexStatus();
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error rebuilding file index:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -622,15 +578,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     setTimeout(loadRebuildSchedule, 500);
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error saving schedule:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -713,15 +669,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     setTimeout(loadScrapeIndexSchedule, 500);
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error saving scrape_index schedule:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -792,15 +748,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     setTimeout(loadSyncSchedule, 500);
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error saving sync schedule:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -822,14 +778,14 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error running sync:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -861,14 +817,14 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(enabled ? 'Credit backfill enabled' : 'Credit backfill disabled', 'success');
+                    CLU.toast(enabled ? 'Credit backfill enabled' : 'Credit backfill disabled', 'success');
                 } else {
-                    showToast(data.error || 'Could not save preference', 'error');
+                    CLU.toast(data.error || 'Could not save preference', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error saving credit backfill preference:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             });
     }
 
@@ -889,14 +845,14 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message || 'Credit backfill started', 'success');
+                    CLU.toast(data.message || 'Credit backfill started', 'success');
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error running credit backfill:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -1001,15 +957,15 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     loadGetcomicsSchedule();
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error saving getcomics schedule:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -1031,14 +987,14 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
                 console.error('Error running getcomics download:', error);
-                showToast('Network error occurred', 'error');
+                CLU.toast('Network error occurred', 'error');
             })
             .finally(() => {
                 button.innerHTML = originalText;
@@ -1092,14 +1048,14 @@
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showToast(data.message, 'success');
+                    CLU.toast(data.message, 'success');
                     loadRlSyncSchedule();
                 } else {
-                    showToast(data.error || 'Unknown error', 'error');
+                    CLU.toast(data.error || 'Unknown error', 'error');
                 }
             })
             .catch(error => {
-                showToast('Error saving schedule: ' + error.message, 'error');
+                CLU.toast('Error saving schedule: ' + error.message, 'error');
             });
     }
 

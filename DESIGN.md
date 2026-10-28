@@ -193,7 +193,9 @@ The palette is borrowed: Bootstrap's semantic roles, filled in by whichever them
 
 ## Layout
 
-Pages sit in Bootstrap's `.container` / `.container-lg` under a full-width navbar, with a sticky footer (`body.d-flex.flex-column.min-vh-100`). The standard page is: heading row (title left, actions right), a toolbar of filters and search, then content.
+Pages sit under a full-width navbar, with a sticky footer (`body.d-flex.flex-column.min-vh-100`). The standard page is: page header, a toolbar of filters and search, then content.
+
+**The Shell Rule.** `base.html` owns the page width and top rhythm: it wraps every page's content in `.clu-shell.container-lg` (1.5rem above, 2.5rem below). A page never adds its own outer container, vertical padding or `max-width`. Cover grids (Home/Collection, Library, Source Wall, Releases, To Read) override `{% block page_shell %}` to `container-fluid clu-shell-wide`, whose side gutter grows with the screen. Nothing else is full width. `tests/unit/test_page_header.py` holds both lists.
 
 The cover grid is the core layout: CSS grid, `repeat(auto-fill, minmax(150px, 1fr))`, gaps of 1.5rem and 1rem vertical padding. A "large cards" mode uses `minmax(173px, 190px)` centred, which grows cards by about 15% without dropping a column. Phones keep two columns. Dashboard rows are horizontal Swiper carousels with 165px slides. Filter bars scroll sideways rather than wrapping.
 
@@ -219,12 +221,22 @@ Gently rounded, never pill-shaped except for counts. Covers have 8px corners, `a
 
 ## Components
 
-Bootstrap components as shipped, styled only through theme variables. CLU's own components are the ones that live on a cover.
+Bootstrap components as shipped, styled only through theme variables. CLU's own components are the ones that live on a cover, plus the page header.
+
+### Page header
+Every page opens with `page_header(title, icon, subtitle, stats)` from `templates/partials/page_header.html` (styles in `static/css/clu-page.css`). It puts the same three things in the same place on every page: where you are, how much there is, and the page's one main action.
+- **Title:** the page's only `h1`, at h3 size (1.75rem from 1200px), weight 500, `--bs-emphasis-color`, with a Bootstrap icon in front in the same colour. On a folder or detail page the title is the item (folder, series, list) and a small breadcrumb sits above it. The breadcrumb is navigation, never a decorative label.
+- **Subtitle:** one muted sentence at most: the thing a visitor needs every time ("Times are shown in UTC+01:00", "An empty list means nothing has failed").
+- **How this works:** the page's explanation goes in the header's `help` slot, a native `<details>` toggle under the subtitle, closed by default. Never an always-open paragraph of explanation above the content.
+- **Stat line:** counts inline, e.g. "**4,115** tracked series · **2,691** missing". The number is in `--bs-emphasis-color` at 600 weight with tabular figures, and the label is muted. A stat can link to its filtered view. Zero and missing counts are left out. This replaces KPI tiles everywhere except Insights, where the numbers are the content.
+- **Actions** (right): at most one `btn-sm btn-primary` for the page's create, add or run verb (a link to a sibling page is never primary), and up to three `btn-sm btn-outline-secondary` for actions used on most visits. Everything else goes in the **More** menu: occasional jobs, imports and exports, mode switches like Select, and links to sibling pages. A busy page (Pull List, Reading Lists) shows the primary and More, nothing else. Destructive items go last in that menu, after a divider, in danger text.
+- **Phone (below 576px):** one line holding the title (truncated with an ellipsis), the primary action and More. `static/js/clu-page.js` moves the secondary actions into More and back. The nodes themselves move, so ids and handlers survive; `data-clu-keep` pins an action inline.
+- **Rhythm:** tight inside (0.25rem between title, subtitle and stats), generous below (1.5rem to the content). No entrance animation.
 
 ### Buttons
 - **Shape:** the theme's control radius (stock: 0.375rem).
 - **Primary:** `btn-primary`, one per view, for the action the page exists for (Save, Run, Apply).
-- **Working default:** `btn-outline-secondary btn-sm` for toolbars, filters, pagers and row actions. It is used about twice as often as primary.
+- **Working default:** `btn-outline-secondary btn-sm` for toolbars, filters, pagers and row actions. It is used about twice as often as primary. In the page header and empty states it is drawn from the text and border tokens, not `--bs-secondary`, because several themes make secondary a brand colour (Minty's is pink at about 2:1 on white): grey means grey on every theme.
 - **Destructive:** `btn-danger`, only inside the shared delete-confirmation modal (`CLU.showDeleteConfirmation`).
 - **Icons:** Bootstrap Icons (`bi-*`) with `me-2` before a label. Icon-only buttons carry a `title` and an `aria-label`.
 
@@ -251,7 +263,8 @@ Small fixed-colour labels pinned 8px in from a cover's corners, like price stick
 - **Active Operations:** a spinning warning-coloured icon with a count, opening a dropdown of progress rows (6px bars, ellipsised label and detail).
 
 ### Feedback
-- **Toasts** (`CLU.showToast`, `CLU.showSuccess`, `CLU.showError`) for results and status; any page that uses them includes `partials/toast_container.html`.
+- **Toasts** (`CLU.toast`, `CLU.showToast`, `CLU.showSuccess`, `CLU.showError` in `static/js/clu-toast.js`) for results and status. One container, bottom right, rendered by `base.html`, so a toast never covers the header button that started it. A theme `text-bg-*` fill with an icon and an optional bold title; the × takes the fill's text colour. Errors stay 8s, warnings 6s, success 4s; 0 keeps one until closed. Errors and warnings are announced assertively, the rest politely. The same message shown again restarts its toast instead of stacking, and at most four are on screen.
+- **Empty states** (`empty_state(title, message, icon)` in `partials/empty_state.html`, `CLU.emptyState()` in scripts): a muted 2.5rem icon, an `h2` title in emphasis colour at 1.25rem, one muted sentence, then at most one `btn-primary` (default size, never `btn-lg`) and `btn-outline-secondary` for the rest. The title names what is missing ("Nothing is downloading"); the sentence says what fills it. A good empty ("No wanted issues") uses `tone='success'`; a panel uses `compact=True`. A source that could not be reached is never shown as empty.
 - **Modals** for every confirmation or input. Never `alert()`, `confirm()` or `prompt()`.
 - **Loading:** a pulsing muted italic metadata line on cover cards; `loading.svg` / `error.svg` placeholders in cover frames.
 
@@ -267,11 +280,13 @@ Full-screen over a Reader Black backdrop at `100dvh`, with translucent black hea
 - **Do** use Bootstrap Icons, Bootstrap components and the shared `CLU` toast and modal helpers before writing a new component.
 - **Do** respect `prefers-reduced-motion` for any animation beyond a hover transition, as the floating pager already does.
 - **Do** load static assets through `url_for`, never a hardcoded `/static/`.
+- **Do** open every new page with `page_header(...)` and let `base.html`'s shell set its width.
 
 ### Don't:
 - **Don't** write hex or rgb colours in page CSS; the only exceptions are stickers on covers and the reader.
 - **Don't** key styles on a bare `[data-bs-theme=dark]`; use `:root[data-bs-theme="dark"]` when a page rule must differ.
-- **Don't** build generic SaaS dashboard pieces: gradient hero cards, KPI tiles, glassy panels.
+- **Don't** build generic SaaS dashboard pieces: gradient hero cards, KPI tiles, glassy panels, display-size page titles. Counts go in the page header's stat line.
+- **Don't** colour a header or toolbar button for decoration (outline-info, -warning, -success). Colour on a button means primary or danger, nothing else.
 - **Don't** spread streaming-app styling (cinematic dark carousels, autoplay previews) beyond the reader.
 - **Don't** load web fonts or set a literal `font-family`.
 - **Don't** lift or shadow things that don't open; flat is the resting state.

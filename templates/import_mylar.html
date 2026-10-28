@@ -1,11 +1,11 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: Import from Mylar3{% endblock %}
 
 {% block content %}
-{% include 'partials/toast_container.html' %}
 
-<div class="container-lg py-4" id="mylar-import"
+<div id="mylar-import"
   data-load-url="{{ url_for('mylar_import.mylar_load') }}"
   data-preview-url="{{ url_for('mylar_import.mylar_preview') }}"
   data-apply-url="{{ url_for('mylar_import.mylar_apply') }}"
@@ -13,14 +13,13 @@
   data-drop-url="{{ url_for('mylar_import.mylar_drop_folder') }}"
   data-latest-job="{{ latest_job_id }}">
 
-  <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
-    <h2 class="text-primary-emphasis mb-0">Import from Mylar3</h2>
-    {% if from_setup %}
-    <a class="btn btn-sm btn-outline-secondary" id="mi-back-to-setup" href="{{ url_for('setup.setup_page') }}">
-      <i class="bi bi-signpost-split me-1"></i>Back to Guided Setup
-    </a>
+  {% call(slot) page_header('Import from Mylar3', 'bi-box-arrow-in-down') %}
+    {% if slot == 'actions' and from_setup %}
+      <a class="btn btn-sm btn-outline-secondary" id="mi-back-to-setup" href="{{ url_for('setup.setup_page') }}">
+        <i class="bi bi-signpost-split me-1" aria-hidden="true"></i>Back to Guided Setup
+      </a>
     {% endif %}
-  </div>
+  {% endcall %}
   <p class="text-muted">
     Bring your Mylar3 watchlist onto the Pull List, along with your SABnzbd/NZBGet client,
     Newznab indexers and ComicVine API key. Nothing is changed until you review the preview and

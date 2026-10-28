@@ -1,5 +1,6 @@
 <!-- templates/index.html -->
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU (Comic Library Utilities){% endblock %}
 
@@ -9,8 +10,8 @@
 
 {% block content %}
 
-<div class="container-lg">
-  <h2 class="text-primary-emphasis">File Manager</h2>
+<div>
+  {{ page_header('File Manager', 'bi-folder2-open') }}
 
   <!-- Progress indicator -->
   {% include 'partials/progress_container.html' %}
@@ -27,7 +28,7 @@
     <div class="col-md-6">
       <h3>Source</h3>
       <!-- Button group for switching between Library, Downloads and Recent Files -->
-      <div class="btn-group mb-2" role="group" aria-label="View Options">
+      <div class="btn-group mb-2 files-source-views" role="group" aria-label="View Options">
         <!-- Library Dropdown -->
         <div class="dropdown">
           <button class="btn btn-outline-primary dropdown-toggle" type="button"
@@ -101,8 +102,6 @@
     </div>
   </div>
 
-  <!-- Toast Container -->
-  {% include 'partials/toast_container.html' %}
   <!--
     The ComicInfo clear flow lives in clu-cbz-info.js: it confirms through
     #clearComicInfoConfirmModal (partials/modal_cbz_info.html) and reports via
@@ -473,7 +472,7 @@
           <div class="input-group">
             <input type="text" class="form-control" id="searchQuery" placeholder="Enter search term..."
               autocomplete="off">
-            <button class="btn btn-outline-secondary" type="button" onclick="performSearch()">
+            <button aria-label="Search" title="Search" class="btn btn-outline-secondary" type="button" onclick="performSearch()">
               <i class="bi bi-search"></i>
             </button>
           </div>

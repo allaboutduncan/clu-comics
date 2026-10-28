@@ -185,6 +185,7 @@ function renderDirectoryList(data, filter) {
         selectBtn.className = 'btn btn-sm btn-outline-success';
         selectBtn.innerHTML = '<i class="bi bi-check-lg"></i>';
         selectBtn.title = 'Select this folder';
+        selectBtn.setAttribute('aria-label', selectBtn.title);
         selectBtn.onclick = (e) => {
             e.stopPropagation();
             selectDirectory(data.current_path + '/' + dir);
@@ -217,7 +218,7 @@ function selectCurrentDirectory() {
 function selectDirectory(path) {
     if (!seriesData || !seriesData.id) {
         console.error('No series data available');
-        alert('Error: Series data not available');
+        CLU.toast('Error: Series data not available', 'error');
         return;
     }
 
@@ -277,12 +278,12 @@ function selectDirectory(path) {
                 // Automatically check collection status
                 setTimeout(() => refreshCollectionStatus(), 300);
             } else {
-                alert('Failed to save mapping: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to save mapping: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error saving mapping:', error);
-            alert('Error saving mapping: ' + error.message);
+            CLU.toast('Error saving mapping: ' + error.message, 'error');
         })
         .finally(() => {
             selectBtn.disabled = false;
@@ -325,12 +326,12 @@ function removeMappingConfirm() {
                 const mapBtn = buttonsDiv.querySelector('.btn-outline-primary');
                 mapBtn.innerHTML = '<i class="bi bi-folder-symlink me-1"></i>Map Location';
             } else {
-                alert('Failed to remove mapping: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to remove mapping: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error removing mapping:', error);
-            alert('Error removing mapping: ' + error.message);
+            CLU.toast('Error removing mapping: ' + error.message, 'error');
         });
 }
 
@@ -367,12 +368,12 @@ function syncSeries() {
                 // Refresh collection status to update table
                 setTimeout(() => refreshCollectionStatus(), 300);
             } else {
-                alert('Failed to sync: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to sync: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error syncing series:', error);
-            alert('Error syncing: ' + error.message);
+            CLU.toast('Error syncing: ' + error.message, 'error');
         })
         .finally(() => {
             syncBtn.disabled = false;
@@ -478,18 +479,18 @@ function refreshCollectionStatus() {
                                     const escapedPath = status.file_path.replace(/\\/g, '/').replace(/'/g, "\\'");
                                     actionCell.innerHTML = `
                                         <div class="btn-group" role="group">
-                                            <button type="button" class="btn btn-sm btn-outline-info text-info"
+                                            <button aria-label="View CBZ Info" type="button" class="btn btn-sm btn-outline-info text-info"
                                                 onclick="viewIssueFile('${escapedPath}', '${issueNum}')"
                                                 title="View CBZ Info">
                                                 <i class="bi bi-eye"></i>
                                             </button>
-                                            <button type="button" class="btn btn-sm btn-outline-primary"
+                                            <button aria-label="Edit CBZ" type="button" class="btn btn-sm btn-outline-primary"
                                                 onclick="editIssueFile('${escapedPath}')"
                                                 title="Edit CBZ">
                                                 <i class="bi bi-pencil"></i>
                                             </button>
                                             <div class="dropdown d-inline-block">
-                                                <button class="btn btn-sm btn-outline-secondary" type="button"
+                                                <button aria-label="More options" class="btn btn-sm btn-outline-secondary" type="button"
                                                     data-bs-toggle="dropdown" aria-expanded="false" title="More options">
                                                     <i class="bi bi-three-dots-vertical"></i>
                                                 </button>
@@ -526,7 +527,7 @@ function refreshCollectionStatus() {
                                 } else if (hasManual) {
                                     // Manually marked - show clear button
                                     actionCell.innerHTML = `
-                                        <button class="btn btn-sm btn-info"
+                                        <button aria-label="Clear ${manualStatus.status} status" class="btn btn-sm btn-info"
                                             onclick="clearManualStatus('${issueNum}')"
                                             title="Clear ${manualStatus.status} status">
                                             <i class="bi bi-arrow-counterclockwise"></i>
@@ -541,7 +542,7 @@ function refreshCollectionStatus() {
                                     const issueYear = row.dataset.issueYear || '';
                                     actionCell.innerHTML = `
                                         <div class="btn-group" role="group">
-                                            <button class="btn btn-sm btn-outline-primary"
+                                            <button aria-label="Search GetComics" class="btn btn-sm btn-outline-primary"
                                                 onclick="searchGetComics('${seriesName}', '${issueNum}', '${issueYear}')"
                                                 title="Search GetComics">
                                                 <i class="bi bi-search"></i>
@@ -608,12 +609,12 @@ function refreshCollectionStatus() {
                 }
 
             } else {
-                alert('Failed to refresh: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to refresh: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error refreshing collection status:', error);
-            alert('Error refreshing: ' + error.message);
+            CLU.toast('Error refreshing: ' + error.message, 'error');
         })
         .finally(() => {
             if (refreshBtn) {
@@ -766,12 +767,12 @@ function submitMarkIssue() {
                 // Show success toast or notification
                 console.log(`Issue #${issueNumber} marked as ${status}`);
             } else {
-                alert('Failed to mark issue: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to mark issue: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error marking issue:', error);
-            alert('Error marking issue');
+            CLU.toast('Error marking issue', 'error');
         });
 }
 
@@ -794,12 +795,12 @@ function clearManualStatus(issueNumber) {
                 // Refresh to show updated status
                 refreshCollectionStatus();
             } else {
-                alert('Failed to clear status: ' + (data.error || 'Unknown error'));
+                CLU.toast('Failed to clear status: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error clearing status:', error);
-            alert('Error clearing status');
+            CLU.toast('Error clearing status', 'error');
         });
 }
 
@@ -843,7 +844,7 @@ function updateIssueRow(issueNumber, status, notes) {
     const actionCell = row.querySelector('td.issue-action-cell');
     if (actionCell) {
         actionCell.innerHTML = `
-            <button class="btn btn-sm btn-outline-secondary"
+            <button aria-label="Clear ${status} status" class="btn btn-sm btn-outline-secondary"
                 onclick="clearManualStatus('${issueNumber}')"
                 title="Clear ${status} status">
                 <i class="bi bi-arrow-counterclockwise"></i>
@@ -1083,15 +1084,13 @@ async function bulkMarkIssues(status) {
             clearIssueSelection();
 
             // Show success toast
-            if (typeof showToastGC === 'function') {
-                showToastGC(`${data.count} issue${data.count !== 1 ? 's' : ''} marked as ${status}`, 'success');
-            }
+            CLU.toast(`${data.count} issue${data.count !== 1 ? 's' : ''} marked as ${status}`, 'success');
         } else {
-            alert('Failed to bulk mark issues: ' + (data.error || 'Unknown error'));
+            CLU.toast('Failed to bulk mark issues: ' + (data.error || 'Unknown error'), 'error');
         }
     } catch (e) {
         console.error('Error bulk marking issues:', e);
-        alert('Error: ' + e.message);
+        CLU.toast('Error: ' + e.message, 'error');
     } finally {
         buttons.forEach(btn => btn.disabled = false);
     }
@@ -1138,15 +1137,13 @@ async function bulkClearManualStatus() {
             refreshCollectionStatus();
 
             // Show success toast
-            if (typeof showToastGC === 'function') {
-                showToastGC(`${data.count} issue${data.count !== 1 ? 's' : ''} cleared to wanted`, 'success');
-            }
+            CLU.toast(`${data.count} issue${data.count !== 1 ? 's' : ''} cleared to wanted`, 'success');
         } else {
-            alert('Failed to clear manual status: ' + (data.error || 'Unknown error'));
+            CLU.toast('Failed to clear manual status: ' + (data.error || 'Unknown error'), 'error');
         }
     } catch (e) {
         console.error('Error clearing manual status:', e);
-        alert('Error: ' + e.message);
+        CLU.toast('Error: ' + e.message, 'error');
     } finally {
         buttons.forEach(btn => btn.disabled = false);
     }

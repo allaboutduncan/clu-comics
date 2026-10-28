@@ -375,3 +375,18 @@
     z-index: 9999;
     pointer-events: none;
 }
+/* "This folder is empty" / "No downloads waiting": a message, not a row. */
+.files-empty-listing {
+    cursor: default;
+    background-color: transparent;
+}
+
+/* Library / Downloads / Recent Files / Trash: never wider than the panel. */
+.files-source-views {
+    max-width: 100%;
+}
+
+.files-source-views > *,
+.files-source-views > .dropdown > .btn {
+    min-width: 0;
+}

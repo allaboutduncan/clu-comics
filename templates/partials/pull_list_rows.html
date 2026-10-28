@@ -61,7 +61,7 @@
     </td>
     <td class="text-end pe-4">
         <div class="btn-group" role="group">
-            <a href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
+            <a aria-label="View Series" href="{{ url_for('series.series_view', slug=generate_series_slug(series.name, series.id, series.volume)) }}"
                 class="btn btn-sm btn-outline-primary" title="View Series">
                 <i class="bi bi-eye"></i>
             </a>
