@@ -62,6 +62,10 @@ class TestReadingListGridPaging:
         assert html.count('class="reading-list-card') == 20
         assert 'data-per-page-cookie="clu_per_page_reading_lists"' in html
         assert client.get("/api/reading-lists/page").get_json()["per_page"] == 20
+        # A junk or unoffered ?per_page falls through to the cookie.
+        for bad in ("abc", "7"):
+            html = client.get("/reading-lists?per_page=" + bad).get_data(as_text=True)
+            assert 'data-per-page="20"' in html
         html = client.get("/reading-lists?per_page=80").get_data(as_text=True)
         assert 'data-per-page="80"' in html
         client.set_cookie("clu_per_page_reading_lists", "abc")

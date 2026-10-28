@@ -35,7 +35,10 @@
  *
  *         rememberAs     optional cookie name: a size picked in the select
  *                        is saved there, and the server falls back to it
- *                        when the URL has no per_page
+ *                        when the URL has no per_page. Every fetch then
+ *                        names its size, and so does the URL: a missing
+ *                        per_page means "the cookie", which another tab
+ *                        may have changed, not "the default"
  *
  *       returns { load({resetPage}), goTo(page), page(), query() }
  *
@@ -141,10 +144,15 @@
       return p;
     }
 
-    function pageParams() {
+    // A fetch always names its size, so the rows that come back are the
+    // size on screen; the URL leaves out a default only when no cookie can
+    // stand in for the missing per_page.
+    function pageParams(forFetch) {
       const p = stateParams();
       if (page !== 1) p.set('page', String(page));
-      if (perPage !== defaultPerPage) p.set('per_page', String(perPage));
+      if (forFetch || opts.rememberAs || perPage !== defaultPerPage) {
+        p.set('per_page', String(perPage));
+      }
       return p;
     }
 
@@ -229,7 +237,7 @@
       if (inFlight) inFlight.abort();
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       inFlight = ctrl;
-      const qs = pageParams().toString();
+      const qs = pageParams(true).toString();
       return fetch(opts.endpoint + (qs ? '?' + qs : ''), {
         headers: { Accept: 'application/json' },
         signal: ctrl ? ctrl.signal : undefined,
@@ -245,6 +253,7 @@
           // The server clamps a page past the end; follow it.
           page = data.page || 1;
           perPage = data.per_page || perPage;
+          if (select) select.value = String(perPage);
           totalPages = data.total_pages || 1;
           shown = { page, perPage, totalPages };
           drawBar();

@@ -1076,6 +1076,10 @@ class TestPullListPaging:
         data = client_with_data.get("/api/pull-list/rows?page=2").get_json()
         assert (data["per_page"], data["page"]) == (24, 2)
         # The URL wins over the cookie, and a junk cookie is ignored.
+        # A junk or unoffered ?per_page falls through to the cookie.
+        for bad in ("abc", "7"):
+            html = client_with_data.get("/pull-list?per_page=" + bad).get_data(as_text=True)
+            assert 'data-per-page="24"' in html
         html = client_with_data.get("/pull-list?per_page=100").get_data(as_text=True)
         assert 'data-per-page="100"' in html
         client_with_data.set_cookie("clu_per_page_pull_list", "7")

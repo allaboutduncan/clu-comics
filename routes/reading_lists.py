@@ -68,6 +68,7 @@ from models.comicvine import (
     fetch_cv_arc_issues,
 )
 from core.app_logging import app_logger
+from helpers.paging import per_page_arg
 import core.app_state as app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
@@ -102,14 +103,8 @@ def _reading_list_grid_args():
         page = max(1, int(args.get('page', 1)))
     except (TypeError, ValueError):
         page = 1
-    try:
-        per_page = int(args.get('per_page')
-                       or request.cookies.get(READING_LIST_PER_PAGE_COOKIE)
-                       or READING_LIST_DEFAULT_PER_PAGE)
-    except (TypeError, ValueError):
-        per_page = READING_LIST_DEFAULT_PER_PAGE
-    if per_page not in READING_LIST_PAGE_SIZES:
-        per_page = READING_LIST_DEFAULT_PER_PAGE
+    per_page = per_page_arg(args, request.cookies, READING_LIST_PER_PAGE_COOKIE,
+                            READING_LIST_PAGE_SIZES, READING_LIST_DEFAULT_PER_PAGE)
     return tags, sort, page, per_page
 
 
