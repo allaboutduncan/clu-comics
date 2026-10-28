@@ -1,0 +1,43 @@
+{#
+  The one empty state: what is missing, why, and the one thing to do next.
+
+    {% from 'partials/empty_state.html' import empty_state %}
+
+    {{ empty_state('No publishers', 'Add publishers from Metron or create custom ones.',
+                   'bi-building') }}
+
+    {% call empty_state('No tracked series', 'Scan your library…', 'bi-collection') %}
+      <button class="btn btn-primary" id="scanLibraryBtnEmpty">…</button>
+      <a class="btn btn-outline-secondary" href="…">Browse releases</a>
+    {% endcall %}
+
+  Rules (DESIGN.md, "Empty states"):
+  - title says what is missing ("No reading lists yet"), message says why or
+    what fills it. No exclamation marks, no "Oops".
+  - At most one .btn-primary (default size, never btn-lg); any other action is
+    .btn-outline-secondary.
+  - The title is an <h2>: the page's <h1> is the page header.
+  - A message with markup is passed as a {% set %}…{% endset %} block, which
+    is already Markup; a plain string is escaped.
+  - Script-toggled states pass id= and hidden=True (rendered as
+    style="display: none;", which is what the page scripts toggle). The JS twin
+    is CLU.emptyState({icon, title, message}) in static/js/clu-page.js.
+  - tone='success' colours the icon for a good empty ("No wanted issues");
+    compact=True is for an empty panel or card, not a whole page.
+#}
+{% macro empty_state(title, message=None, icon=None, id=None, hidden=False, tone=None, compact=False, classes=None) -%}
+{%- set actions_html = caller() if caller is defined else '' -%}
+<div class="clu-empty{% if compact %} clu-empty-compact{% endif %}{% if tone %} clu-empty-{{ tone }}{% endif %}{% if classes %} {{ classes }}{% endif %}"
+     {%- if id %} id="{{ id }}"{% endif %}{% if hidden %} style="display: none;"{% endif %}>
+  {%- if icon %}
+  <i class="bi {{ icon }} clu-empty-icon" aria-hidden="true"></i>
+  {%- endif %}
+  <h2 class="clu-empty-title">{{ title }}</h2>
+  {%- if message %}
+  <p class="clu-empty-text">{{ message }}</p>
+  {%- endif %}
+  {%- if actions_html | trim %}
+  <div class="clu-empty-actions">{{ actions_html }}</div>
+  {%- endif %}
+</div>
+{%- endmacro %}

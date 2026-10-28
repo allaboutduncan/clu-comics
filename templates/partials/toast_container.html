@@ -1,23 +1,4 @@
-<!-- Shared toast container – included by pages that use CLU toast helpers -->
-<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 9999;">
-    <div id="successToast" class="toast align-items-center text-bg-success border-0" role="alert" aria-live="assertive"
-        aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body" id="successToastBody">
-                Success message
-            </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                aria-label="Close"></button>
-        </div>
-    </div>
-    <div id="errorToast" class="toast align-items-center text-bg-danger border-0" role="alert" aria-live="assertive"
-        aria-atomic="true">
-        <div class="d-flex">
-            <div class="toast-body" id="errorToastBody">
-                Error message
-            </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"
-                aria-label="Close"></button>
-        </div>
-    </div>
-</div>
+{# The one toast container, rendered once by base.html. static/js/clu-toast.js
+   (CLU.toast / CLU.showToast) appends every toast here. Bottom right, so a
+   toast never covers the page-header button that started it. #}
+<div id="toast-container" class="toast-container clu-toasts position-fixed bottom-0 end-0 p-3"></div>

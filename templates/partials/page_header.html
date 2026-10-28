@@ -1,0 +1,102 @@
+{#
+  The one page header. Every page that extends base.html opens with it
+  (tests/unit/test_page_header.py), so a page title, its count line and its
+  actions sit in the same place on every page.
+
+    {% from 'partials/page_header.html' import page_header %}
+
+    {{ page_header('Users', 'bi-people') }}
+
+    {% call(slot) page_header('Pull List', 'bi-list-check',
+                              subtitle='All tracked series in your collection',
+                              stats=[{'value': total, 'label': 'tracked'},
+                                     {'value': missing, 'label': 'missing',
+                                      'href': url_for(...), 'id': 'plMissing'}]) %}
+      {% if slot == 'actions' %}
+        <button class="btn btn-sm btn-primary" id="scanLibraryBtn">…</button>
+        <a class="btn btn-sm btn-outline-secondary" href="…">…</a>
+      {% elif slot == 'more' %}
+        <li><button class="dropdown-item" id="importBtn">…</button></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><button class="dropdown-item text-danger" id="deleteAllBtn">…</button></li>
+      {% elif slot == 'crumbs' %}
+        <li class="breadcrumb-item"><a href="…">Reading Lists</a></li>
+      {% elif slot == 'help' %}
+        <p>How the page works, for the visit you need it…</p>
+      {% endif %}
+    {% endcall %}
+
+  Rules (DESIGN.md, "Page header"):
+  - title is the page's only <h1>; on a folder or detail page it is the item
+    (folder, series, list) and `crumbs` holds the path to it.
+  - `actions`: at most one .btn-primary (the page's create/add/run verb, never
+    a link to a sibling page) and at most three .btn-outline-secondary, all
+    .btn-sm. Everything else goes in `more`; destructive items go last in
+    `more`, after a divider, as .text-danger.
+  - Below the sm breakpoint static/js/clu-page.js moves the secondary actions
+    into the More menu (the nodes move, so ids and handlers survive). Mark an
+    action that must stay inline with data-clu-keep.
+  - `help`: the page's explanation, folded behind a "How this works" toggle
+    under the subtitle (help_label renames it). The subtitle keeps the one
+    sentence a visitor needs every time; the help holds the rest.
+  - A stat whose value is 0 or None is left out unless it sets keep_zero.
+  - title_id / subtitle_id / stats_id give page JS a hook to rewrite the text in
+    place; crumbs_id puts an id on the breadcrumb <ol> for pages whose JS
+    builds the breadcrumb (crumbs_class adds classes to it).
+#}
+{% macro page_header(title, icon=None, subtitle=None, stats=None, title_id=None, subtitle_id=None, stats_id=None, crumbs_id=None, crumbs_class=None, help_label='How this works') -%}
+{%- set has_caller = caller is defined -%}
+{%- set actions_html = caller('actions') if has_caller else '' -%}
+{%- set more_html = caller('more') if has_caller else '' -%}
+{%- set crumbs_html = caller('crumbs') if has_caller else '' -%}
+{%- set help_html = caller('help') if has_caller else '' -%}
+{%- set shown_stats = [] -%}
+{%- for s in (stats or []) -%}
+  {%- if s.value is not none and (s.value != 0 or s.keep_zero) -%}{%- set _ = shown_stats.append(s) -%}{%- endif -%}
+{%- endfor -%}
+<header class="clu-page-header">
+  {%- if crumbs_html | trim or crumbs_id %}
+  <nav aria-label="breadcrumb" class="clu-page-crumbs">
+    <ol class="breadcrumb{% if crumbs_class %} {{ crumbs_class }}{% endif %}"{% if crumbs_id %} id="{{ crumbs_id }}"{% endif %}>{{ crumbs_html }}</ol>
+  </nav>
+  {%- endif %}
+  <div class="clu-page-header-row">
+    <h1 class="clu-page-title"{% if title_id %} id="{{ title_id }}"{% endif %}{% if title %} title="{{ title }}"{% endif %}>
+      {%- if icon %}<i class="bi {{ icon }}" aria-hidden="true"></i>{% endif -%}
+      <span class="clu-page-title-text">{{ title }}</span>
+    </h1>
+    {%- if actions_html | trim or more_html | trim %}
+    <div class="clu-page-actions" data-clu-actions>
+      {{ actions_html }}
+      <div class="dropdown clu-page-more{% if not more_html | trim %} clu-page-more-empty{% endif %}">
+        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-three-dots" aria-hidden="true"></i> More<span class="visually-hidden"> actions</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end" data-clu-more>
+          {{ more_html }}
+        </ul>
+      </div>
+    </div>
+    {%- endif %}
+  </div>
+  {%- if subtitle or subtitle_id %}
+  <p class="clu-page-sub"{% if subtitle_id %} id="{{ subtitle_id }}"{% endif %}>{{ subtitle or '' }}</p>
+  {%- endif %}
+  {%- if shown_stats or stats_id %}
+  <p class="clu-page-stats"{% if stats_id %} id="{{ stats_id }}"{% endif %}>
+    {%- for s in shown_stats -%}
+    {%- set v = '{:,}'.format(s.value) if s.value is number else s.value -%}
+    {%- if s.href %}<a class="clu-stat" href="{{ s.href }}">{% else %}<span class="clu-stat">{% endif -%}
+      <span class="clu-stat-value"{% if s.id %} id="{{ s.id }}"{% endif %}>{{ v }}</span> {{ s.label }}
+    {%- if s.href %}</a>{% else %}</span>{% endif -%}
+    {%- endfor -%}
+  </p>
+  {%- endif %}
+  {%- if help_html | trim %}
+  <details class="clu-page-help">
+    <summary><i class="bi bi-chevron-right" aria-hidden="true"></i>{{ help_label }}</summary>
+    <div class="clu-page-help-body">{{ help_html }}</div>
+  </details>
+  {%- endif %}
+</header>
+{%- endmacro %}

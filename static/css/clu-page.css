@@ -1,0 +1,394 @@
+/*
+ * Page shell and page header (templates/base.html, partials/page_header.html).
+ * Theme variables only: these rules run under all 32 themes, and the header
+ * navbar is data-bs-theme="dark" everywhere, so nothing here keys on a theme.
+ *
+ * Rhythm: tight inside the header (title, subtitle and count line read as one
+ * unit), generous below it (the header is separate from the page's content).
+ */
+
+/* ---- Shell ------------------------------------------------------------ */
+
+.clu-shell {
+    padding-top: 1.5rem;
+    padding-bottom: 2.5rem;
+}
+
+/* Cover grids use the whole width; the gutter grows with the screen so the
+   first column of covers never touches the window edge. */
+.clu-shell.clu-shell-wide {
+    padding-inline: clamp(0.75rem, 2.5vw, 2.5rem);
+}
+
+/* ---- Header ----------------------------------------------------------- */
+
+.clu-page-header {
+    margin-bottom: 1.5rem;
+}
+
+.clu-page-crumbs .breadcrumb {
+    /* Some themes (Minty, Sketchy...) paint breadcrumbs as a filled bar; in
+       the header it is a quiet line of links. */
+    --bs-breadcrumb-bg: transparent;
+    --bs-breadcrumb-padding-x: 0;
+    --bs-breadcrumb-padding-y: 0;
+    --bs-breadcrumb-border-radius: 0;
+    --bs-breadcrumb-divider-color: var(--bs-secondary-color);
+    --bs-breadcrumb-item-active-color: var(--bs-secondary-color);
+    margin-bottom: 0.25rem;
+    padding: 0;
+    background: none;
+    border: 0;
+    font-size: 0.875rem;
+}
+
+.clu-page-crumbs .breadcrumb {
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+
+.clu-page-crumbs .breadcrumb-item {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+/* The current item is the same text as the title below it, so it is the
+   one that gives way on a narrow screen. */
+.clu-page-crumbs .breadcrumb-item:last-child {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.clu-page-crumbs .breadcrumb-item a {
+    color: var(--bs-link-color);
+}
+
+.clu-page-crumbs .breadcrumb-item + .breadcrumb-item::before {
+    color: var(--bs-secondary-color);
+}
+
+.clu-page-crumbs .breadcrumb-item.active {
+    color: var(--bs-secondary-color);
+}
+
+/* A one-item breadcrumb ("Library" at the top level, "Select a library"
+   before one is picked) only repeats the title; show the path once it is
+   a path. JS-built breadcrumbs grow and shrink, so this cannot be decided
+   in the template. */
+.clu-page-crumbs:has(> .breadcrumb > li:only-child),
+.clu-page-crumbs:has(> .breadcrumb:empty) {
+    display: none;
+}
+
+.clu-page-header-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem 1rem;
+}
+
+.clu-page-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    margin: 0;
+    color: var(--bs-emphasis-color);
+    font-size: calc(1.3rem + 0.6vw);
+    font-weight: 500;
+    line-height: 1.2;
+    text-wrap: balance;
+}
+
+.clu-page-title .bi {
+    margin-inline-end: 0.5rem;
+    font-size: 0.85em;
+}
+
+@media (min-width: 1200px) {
+    .clu-page-title {
+        font-size: 1.75rem;
+    }
+}
+
+.clu-page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+/* Inline buttons never break their label over two lines. */
+.clu-page-actions > .btn,
+.clu-page-actions > .btn-group > .btn,
+.clu-page-actions > .dropdown > .btn {
+    white-space: nowrap;
+}
+
+/* "Small grey outline buttons" means grey on every theme. Several themes
+   make secondary a brand colour (Minty: pink at about 2:1 on white), so the
+   shared header and empty states take their neutral from the text and border
+   tokens instead of --bs-secondary. */
+.clu-page-actions .btn-outline-secondary,
+.clu-empty-actions .btn-outline-secondary {
+    --bs-btn-color: var(--bs-body-color);
+    --bs-btn-border-color: color-mix(in srgb, var(--bs-body-color) 35%, transparent);
+    --bs-btn-hover-color: var(--bs-emphasis-color);
+    --bs-btn-hover-bg: var(--bs-secondary-bg);
+    --bs-btn-hover-border-color: color-mix(in srgb, var(--bs-body-color) 45%, transparent);
+    --bs-btn-active-color: var(--bs-emphasis-color);
+    --bs-btn-active-bg: var(--bs-tertiary-bg);
+    --bs-btn-active-border-color: color-mix(in srgb, var(--bs-body-color) 55%, transparent);
+    --bs-btn-disabled-color: var(--bs-secondary-color);
+    --bs-btn-disabled-border-color: var(--bs-border-color);
+    /* Bootswatch themes such as Minty set color and border-color on the
+       class itself, not through the variables. */
+    color: var(--bs-btn-color);
+    border-color: var(--bs-btn-border-color);
+}
+
+.clu-page-actions .btn-outline-secondary:hover,
+.clu-empty-actions .btn-outline-secondary:hover {
+    color: var(--bs-btn-hover-color);
+    background-color: var(--bs-btn-hover-bg);
+    border-color: var(--bs-btn-hover-border-color);
+}
+
+.clu-page-actions .btn-outline-secondary:is(:active, .active, .show),
+.clu-empty-actions .btn-outline-secondary:is(:active, .active, .show) {
+    color: var(--bs-btn-active-color);
+    background-color: var(--bs-btn-active-bg);
+    border-color: var(--bs-btn-active-border-color);
+}
+
+.clu-page-actions .btn-outline-secondary:disabled,
+.clu-empty-actions .btn-outline-secondary:disabled {
+    color: var(--bs-btn-disabled-color);
+    border-color: var(--bs-btn-disabled-border-color);
+}
+
+/* The More menu is always rendered so phones have somewhere to fold the
+   secondary actions into; it only shows when it holds something. */
+.clu-page-more-empty:not(.clu-page-more-folded) {
+    display: none;
+}
+
+/* Folded buttons carry me-1 icons, menu items me-2: give every menu icon one
+   fixed slot so the labels line up. */
+.clu-page-more .dropdown-item > .bi:first-child {
+    display: inline-block;
+    width: 1.25em;
+    margin-inline-end: 0.5rem !important;
+}
+
+.clu-page-sub {
+    max-width: 75ch;
+    margin: 0.25rem 0 0;
+    color: var(--bs-secondary-color);
+}
+
+.clu-page-stats {
+    margin: 0.25rem 0 0;
+    color: var(--bs-secondary-color);
+    font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.clu-stat + .clu-stat::before {
+    content: "\00B7";
+    margin-inline: 0.5rem;
+    color: var(--bs-secondary-color);
+}
+
+.clu-stat-value {
+    color: var(--bs-emphasis-color);
+    font-weight: 600;
+}
+
+a.clu-stat {
+    color: inherit;
+    text-decoration: none;
+}
+
+a.clu-stat:hover .clu-stat-value,
+a.clu-stat:focus-visible .clu-stat-value {
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+}
+
+/* "How this works": the page's explanation, one click away. Native
+   <details>, so it opens from the keyboard and needs no script. */
+.clu-page-help {
+    max-width: 75ch;
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.clu-page-help > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--bs-link-color);
+    cursor: pointer;
+    list-style: none;
+    border-radius: var(--bs-border-radius-sm);
+}
+
+.clu-page-help > summary::-webkit-details-marker {
+    display: none;
+}
+
+.clu-page-help > summary:hover {
+    color: var(--bs-link-hover-color);
+    text-decoration: underline;
+    text-underline-offset: 0.2em;
+}
+
+.clu-page-help > summary:focus-visible {
+    outline: 0;
+    box-shadow: var(--bs-focus-ring-x, 0) var(--bs-focus-ring-y, 0) var(--bs-focus-ring-blur, 0)
+        var(--bs-focus-ring-width) var(--bs-focus-ring-color);
+}
+
+.clu-page-help > summary .bi {
+    font-size: 0.75em;
+    transition: transform 0.15s ease-out;
+}
+
+.clu-page-help[open] > summary .bi {
+    transform: rotate(90deg);
+}
+
+.clu-page-help-body {
+    margin-top: 0.5rem;
+    padding-inline-start: 1.125rem;
+    color: var(--bs-secondary-color);
+}
+
+.clu-page-help-body > :last-child {
+    margin-bottom: 0;
+}
+
+.clu-page-help-body p {
+    margin-bottom: 0.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .clu-page-help > summary .bi {
+        transition: none;
+    }
+}
+
+/* ---- Empty states (partials/empty_state.html, CLU.emptyState) ------- */
+
+.clu-empty {
+    max-width: 40rem;
+    margin-inline: auto;
+    padding: 3rem 1rem;
+    text-align: center;
+}
+
+.clu-empty-icon {
+    display: block;
+    margin-bottom: 0.75rem;
+    color: var(--bs-secondary-color);
+    font-size: 2.5rem;
+    line-height: 1;
+}
+
+.clu-empty-title {
+    margin: 0 0 0.375rem;
+    color: var(--bs-emphasis-color);
+    font-size: 1.25rem;
+    font-weight: 500;
+    text-wrap: balance;
+}
+
+.clu-empty-text {
+    max-width: 60ch;
+    margin: 0 auto;
+    color: var(--bs-secondary-color);
+    text-wrap: pretty;
+}
+
+.clu-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1.25rem;
+}
+
+.clu-empty-compact {
+    padding: 1.5rem 1rem;
+}
+
+.clu-empty-compact .clu-empty-icon {
+    font-size: 1.75rem;
+}
+
+.clu-empty-success .clu-empty-icon {
+    color: var(--bs-success-text-emphasis);
+}
+
+/* ---- Toasts (static/js/clu-toast.js) --------------------------------- */
+
+.clu-toasts {
+    /* Never wider than the phone it is on. */
+    max-width: 100%;
+}
+
+.clu-toast {
+    width: min(var(--bs-toast-max-width, 350px), calc(100vw - 2rem));
+}
+
+.clu-toast .toast-body {
+    overflow-wrap: anywhere;
+}
+
+.clu-toast-icon {
+    flex: none;
+    margin-top: 0.125rem;
+}
+
+.clu-toast-close {
+    flex: none;
+    align-self: flex-start;
+    margin: 0.375rem 0.375rem 0 0;
+    padding: 0.25rem 0.375rem;
+    border: 0;
+    border-radius: var(--bs-border-radius-sm);
+    background: transparent;
+    color: inherit;
+    line-height: 1;
+    opacity: 0.7;
+}
+
+.clu-toast-close:hover {
+    opacity: 1;
+}
+
+.clu-toast-close:focus-visible {
+    opacity: 1;
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+}
+
+/* Phone: the secondaries have folded into More (clu-page.js), so title +
+   primary + More normally share one line. When the actions still don't fit
+   (an action the page's JS restyles stays inline via data-clu-keep), they
+   drop to their own line under the title rather than push the page sideways. */
+@media (max-width: 575.98px) {
+    .clu-page-title {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    .clu-page-actions {
+        flex: 0 1 auto;
+        justify-content: flex-start;
+    }
+}

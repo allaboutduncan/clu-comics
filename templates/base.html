@@ -98,6 +98,7 @@
     .ops-item-completed { opacity: 0.6; }
     .ops-item-error { border-left: 3px solid #dc3545; }
   </style>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/clu-page.css') }}">
   {% block extra_css %}{% endblock %}
 </head>
 
@@ -126,14 +127,22 @@
       });
     </script>
     {% endif %}
-    {% block content %}{% endblock %}
+    {# The page shell. Every page gets the same width and top rhythm from here;
+       a page never adds its own outer container. Cover grids opt into full
+       width by overriding page_shell (tests/unit/test_page_header.py). #}
+    <div class="clu-shell {% block page_shell %}container-lg{% endblock %}">
+      {% block content %}{% endblock %}
+    </div>
   </main>
 
   {% include 'footer.html' %}
+  {% include 'partials/toast_container.html' %}
 
 
   <!-- Bootstrap JS (Required for Modal functionality) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="{{ url_for('static', filename='js/clu-toast.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/clu-page.js') }}"></script>
 
   <!-- Environment-based console logging -->
   <script>
