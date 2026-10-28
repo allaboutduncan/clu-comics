@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 {% block title %}{{ reading_list.name }}{% endblock %}
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
@@ -175,63 +176,66 @@
    get a view-only detail page and can still open/read matched issues. In
    implicit-owner mode current_user is the owner, so everything shows as before. #}
 {% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
-<div class="container mt-4">
-    <nav aria-label="breadcrumb">
-        <ol class="breadcrumb">
+<div>
+    {% call(slot) page_header(reading_list.name, 'bi-journal-bookmark', title_id='reading-list-title',
+                              stats=[{'value': reading_list.entries|length, 'label': 'issues'}]) %}
+        {% if slot == 'crumbs' %}
             <li class="breadcrumb-item"><a href="{{ url_for('reading_lists.index') }}">Reading Lists</a></li>
             <li class="breadcrumb-item active" aria-current="page">{{ reading_list.name }}</li>
-        </ol>
-    </nav>
-
-    <div class="mb-4">
-        <h2 id="reading-list-title" class="mb-3">{{ reading_list.name }}</h2>
-        <div class="d-flex flex-wrap align-items-center gap-2">
+        {% elif slot == 'actions' %}
+            {% if _can_manage %}
+            <button class="btn btn-sm btn-primary" onclick="openAddIssueModal()">
+                <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add Issue
+            </button>
+            {% endif %}
             {# Outside the _can_manage gate on purpose — bookmarking is personal
                data, so Readers get it too. #}
-            <button type="button" class="btn btn-outline-warning btn-sm want-to-read-toggle"
+            <button type="button" class="btn btn-outline-secondary btn-sm want-to-read-toggle"
                 data-list-id="{{ reading_list.id }}"
                 onclick='toggleReadingListWantToRead({{ reading_list.id }}, {{ reading_list.name|tojson }}, this)'
                 title="Add to Want to Read" aria-label="Add to Want to Read">
-                <i class="bi bi-bookmark-plus me-1"></i><span class="want-to-read-label">Want to Read</span>
+                <i class="bi bi-bookmark-plus me-1" aria-hidden="true"></i><span class="want-to-read-label">Want to Read</span>
             </button>
             {% if _can_manage %}
-            <button class="btn btn-success btn-sm" onclick="openAddIssueModal()">
-                <i class="bi bi-plus-lg me-1"></i>Add Issue
+            {# Opt this list into the Wanted page and the nightly source sweep.
+               Unlike Want to Read above -- personal data every role may set --
+               this spends bandwidth and disk, so it stays inside _can_manage.
+               reading_list.js swaps btn-primary/btn-outline-primary on it, so
+               it stays inline (data-clu-keep). #}
+            <button class="btn btn-sm {% if reading_list.track_wanted %}btn-primary{% else %}btn-outline-primary{% endif %}"
+                id="trackWantedBtn" data-tracking="{{ 1 if reading_list.track_wanted else 0 }}" data-clu-keep
+                onclick="toggleTrackWanted({{ reading_list.id }}, this)"
+                title="Add this list's unmatched issues to your Wanted list and search for them on the nightly sweep">
+                <i class="bi bi-binoculars me-1" aria-hidden="true"></i><span class="track-wanted-label">{% if reading_list.track_wanted %}Tracking Wanted{% else %}Track Wanted{% endif %}</span>
             </button>
-            <a class="btn btn-outline-primary btn-sm" href="{{ url_for('reading_lists.export_cbl', list_id=reading_list.id) }}">
-                <i class="bi bi-download me-1"></i>Export CBL
-            </a>
+            {# reading_list.js swaps btn-outline-secondary/btn-warning on it. #}
+            <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" data-clu-keep onclick="toggleReorderMode()" title="Toggle reorder mode">
+                <i class="bi bi-arrows-move me-1" aria-hidden="true"></i>Reorder
+            </button>
+            {% endif %}
+        {% elif slot == 'more' %}
+            {% if _can_manage %}
+            <li><a class="dropdown-item" href="{{ url_for('reading_lists.export_cbl', list_id=reading_list.id) }}">
+                <i class="bi bi-download me-2" aria-hidden="true"></i>Export CBL
+            </a></li>
             {# `syncable` is decided by core.reading_list_sync.parse_source, so
                the four source schemes are spelled out in exactly one place. #}
             {% if syncable %}
-            <button class="btn btn-outline-info btn-sm" onclick="syncReadingList({{ reading_list.id }})"
+            <li><button class="dropdown-item" onclick="syncReadingList({{ reading_list.id }})"
                 {% if reading_list.last_synced %}data-bs-toggle="tooltip" data-bs-placement="bottom" title="Last synced: {{ reading_list.last_synced }}"{% endif %}>
-                <i class="bi bi-arrow-repeat me-1"></i>Sync
-            </button>
+                <i class="bi bi-arrow-repeat me-2" aria-hidden="true"></i>Sync
+            </button></li>
             {% endif %}
             {# Shown for every list, Sync or not: Sync pulls what the source now
                holds, this re-runs local matching on what is already here. #}
-            <button class="btn btn-outline-info btn-sm" id="rematchBtn"
+            <li><button class="dropdown-item" id="rematchBtn"
                 onclick="rematchReadingList({{ reading_list.id }})"
                 title="Re-run file matching for this list (manual mappings are kept)">
-                <i class="bi bi-arrow-repeat me-1"></i>Re-match
-            </button>
-            {# Opt this list into the Wanted page and the nightly source sweep.
-               Unlike Want to Read above -- personal data every role may set --
-               this spends bandwidth and disk, so it stays inside _can_manage. #}
-            <button class="btn btn-sm {% if reading_list.track_wanted %}btn-primary{% else %}btn-outline-primary{% endif %}"
-                id="trackWantedBtn" data-tracking="{{ 1 if reading_list.track_wanted else 0 }}"
-                onclick="toggleTrackWanted({{ reading_list.id }}, this)"
-                title="Add this list's unmatched issues to your Wanted list and search for them on the nightly sweep">
-                <i class="bi bi-binoculars me-1"></i><span class="track-wanted-label">{% if reading_list.track_wanted %}Tracking Wanted{% else %}Track Wanted{% endif %}</span>
-            </button>
-            <button class="btn btn-outline-secondary btn-sm" id="reorderToggleBtn" onclick="toggleReorderMode()" title="Toggle reorder mode">
-                <i class="bi bi-arrows-move me-1"></i>Reorder
-            </button>
+                <i class="bi bi-arrow-repeat me-2" aria-hidden="true"></i>Re-match
+            </button></li>
             {% endif %}
-            <span class="badge bg-secondary">{{ reading_list.entries|length }} Issues</span>
-        </div>
-    </div>
+        {% endif %}
+    {% endcall %}
 
     {% if reading_list.description %}
     <div class="card mb-4">
@@ -282,7 +286,7 @@
                 <!-- Three-dots menu (managers only) -->
                 {% if _can_manage %}
                 <div class="dropdown">
-                    <button class="btn btn-link btn-sm p-0 text-dark" type="button" data-bs-toggle="dropdown"
+                    <button aria-label="More actions" title="More actions" class="btn btn-link btn-sm p-0 text-dark" type="button" data-bs-toggle="dropdown"
                         onclick="event.stopPropagation()">
                         <i class="bi bi-three-dots-vertical"></i>
                     </button>
@@ -375,11 +379,11 @@
             </div>
             <div class="comic-reader-controls">
                 <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
-                <button class="btn btn-sm btn-outline-light me-2" id="comicReaderBookmark"
+                <button aria-label="Save Reading Position" class="btn btn-sm btn-outline-light me-2" id="comicReaderBookmark"
                     title="Save Reading Position">
                     <i class="bi bi-bookmark"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                <button aria-label="Close" class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
                     <i class="bi bi-x-lg text-light"></i>
                 </button>
             </div>
@@ -425,10 +429,10 @@
         <!-- Footer -->
         <div class="comic-reader-footer">
             <div class="comic-reader-footer-controls">
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
+                <button aria-label="Zoom Out (Arrow Down)" class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
                     <i class="bi bi-zoom-out text-light"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
+                <button aria-label="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre" class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
                     <i class="bi bi-zoom-in text-light"></i>
                 </button>
                 <select class="form-select form-select-sm page-selector" id="pageSelector">
@@ -439,7 +443,6 @@
     </div>
 </div>
 
-{% include 'partials/toast_container.html' %}
 
 {% if _can_manage %}
 <!-- Source Search Modal (GetComics / Usenet / DC++, driven by clu-source-search.js) -->
@@ -457,7 +460,7 @@
                     <div class="input-group">
                         <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
                             onkeypress="if(event.key==='Enter')doGetComicsSearch()">
-                        <button class="btn btn-primary" onclick="doGetComicsSearch()">
+                        <button aria-label="Search GetComics" title="Search GetComics" class="btn btn-primary" onclick="doGetComicsSearch()">
                             <i class="bi bi-search"></i>
                         </button>
                     </div>

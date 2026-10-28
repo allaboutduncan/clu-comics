@@ -22,7 +22,7 @@
  *     const search = CLU.createSourceSearch({
  *         resultsEl: document.getElementById('getcomicsResults'),
  *         getContext: () => ({ series, issue, year }),
- *         toast: (message, type) => showToast(message, type),
+ *         toast: CLU.toast,
  *         onQueued: ({ source, downloadId, downloadIds, issue, keepOpen }) => {
  *             if (!keepOpen) modal.hide();
  *         },
@@ -453,6 +453,10 @@
             rowButtons(key).forEach(el => {
                 el.disabled = true;
                 el.innerHTML = '<i class="bi bi-check"></i>';
+                // The label said "Download"; it has been.
+                el.dataset.idleLabel = el.dataset.idleLabel || el.getAttribute('aria-label') || '';
+                el.setAttribute('aria-label', 'Queued');
+                el.title = 'Queued';
                 el.classList.remove('btn-primary', 'btn-outline-primary');
                 el.classList.add('btn-success');
             });
@@ -464,6 +468,10 @@
             rowButtons(key).forEach(el => {
                 el.disabled = false;
                 el.innerHTML = `<i class="bi ${el.dataset.idle}"></i>`;
+                if (el.dataset.idleLabel) {
+                    el.setAttribute('aria-label', el.dataset.idleLabel);
+                    el.title = el.dataset.idleLabel;
+                }
             });
         }
 

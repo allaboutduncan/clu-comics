@@ -72,7 +72,7 @@ function applyTagFilters() {
                 selectedListIds.clear();
                 syncListCheckboxes();
                 updateBulkBar();
-                showToast('Could not check the selection against the filter, so it was cleared', 'warning');
+                CLU.toast('Could not check the selection against the filter, so it was cleared', 'warning');
             });
     }
     readingListPager.load({ resetPage: true });
@@ -152,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
         onError: err => {
             console.error('Error loading reading lists:', err);
             grid.classList.add('opacity-50');
-            showToast('Could not load reading lists, showing the previous results', 'error');
+            CLU.toast('Could not load reading lists, showing the previous results', 'error');
         },
     });
 });
@@ -291,7 +291,7 @@ function toggleReadingListWantToRead(listId, name, button) {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                showToast(
+                CLU.toast(
                     marked
                         ? `${name} removed from Want to Read`
                         : `${name} added to Want to Read`,
@@ -299,60 +299,22 @@ function toggleReadingListWantToRead(listId, name, button) {
                 );
             } else {
                 buttons.forEach(btn => _paintWantToReadButton(btn, marked));
-                showToast('Error: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Unknown error'), 'error');
             }
         })
         .catch(err => {
             console.error('Error updating Want to Read:', err);
             buttons.forEach(btn => _paintWantToReadButton(btn, marked));
-            showToast('Failed to update Want to Read', 'error');
+            CLU.toast('Failed to update Want to Read', 'error');
         });
 }
 
 // Toast notification system
 let currentProgressToast = null;
 
+// Progress and confirm toasts share the page's one container (base.html).
 function getToastContainer() {
-    let toastContainer = document.getElementById('toast-container');
-    if (!toastContainer) {
-        toastContainer = document.createElement('div');
-        toastContainer.id = 'toast-container';
-        toastContainer.className = 'toast-container position-fixed end-0 p-4';
-        toastContainer.style.zIndex = '1100';
-        toastContainer.style.top = '60px'; // Below navbar
-        document.body.appendChild(toastContainer);
-    }
-    return toastContainer;
-}
-
-function showToast(message, type = 'info', duration = 5000) {
-    console.log(`[Toast] ${type}: ${message}`);
-
-    const toastContainer = getToastContainer();
-    const toastId = 'toast-' + Date.now();
-    const bgClass = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : 'bg-primary';
-
-    const toastHtml = `
-        <div id="${toastId}" class="toast align-items-center text-white ${bgClass} border-0 show" role="alert">
-            <div class="d-flex">
-                <div class="toast-body">${message}</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-            </div>
-        </div>
-    `;
-
-    toastContainer.insertAdjacentHTML('beforeend', toastHtml);
-    const toastEl = document.getElementById(toastId);
-
-    // Auto-hide after duration
-    setTimeout(() => {
-        if (toastEl && toastEl.parentNode) {
-            toastEl.classList.remove('show');
-            setTimeout(() => toastEl.remove(), 300);
-        }
-    }, duration);
-
-    return toastEl;
+    return CLU.toastContainer();
 }
 
 function showProgressToast(message) {
@@ -459,18 +421,18 @@ function pollImportStatus(taskId, filename) {
             .then(response => response.json())
             .then(data => {
                 if (!data.success) {
-                    showToast('Import task not found', 'error');
+                    CLU.toast('Import task not found', 'error');
                     return;
                 }
 
                 if (data.status === 'complete') {
-                    showToast(`Imported "${data.list_name}" (${data.processed} issues)`, 'success', 8000);
+                    CLU.toast(`Imported "${data.list_name}" (${data.processed} issues)`, 'success', 8000);
                     // Reload if still on the reading lists page
                     if (window.location.pathname === '/reading-lists') {
                         setTimeout(() => window.location.reload(), 2000);
                     }
                 } else if (data.status === 'error') {
-                    showToast(`Import failed: ${data.message}`, 'error', 10000);
+                    CLU.toast(`Import failed: ${data.message}`, 'error', 10000);
                 } else {
                     setTimeout(checkStatus, pollInterval);
                 }
@@ -501,7 +463,7 @@ function uploadCBL() {
     const fileInput = document.getElementById('cblFile');
     const file = fileInput.files[0];
     if (!file) {
-        showToast('Please select a file', 'error');
+        CLU.toast('Please select a file', 'error');
         return;
     }
 
@@ -531,18 +493,18 @@ function uploadCBL() {
                     // Close modal — progress shown in navbar ops-indicator
                     const modal = bootstrap.Modal.getInstance(document.getElementById('uploadCBLModal'));
                     if (modal) modal.hide();
-                    showToast(`Importing "${listName}" — track progress in the navbar`, 'info', 5000);
+                    CLU.toast(`Importing "${listName}" — track progress in the navbar`, 'info', 5000);
                     pollImportStatus(data.task_id, listName);
                 } else {
                     window.location.reload();
                 }
             } else {
-                showToast(data.message || 'Something went wrong', 'error');
+                CLU.toast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred during upload', 'error');
+            CLU.toast('An error occurred during upload', 'error');
         })
         .finally(() => {
             // Reset loading state
@@ -577,7 +539,7 @@ function importGithub() {
     const urlInput = document.getElementById('githubUrl');
     const url = urlInput.value;
     if (!url) {
-        showToast('Please enter a URL', 'error');
+        CLU.toast('Please enter a URL', 'error');
         return;
     }
 
@@ -607,18 +569,18 @@ function importGithub() {
                     // Close modal — progress shown in navbar ops-indicator
                     const modal = bootstrap.Modal.getInstance(document.getElementById('importGithubModal'));
                     if (modal) modal.hide();
-                    showToast(`Importing "${filename}" — track progress in the navbar`, 'info', 5000);
+                    CLU.toast(`Importing "${filename}" — track progress in the navbar`, 'info', 5000);
                     pollImportStatus(data.task_id, filename);
                 } else {
                     window.location.reload();
                 }
             } else {
-                showToast(data.message || 'Something went wrong', 'error');
+                CLU.toast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred during import', 'error');
+            CLU.toast('An error occurred during import', 'error');
         })
         .finally(() => {
             // Reset loading state
@@ -686,12 +648,12 @@ function confirmDelete(id) {
                     window.location.reload();
                 }
             } else {
-                showToast('Error: ' + data.message, 'error');
+                CLU.toast('Error: ' + data.message, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred while deleting', 'error');
+            CLU.toast('An error occurred while deleting', 'error');
         });
 }
 
@@ -781,7 +743,7 @@ function selectAllVisibleLists() {
         })
         .catch(err => {
             console.error('Error selecting lists:', err);
-            showToast('Could not select every matching list', 'error');
+            CLU.toast('Could not select every matching list', 'error');
         });
 }
 
@@ -793,7 +755,7 @@ function clearListSelection() {
 
 function bulkDeleteSelected() {
     if (selectedListIds.size === 0) {
-        showToast('No lists selected', 'warning');
+        CLU.toast('No lists selected', 'warning');
         return;
     }
 
@@ -829,7 +791,7 @@ function confirmDeleteAll() {
     const grid = document.querySelector('.reading-list-grid');
     const total = grid ? (parseInt(grid.dataset.totalLists, 10) || 0) : 0;
     if (total === 0) {
-        showToast('No reading lists to delete', 'warning');
+        CLU.toast('No reading lists to delete', 'warning');
         return;
     }
 
@@ -870,17 +832,17 @@ function sendBulkDelete(payload) {
             const deletedCount = (data.deleted || []).length;
             const failedCount = (data.failed || []).length;
             if (data.success) {
-                showToast(`Deleted ${deletedCount} reading list${deletedCount === 1 ? '' : 's'}`, 'success');
+                CLU.toast(`Deleted ${deletedCount} reading list${deletedCount === 1 ? '' : 's'}`, 'success');
             } else if (deletedCount > 0) {
-                showToast(`Deleted ${deletedCount}, failed ${failedCount}`, 'warning');
+                CLU.toast(`Deleted ${deletedCount}, failed ${failedCount}`, 'warning');
             } else {
-                showToast(data.message || 'Bulk delete failed', 'error');
+                CLU.toast(data.message || 'Bulk delete failed', 'error');
             }
             setTimeout(() => window.location.reload(), 600);
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred during bulk delete', 'error');
+            CLU.toast('An error occurred during bulk delete', 'error');
         });
 }
 
@@ -919,12 +881,12 @@ function cropCover(filePath) {
             if (data.success) {
                 window.location.reload();
             } else {
-                showToast('Crop failed: ' + (data.error || data.message || 'unknown error'), 'error');
+                CLU.toast('Crop failed: ' + (data.error || data.message || 'unknown error'), 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred while cropping', 'error');
+            CLU.toast('An error occurred while cropping', 'error');
         });
 }
 
@@ -937,14 +899,14 @@ function setAsThumbnail(filePath) {
         .then(response => response.json())
         .then(data => {
             if (data.success) {
-                showToast('Thumbnail updated', 'success');
+                CLU.toast('Thumbnail updated', 'success');
             } else {
-                showToast('Failed to update thumbnail: ' + data.message, 'error');
+                CLU.toast('Failed to update thumbnail: ' + data.message, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred', 'error');
+            CLU.toast('An error occurred', 'error');
         });
 }
 
@@ -988,13 +950,13 @@ function editTitle(listId, element) {
                 .then(data => {
                     if (data.success) {
                         originalElement.textContent = newName;
-                        showToast('Title updated', 'success');
+                        CLU.toast('Title updated', 'success');
                     } else {
-                        showToast('Failed to update title', 'error');
+                        CLU.toast('Failed to update title', 'error');
                     }
                 })
                 .catch(() => {
-                    showToast('Error updating title', 'error');
+                    CLU.toast('Error updating title', 'error');
                 });
         }
         originalElement.textContent = newName || currentName;
@@ -1136,15 +1098,15 @@ function saveTags() {
         .then(data => {
             if (data.success) {
                 tagsModal.hide();
-                showToast('Tags updated', 'success');
+                CLU.toast('Tags updated', 'success');
                 location.reload();
             } else {
-                showToast('Failed to update tags: ' + data.message, 'error');
+                CLU.toast('Failed to update tags: ' + data.message, 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('Error saving tags', 'error');
+            CLU.toast('Error saving tags', 'error');
         });
 }
 
@@ -1381,12 +1343,12 @@ function confirmMapping() {
             if (data.success) {
                 location.reload();
             } else {
-                showToast(data.message || 'Something went wrong', 'error');
+                CLU.toast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred', 'error');
+            CLU.toast('An error occurred', 'error');
         });
 }
 
@@ -1416,12 +1378,12 @@ function doClearMapping() {
             if (data.success) {
                 location.reload();
             } else {
-                showToast(data.message || 'Something went wrong', 'error');
+                CLU.toast(data.message || 'Something went wrong', 'error');
             }
         })
         .catch(error => {
             console.error('Error:', error);
-            showToast('An error occurred', 'error');
+            CLU.toast('An error occurred', 'error');
         });
 }
 
@@ -1432,7 +1394,7 @@ function createNewList() {
     const nameInput = document.getElementById('newListName');
     const name = nameInput ? nameInput.value.trim() : '';
     if (!name) {
-        showToast('Please enter a name', 'error');
+        CLU.toast('Please enter a name', 'error');
         return;
     }
 
@@ -1446,12 +1408,12 @@ function createNewList() {
         if (data.success) {
             window.location.href = '/reading-lists/' + data.list_id;
         } else {
-            showToast(data.message || 'Something went wrong', 'error');
+            CLU.toast(data.message || 'Something went wrong', 'error');
         }
     })
     .catch(err => {
         console.error('Error creating list:', err);
-        showToast('An error occurred', 'error');
+        CLU.toast('An error occurred', 'error');
     });
 }
 
@@ -1476,14 +1438,14 @@ function doRemoveEntry(entryId) {
             // Remove the card from DOM
             const card = document.querySelector(`.book-card[data-entry-id="${entryId}"]`);
             if (card) card.remove();
-            showToast('Entry removed', 'success');
+            CLU.toast('Entry removed', 'success');
         } else {
-            showToast('Failed to remove entry: ' + data.message, 'error');
+            CLU.toast('Failed to remove entry: ' + data.message, 'error');
         }
     })
     .catch(err => {
         console.error('Error removing entry:', err);
-        showToast('An error occurred', 'error');
+        CLU.toast('An error occurred', 'error');
     });
 }
 
@@ -1573,12 +1535,12 @@ function confirmAddIssue() {
         if (data.success) {
             location.reload();
         } else {
-            showToast(data.message || 'Something went wrong', 'error');
+            CLU.toast(data.message || 'Something went wrong', 'error');
         }
     })
     .catch(err => {
         console.error('Error adding issue:', err);
-        showToast('An error occurred', 'error');
+        CLU.toast('An error occurred', 'error');
     });
 }
 
@@ -1629,12 +1591,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 .then(r => r.json())
                 .then(data => {
                     if (!data.success) {
-                        showToast('Failed to save order', 'error');
+                        CLU.toast('Failed to save order', 'error');
                     }
                 })
                 .catch(err => {
                     console.error('Error reordering:', err);
-                    showToast('Failed to save order', 'error');
+                    CLU.toast('Failed to save order', 'error');
                 });
             }
         });
@@ -1666,7 +1628,7 @@ let readIssuesSet = new Set();
 function openReadingListComic(filePath) {
     if (reorderMode) return;
     if (typeof window.openComicReader !== 'function') {
-        showToast('Reader failed to load. Try refreshing the page.', 'error');
+        CLU.toast('Reader failed to load. Try refreshing the page.', 'error');
         return;
     }
     // Publish siblings in reading-list order so "next issue" follows the list
@@ -2041,7 +2003,7 @@ function deselectAll() {
 function importSelectedFiles() {
     const files = getSelectedFiles();
     if (files.length === 0) {
-        showToast('No files selected', 'error');
+        CLU.toast('No files selected', 'error');
         return;
     }
 
@@ -2062,18 +2024,18 @@ function importSelectedFiles() {
                 const modal = bootstrap.Modal.getInstance(document.getElementById('importGithubModal'));
                 if (modal) modal.hide();
 
-                showToast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
+                CLU.toast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
 
                 // Poll each task
                 data.tasks.forEach(task => {
                     pollImportStatus(task.task_id, task.filename);
                 });
             } else {
-                showToast('Error: ' + data.message, 'error');
+                CLU.toast('Error: ' + data.message, 'error');
             }
         })
         .catch(err => {
-            showToast('Import failed: ' + err.message, 'error');
+            CLU.toast('Import failed: ' + err.message, 'error');
         })
         .finally(() => {
             btn.disabled = false;
@@ -2256,7 +2218,7 @@ function deselectAllMetron() {
 function importSelectedMetronLists() {
     const listIds = getSelectedMetronLists();
     if (listIds.length === 0) {
-        showToast('No lists selected', 'error');
+        CLU.toast('No lists selected', 'error');
         return;
     }
 
@@ -2276,17 +2238,17 @@ function importSelectedMetronLists() {
                 const modal = bootstrap.Modal.getInstance(document.getElementById('importMetronModal'));
                 if (modal) modal.hide();
 
-                showToast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
+                CLU.toast(`Importing ${data.tasks.length} list(s) -- track progress in the navbar`, 'info', 5000);
 
                 data.tasks.forEach(task => {
                     pollImportStatus(task.task_id, `Metron list ${task.list_id}`);
                 });
             } else {
-                showToast('Error: ' + data.message, 'error');
+                CLU.toast('Error: ' + data.message, 'error');
             }
         })
         .catch(err => {
-            showToast('Import failed: ' + err.message, 'error');
+            CLU.toast('Import failed: ' + err.message, 'error');
         })
         .finally(() => {
             btn.disabled = false;
@@ -2530,7 +2492,7 @@ function deselectAllMetronArcs() {
 function importSelectedMetronArcs() {
     const arcIds = getSelectedMetronArcs();
     if (arcIds.length === 0) {
-        showToast('No arcs selected', 'error');
+        CLU.toast('No arcs selected', 'error');
         return;
     }
 
@@ -2550,17 +2512,17 @@ function importSelectedMetronArcs() {
                 const modal = bootstrap.Modal.getInstance(document.getElementById('importMetronModal'));
                 if (modal) modal.hide();
 
-                showToast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
+                CLU.toast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
 
                 data.tasks.forEach(task => {
                     pollImportStatus(task.task_id, `Metron arc ${task.arc_id}`);
                 });
             } else {
-                showToast('Error: ' + data.message, 'error');
+                CLU.toast('Error: ' + data.message, 'error');
             }
         })
         .catch(err => {
-            showToast('Import failed: ' + err.message, 'error');
+            CLU.toast('Import failed: ' + err.message, 'error');
         })
         .finally(() => {
             btn.disabled = false;
@@ -2717,7 +2679,7 @@ function deselectAllCVArcs() {
 function importSelectedCVArcs() {
     const arcIds = getSelectedCVArcs();
     if (arcIds.length === 0) {
-        showToast('No arcs selected', 'error');
+        CLU.toast('No arcs selected', 'error');
         return;
     }
 
@@ -2737,17 +2699,17 @@ function importSelectedCVArcs() {
                 const modal = bootstrap.Modal.getInstance(document.getElementById('importCVModal'));
                 if (modal) modal.hide();
 
-                showToast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
+                CLU.toast(`Importing ${data.tasks.length} arc(s) -- track progress in the navbar`, 'info', 5000);
 
                 data.tasks.forEach(task => {
                     pollImportStatus(task.task_id, `CV arc ${task.arc_id}`);
                 });
             } else {
-                showToast('Error: ' + data.message, 'error');
+                CLU.toast('Error: ' + data.message, 'error');
             }
         })
         .catch(err => {
-            showToast('Import failed: ' + err.message, 'error');
+            CLU.toast('Import failed: ' + err.message, 'error');
         })
         .finally(() => {
             btn.disabled = false;
@@ -2793,14 +2755,14 @@ function doRematchReadingList(listId) {
         .then(r => r.json())
         .then(data => {
             if (!data.success) {
-                showToast(data.message || 'Re-match failed', 'error');
+                CLU.toast(data.message || 'Re-match failed', 'error');
                 restore();
                 return;
             }
             pollRematchStatus(data.task_id, restore);
         })
         .catch(err => {
-            showToast('Re-match error: ' + err.message, 'error');
+            CLU.toast('Re-match error: ' + err.message, 'error');
             restore();
         });
 }
@@ -2813,15 +2775,15 @@ function pollRematchStatus(taskId, onDone) {
             .then(r => r.json())
             .then(data => {
                 if (!data.success) {
-                    showToast('Re-match task not found', 'error');
+                    CLU.toast('Re-match task not found', 'error');
                     onDone();
                     return;
                 }
                 if (data.status === 'complete') {
-                    showToast(`Re-match complete — ${data.message}`, 'success', 8000);
+                    CLU.toast(`Re-match complete — ${data.message}`, 'success', 8000);
                     setTimeout(() => window.location.reload(), 1500);
                 } else if (data.status === 'error') {
-                    showToast(`Re-match failed: ${data.message}`, 'error', 10000);
+                    CLU.toast(`Re-match failed: ${data.message}`, 'error', 10000);
                     onDone();
                 } else {
                     setTimeout(check, pollInterval);
@@ -2856,7 +2818,7 @@ function toggleTrackWanted(listId, btn) {
             btn.disabled = false;
             if (!data.success) {
                 btn.innerHTML = originalHtml;
-                showToast(data.message || 'Could not update this list', 'error');
+                CLU.toast(data.message || 'Could not update this list', 'error');
                 return;
             }
             btn.dataset.tracking = data.enabled ? '1' : '0';
@@ -2864,12 +2826,12 @@ function toggleTrackWanted(listId, btn) {
             btn.classList.toggle('btn-outline-primary', !data.enabled);
             btn.innerHTML = '<i class="bi bi-binoculars me-1"></i><span class="track-wanted-label">'
                 + (data.enabled ? 'Tracking Wanted' : 'Track Wanted') + '</span>';
-            showToast(data.message, 'success');
+            CLU.toast(data.message, 'success');
         })
         .catch(err => {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
-            showToast('Error: ' + err.message, 'error');
+            CLU.toast('Error: ' + err.message, 'error');
         });
 }
 
@@ -2891,12 +2853,12 @@ function syncReadingList(listId) {
         .then(r => r.json())
         .then(data => {
             if (!data.success) {
-                showToast('Sync failed: ' + data.message, 'error');
+                CLU.toast('Sync failed: ' + data.message, 'error');
                 restore();
                 return;
             }
             if (!data.changed) {
-                showToast('No changes detected', 'info');
+                CLU.toast('No changes detected', 'info');
                 restore();
                 return;
             }
@@ -2904,7 +2866,7 @@ function syncReadingList(listId) {
             pollSyncStatus(data.task_id, restore);
         })
         .catch(err => {
-            showToast('Sync error: ' + err.message, 'error');
+            CLU.toast('Sync error: ' + err.message, 'error');
             restore();
         });
 }
@@ -2917,15 +2879,15 @@ function pollSyncStatus(taskId, onDone) {
             .then(r => r.json())
             .then(data => {
                 if (!data.success) {
-                    showToast('Sync task not found', 'error');
+                    CLU.toast('Sync task not found', 'error');
                     onDone();
                     return;
                 }
                 if (data.status === 'complete') {
-                    showToast(data.message || 'Sync complete', 'success', 8000);
+                    CLU.toast(data.message || 'Sync complete', 'success', 8000);
                     setTimeout(() => window.location.reload(), 1500);
                 } else if (data.status === 'error') {
-                    showToast(`Sync failed: ${data.message}`, 'error', 10000);
+                    CLU.toast(`Sync failed: ${data.message}`, 'error', 10000);
                     onDone();
                 } else {
                     setTimeout(check, pollInterval);
@@ -2974,9 +2936,9 @@ function ensureSourceSearch() {
                 issue: currentSearchIssue,
                 year: currentSearchYear,
             }),
-            // The shared module speaks Bootstrap severities; showToast() here
+            // The shared module speaks Bootstrap severities; CLU.toast() here
             // only knows 'success'/'error' and renders anything else blue.
-            toast: (message, type) => showToast(message, type === 'danger' ? 'error' : type),
+            toast: (message, type) => CLU.toast(message, type === 'danger' ? 'error' : type),
             // The keep-open button leaves the results up so the user can grab
             // more than one file from a single search.
             onQueued: ({ keepOpen }) => {

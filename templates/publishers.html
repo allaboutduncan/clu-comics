@@ -1,52 +1,33 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Publishers{% endblock %}
 
 {% block content %}
-<div class="container py-5">
-    <!-- Header Section -->
-    <div class="d-flex justify-content-between align-items-center mb-4 fade-in-down">
-        <div>
-            <h2 class="display-4 fw-bold mb-1">Publishers</h2>
-            <p class="text-muted lead mb-0">Manage publishers from Metron or add custom ones</p>
-        </div>
-        <div class="d-flex gap-2">
-            <button class="btn btn-outline-secondary" id="syncAllBtn" onclick="syncAllPublishers()">
-                <i class="bi bi-arrow-repeat me-1"></i>Sync All from Metron
+<div>
+    {% call(slot) page_header('Publishers', 'bi-building',
+                              subtitle='Manage publishers from Metron or add custom ones',
+                              stats=[{'value': total_publishers, 'label': 'publishers'}]) %}
+        {% if slot == 'actions' %}
+            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addManualModal">
+                <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add Publisher
             </button>
-            <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#searchMetronModal">
-                <i class="bi bi-search me-1"></i>Search Metron
+            <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#searchMetronModal">
+                <i class="bi bi-search me-1" aria-hidden="true"></i>Search Metron
             </button>
-            <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addManualModal">
-                <i class="bi bi-plus-lg me-1"></i>Add Publisher
+            <button class="btn btn-sm btn-outline-secondary" id="syncAllBtn" onclick="syncAllPublishers()">
+                <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>Sync All from Metron
             </button>
-        </div>
-    </div>
-
-    <!-- Stats Card -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-4">
-            <div class="card border-0 shadow-sm bg-primary bg-opacity-10">
-                <div class="card-body text-center">
-                    <h3 class="display-5 fw-bold text-primary mb-0">{{ total_publishers }}</h3>
-                    <p class="text-muted mb-0">Total Publishers</p>
-                </div>
-            </div>
-        </div>
-    </div>
+        {% endif %}
+    {% endcall %}
 
     {% if total_publishers == 0 %}
-    <!-- Empty State -->
-    <div class="text-center py-5 fade-in-up">
-        <div class="mb-4">
-            <i class="bi bi-building display-1 text-muted opacity-25"></i>
-        </div>
-        <h3 class="h2 text-muted mb-3">No Publishers</h3>
-        <p class="text-muted mb-4 lead">Add publishers from Metron or create custom ones.</p>
-        <button class="btn btn-outline-primary btn-lg" data-bs-toggle="modal" data-bs-target="#searchMetronModal">
-            <i class="bi bi-search me-1"></i>Search Metron
+    {% call empty_state('No publishers', 'Add publishers from Metron or create custom ones.', 'bi-building') %}
+        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#searchMetronModal">
+            <i class="bi bi-search me-1" aria-hidden="true"></i>Search Metron
         </button>
-    </div>
+    {% endcall %}
     {% else %}
 
     <!-- Search/Filter -->
@@ -136,11 +117,11 @@
                             </td>
                             <td class="text-end pe-4">
                                 <div class="btn-group" role="group">
-                                    <button class="btn btn-sm btn-outline-secondary" title="Edit"
+                                    <button aria-label="Edit" class="btn btn-sm btn-outline-secondary" title="Edit"
                                         onclick="editPublisher({{ pub.id }}, '{{ pub.name|replace("'", "\\'") }}', '{{ pub.path|default("", true)|replace("'", "\\'") }}', '{{ pub.brand_keywords|default("", true)|replace("'", "\\'") }}')">
                                         <i class="bi bi-pencil"></i>
                                     </button>
-                                    <button class="btn btn-sm btn-outline-danger" title="Delete"
+                                    <button aria-label="Delete" class="btn btn-sm btn-outline-danger" title="Delete"
                                         onclick="deletePublisher({{ pub.id }}, '{{ pub.name|replace("'", "\\'") }}')">
                                         <i class="bi bi-trash"></i>
                                     </button>
@@ -171,7 +152,7 @@
                 <div class="input-group mb-4">
                     <input type="text" class="form-control form-control-lg" id="metronSearchInput"
                         placeholder="Enter publisher name..." autocomplete="off">
-                    <button class="btn btn-primary" type="button" onclick="searchMetron()">
+                    <button aria-label="Search Metron" title="Search Metron" class="btn btn-primary" type="button" onclick="searchMetron()">
                         <i class="bi bi-search"></i>
                     </button>
                 </div>
@@ -359,14 +340,14 @@
             const response = await fetch('/api/publishers/sync', { method: 'POST' });
             const data = await response.json();
             if (!data.success) {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 btn.disabled = false;
                 btn.innerHTML = original;
                 return;
             }
             location.reload();
         } catch (error) {
-            alert('Error: ' + error.message);
+            CLU.toast('Error: ' + error.message, 'error');
             btn.disabled = false;
             btn.innerHTML = original;
         }
@@ -458,7 +439,7 @@
 
             const data = await response.json();
             if (!data.success) {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 return;
             }
 
@@ -474,7 +455,7 @@
             // Reload page to show new publisher
             location.reload();
         } catch (error) {
-            alert('Error: ' + error.message);
+            CLU.toast('Error: ' + error.message, 'error');
         }
     }
 
@@ -484,7 +465,7 @@
         const logo = document.getElementById('pubLogo').value.trim();
 
         if (!name) {
-            alert('Name is required');
+            CLU.toast('Name is required', 'warning');
             return;
         }
 
@@ -497,13 +478,13 @@
 
             const data = await response.json();
             if (!data.success) {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 return;
             }
 
             location.reload();
         } catch (error) {
-            alert('Error: ' + error.message);
+            CLU.toast('Error: ' + error.message, 'error');
         }
     }
 
@@ -517,13 +498,13 @@
 
             const data = await response.json();
             if (!data.success) {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 return;
             }
 
             location.reload();
         } catch (error) {
-            alert('Error: ' + error.message);
+            CLU.toast('Error: ' + error.message, 'error');
         }
     }
 
@@ -544,7 +525,7 @@
         const brandKeywords = document.getElementById('editPubBrandKeywords').value.trim();
 
         if (!name) {
-            alert('Name is required');
+            CLU.toast('Name is required', 'warning');
             return;
         }
 
@@ -557,13 +538,13 @@
 
             const data = await response.json();
             if (!data.success) {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 return;
             }
 
             location.reload();
         } catch (error) {
-            alert('Error: ' + error.message);
+            CLU.toast('Error: ' + error.message, 'error');
         }
     }
 </script>

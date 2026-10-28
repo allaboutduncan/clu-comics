@@ -111,33 +111,5 @@ function openAddToReadingListModal(filePath) {
 }
 
 function _rlPickerShowToast(message, type) {
-    // Use existing showToast if available (from reading_list.js or other pages)
-    if (typeof showToast === 'function') {
-        showToast(message, type);
-        return;
-    }
-    // Fallback: create a simple toast
-    let container = document.getElementById('toast-container');
-    if (!container) {
-        container = document.createElement('div');
-        container.id = 'toast-container';
-        container.className = 'toast-container position-fixed end-0 p-4';
-        container.style.zIndex = '1100';
-        container.style.top = '60px';
-        document.body.appendChild(container);
-    }
-    const bgClass = type === 'success' ? 'bg-success' : type === 'error' ? 'bg-danger' : 'bg-primary';
-    const id = 'rl-toast-' + Date.now();
-    container.insertAdjacentHTML('beforeend', `
-        <div id="${id}" class="toast align-items-center text-white ${bgClass} border-0 show" role="alert">
-            <div class="d-flex">
-                <div class="toast-body">${message}</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-            </div>
-        </div>
-    `);
-    setTimeout(() => {
-        const el = document.getElementById(id);
-        if (el) el.remove();
-    }, 5000);
+    CLU.toast(message, type);
 }

@@ -1,4 +1,6 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}{{ series.name }} - Series{% endblock %}
 
@@ -7,7 +9,44 @@
 {% endblock %}
 
 {% block content %}
-<div class="container py-5">
+<div>
+    {% call(slot) page_header(series.name, 'bi-journal-text') %}
+        {% if slot == 'crumbs' %}
+            <li class="breadcrumb-item"><a href="{{ url_for('series.pull_list') }}">Pull List</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ series.name }}</li>
+        {% elif slot == 'actions' %}
+            <button onclick="history.back()" class="btn btn-sm btn-outline-secondary">
+                <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Back
+            </button>
+            <button onclick="forceRefresh()" class="btn btn-sm btn-outline-secondary" title="Force refresh from Metron API">
+                <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh
+            </button>
+            {% if mapped_path %}
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                onclick="CLU.openSeriesJsonModal({{ mapped_path|tojson|forceescape }}, {{ series.name|tojson|forceescape }})"
+                title="Create or update series.json in the mapped folder">
+                <i class="bi bi-file-earmark-code me-1" aria-hidden="true"></i>series.json
+            </button>
+            {% endif %}
+        {% elif slot == 'more' %}
+            {% if series.id < 2000000000 %}
+            <li><a href="https://metron.cloud/series/{{ series.id }}/" target="_blank" class="dropdown-item">
+                <i class="bi bi-box-arrow-up-right me-2" aria-hidden="true"></i>View on Metron
+            </a></li>
+            {% endif %}
+            {% if series.cv_id %}
+            <li><a href="https://comicvine.gamespot.com/volume/4050-{{ series.cv_id }}/" target="_blank" class="dropdown-item">
+                <i class="bi bi-box-arrow-up-right me-2" aria-hidden="true"></i>ComicVine
+            </a></li>
+            {% endif %}
+            {% if series.gcd_id %}
+            <li><a href="https://www.comics.org/series/{{ series.gcd_id }}/" target="_blank" class="dropdown-item">
+                <i class="bi bi-box-arrow-up-right me-2" aria-hidden="true"></i>GCD
+            </a></li>
+            {% endif %}
+        {% endif %}
+    {% endcall %}
+
     <div class="row mb-5" id="series">
         <div class="col-12">
             <div class="card bg-light border-0 shadow-sm">
@@ -25,10 +64,9 @@
                             {% endif %}
                         </div>
                         <!-- Series Info -->
-                        <div class="col-md-7">
+                        <div class="col-md-9">
+                            {% if mapped_path %}
                             <div class="d-flex align-items-baseline flex-wrap gap-2 mb-3">
-                                <h2 class="display-6 fw-bold mb-0">{{ series.name }}</h2>
-                                {% if mapped_path %}
                                 {% if has_series_json %}
                                 <span class="badge bg-success" title="series.json is present in the mapped folder">
                                     <i class="bi bi-file-earmark-check me-1"></i>series.json
@@ -38,8 +76,8 @@
                                     <i class="bi bi-file-earmark-x me-1"></i>series.json
                                 </span>
                                 {% endif %}
-                                {% endif %}
                             </div>
+                            {% endif %}
                             <p class="lead mb-4">{{ series.desc or 'No description available.' }}</p>
 
                             <div class="row g-3 text-muted">
@@ -107,40 +145,6 @@
                                 </div>
                             </div>
                         </div>
-                        <!-- Actions -->
-                        <div class="col-md-2 d-flex flex-column align-items-md-end justify-content-start gap-2">
-                            <button onclick="history.back()" class="btn btn-outline-secondary w-100">
-                                <i class="bi bi-arrow-left me-1"></i>Back
-                            </button>
-                            <button onclick="forceRefresh()" class="btn btn-outline-info w-100" title="Force refresh from Metron API">
-                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-                            </button>
-                            {% if mapped_path %}
-                            <button type="button" class="btn btn-outline-success w-100"
-                                onclick="CLU.openSeriesJsonModal({{ mapped_path|tojson|forceescape }}, {{ series.name|tojson|forceescape }})"
-                                title="Create or update series.json in the mapped folder">
-                                <i class="bi bi-file-earmark-code me-1"></i>series.json
-                            </button>
-                            {% endif %}
-                            {% if series.id < 2000000000 %}
-                            <a href="https://metron.cloud/series/{{ series.id }}/" target="_blank"
-                                class="btn btn-outline-primary w-100">
-                                <i class="bi bi-box-arrow-up-right me-1"></i>View on Metron
-                            </a>
-                            {% endif %}
-                            {% if series.cv_id %}
-                            <a href="https://comicvine.gamespot.com/volume/4050-{{ series.cv_id }}/" target="_blank"
-                                class="btn btn-outline-info w-100">
-                                <i class="bi bi-box-arrow-up-right me-1"></i>ComicVine
-                            </a>
-                            {% endif %}
-                            {% if series.gcd_id %}
-                            <a href="https://www.comics.org/series/{{ series.gcd_id }}/" target="_blank"
-                                class="btn btn-outline-warning w-100">
-                                <i class="bi bi-box-arrow-up-right me-1"></i>GCD
-                            </a>
-                            {% endif %}
-                        </div>
                     </div>
                 </div>
             </div>
@@ -182,8 +186,8 @@
                                 {% endif %}
                             </p>
                         </div>
-                        <div class="d-flex align-items-center gap-3">
-                            <div class="d-flex gap-2">
+                        <div class="d-flex flex-wrap align-items-center gap-2 gap-md-3">
+                            <div class="d-flex flex-wrap gap-2">
                                 {% if mapped_path %}
                                 <button class="btn btn-outline-danger" onclick="removeMappingConfirm()">
                                     <i class="bi bi-x-circle me-1"></i>Remove
@@ -353,18 +357,18 @@
                                 {% if mapped_path and status.get('found') and status.get('file_path') %}
                                 <!-- Found in collection - show file actions -->
                                 <div class="btn-group" role="group">
-                                    <button type="button" class="btn btn-sm btn-outline-info text-info"
+                                    <button aria-label="View CBZ Info" type="button" class="btn btn-sm btn-outline-info text-info"
                                         onclick="viewIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}', '{{ issue.number }}')"
                                         title="View CBZ Info">
                                         <i class="bi bi-eye"></i>
                                     </button>
-                                    <button type="button" class="btn btn-sm btn-outline-primary"
+                                    <button aria-label="Edit CBZ" type="button" class="btn btn-sm btn-outline-primary"
                                         onclick="editIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}')"
                                         title="Edit CBZ">
                                         <i class="bi bi-pencil"></i>
                                     </button>
                                     <div class="dropdown d-inline-block">
-                                        <button class="btn btn-sm btn-outline-secondary" type="button"
+                                        <button aria-label="More options" class="btn btn-sm btn-outline-secondary" type="button"
                                             data-bs-toggle="dropdown" aria-expanded="false" title="More options">
                                             <i class="bi bi-three-dots-vertical"></i>
                                         </button>
@@ -401,7 +405,7 @@
                                 </div>
                                 {% elif mapped_path and has_manual %}
                                 <!-- Manually marked as owned/skipped - show clear button -->
-                                <button class="btn btn-sm btn-outline-dark"
+                                <button aria-label="Clear {{ manual.status }} status" class="btn btn-sm btn-outline-dark"
                                     onclick="clearManualStatus('{{ issue.number }}')"
                                     title="Clear {{ manual.status }} status">
                                     <i class="bi bi-x-circle"></i>
@@ -409,7 +413,7 @@
                                 {% else %}
                                 <!-- Not found - show search with mark dropdown -->
                                 <div class="btn-group" role="group">
-                                    <button class="btn btn-sm btn-outline-primary"
+                                    <button aria-label="Search GetComics" class="btn btn-sm btn-outline-primary"
                                         data-series="{{ series.name }}"
                                         data-issue="{{ issue.number }}"
                                         data-year="{{ issue_year }}"
@@ -469,17 +473,11 @@
         </div>
     </div>
     {% else %}
-    <!-- Empty State -->
-    <div class="text-center py-5 fade-in-up">
-        <div class="mb-4">
-            <i class="bi bi-journal-x display-1 text-muted opacity-25"></i>
-        </div>
-        <h3 class="h2 text-muted mb-3">No issues found</h3>
-        <p class="text-muted mb-4 lead">Unable to retrieve issues for this series.</p>
-        <button onclick="history.back()" class="btn btn-outline-primary btn-lg">
-            <i class="bi bi-arrow-left me-1"></i>Back
+    {% call empty_state('No issues found', 'The provider returned no issues for this series.', 'bi-journal-x') %}
+        <button type="button" onclick="history.back()" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Back
         </button>
-    </div>
+    {% endcall %}
     {% endif %}
 </div>
 
@@ -633,19 +631,6 @@
     </div>
 </div>
 <!-- End of ComicVine Volume Selection Modal -->
-
-<!-- Toast Container -->
-<div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1100">
-    <div id="moveErrorToast" class="toast bg-danger text-white" role="alert" aria-live="assertive" aria-atomic="true">
-        <div class="toast-header bg-danger text-white">
-            <strong class="me-auto">Rename Error</strong>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="toast" aria-label="Close"></button>
-        </div>
-        <div class="toast-body" id="moveErrorToastBody">
-            Rename failed.
-        </div>
-    </div>
-</div>
 
 <!-- Edit CBZ Modal (shared partial – driven by clu-cbz-edit.js) -->
 {% include 'partials/modal_cbz_edit.html' %}
@@ -886,7 +871,7 @@
                     <div class="input-group">
                         <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
                             onkeypress="if(event.key==='Enter')doGetComicsSearch()">
-                        <button class="btn btn-primary" onclick="doGetComicsSearch()">
+                        <button aria-label="Search GetComics" title="Search GetComics" class="btn btn-primary" onclick="doGetComicsSearch()">
                             <i class="bi bi-search"></i>
                         </button>
                     </div>
@@ -1023,11 +1008,11 @@
             const data = await response.json();
             if (!data.success) {
                 document.getElementById('stackSubscription').checked = !enabled;
-                showToast('Failed to update subscription', 'danger');
+                CLU.toast('Failed to update subscription', 'danger');
             }
         } catch (e) {
             document.getElementById('stackSubscription').checked = !enabled;
-            showToast('Failed to update subscription', 'danger');
+            CLU.toast('Failed to update subscription', 'danger');
         }
     }
 
@@ -1042,11 +1027,11 @@
             const data = await response.json();
             if (!data.success) {
                 document.getElementById('monitorSeries').checked = !enabled;
-                showToast('Failed to update monitoring', 'danger');
+                CLU.toast('Failed to update monitoring', 'danger');
             }
         } catch (e) {
             document.getElementById('monitorSeries').checked = !enabled;
-            showToast('Failed to update monitoring', 'danger');
+            CLU.toast('Failed to update monitoring', 'danger');
         }
     }
 
@@ -1069,15 +1054,15 @@
             .then(data => {
                 if (!data.success) {
                     resetCheckMissingBtn();
-                    showToastGC('Error: ' + (data.error || 'Check failed'), 'danger');
+                    CLU.toast('Error: ' + (data.error || 'Check failed'), 'danger');
                     return;
                 }
-                showToastGC(data.message, 'info');
+                CLU.toast(data.message, 'info');
                 pollMissingCheck(data.op_id);
             })
             .catch(e => {
                 resetCheckMissingBtn();
-                showToastGC('Error: ' + e.message, 'danger');
+                CLU.toast('Error: ' + e.message, 'danger');
             });
     }
 
@@ -1114,9 +1099,9 @@
                     missingCheckPoll = null;
                     resetCheckMissingBtn();
                     if (op && op.status === 'error') {
-                        showToastGC('Check failed: ' + (op.detail || 'unknown error'), 'danger');
+                        CLU.toast('Check failed: ' + (op.detail || 'unknown error'), 'danger');
                     } else {
-                        showToastGC(
+                        CLU.toast(
                             'Missing issue check complete' +
                             (op && op.detail ? ' — ' + op.detail : ''),
                             'success'
@@ -1148,12 +1133,12 @@
             if (data.success) {
                 location.reload();
             } else {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-folder-plus me-1"></i>Create & Map';
             }
         } catch (e) {
-            alert('Error: ' + e.message);
+            CLU.toast('Error: ' + e.message, 'error');
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-folder-plus me-1"></i>Create & Map';
         }
@@ -1219,7 +1204,7 @@
                     issue: currentSearchIssue,
                     year: currentSearchYear,
                 }),
-                toast: showToastGC,
+                toast: CLU.toast,
                 onQueued: ({ source, downloadIds, issue, keepOpen }) => {
                     // Reflect the queued download on the issue row:
                     // a wanted/not-found issue (table-danger) becomes table-warning.
@@ -1298,7 +1283,7 @@
                 if (!data.success) return;
 
                 if (data.status === 'complete') {
-                    showToastGC('Download completed' + (data.filename ? ': ' + data.filename : ''), 'success');
+                    CLU.toast('Download completed' + (data.filename ? ': ' + data.filename : ''), 'success');
                     return;
                 }
                 if (data.status === 'cancelled') {
@@ -1310,7 +1295,7 @@
                     if (data.manual_url) {
                         showManualDownloadAlert(data.manual_url, data.filename);
                     } else {
-                        showToastGC('Download failed: ' + (data.error || 'unknown error'), 'danger');
+                        CLU.toast('Download failed: ' + (data.error || 'unknown error'), 'danger');
                     }
                     return;
                 }
@@ -1328,12 +1313,7 @@
     // Persistent toast offering a manual (browser) download link for mirrors
     // we can't fetch automatically (Cloudflare challenge).
     function showManualDownloadAlert(manualUrl, filename) {
-        let container = document.querySelector('.toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.className = 'toast-container position-fixed bottom-0 end-0 p-3';
-            document.body.appendChild(container);
-        }
+        const container = CLU.toastContainer();
 
         const toastId = 'manual-toast-' + Date.now();
         const label = filename ? escapeHtmlGC(filename) : 'this file';
@@ -1369,31 +1349,6 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
-    }
-
-    function showToastGC(message, type) {
-        let container = document.querySelector('.toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.className = 'toast-container position-fixed bottom-0 end-0 p-3';
-            document.body.appendChild(container);
-        }
-
-        const toastId = 'toast-' + Date.now();
-        const toastHtml = `
-        <div id="${toastId}" class="toast align-items-center text-bg-${type} border-0" role="alert">
-            <div class="d-flex">
-                <div class="toast-body">${escapeHtmlGC(message)}</div>
-                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-            </div>
-        </div>`;
-        container.insertAdjacentHTML('beforeend', toastHtml);
-
-        const toastEl = document.getElementById(toastId);
-        const toast = new bootstrap.Toast(toastEl, { autohide: true, delay: 3000 });
-        toast.show();
-
-        toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
     }
 
     // GetComics Search Aliases
@@ -1478,12 +1433,12 @@
                 const display = document.getElementById('aliasesDisplay');
                 if (display) renderAliasesDisplay(display, currentAliases);
                 aliasesModal.hide();
-                showToastGC(`Aliases updated (${data.entries_updated} entries)`, 'success');
+                CLU.toast(`Aliases updated (${data.entries_updated} entries)`, 'success');
             } else {
-                showToastGC('Error: ' + (data.error || 'Save failed'), 'danger');
+                CLU.toast('Error: ' + (data.error || 'Save failed'), 'danger');
             }
         } catch (e) {
-            showToastGC('Error: ' + e.message, 'danger');
+            CLU.toast('Error: ' + e.message, 'danger');
         } finally {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-check-lg me-1"></i>Save';
