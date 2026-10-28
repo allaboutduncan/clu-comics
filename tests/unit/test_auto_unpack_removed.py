@@ -18,14 +18,13 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-# Every file that used to name the setting, plus the shipped config file.
+# Every file that used to name the setting.
 SOURCES = [
     "app.py",
     "api.py",
     "monitor.py",
     "core/download_utils.py",
     "templates/config.html",
-    "config.ini",
 ]
 
 

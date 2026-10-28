@@ -59,16 +59,14 @@ def test_endpoint_reads_the_field(save_handler, field):
 
 
 @pytest.mark.parametrize("key", LEGACY_KEYS)
-def test_setting_is_not_in_the_deprecated_config_ini(key):
+def test_setting_is_not_a_legacy_ini_default(key):
     """CLAUDE.md deprecates config.ini: new settings live in user_preferences.
 
     This test was originally the other way round, asserting the keys were
     present in config.ini — it would have kept enforcing the deprecated
-    pattern.
+    pattern. The shipped config.ini itself is gone (test_settings.py).
     """
-    config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
     config_py = (ROOT / "core" / "config.py").read_text(encoding="utf-8")
-    assert not re.search(rf"^{key}\s*=", config_ini, re.MULTILINE)
     assert f'"{key}"' not in config_py
 
 

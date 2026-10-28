@@ -263,9 +263,3 @@ def test_endpoint_persists_the_preference(save_handler):
 
 def test_config_page_renders_the_current_value(app_py):
     assert "downloadPacks=is_download_packs_enabled()" in app_py
-
-
-def test_setting_is_not_in_the_deprecated_config_ini():
-    """CLAUDE.md: new settings live in user_preferences, not config.ini."""
-    config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
-    assert "DOWNLOAD_PACKS" not in config_ini

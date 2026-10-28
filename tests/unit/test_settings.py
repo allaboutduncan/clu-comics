@@ -182,6 +182,11 @@ class TestIniIsRetired:
                         offenders.append(f"{rel}: {ln.strip()}")
         assert not offenders, "\n".join(offenders)
 
+    def test_repo_ships_no_ini(self):
+        """The shipped config.ini is gone; settings defaults live in SETTINGS_SCHEMA.
+        A restored copy would invite new keys back into the deprecated file."""
+        assert not os.path.exists(os.path.join(self.ROOT, "config.ini"))
+
     def test_no_ini_watcher_thread(self):
         assert not hasattr(cc, "monitor_config") and not hasattr(cc, "write_config")
 
