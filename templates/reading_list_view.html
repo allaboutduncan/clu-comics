@@ -107,7 +107,9 @@
         right: 8px;
         padding: 2px 6px;
         border-radius: 4px;
-        color: white;
+        /* Dark ink for the gold sticker: white on it is about 1.6:1. This
+           block loads after collection.css, so it must not reset to white. */
+        color: #212529;
         font-size: 0.7rem;
         font-weight: bold;
         z-index: 10;
@@ -124,6 +126,8 @@
 
     .issue-badge-unmatched {
         background: rgba(220, 53, 69, 0.85);
+        /* The base sticker ink is dark (for the gold); keep white on red. */
+        color: #fff;
     }
 
     .book-details {

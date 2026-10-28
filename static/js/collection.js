@@ -4046,7 +4046,7 @@ async function loadFavoritePublishers() {
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${pub.name}">${pub.name}</div>
-                        <small class="text-muted item-meta${pub.folderCount === null ? ' metadata-loading' : ''}">${pub.folderCount === null ? 'Loading...' :
+                        <small class="item-meta${pub.folderCount === null ? ' metadata-loading' : ''}">${pub.folderCount === null ? 'Loading...' :
                     [
                         pub.folderCount > 0 ? `${pub.folderCount} folder${pub.folderCount !== 1 ? 's' : ''}` : '',
                         pub.fileCount > 0 ? `${pub.fileCount} file${pub.fileCount !== 1 ? 's' : ''}` : ''
