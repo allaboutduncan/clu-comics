@@ -27,6 +27,19 @@
         currentLevel: 'publisher',
     };
 
+    // The size last picked in the select; used when the URL does not say.
+    const PER_PAGE_COOKIE = 'clu_per_page_library';
+
+    // The sizes the select offers, so the two lists cannot drift apart.
+    function pageSizes() {
+        const per = document.getElementById('mbPerPage');
+        return per ? Array.from(per.options, o => parseInt(o.value, 10)) : [24, 50, 100, 250];
+    }
+
+    function rememberedPerPage() {
+        return window.CLU && CLU.rememberedPerPage ? CLU.rememberedPerPage(PER_PAGE_COOKIE) : null;
+    }
+
     let browseAbort = null;
     let searchTimer = null;
 
@@ -38,7 +51,12 @@
         state.sort = p.get('sort') || 'alpha';
         state.search = p.get('search') || '';
         state.page = parseInt(p.get('page') || '1', 10) || 1;
-        state.perPage = parseInt(p.get('per_page') || '50', 10) || 50;
+        // A size the select does not offer falls through to the cookie.
+        const sizes = pageSizes();
+        const fromUrl = parseInt(p.get('per_page') || '', 10);
+        const remembered = rememberedPerPage();
+        state.perPage = sizes.includes(fromUrl) ? fromUrl
+            : sizes.includes(remembered) ? remembered : 50;
         state.publisher = p.get('publisher') || '';
         state.series = p.get('series') || '';
         const yf = p.get('year_from'); const yt = p.get('year_to');
@@ -51,7 +69,9 @@
         p.set('axis', state.axis);
         if (state.sort !== 'alpha') p.set('sort', state.sort);
         if (state.page !== 1) p.set('page', String(state.page));
-        if (state.perPage !== 50) p.set('per_page', String(state.perPage));
+        // With a remembered size a missing per_page means "the cookie", not
+        // 50, so the URL must name the size to reproduce it.
+        if (state.perPage !== 50 || rememberedPerPage() !== null) p.set('per_page', String(state.perPage));
         if (state.search) p.set('search', state.search);
         if (state.publisher) p.set('publisher', state.publisher);
         if (state.series) p.set('series', state.series);
@@ -472,7 +492,9 @@
         });
         const per = document.getElementById('mbPerPage');
         if (per) per.addEventListener('change', () => {
-            state.perPage = parseInt(per.value, 10) || 50; state.page = 1; reload();
+            state.perPage = parseInt(per.value, 10) || 50; state.page = 1;
+            if (window.CLU && CLU.rememberPerPage) CLU.rememberPerPage(PER_PAGE_COOKIE, state.perPage);
+            reload();
         });
         const refresh = document.getElementById('mbRefreshBtn');
         if (refresh) refresh.onclick = () => reload();

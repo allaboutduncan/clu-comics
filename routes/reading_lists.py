@@ -68,6 +68,7 @@ from models.comicvine import (
     fetch_cv_arc_issues,
 )
 from core.app_logging import app_logger
+from helpers.paging import per_page_arg
 import core.app_state as app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
@@ -88,6 +89,8 @@ _import_semaphore = threading.Semaphore(5)
 # templates/reading_lists.html offers exactly these.
 READING_LIST_PAGE_SIZES = (20, 40, 80, 160, 300)
 READING_LIST_DEFAULT_PER_PAGE = 40
+# The size last picked in the select; used when the URL does not say.
+READING_LIST_PER_PAGE_COOKIE = 'clu_per_page_reading_lists'
 
 
 def _reading_list_grid_args():
@@ -100,12 +103,8 @@ def _reading_list_grid_args():
         page = max(1, int(args.get('page', 1)))
     except (TypeError, ValueError):
         page = 1
-    try:
-        per_page = int(args.get('per_page', READING_LIST_DEFAULT_PER_PAGE))
-    except (TypeError, ValueError):
-        per_page = READING_LIST_DEFAULT_PER_PAGE
-    if per_page not in READING_LIST_PAGE_SIZES:
-        per_page = READING_LIST_DEFAULT_PER_PAGE
+    per_page = per_page_arg(args, request.cookies, READING_LIST_PER_PAGE_COOKIE,
+                            READING_LIST_PAGE_SIZES, READING_LIST_DEFAULT_PER_PAGE)
     return tags, sort, page, per_page
 
 
@@ -134,6 +133,7 @@ def index():
         active_sort=sort,
         page_sizes=READING_LIST_PAGE_SIZES,
         default_per_page=READING_LIST_DEFAULT_PER_PAGE,
+        per_page_cookie=READING_LIST_PER_PAGE_COOKIE,
     )
 
 
