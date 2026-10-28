@@ -107,7 +107,9 @@
         right: 8px;
         padding: 2px 6px;
         border-radius: 4px;
-        color: white;
+        /* Dark ink for the gold sticker: white on it is about 1.6:1. This
+           block loads after collection.css, so it must not reset to white. */
+        color: #212529;
         font-size: 0.7rem;
         font-weight: bold;
         z-index: 10;

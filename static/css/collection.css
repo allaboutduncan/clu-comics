@@ -226,7 +226,7 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    background: var(--clu-select);
+    background: var(--clu-select-fill);
     color: #fff;
     padding: 8px 16px;
     border-radius: 4px;
@@ -398,19 +398,6 @@ body.collection-select-mode {
     #pagination-controls.is-floating .collection-pager-inner {
         animation: none;
         transition: none;
-    }
-
-    #loading-more-indicator,
-    #loading-more-indicator.fade-out,
-    .collection-bulk-action-bar,
-    .item-meta.metadata-loading {
-        animation: none;
-    }
-
-    .grid-item:hover,
-    .dashboard-card:hover,
-    .grid-item.drag-over {
-        transform: none;
     }
 }
 
@@ -829,7 +816,7 @@ body.collection-select-mode {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    background: rgba(var(--bs-primary-rgb), 0.9);
+    background: var(--clu-select-fill);
     color: #fff;
     padding: 1rem 2rem;
     border-radius: 0.5rem;
@@ -851,11 +838,25 @@ body.collection-select-mode {
 
 /* Multi-Select & Bulk Action Bar */
 
-/* Selection colour: the theme's primary pushed 30% toward its emphasis colour
-   (black on light themes, white on dark), so a muted primary such as Minty's
-   or Darkly's still marks a selected cover clearly and carries a white check. */
+/* Selection colours.
+   --clu-select is an outline: the theme's primary pushed 30% toward its
+   emphasis colour (black on light themes, white on dark), so it stands off the
+   page on either.
+   --clu-select-fill carries white ink (the check, the drop label), so it is
+   always pushed toward black - pushing it toward white on a dark theme would
+   leave Cyborg's or Solar's white check at about 2:1.
+   Plain primary first: a custom property holding an unsupported color-mix()
+   is not discarded at parse time, it is invalid wherever it is used. */
 :root {
-    --clu-select: color-mix(in srgb, var(--bs-primary) 70%, var(--bs-emphasis-color));
+    --clu-select: var(--bs-primary);
+    --clu-select-fill: var(--bs-primary);
+}
+
+@supports (color: color-mix(in srgb, red 50%, blue)) {
+    :root {
+        --clu-select: color-mix(in srgb, var(--bs-primary) 70%, var(--bs-emphasis-color));
+        --clu-select-fill: color-mix(in srgb, var(--bs-primary) 70%, #000);
+    }
 }
 
 .grid-item.file.bulk-selected .thumbnail-container {
@@ -884,7 +885,7 @@ body.collection-select-mode {
     left: 8px;
     width: 24px;
     height: 24px;
-    background: var(--clu-select);
+    background: var(--clu-select-fill);
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -974,4 +975,23 @@ body.collection-select-mode .grid-item.file {
 
 .selection-hint i {
     font-size: 0.72rem;
+}
+
+/* Reduced motion. Kept last on purpose: it overrides rules of equal
+   specificity (.dashboard-card:hover, .collection-bulk-action-bar...) and
+   only wins by coming after them. */
+@media (prefers-reduced-motion: reduce) {
+
+    #loading-more-indicator,
+    #loading-more-indicator.fade-out,
+    .collection-bulk-action-bar,
+    .item-meta.metadata-loading {
+        animation: none;
+    }
+
+    .grid-item:hover,
+    .dashboard-card:hover,
+    .grid-item.drag-over {
+        transform: none;
+    }
 }
