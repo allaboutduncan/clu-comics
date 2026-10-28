@@ -126,6 +126,14 @@
         if (state.series) {
             push(`Series: ${state.series}`, null);
         }
+        // Page header title = the current level (the icon is left alone).
+        const title = document.getElementById('mbTitle');
+        const titleText = state.series || state.publisher || 'Library';
+        if (title) {
+            const span = title.querySelector('.clu-page-title-text');
+            if (span) span.textContent = titleText;
+            title.title = titleText;
+        }
     }
 
     function clearDrilldown() {

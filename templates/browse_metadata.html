@@ -1,25 +1,11 @@
 {% extends "base.html" %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Browse by {{ category_label }}: {{ name }} - Comic Library{% endblock %}
 
 {% block extra_css %}
 <style>
-    .browse-page {
-        padding: 2rem 0;
-    }
-
-    .browse-header {
-        margin-bottom: 2rem;
-    }
-
-    .stat-badge {
-        background: var(--bs-primary);
-        color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 20px;
-        font-weight: 600;
-    }
-
     /* Publisher group (h2 level) */
     .publisher-group {
         margin-bottom: 2.5rem;
@@ -118,44 +104,20 @@
     }
 
     /* Empty state */
-    .empty-state {
-        text-align: center;
-        padding: 4rem 2rem;
-    }
-
-    .empty-state i {
-        font-size: 4rem;
-        color: var(--bs-secondary-color);
-        margin-bottom: 1rem;
-    }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="container-lg browse-page">
-    <!-- Page Header -->
-    <div class="browse-header d-flex justify-content-between align-items-start flex-wrap gap-3">
-        <div>
-            <nav aria-label="breadcrumb">
-                <ol class="breadcrumb">
-                    <li class="breadcrumb-item"><a href="{{ url_for('insights_page') }}">Insights</a></li>
-                    <li class="breadcrumb-item active">{{ category_label }}</li>
-                </ol>
-            </nav>
-            <h1>
-                {% if category == 'writer' %}<i class="bi bi-pencil me-2"></i>
-                {% elif category == 'penciller' %}<i class="bi bi-brush me-2"></i>
-                {% elif category == 'characters' %}<i class="bi bi-people me-2"></i>
-                {% elif category == 'publisher' %}<i class="bi bi-building me-2"></i>
-                {% endif %}
-                {{ name }}
-            </h1>
-            <p class="lead text-muted mb-0">Comics by {{ category_label|lower }}</p>
-        </div>
-        <div class="stat-badge">
-            <i class="bi bi-collection me-1"></i>{{ "{:,}".format(total) }} comic{{ 's' if total != 1 else '' }}
-        </div>
-    </div>
+<div class="browse-page">
+    {% set _icons = {'writer': 'bi-pencil', 'penciller': 'bi-brush', 'characters': 'bi-people', 'publisher': 'bi-building'} %}
+    {% call(slot) page_header(name, _icons.get(category),
+                              subtitle='Comics by ' ~ (category_label | lower),
+                              stats=[{'value': total, 'label': 'comic' if total == 1 else 'comics', 'keep_zero': True}]) %}
+        {% if slot == 'crumbs' %}
+            <li class="breadcrumb-item"><a href="{{ url_for('insights_page') }}">Insights</a></li>
+            <li class="breadcrumb-item active">{{ category_label }}</li>
+        {% endif %}
+    {% endcall %}
 
     {% if groups %}
         {% if nested %}
@@ -241,15 +203,11 @@
         {% endif %}
 
     {% else %}
-    <!-- Empty State -->
-    <div class="empty-state">
-        <i class="bi bi-search d-block"></i>
-        <h4 class="text-muted">No comics found</h4>
-        <p class="text-muted">No comics matching "{{ name }}" were found in your library.</p>
-        <a href="{{ url_for('insights_page') }}" class="btn btn-primary mt-3">
-            <i class="bi bi-arrow-left me-1"></i>Back to Insights
+    {% call empty_state('No comics found', 'No comics matching "' ~ name ~ '" were found in your library.', 'bi-search') %}
+        <a href="{{ url_for('insights_page') }}" class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Back to Insights
         </a>
-    </div>
+    {% endcall %}
     {% endif %}
 </div>
 {% endblock %}

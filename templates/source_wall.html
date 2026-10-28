@@ -1,5 +1,8 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 {% block title %}Source Wall - Metadata Editor{% endblock %}
+{% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/source_wall.css') }}?v={{ range(1, 10000) | random }}">
@@ -8,49 +11,49 @@
 {% endblock %}
 
 {% block content %}
-<div class="container-fluid px-4 py-3">
-  <div class="d-flex align-items-center justify-content-between mb-3">
-    <h2 class="text-primary-emphasis mb-0">Source Wall</h2>
-    <div class="d-flex align-items-center gap-2">
-      <!-- Library Dropdown -->
-      <div class="dropdown">
-        <button class="btn btn-outline-primary dropdown-toggle" type="button"
-                id="swLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-          <i class="bi bi-folder2-open me-1"></i><span id="swLibraryName">Library</span>
-        </button>
-        <ul class="dropdown-menu" id="swLibraryMenu">
-          <!-- Populated by JavaScript -->
-        </ul>
-      </div>
-      <!-- View: browse folders, or every file tagged by one provider -->
-      <select id="swViewSelect" class="form-select w-auto" onchange="onViewChange()"
-              aria-label="View" title="Show every file tagged by one metadata provider">
-        <option value="">Browse folders</option>
-      </select>
-      <!-- Where the provider counts and the "Tagged by" view look -->
-      <div class="btn-group" role="group" aria-label="Provider view scope">
-        <button type="button" class="btn btn-outline-secondary active" id="swScopeFolder"
-                onclick="setProviderScope('folder')" title="Only the folder you are browsing, and its subfolders">
-          <i class="bi bi-folder2 me-1"></i>This folder
-        </button>
-        <button type="button" class="btn btn-outline-secondary" id="swScopeLibrary"
-                onclick="setProviderScope('library')" title="The whole library">
-          <i class="bi bi-collection me-1"></i>All
-        </button>
-      </div>
+<div>
+  {# source_wall.js rebuilds #swBreadcrumb (folder path, or the provider view). #}
+  {% call(slot) page_header('Source Wall', 'bi-table', crumbs_id='swBreadcrumb') %}
+    {% if slot == 'actions' %}
       <!-- Column Selector -->
-      <button class="btn btn-outline-secondary" onclick="openColumnSelector()" title="Configure Columns">
-        <i class="bi bi-layout-three-columns"></i> <span id="swColumnName">Configure Columns</span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="openColumnSelector()" title="Configure Columns">
+        <i class="bi bi-layout-three-columns" aria-hidden="true"></i> <span id="swColumnName">Configure Columns</span>
+      </button>
+    {% elif slot == 'crumbs' %}
+      <li class="breadcrumb-item active"><i class="bi bi-info-circle me-1" aria-hidden="true"></i>Select a library</li>
+    {% endif %}
+  {% endcall %}
+
+  {# What the wall shows: which library, which view, and how wide the provider
+     counts look. These change the content, so they sit with it, not in the header. #}
+  <div class="d-flex flex-wrap align-items-center gap-2 mb-3" role="toolbar" aria-label="Source Wall view">
+    <!-- Library Dropdown -->
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+              id="swLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+        <i class="bi bi-folder2-open me-1" aria-hidden="true"></i><span id="swLibraryName">Library</span>
+      </button>
+      <ul class="dropdown-menu" id="swLibraryMenu">
+        <!-- Populated by JavaScript -->
+      </ul>
+    </div>
+    <!-- View: browse folders, or every file tagged by one provider -->
+    <select id="swViewSelect" class="form-select form-select-sm w-auto" onchange="onViewChange()"
+            aria-label="View" title="Show every file tagged by one metadata provider">
+      <option value="">Browse folders</option>
+    </select>
+    <!-- Where the provider counts and the "Tagged by" view look -->
+    <div class="btn-group btn-group-sm" role="group" aria-label="Provider view scope">
+      <button type="button" class="btn btn-outline-secondary active" id="swScopeFolder"
+              onclick="setProviderScope('folder')" title="Only the folder you are browsing, and its subfolders">
+        <i class="bi bi-folder2 me-1" aria-hidden="true"></i>This folder
+      </button>
+      <button type="button" class="btn btn-outline-secondary" id="swScopeLibrary"
+              onclick="setProviderScope('library')" title="The whole library">
+        <i class="bi bi-collection me-1" aria-hidden="true"></i>All
       </button>
     </div>
   </div>
-
-  <!-- Breadcrumb -->
-  <nav aria-label="breadcrumb" class="mb-3">
-    <ol id="swBreadcrumb" class="breadcrumb sw-breadcrumb px-3 py-2 rounded-3 mb-0 shadow-sm">
-      <li class="breadcrumb-item active"><i class="bi bi-info-circle me-1"></i>Select a library</li>
-    </ol>
-  </nav>
 
   <!-- Directory Filter Bar -->
   <div id="swFilterBar" class="mb-2" style="display: none;">
@@ -70,10 +73,8 @@
     <div id="swLoadMore" class="text-center py-3" style="display: none;">
       <button type="button" class="btn btn-outline-primary btn-sm" onclick="loadMoreProviderFiles()">Load more</button>
     </div>
-    <div id="swEmptyState" class="text-center text-muted py-5" style="display: none;">
-      <i class="bi bi-folder2-open" style="font-size: 3rem;"></i>
-      <p class="mt-2">Select a library to browse metadata</p>
-    </div>
+    {# source_wall.js rewrites the title for the view it is showing. #}
+    {{ empty_state('Select a library to browse metadata', icon='bi-folder2-open', id='swEmptyState', hidden=True) }}
     <div id="swLoadingState" class="text-center py-5" style="display: none;">
       <div class="spinner-border text-primary" role="status">
         <span class="visually-hidden">Loading...</span>
@@ -140,7 +141,7 @@
   <button class="btn btn-sm btn-outline-warning" onclick="reconcileSelectedFromDb()" title="Rebuild ComicInfo.xml for selected files from the database">
     <i class="bi bi-arrow-repeat me-1"></i>Write XML from DB
   </button>
-  <button class="btn btn-sm btn-outline-light" onclick="clearSelection()">
+  <button aria-label="Clear selection" title="Clear selection" class="btn btn-sm btn-outline-light" onclick="clearSelection()">
     <i class="bi bi-x-lg"></i>
   </button>
 </div>
@@ -178,10 +179,10 @@
             </div>
             <div class="comic-reader-controls">
                 <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
-                <button class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
+                <button aria-label="Save Position" class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
                     <i class="bi bi-bookmark text-primary"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                <button aria-label="Close" class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
                     <i class="bi bi-x-lg text-light"></i>
                 </button>
             </div>
@@ -222,10 +223,10 @@
         </div>
         <div class="comic-reader-footer">
             <div class="comic-reader-footer-controls">
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
+                <button aria-label="Zoom Out (Arrow Down)" class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
                     <i class="bi bi-zoom-out text-light"></i>
                 </button>
-                <button class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
+                <button aria-label="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre" class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
                     <i class="bi bi-zoom-in text-light"></i>
                 </button>
                 <select class="form-select form-select-sm page-selector" id="pageSelector">
@@ -236,7 +237,6 @@
     </div>
 </div>
 
-{% include 'partials/toast_container.html' %}
 {% include 'partials/progress_container.html' %}
 {% include 'partials/modal_cbz_info.html' %}
 {% include 'partials/modal_cbz_edit.html' %}
