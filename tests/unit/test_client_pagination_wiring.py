@@ -223,7 +223,8 @@ def test_pull_list_reports_errors_without_native_dialogs():
     html = _read("templates/pull_list.html")
     script = html[html.index("<script"):]
     assert not re.search(r"\balert\(", script)
-    assert "partials/toast_container.html" in html
+    # The toast container and CLU.toast come from base.html on every page.
+    assert "partials/toast_container.html" not in html
     assert "js/clu-utils.js" in html
 
 
