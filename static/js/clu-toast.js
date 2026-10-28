@@ -128,10 +128,17 @@
     row.appendChild(close);
     el.appendChild(row);
 
-    // Keep the stack short: drop the oldest.
-    while (container.children.length >= MAX_VISIBLE) {
-      container.removeChild(container.firstElementChild);
+    // Keep the stack short: drop the oldest of our own self-closing toasts.
+    // A toast that stays until closed (duration 0) is waiting on the user, and
+    // a toast a page built itself (a confirm, a progress bar, a manual-download
+    // link) is the page's to remove, so neither is ever evicted.
+    var evictable = Array.prototype.filter.call(container.children, function (c) {
+      return c._cluSig !== undefined && !c._cluSticky;
+    });
+    while (evictable.length && container.children.length >= MAX_VISIBLE) {
+      container.removeChild(evictable.shift());
     }
+    el._cluSticky = duration <= 0;
     container.appendChild(el);
 
     var toast = new bootstrap.Toast(el, { autohide: duration > 0, delay: duration || 5000 });

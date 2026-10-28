@@ -348,6 +348,11 @@ a.clu-stat:focus-visible .clu-stat-value {
     overflow-wrap: anywhere;
 }
 
+/* Messages are text; a newline in one is a line break. */
+.clu-toast-text {
+    white-space: pre-line;
+}
+
 .clu-toast-icon {
     flex: none;
     margin-top: 0.125rem;

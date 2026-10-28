@@ -84,6 +84,41 @@ def test_toast_never_renders_html():
     assert "type === 'danger'" in src
 
 
+_TOAST_CALL = re.compile(r"CLU\.(toast|showToast|showSuccess|showError)\(")
+
+
+def _toast_call_args(text):
+    """The argument text of every CLU toast call, matched to its closing paren."""
+    for m in _TOAST_CALL.finditer(text):
+        depth, i = 1, m.end()
+        while depth and i < len(text):
+            depth += {"(": 1, ")": -1}.get(text[i], 0)
+            i += 1
+        yield text.count("\n", 0, m.start()) + 1, text[m.end():i - 1]
+
+
+def test_toast_messages_are_not_html():
+    """The old toast set innerHTML, so callers escaped and joined with <br>.
+    Kept against the text-only toast, that shows up as &amp;amp; and literal tags."""
+    offenders = [f"{p.relative_to(ROOT)}:{n}" for p, t in _sources()
+                 if p.name != "clu-toast.js"
+                 for n, args in _toast_call_args(t)
+                 if "escapeHtml" in args or re.search(r"<br\s*/?>", args)]
+    assert offenders == [], "toast messages are text: pass them raw, use \\n for a line break"
+    streaming = (JS / "clu-streaming.js").read_text(encoding="utf-8")
+    assert "'Completed with warnings:<br>'" not in streaming
+
+
+def test_toast_limit_never_evicts_a_toast_that_waits_for_the_user():
+    """Every page shares one container, and it also holds page-built toasts (the
+    manual-download link, confirm prompts, progress). The limit drops only our
+    own self-closing toasts."""
+    src = (JS / "clu-toast.js").read_text(encoding="utf-8")
+    assert "removeChild(container.firstElementChild)" not in src
+    assert "c._cluSig !== undefined && !c._cluSticky" in src
+    assert "el._cluSticky = duration <= 0;" in src
+
+
 def test_no_legacy_empty_state_class():
     offenders = [f"{p.relative_to(ROOT)}:{n}" for p, t in _sources()
                  for n, line in _code_lines(t)

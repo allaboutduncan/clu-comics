@@ -4509,13 +4509,13 @@
             const response = await fetch(`/api/providers/${providerType}/reset-auth`, { method: 'POST' });
             const data = await readJsonResponse(response);
             if (data.success) {
-                CLU.toast(escapeHtml(data.message || 'Provider re-enabled'), 'success');
+                CLU.toast(data.message || 'Provider re-enabled', 'success');
                 loadProviders();
             } else {
-                CLU.toast('Error: ' + escapeHtml(data.error || 'Could not re-enable provider'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Could not re-enable provider'), 'error');
             }
         } catch (e) {
-            CLU.toast('Error: ' + escapeHtml(e.message), 'error');
+            CLU.toast('Error: ' + e.message, 'error');
         }
     }
 
@@ -4576,7 +4576,7 @@
                     // than through a silent lockout later.
                     CLU.toast(
                         `Saved, but ${providerType} rejected these credentials. ` +
-                        escapeHtml(data.error || ''),
+                        (data.error || ''),
                         'error',
                         0
                     );
