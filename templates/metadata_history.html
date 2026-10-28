@@ -1,10 +1,9 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 {% block title %}Metadata History{% endblock %}
 {% block content %}
-<div class="container-lg mt-4">
-  <h2 class="text-primary-emphasis">
-    <i class="bi bi-clock-history me-2"></i>Metadata History
-  </h2>
+<div>
+  {{ page_header('Metadata History', 'bi-clock-history') }}
   <p class="text-muted">Every metadata write performed by a bulk job is recorded here. Revert restores the prior ComicInfo.xml (or removes it entirely if the file previously had none).</p>
 
   <div class="card mb-3">
@@ -84,7 +83,6 @@
 </div>
 
 {% include 'partials/modal_cbz_info.html' %}
-{% include 'partials/toast_container.html' %}
 
 <!-- Confirmation modal — used in place of window.confirm() so the page is
      toast-only with no native browser dialogs. -->
@@ -260,12 +258,12 @@
         </td>
         <td class="text-end">
           <div class="btn-group btn-group-sm" role="group">
-            <button class="btn btn-outline-info action-info" type="button"
+            <button aria-label="View CBZ info" class="btn btn-outline-info action-info" type="button"
                     data-file="${esc(item.file_path)}" data-name="${esc(fileBase)}"
                     title="View CBZ info">
               <i class="bi bi-info-circle"></i>
             </button>
-            ${isReverted ? '' : `<button class="btn btn-outline-danger action-revert" type="button"
+            ${isReverted ? '' : `<button aria-label="Revert this write" class="btn btn-outline-danger action-revert" type="button"
                     data-id="${item.id}" title="Revert this write">
               <i class="bi bi-arrow-counterclockwise"></i>
             </button>`}

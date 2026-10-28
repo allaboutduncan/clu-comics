@@ -39,10 +39,9 @@
     }
 
     function toast(message, type, duration) {
-        // showToast is defined in config.html's inline script. Optional-chained
-        // because this file loads first; the important results are also written
-        // into the page, never only into a toast.
-        window.showToast?.(message, type || 'info', duration || 5000);
+        // The important results are also written into the page, never only
+        // into a toast.
+        CLU.toast(message, type || 'info', duration || 5000);
     }
 
     // ---- Confirmation modal -------------------------------------------------
@@ -224,15 +223,15 @@
                 <td>${escapeHtml(formatTimestamp(b.modified_at))}</td>
                 <td class="text-end">${formatBytes(b.size)}</td>
                 <td class="text-end">
-                    <a class="btn btn-sm btn-outline-secondary me-1"
+                    <a aria-label="Download" class="btn btn-sm btn-outline-secondary me-1"
                        href="/api/database/backups/${encodeURIComponent(b.filename)}/download"
                        title="Download">
                         <i class="bi bi-download"></i>
                     </a>
-                    <button class="btn btn-sm btn-outline-warning me-1" data-restore="${fn}" title="Restore">
+                    <button aria-label="Restore" class="btn btn-sm btn-outline-warning me-1" data-restore="${fn}" title="Restore">
                         <i class="bi bi-arrow-counterclockwise"></i>
                     </button>
-                    <button class="btn btn-sm btn-outline-danger" data-delete="${fn}" title="Delete">
+                    <button aria-label="Delete" class="btn btn-sm btn-outline-danger" data-delete="${fn}" title="Delete">
                         <i class="bi bi-trash"></i>
                     </button>
                 </td>
@@ -256,7 +255,7 @@
                 <td>${escapeHtml(formatTimestamp(q.modified_at))}</td>
                 <td class="text-end">${formatBytes(q.size)}</td>
                 <td class="text-end">
-                    <a class="btn btn-sm btn-outline-secondary"
+                    <a aria-label="Download" class="btn btn-sm btn-outline-secondary"
                        href="/api/database/quarantine/${encodeURIComponent(q.filename)}/download"
                        title="Download">
                         <i class="bi bi-download"></i>

@@ -1,31 +1,45 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/empty_state.html' import empty_state %}
 
 {% block title %}Download Status{% endblock %}
 
 {% block content %}
 <style>
-  .action-icon {
-    transition: all 0.2s ease;
-    padding: 5px;
-    border-radius: 4px;
+  /* Row actions are real buttons (keyboard, screen readers); this keeps them
+     icon-sized in the table. */
+  .status-action {
+    padding: 0.125rem 0.375rem;
+    font-size: 1.1em;
+    line-height: 1;
   }
-  
-  .action-icon:hover {
-    transform: scale(1.1);
-    background-color: rgba(0,0,0,0.1);
+  #downloads-table td:first-child {
+    overflow-wrap: anywhere;
+    min-width: 10rem;
   }
-  
-  .text-danger.action-icon:hover {
-    background-color: rgba(220,53,69,0.1);
+  #downloads-table .status-progress {
+    min-width: 5rem;
   }
-  
-  .text-primary.action-icon:hover {
-    background-color: rgba(13,110,253,0.1);
+  /* Phone: provider and bytes are already hidden; tighter cells let filename,
+     progress, status and actions fit without a sideways scroll. */
+  @media (max-width: 575.98px) {
+    #downloads-table {
+      font-size: 0.875rem;
+    }
+    #downloads-table > :not(caption) > * > * {
+      padding: 0.375rem 0.25rem;
+    }
+    #downloads-table td:first-child {
+      min-width: 7rem;
+    }
+    #downloads-table .status-progress {
+      min-width: 3.5rem;
+    }
   }
 </style>
 
-<div class="container my-5">
-    <h2>Download Status</h2>
+<div>
+    {{ page_header('Download Status', 'bi-download') }}
     <ul class="nav nav-tabs mb-3" id="statusTabs" role="tablist">
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="downloads-tab" data-bs-toggle="tab" data-bs-target="#downloads-pane"
@@ -43,19 +57,28 @@
 
     <div class="tab-content">
       <div class="tab-pane fade show active" id="downloads-pane" role="tabpanel" aria-labelledby="downloads-tab">
-        <button id="clear-downloads-btn" class="btn btn-primary mb-3">
-          Clear Completed/Cancelled Downloads
-        </button>
-        <button id="clear-errors-btn" class="btn btn-danger mb-3 ms-2">
-          Clear Failed Downloads
-        </button>
+        <div class="d-flex flex-wrap gap-2 mb-3" role="toolbar" aria-label="Download list">
+          <button type="button" id="clear-downloads-btn" class="btn btn-sm btn-outline-secondary" disabled>
+            <i class="bi bi-check2-all me-1" aria-hidden="true"></i>Clear completed and cancelled
+          </button>
+          <button type="button" id="clear-errors-btn" class="btn btn-sm btn-outline-secondary" disabled>
+            <i class="bi bi-x-circle me-1" aria-hidden="true"></i>Clear failed
+          </button>
+        </div>
+        {# Shown by fetchStatus() when no store has a row: an empty table header
+           reads as "still loading", not as "nothing is running". The same box
+           reports a status endpoint that cannot be reached. #}
+        {{ empty_state('Nothing is downloading',
+                       'Downloads you queue from Wanted, Releases or a series page show up here.',
+                       'bi-cloud-check', id='downloads-empty', hidden=True) }}
+        <div class="table-responsive" id="downloads-table-wrap" style="display: none;">
         <table class="table table-striped" id="downloads-table">
           <thead>
             <tr>
               <th>Filename</th>
-              <th>Provider</th>
+              <th class="d-none d-md-table-cell">Provider</th>
               <th>Progress</th>
-              <th>Downloaded</th>
+              <th class="d-none d-md-table-cell">Downloaded</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
@@ -63,6 +86,7 @@
           <tbody>
           </tbody>
         </table>
+        </div>
       </div>
 
       <div class="tab-pane fade" id="runs-pane" role="tabpanel" aria-labelledby="runs-tab">
@@ -114,16 +138,36 @@
       return `${mins}m ${String(secs).padStart(2, '0')}s`;
     }
 
+    // A row action. The table is rebuilt every second, so each button carries a
+    // stable key (action + download) that fetchStatus() uses to put keyboard
+    // focus back on it after the rebuild.
+    function actionButton(icon, colorClass, label, rowKey) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `btn btn-link status-action ${colorClass}`;
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      btn.dataset.focusKey = `${label}|${rowKey}`;
+      const i = document.createElement('i');
+      i.className = `bi ${icon}`;
+      i.setAttribute('aria-hidden', 'true');
+      btn.appendChild(i);
+      return btn;
+    }
+
     // Shared cell builders so direct and Usenet rows render identically.
+    // Provider and byte counts are the first to go on a narrow screen: the
+    // filename, progress, status and actions are what a phone check needs.
     function providerCell(providerKey) {
       const td = document.createElement('td');
+      td.className = 'd-none d-md-table-cell';
       const prov = providerMap[providerKey];
       if (prov && prov.img) {
         td.innerHTML = `<img src="${prov.img}" alt="${prov.label}" title="${prov.label}" style="width:18px;height:18px;vertical-align:text-bottom;"> <small>${prov.label}</small>`;
       } else if (prov) {
         td.innerHTML = `<i class="bi ${prov.icon} ${prov.color}" title="${prov.label}"></i> <small>${prov.label}</small>`;
       } else {
-        td.innerHTML = '<i class="bi bi-hourglass-split text-muted" title="Pending"></i>';
+        td.innerHTML = '<i class="bi bi-hourglass-split text-muted" title="Pending" role="img" aria-label="Pending"></i>';
       }
       return td;
     }
@@ -131,6 +175,7 @@
     function progressCell(progress) {
       const pct = Math.max(0, Math.min(100, Math.round(progress || 0)));
       const td = document.createElement('td');
+      td.className = 'status-progress';
       const progressBar = document.createElement('div');
       progressBar.className = 'progress';
       const progressInner = document.createElement('div');
@@ -147,6 +192,7 @@
 
     function bytesCell(downloaded, total) {
       const td = document.createElement('td');
+      td.className = 'd-none d-md-table-cell text-nowrap';
       if (total && downloaded) {
         td.textContent = `${mb(downloaded)} MB / ${mb(total)} MB`;
       } else {
@@ -213,6 +259,7 @@
     // Render direct (api.py) download rows into the table body.
     function renderDirectRows(tbody, data) {
       for (const [downloadId, details] of Object.entries(data)) {
+        const downloadKey = 'direct:' + downloadId;
             const tr = document.createElement('tr');
             tr.appendChild(filenameCell(details.filename));
             tr.appendChild(providerCell(details.provider));
@@ -221,7 +268,12 @@
 
             // Status
             let statusClass = '';
-            let statusText = details.status;
+            // api.py's status codes, in words. An unknown code is shown as-is.
+            const DIRECT_STATUS_TEXT = {
+              queued: 'Queued', in_progress: 'Downloading', complete: 'Complete',
+              error: 'Failed', cancelled: 'Cancelled',
+            };
+            let statusText = DIRECT_STATUS_TEXT[details.status] || details.status;
             let statusTitle = details.error;
             if (details.status === 'error') {
               statusClass = 'text-danger fw-bold';
@@ -257,11 +309,7 @@
             if (details.status === 'in_progress' || details.status === 'queued'
                 || details.status === 'retry_pending') {
               // Cancel button for in-progress downloads
-              const cancelIcon = document.createElement('i');
-              cancelIcon.className = "bi bi-x-circle text-danger action-icon";
-              cancelIcon.style.cursor = "pointer";
-              cancelIcon.style.fontSize = "1.2em";
-              cancelIcon.title = "Cancel download";
+              const cancelIcon = actionButton('bi-x-circle', 'text-danger', 'Cancel download', downloadKey);
               cancelIcon.addEventListener('click', () => {
                 showConfirmToast('Are you sure you want to cancel this download?', () => {
                   // The worker stops cooperatively — it may take a chunk or a
@@ -272,11 +320,11 @@
                       return data;
                     }))
                     .then(data => {
-                      showToast('Download cancelled', 'success');
+                      CLU.toast('Download cancelled', 'success');
                       fetchStatus();
                     })
                     .catch(error => {
-                      showToast(error.message || 'Error cancelling download', 'error');
+                      CLU.toast(error.message || 'Error cancelling download', 'error');
                     });
                 });
               });
@@ -290,45 +338,37 @@
               }
 
               // Retry button for error status
-              const retryIcon = document.createElement('i');
-              retryIcon.className = "bi bi-arrow-clockwise text-primary action-icon";
-              retryIcon.style.cursor = "pointer";
-              retryIcon.style.fontSize = "1.2em";
-              retryIcon.title = "Retry download";
+              const retryIcon = actionButton('bi-arrow-clockwise', 'text-primary', 'Retry download', downloadKey);
               retryIcon.addEventListener('click', () => {
                 showConfirmToast('Are you sure you want to retry this download?', () => {
                   fetch(`/retry_download/${downloadId}`, { method: 'POST' })
                     .then(response => response.json())
                     .then(data => {
                       console.log(data.message);
-                      showToast('Download retried', 'success');
+                      CLU.toast('Download retried', 'success');
                       // Refresh the table to show updated status
                       fetchStatus();
                     })
                     .catch(error => {
                       console.error('Error retrying download:', error);
-                      showToast('Error retrying download', 'error');
+                      CLU.toast('Error retrying download', 'error');
                     });
                 });
               });
               tdActions.appendChild(retryIcon);
 
               // Dismiss button for error status
-              const dismissIcon = document.createElement('i');
-              dismissIcon.className = "bi bi-trash text-muted action-icon ms-2";
-              dismissIcon.style.cursor = "pointer";
-              dismissIcon.style.fontSize = "1.2em";
-              dismissIcon.title = "Dismiss failed download";
+              const dismissIcon = actionButton('bi-trash', 'text-muted', 'Dismiss failed download', downloadKey);
               dismissIcon.addEventListener('click', () => {
                 showConfirmToast('Remove this failed download?', () => {
                   fetch(`/dismiss_download/${downloadId}`, { method: 'POST' })
                     .then(response => response.json())
                     .then(data => {
-                      showToast('Download dismissed', 'success');
+                      CLU.toast('Download dismissed', 'success');
                       fetchStatus();
                     })
                     .catch(error => {
-                      showToast('Error dismissing download', 'error');
+                      CLU.toast('Error dismissing download', 'error');
                     });
                 });
               });
@@ -348,6 +388,7 @@
     // only action offered is dismissing a job CLU can no longer resolve.
     function renderClientRows(tbody, downloads, dismissUrl) {
       for (const job of downloads) {
+        const downloadKey = 'client:' + (job.download_id || job.filename);
         const tr = document.createElement('tr');
         if (job.untracked) tr.className = 'text-muted';
         tr.appendChild(filenameCell(job.filename));
@@ -375,20 +416,16 @@
         const tdActions = document.createElement('td');
         const needsAck = job.status === 'failed' || job.status === 'complete_no_move';
         if (dismissUrl && needsAck && job.download_id) {
-          const dismissIcon = document.createElement('i');
-          dismissIcon.className = "bi bi-trash text-muted action-icon";
-          dismissIcon.style.cursor = "pointer";
-          dismissIcon.style.fontSize = "1.2em";
-          dismissIcon.title = "Dismiss this download";
+          const dismissIcon = actionButton('bi-trash', 'text-muted', 'Dismiss this download', downloadKey);
           dismissIcon.addEventListener('click', () => {
             showConfirmToast('Remove this download from the list?', () => {
               fetch(dismissUrl(job.download_id), { method: 'POST' })
                 .then(response => response.json())
                 .then(() => {
-                  showToast('Download dismissed', 'success');
+                  CLU.toast('Download dismissed', 'success');
                   fetchStatus();
                 })
-                .catch(() => showToast('Error dismissing download', 'error'));
+                .catch(() => CLU.toast('Error dismissing download', 'error'));
             });
           });
           tdActions.appendChild(dismissIcon);
@@ -407,21 +444,56 @@
         .catch(() => []);
     }
 
+    // Which empty message is up, so a 1s poll does not rewrite it every tick.
+    let emptyMode = null;
+
+    // Nothing in any store: say so instead of showing a bare table header. A
+    // status endpoint that cannot be reached is not "nothing running", so it
+    // gets its own message rather than an empty list (it keeps retrying).
+    function showEmpty(mode) {
+      const box = document.getElementById('downloads-empty');
+      document.getElementById('downloads-table-wrap').style.display = mode ? 'none' : '';
+      box.style.display = mode ? '' : 'none';
+      if (mode === emptyMode) return;
+      emptyMode = mode;
+      if (!mode) return;
+      const unreachable = mode === 'unreachable';
+      box.querySelector('.clu-empty-title').textContent = unreachable
+        ? 'Could not reach the download queue'
+        : 'Nothing is downloading';
+      box.querySelector('.clu-empty-text').textContent = unreachable
+        ? 'CLU did not answer the status request. This page keeps trying every second.'
+        : 'Downloads you queue from Wanted, Releases or a series page show up here.';
+      box.querySelector('.clu-empty-icon').className = 'bi clu-empty-icon ' +
+        (unreachable ? 'bi-wifi-off' : 'bi-cloud-check');
+    }
+
     // Fetch direct (api.py), Usenet and DC++ download statuses and rebuild the table.
     function fetchStatus(signal) {
       const direct = fetch('/download_status_all', { signal })
-        .then(r => r.json())
-        .catch(() => ({}));
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .catch(err => { if (err.name === 'AbortError') throw err; return null; });
       const usenet = fetchClientDownloads('/api/usenet/downloads', signal);
       const dcpp = fetchClientDownloads('/api/dcpp/downloads', signal);
       return Promise.all([direct, usenet, dcpp]).then(([data, usenetDownloads, dcppDownloads]) => {
         const tbody = document.querySelector('#downloads-table tbody');
+        // The rebuild below would drop keyboard focus every second.
+        const focusKey = tbody.contains(document.activeElement)
+          ? document.activeElement.dataset.focusKey : null;
         tbody.innerHTML = ''; // Clear previous rows.
         renderDirectRows(tbody, data || {});
         renderClientRows(tbody, usenetDownloads);
         renderClientRows(tbody, dcppDownloads,
           id => `/api/dcpp/downloads/${encodeURIComponent(id)}/dismiss`);
-      });
+        if (focusKey) {
+          const again = tbody.querySelector(`[data-focus-key="${CSS.escape(focusKey)}"]`);
+          if (again) again.focus();
+        }
+        const hasRows = tbody.rows.length > 0;
+        document.getElementById('clear-downloads-btn').disabled = !hasRows;
+        document.getElementById('clear-errors-btn').disabled = !hasRows;
+        showEmpty(hasRows ? null : (data === null ? 'unreachable' : 'idle'));
+      }).catch(err => { if (err.name !== 'AbortError') throw err; });
     }
 
     // Both clear buttons act on the whole table, and the table is fed by two
@@ -444,11 +516,11 @@
       // way so the user sees what actually happened.
       return Promise.all([direct, clients]).then(([directOk, clientsOk]) => {
         if (directOk && clientsOk) {
-          showToast(successMsg, 'success');
+          CLU.toast(successMsg, 'success');
         } else if (directOk || clientsOk) {
-          showToast('Some downloads could not be cleared', 'warning');
+          CLU.toast('Some downloads could not be cleared', 'warning');
         } else {
-          showToast('Error clearing downloads', 'error');
+          CLU.toast('Error clearing downloads', 'error');
         }
         fetchStatus();
       });
@@ -702,7 +774,7 @@
         })
         .catch(err => {
           if (err.name === 'AbortError') return;
-          showToast(`Could not load that run: ${err.message}`, 'error');
+          CLU.toast(`Could not load that run: ${err.message}`, 'error');
         });
     }
 
@@ -772,70 +844,13 @@
       }
     } catch (e) { }
 
-    // Toast notification system for status.html
-    function showToast(message, type = 'info', duration = 5000) {
-        // Create toast container if it doesn't exist
-        let container = document.getElementById('toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'toast-container';
-            container.className = 'toast-container position-fixed top-0 end-0 p-3';
-            container.style.zIndex = '9999';
-            document.body.appendChild(container);
-        }
-
-        const toastId = 'toast-' + Date.now();
-        const iconMap = {
-            'success': 'bi-check-circle-fill text-success',
-            'error': 'bi-exclamation-triangle-fill text-danger',
-            'warning': 'bi-exclamation-triangle-fill text-warning',
-            'info': 'bi-info-circle-fill text-info'
-        };
-
-        const toastHtml = `
-            <div id="${toastId}" class="toast bg-white border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
-                <div class="toast-header">
-                    <i class="bi ${iconMap[type]} me-2"></i>
-                    <strong class="me-auto">${type.charAt(0).toUpperCase() + type.slice(1)}</strong>
-                    <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-                </div>
-                <div class="toast-body">
-                    ${message}
-                </div>
-            </div>
-        `;
-
-        container.insertAdjacentHTML('beforeend', toastHtml);
-        const toastElement = document.getElementById(toastId);
-        const toast = new bootstrap.Toast(toastElement, {
-            delay: duration,
-            autohide: duration > 0
-        });
-
-        toast.show();
-
-        // Remove from DOM after hiding
-        toastElement.addEventListener('hidden.bs.toast', () => {
-            toastElement.remove();
-        });
-
-        return toast;
-    }
-
     // Confirmation toast with Yes/No buttons
     function showConfirmToast(message, callback) {
-        const container = document.getElementById('toast-container') || (() => {
-            const div = document.createElement('div');
-            div.id = 'toast-container';
-            div.className = 'toast-container position-fixed top-0 end-0 p-3';
-            div.style.zIndex = '9999';
-            document.body.appendChild(div);
-            return div;
-        })();
+        const container = CLU.toastContainer();
 
         const toastId = 'confirm-toast-' + Date.now();
         const toastHtml = `
-            <div id="${toastId}" class="toast bg-white border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
+            <div id="${toastId}" class="toast border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
                 <div class="toast-header">
                     <i class="bi bi-question-circle-fill text-warning me-2"></i>
                     <strong class="me-auto">Confirm</strong>

@@ -1072,8 +1072,8 @@
         var dups = h.duplicates || {};
         var parts = [];
         if (!h.last_run_at) {
-            parts.push('No scan has run yet. An empty list below means nothing has failed, ' +
-                       'not that the library is clean.');
+            // The page subtitle already says what an empty list means.
+            parts.push('No scan has run yet');
         } else {
             parts.push('Last scan ' + new Date(h.last_run_at * 1000).toLocaleString());
             parts.push('Checked ' + fmtNumber(cov.checked) + ' of ' + fmtNumber(cov.total) +

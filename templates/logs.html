@@ -1,23 +1,21 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}Logs{% endblock %}
 
 {% block content %}
-<div class="container-lg">
-    <h1 class="text-center mb-3">Logs</h1>
-
+<div>
     {# Clerks can read the logs; the debug package and the system check are owner-only (/api/admin, /api/setup). #}
     {% set _is_owner = (g.current_user.role if g.get('current_user') else 'owner') == 'owner' %}
 
-    {% if _is_owner %}
-    <!-- Debug Package -->
-    <div class="text-center mb-3">
-        <a href="{{ url_for('admin.download_debug_package') }}" class="btn btn-outline-secondary btn-sm" download>
-            <i class="bi bi-bug"></i> Download Debug Package
-        </a>
-        <div class="text-muted small mt-1">Bundles config, settings, system checks &amp; recent logs for support. Secrets are redacted.</div>
-    </div>
-    {% endif %}
+    {% call(slot) page_header('Logs', 'bi-journal-text') %}
+        {% if slot == 'actions' and _is_owner %}
+            <a href="{{ url_for('admin.download_debug_package') }}" class="btn btn-sm btn-outline-secondary" download
+                title="Bundles config, settings, system checks &amp; recent logs for support. Secrets are redacted.">
+                <i class="bi bi-bug me-1" aria-hidden="true"></i>Download Debug Package
+            </a>
+        {% endif %}
+    {% endcall %}
 
     <!-- Nav Tabs -->
     <ul class="nav nav-tabs" id="logTabs" role="tablist">

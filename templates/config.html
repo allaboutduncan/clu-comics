@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
 
 {% block title %}CLU: Settings Page{% endblock %}
 
@@ -21,22 +22,20 @@
     }
 </style>
 
-{% include 'partials/toast_container.html' %}
 
-<div class="container-lg">
-    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-        <h2 class="text-primary-emphasis mb-0">App Settings</h2>
-        <div class="d-flex flex-wrap gap-2">
-            <a href="{{ url_for('setup.setup_page') }}" class="btn btn-outline-primary btn-sm"
+<div>
+    {% call(slot) page_header('App Settings', 'bi-gear') %}
+        {% if slot == 'actions' %}
+            <a href="{{ url_for('setup.setup_page') }}" class="btn btn-sm btn-outline-secondary"
                 title="Walk through the setup, or check what is configured and what needs attention">
-                <i class="bi bi-signpost-split me-1"></i>Run Guided Setup
+                <i class="bi bi-signpost-split me-1" aria-hidden="true"></i>Run Guided Setup
             </a>
-            <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-outline-secondary btn-sm"
+            <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-sm btn-outline-secondary"
                 title="Import the watchlist, download client, indexers and ComicVine key from Mylar3">
-                <i class="bi bi-box-arrow-in-down me-1"></i>Import from Mylar3
+                <i class="bi bi-box-arrow-in-down me-1" aria-hidden="true"></i>Import from Mylar3
             </a>
-        </div>
-    </div>
+        {% endif %}
+    {% endcall %}
     <div class="mt-4">
 
         <!-- Navigation Tabs -->
@@ -695,7 +694,7 @@
                                                 aria-label="Replacement">
                                         </td>
                                         <td>
-                                            <button type="button" class="btn btn-sm btn-outline-danger char-map-remove"
+                                            <button aria-label="Remove row" type="button" class="btn btn-sm btn-outline-danger char-map-remove"
                                                 title="Remove row"><i class="bi bi-x-lg"></i></button>
                                         </td>
                                     </tr>
@@ -825,7 +824,7 @@
                                 <input type="password" name="pixeldrainApiKey" id="pixeldrainApiKey"
                                     value="{{ pixeldrainApiKey }}" class="form-control password-field"
                                     placeholder="Enter your PixelDrain API key" autocomplete="off">
-                                <button class="btn btn-outline-secondary toggle-password" type="button"
+                                <button aria-label="Show password" title="Show password" class="btn btn-outline-secondary toggle-password" type="button"
                                     data-target="pixeldrainApiKey">
                                     <i class="bi bi-eye"></i>
                                 </button>
@@ -1014,11 +1013,11 @@
                             <div class="input-group">
                                 <input type="password" class="form-control password-field" id="apiTokenField"
                                     placeholder="No token generated yet" readonly autocomplete="off">
-                                <button class="btn btn-outline-secondary" type="button" id="apiTokenToggleBtn"
+                                <button aria-label="Show / hide token" class="btn btn-outline-secondary" type="button" id="apiTokenToggleBtn"
                                     title="Show / hide token">
                                     <i class="bi bi-eye"></i>
                                 </button>
-                                <button class="btn btn-outline-secondary" type="button" id="apiTokenCopyBtn"
+                                <button aria-label="Copy to clipboard" class="btn btn-outline-secondary" type="button" id="apiTokenCopyBtn"
                                     title="Copy to clipboard" disabled>
                                     <i class="bi bi-clipboard"></i>
                                 </button>
@@ -1097,7 +1096,7 @@
                             <div class="input-group">
                                 <input type="password" class="form-control password-field" id="komgaPassword"
                                     placeholder="Password" autocomplete="current-password">
-                                <button class="btn btn-outline-secondary toggle-password" type="button"
+                                <button aria-label="Show password" title="Show password" class="btn btn-outline-secondary toggle-password" type="button"
                                     data-target="komgaPassword">
                                     <i class="bi bi-eye"></i>
                                 </button>
@@ -1989,7 +1988,7 @@
                             <div class="input-group">
                                 <input type="password" name="recApiKey" id="recApiKey" value="{{ rec_api_key }}"
                                     class="form-control password-field" autocomplete="off">
-                                <button class="btn btn-outline-secondary toggle-password" type="button"
+                                <button aria-label="Show password" title="Show password" class="btn btn-outline-secondary toggle-password" type="button"
                                     data-target="recApiKey">
                                     <i class="bi bi-eye"></i>
                                 </button>
@@ -2164,56 +2163,6 @@
 <script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/database_panel.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script>
-    // Toast notification system for config.html
-    function showToast(message, type = 'info', duration = 5000) {
-        // Create toast container if it doesn't exist
-        let container = document.getElementById('toast-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'toast-container';
-            container.className = 'toast-container position-fixed top-0 end-0 p-3';
-            container.style.zIndex = '9999';
-            document.body.appendChild(container);
-        }
-
-        const toastId = 'toast-' + Date.now();
-        const iconMap = {
-            'success': 'bi-check-circle-fill text-success',
-            'error': 'bi-exclamation-triangle-fill text-danger',
-            'warning': 'bi-exclamation-triangle-fill text-warning',
-            'info': 'bi-info-circle-fill text-info'
-        };
-
-        const toastHtml = `
-            <div id="${toastId}" class="toast bg-white border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
-                <div class="toast-header">
-                    <i class="bi ${iconMap[type]} me-2"></i>
-                    <strong class="me-auto">${type.charAt(0).toUpperCase() + type.slice(1)}</strong>
-                    <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
-                </div>
-                <div class="toast-body">
-                    ${message}
-                </div>
-            </div>
-        `;
-
-        container.insertAdjacentHTML('beforeend', toastHtml);
-        const toastElement = document.getElementById(toastId);
-        const toast = new bootstrap.Toast(toastElement, {
-            delay: duration,
-            autohide: duration > 0
-        });
-
-        toast.show();
-
-        // Remove from DOM after hiding
-        toastElement.addEventListener('hidden.bs.toast', () => {
-            toastElement.remove();
-        });
-
-        return toast;
-    }
-
     // The Komga schedule time is stored as UTC, like every other schedule time.
     // data-utc is the source of truth so the field can be re-rendered whenever
     // the offset changes -- on this page the #timezone element is the editable
@@ -2262,7 +2211,7 @@
     function restartApp() {
         fetch('/restart', { method: 'POST' })
             .then(response => response.json())
-            .then(data => showToast(data.message, 'success'))
+            .then(data => CLU.toast(data.message, 'success'))
             .catch(error => console.error('Error:', error));
     }
 
@@ -2324,13 +2273,13 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('File processing settings saved', 'success');
+                CLU.toast('File processing settings saved', 'success');
                 refreshMonitorStatusSoon();
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2398,13 +2347,13 @@
                 if (data.success) {
                     const toggle = document.getElementById('monitorEnabled');
                     if (toggle) toggle.checked = true;
-                    showToast('Folder Monitoring enabled', 'success');
+                    CLU.toast('Folder Monitoring enabled', 'success');
                     refreshMonitorStatusSoon();
                 } else {
-                    showToast('Error: ' + (data.error || 'Could not enable Folder Monitoring'), 'error');
+                    CLU.toast('Error: ' + (data.error || 'Could not enable Folder Monitoring'), 'error');
                 }
             } catch (e) {
-                showToast('Error enabling Folder Monitoring: ' + e.message, 'error');
+                CLU.toast('Error enabling Folder Monitoring: ' + e.message, 'error');
             } finally {
                 btn.disabled = false;
                 bootstrap.Modal.getOrCreateInstance(document.getElementById('enableFolderMonitorModal')).hide();
@@ -2435,6 +2384,8 @@
                 const upBtn = document.createElement('button');
                 upBtn.type = 'button';
                 upBtn.className = 'btn btn-sm btn-outline-secondary me-1';
+                upBtn.title = 'Move up';
+                upBtn.setAttribute('aria-label', upBtn.title);
                 upBtn.innerHTML = '<i class="bi bi-arrow-up"></i>';
                 upBtn.onclick = () => moveProvider(idx, idx - 1);
                 btnGroup.appendChild(upBtn);
@@ -2443,6 +2394,8 @@
                 const downBtn = document.createElement('button');
                 downBtn.type = 'button';
                 downBtn.className = 'btn btn-sm btn-outline-secondary';
+                downBtn.title = 'Move down';
+                downBtn.setAttribute('aria-label', downBtn.title);
                 downBtn.innerHTML = '<i class="bi bi-arrow-down"></i>';
                 downBtn.onclick = () => moveProvider(idx, idx + 1);
                 btnGroup.appendChild(downBtn);
@@ -2523,12 +2476,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Download & API settings saved', 'success');
+                CLU.toast('Download & API settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2562,12 +2515,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('System & Performance settings saved', 'success');
+                CLU.toast('System & Performance settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2593,12 +2546,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Styling settings saved', 'success');
+                CLU.toast('Styling settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2627,12 +2580,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Thumbnail style saved. Existing thumbnails keep their current look until regenerated.', 'success');
+                CLU.toast('Thumbnail style saved. Existing thumbnails keep their current look until regenerated.', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2666,12 +2619,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast(result.message || 'Regenerating thumbnails in the background', 'success');
+                CLU.toast(result.message || 'Regenerating thumbnails in the background', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to start'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to start'), 'error');
             }
         } catch (e) {
-            showToast('Error starting regeneration: ' + e.message, 'error');
+            CLU.toast('Error starting regeneration: ' + e.message, 'error');
         }
     });
 
@@ -2698,12 +2651,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Recommendation settings saved', 'success');
+                CLU.toast('Recommendation settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2747,12 +2700,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast(result.message || 'Notification settings saved', 'success');
+                CLU.toast(result.message || 'Notification settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2776,12 +2729,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast(result.message || 'Test notification sent', 'success');
+                CLU.toast(result.message || 'Test notification sent', 'success');
             } else {
-                showToast('Test failed: ' + (result.error || 'Unknown error'), 'error');
+                CLU.toast('Test failed: ' + (result.error || 'Unknown error'), 'error');
             }
         } catch (e) {
-            showToast('Error sending test: ' + e.message, 'error');
+            CLU.toast('Error sending test: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2809,12 +2762,12 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Dashboard settings saved', 'success');
+                CLU.toast('Dashboard settings saved', 'success');
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving settings: ' + e.message, 'error');
+            CLU.toast('Error saving settings: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -2957,10 +2910,10 @@
                 document.getElementById('apiTokenField').type = 'text';
                 document.getElementById('apiTokenToggleBtn').querySelector('i').className = 'bi bi-eye-slash';
             } else {
-                alert('Failed to generate token: ' + (data.error || 'unknown error'));
+                CLU.toast('Failed to generate token: ' + (data.error || 'unknown error'), 'error');
             }
         } catch (err) {
-            alert('Failed to generate token: ' + err);
+            CLU.toast('Failed to generate token: ' + err, 'error');
         } finally {
             btn.disabled = false;
         }
@@ -3043,14 +2996,14 @@
             });
             const data = await resp.json();
             if (data.success) {
-                showToast(`API browse mode: ${data.mode === 'filesystem' ? 'Filesystem view' : 'Metadata view'}`, 'success');
+                CLU.toast(`API browse mode: ${data.mode === 'filesystem' ? 'Filesystem view' : 'Metadata view'}`, 'success');
                 setApiBrowseModeUi(data.mode);
             } else {
-                showToast(data.error || 'Failed to update browse mode', 'error');
+                CLU.toast(data.error || 'Failed to update browse mode', 'error');
                 loadApiBrowseMode();
             }
         } catch (err) {
-            showToast('Failed to update browse mode: ' + err.message, 'error');
+            CLU.toast('Failed to update browse mode: ' + err.message, 'error');
             loadApiBrowseMode();
         }
     }
@@ -3215,13 +3168,13 @@
             const result = await response.json();
 
             if (result.success) {
-                showToast('Komga configuration saved', 'success');
+                CLU.toast('Komga configuration saved', 'success');
                 loadKomgaConfig();
             } else {
-                showToast('Error: ' + (result.error || 'Failed to save'), 'error');
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
         } catch (e) {
-            showToast('Error saving Komga config: ' + e.message, 'error');
+            CLU.toast('Error saving Komga config: ' + e.message, 'error');
         } finally {
             btn.disabled = false;
             btn.innerHTML = originalHtml;
@@ -3242,7 +3195,7 @@
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected!';
                 btn.classList.remove('btn-outline-info');
                 btn.classList.add('btn-success');
-                showToast('Komga connection successful!', 'success');
+                CLU.toast('Komga connection successful!', 'success');
 
                 // Reload config to refresh badge from persisted state
                 setTimeout(() => {
@@ -3259,7 +3212,7 @@
 
                 // Reload config to refresh badge from persisted state
                 loadKomgaConfig();
-                showToast('Connection failed: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Connection failed: ' + (data.error || 'Unknown error'), 'error');
 
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
@@ -3271,7 +3224,7 @@
         } catch (e) {
             btn.innerHTML = originalHtml;
             btn.disabled = false;
-            showToast('Error testing connection: ' + e.message, 'error');
+            CLU.toast('Error testing connection: ' + e.message, 'error');
         }
     }
 
@@ -3291,7 +3244,7 @@
             const data = await response.json();
 
             if (data.success) {
-                showToast('Komga sync started in background', 'info');
+                CLU.toast('Komga sync started in background', 'info');
 
                 // Poll until last_sync changes (sync completed)
                 let attempts = 0;
@@ -3309,7 +3262,7 @@
                             // Sync completed - update UI
                             clearInterval(pollInterval);
                             loadKomgaSyncStatus();
-                            showToast('Komga sync completed!', 'success');
+                            CLU.toast('Komga sync completed!', 'success');
                             btn.innerHTML = originalHtml;
                             btn.disabled = false;
                         } else if (attempts >= maxAttempts) {
@@ -3326,12 +3279,12 @@
                     }
                 }, 3000);
             } else {
-                showToast('Error: ' + (data.error || 'Failed to start sync'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to start sync'), 'error');
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
             }
         } catch (e) {
-            showToast('Error starting sync: ' + e.message, 'error');
+            CLU.toast('Error starting sync: ' + e.message, 'error');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         }
@@ -3373,7 +3326,7 @@
                         maxlength="1" aria-label="Character"></td>
                 <td><input type="text" class="form-control form-control-sm char-map-value"
                         maxlength="8" placeholder="(remove)" aria-label="Replacement"></td>
-                <td><button type="button" class="btn btn-sm btn-outline-danger char-map-remove"
+                <td><button aria-label="Remove row" type="button" class="btn btn-sm btn-outline-danger char-map-remove"
                         title="Remove row"><i class="bi bi-x-lg"></i></button></td>`;
             tbody.appendChild(row);
             row.querySelector('.char-map-key').focus();
@@ -3566,6 +3519,10 @@
                     icon.classList.remove('bi-eye-slash');
                     icon.classList.add('bi-eye');
                 }
+                // The icon flips, so the name has to as well.
+                const label = input.type === 'password' ? 'Show password' : 'Hide password';
+                this.setAttribute('aria-label', label);
+                this.title = label;
             });
         });
     });
@@ -3648,16 +3605,16 @@
                             ${enabledBadge}
                         </div>
                         <div class="btn-group btn-group-sm">
-                            <button type="button" class="btn btn-outline-primary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
+                            <button aria-label="Edit library" title="Edit library" type="button" class="btn btn-outline-primary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
                                 <i class="bi bi-pencil"></i>
                             </button>
-                            <button type="button" class="btn btn-outline-warning" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
+                            <button aria-label="Convert all RAR/CBR files in this library to CBZ" type="button" class="btn btn-outline-warning" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
                                 <i class="bi bi-file-earmark-zip"></i>
                             </button>
-                            <button type="button" class="btn btn-outline-${lib.enabled ? 'warning' : 'success'}" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
+                            <button aria-label="${lib.enabled ? 'Disable' : 'Enable'} library" title="${lib.enabled ? 'Disable' : 'Enable'} library" type="button" class="btn btn-outline-${lib.enabled ? 'warning' : 'success'}" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
                                 <i class="bi bi-${lib.enabled ? 'pause' : 'play'}"></i>
                             </button>
-                            <button type="button" class="btn btn-outline-danger" onclick="deleteLibrary(${lib.id}, '${escapeHtml(lib.name)}')">
+                            <button aria-label="Delete library" title="Delete library" type="button" class="btn btn-outline-danger" onclick="deleteLibrary(${lib.id}, '${escapeHtml(lib.name)}')">
                                 <i class="bi bi-trash"></i>
                             </button>
                         </div>
@@ -3692,7 +3649,7 @@
         const path = document.getElementById('libraryPath').value.trim();
 
         if (!name || !path) {
-            alert('Please enter both name and path');
+            CLU.toast('Please enter both name and path', 'warning');
             return;
         }
 
@@ -3719,10 +3676,10 @@
                 libraryModal.hide();
                 loadLibraries();
             } else {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
             }
         } catch (e) {
-            alert('Error saving library: ' + e.message);
+            CLU.toast('Error saving library: ' + e.message, 'error');
         }
     }
 
@@ -3737,10 +3694,10 @@
             if (data.success) {
                 loadLibraries();
             } else {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
             }
         } catch (e) {
-            alert('Error toggling library: ' + e.message);
+            CLU.toast('Error toggling library: ' + e.message, 'error');
         }
     }
 
@@ -3757,10 +3714,10 @@
             if (data.success) {
                 loadLibraries();
             } else {
-                alert('Error: ' + data.error);
+                CLU.toast('Error: ' + data.error, 'error');
             }
         } catch (e) {
-            alert('Error deleting library: ' + e.message);
+            CLU.toast('Error deleting library: ' + e.message, 'error');
         }
     }
 
@@ -4202,12 +4159,12 @@
             });
             const data = await resp.json();
             if (data.success) {
-                showToast('GCD language preference saved', 'success');
+                CLU.toast('GCD language preference saved', 'success');
             } else {
-                showToast('Error saving GCD languages: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Error saving GCD languages: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
-            showToast('Error saving GCD languages: ' + e.message, 'error');
+            CLU.toast('Error saving GCD languages: ' + e.message, 'error');
         }
     }
 
@@ -4235,12 +4192,12 @@
             });
             const data = await resp.json();
             if (data.success) {
-                showToast('INDUCKS country preference saved', 'success');
+                CLU.toast('INDUCKS country preference saved', 'success');
             } else {
-                showToast('Error saving INDUCKS countries: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Error saving INDUCKS countries: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
-            showToast('Error saving INDUCKS countries: ' + e.message, 'error');
+            CLU.toast('Error saving INDUCKS countries: ' + e.message, 'error');
         }
     }
 
@@ -4317,16 +4274,16 @@
             });
             const data = await resp.json();
             if (data.success) {
-                showToast(enabled
+                CLU.toast(enabled
                     ? 'CLU will check for a new ComicVine database every 2 weeks'
                     : 'Automatic ComicVine database updates turned off', 'success');
             } else {
                 toggle.checked = !enabled;
-                showToast('Error saving setting: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Error saving setting: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
             toggle.checked = !enabled;
-            showToast('Error saving setting: ' + e.message, 'error');
+            CLU.toast('Error saving setting: ' + e.message, 'error');
         }
     }
 
@@ -4364,14 +4321,14 @@
             const data = await resp.json();
             if (!data.success) {
                 if (btn) btn.disabled = false;
-                showToast('Could not start the update: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Could not start the update: ' + (data.error || 'Unknown error'), 'error');
                 return;
             }
-            showToast('Downloading the ComicVine database in the background', 'success');
+            CLU.toast('Downloading the ComicVine database in the background', 'success');
             pollCvSqliteUpdate(data.op_id);
         } catch (e) {
             if (btn) btn.disabled = false;
-            showToast('Could not start the update: ' + e.message, 'error');
+            CLU.toast('Could not start the update: ' + e.message, 'error');
         }
     }
 
@@ -4415,10 +4372,10 @@
                     }
                     finish();
                     if (op && op.status === 'error') {
-                        showToast('ComicVine database update failed' +
+                        CLU.toast('ComicVine database update failed' +
                             (op.detail ? ' — ' + op.detail : ''), 'error');
                     } else {
-                        showToast('ComicVine database update finished' +
+                        CLU.toast('ComicVine database update finished' +
                             (op && op.detail ? ' — ' + op.detail : ''), 'success');
                     }
                 }), 2000);
@@ -4440,6 +4397,10 @@
                     icon.classList.remove('bi-eye-slash');
                     icon.classList.add('bi-eye');
                 }
+                // The icon flips, so the name has to as well.
+                const label = input.type === 'password' ? 'Show password' : 'Hide password';
+                this.setAttribute('aria-label', label);
+                this.title = label;
             });
         });
     }
@@ -4475,7 +4436,7 @@
                                ${disabled ? 'disabled' : ''}
                                autocomplete="${field.toLowerCase().includes('password') ? 'current-password' : 'off'}">
                         ${isPassword ? `
-                        <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
+                        <button aria-label="Show password" title="Show password" class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
                             <i class="bi bi-eye"></i>
                         </button>` : ''}
                     </div>
@@ -4548,13 +4509,13 @@
             const response = await fetch(`/api/providers/${providerType}/reset-auth`, { method: 'POST' });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast(escapeHtml(data.message || 'Provider re-enabled'), 'success');
+                CLU.toast(escapeHtml(data.message || 'Provider re-enabled'), 'success');
                 loadProviders();
             } else {
-                showToast('Error: ' + escapeHtml(data.error || 'Could not re-enable provider'), 'error');
+                CLU.toast('Error: ' + escapeHtml(data.error || 'Could not re-enable provider'), 'error');
             }
         } catch (e) {
-            showToast('Error: ' + escapeHtml(e.message), 'error');
+            CLU.toast('Error: ' + escapeHtml(e.message), 'error');
         }
     }
 
@@ -4586,7 +4547,7 @@
 
         // Check if any credentials were provided
         if (Object.keys(credentials).length === 0) {
-            showToast('Please enter at least one credential field', 'warning');
+            CLU.toast('Please enter at least one credential field', 'warning');
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalBtnHtml;
             return false;
@@ -4613,14 +4574,14 @@
                     // Saved, but the provider rejected them. Say so loudly:
                     // the whole point is that the user finds out now rather
                     // than through a silent lockout later.
-                    showToast(
+                    CLU.toast(
                         `Saved, but ${providerType} rejected these credentials. ` +
                         escapeHtml(data.error || ''),
                         'error',
                         0
                     );
                 } else {
-                    showToast(`Credentials saved for ${providerType}`, 'success');
+                    CLU.toast(`Credentials saved for ${providerType}`, 'success');
                     if (data.suggest_enable_monitor) {
                         offerFolderMonitor();
                     }
@@ -4630,10 +4591,10 @@
                 loadProviders();
                 loadLibraryProviders();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to save credentials'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to save credentials'), 'error');
             }
         } catch (e) {
-            showToast('Error saving credentials: ' + e.message, 'error');
+            CLU.toast('Error saving credentials: ' + e.message, 'error');
         } finally {
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalBtnHtml;
@@ -4657,7 +4618,7 @@
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Success!';
                 btn.classList.remove('btn-outline-info');
                 btn.classList.add('btn-success');
-                showToast(`Connection to ${providerType} successful!`, 'success');
+                CLU.toast(`Connection to ${providerType} successful!`, 'success');
                 setTimeout(() => {
                     loadProviders();
                 }, 1500);
@@ -4665,7 +4626,7 @@
                 btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Failed';
                 btn.classList.remove('btn-outline-info');
                 btn.classList.add('btn-danger');
-                showToast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
                     btn.classList.remove('btn-danger');
@@ -4676,7 +4637,7 @@
         } catch (e) {
             btn.innerHTML = originalHtml;
             btn.disabled = false;
-            showToast('Error testing connection: ' + e.message, 'error');
+            CLU.toast('Error testing connection: ' + e.message, 'error');
         }
     }
 
@@ -4692,14 +4653,14 @@
             const data = await readJsonResponse(response);
 
             if (data.success) {
-                showToast(`Credentials deleted for ${providerType}`, 'success');
+                CLU.toast(`Credentials deleted for ${providerType}`, 'success');
                 loadProviders();
                 loadLibraryProviders();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to delete credentials'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to delete credentials'), 'error');
             }
         } catch (e) {
-            showToast('Error deleting credentials: ' + e.message, 'error');
+            CLU.toast('Error deleting credentials: ' + e.message, 'error');
         }
     }
 
@@ -4764,7 +4725,7 @@
                                id="${fieldId}" name="${field}" ${valueAttr}
                                placeholder="${placeholder}" autocomplete="off">
                         ${isSecret ? `
-                        <button class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
+                        <button aria-label="Show password" title="Show password" class="btn btn-outline-secondary toggle-password" type="button" data-target="${fieldId}">
                             <i class="bi bi-eye"></i>
                         </button>` : ''}
                     </div>
@@ -4901,13 +4862,13 @@
             });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast(`Config saved for ${clientType}`, 'success');
+                CLU.toast(`Config saved for ${clientType}`, 'success');
                 loadDownloadClients();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to save config'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to save config'), 'error');
             }
         } catch (e) {
-            showToast('Error saving config: ' + e.message, 'error');
+            CLU.toast('Error saving config: ' + e.message, 'error');
         } finally {
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalBtnHtml;
@@ -4928,17 +4889,17 @@
             });
             const data = await readJsonResponse(response);
             if (data.success && data.valid) {
-                showToast(`Connection to ${clientType} successful!`, 'success');
+                CLU.toast(`Connection to ${clientType} successful!`, 'success');
                 setTimeout(loadDownloadClients, 1200);
             } else {
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
-                showToast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
             btn.innerHTML = originalHtml;
             btn.disabled = false;
-            showToast('Error testing connection: ' + e.message, 'error');
+            CLU.toast('Error testing connection: ' + e.message, 'error');
         }
     }
 
@@ -4947,13 +4908,13 @@
             const response = await fetch(`/api/download-clients/${clientType}/activate`, { method: 'POST' });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast(`${clientType} is now the active client`, 'success');
+                CLU.toast(`${clientType} is now the active client`, 'success');
                 loadDownloadClients();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to activate client'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to activate client'), 'error');
             }
         } catch (e) {
-            showToast('Error activating client: ' + e.message, 'error');
+            CLU.toast('Error activating client: ' + e.message, 'error');
         }
     }
 
@@ -4963,13 +4924,13 @@
             const response = await fetch(`/api/download-clients/${clientType}/config`, { method: 'DELETE' });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast(`Config deleted for ${clientType}`, 'success');
+                CLU.toast(`Config deleted for ${clientType}`, 'success');
                 loadDownloadClients();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to delete config'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to delete config'), 'error');
             }
         } catch (e) {
-            showToast('Error deleting config: ' + e.message, 'error');
+            CLU.toast('Error deleting config: ' + e.message, 'error');
         }
     }
 
@@ -5028,21 +4989,21 @@
                                 <br><small class="text-muted">${escapeHtml(idx.url)}</small>
                             </div>
                             <div class="btn-group btn-group-sm">
-                                <button type="button" class="btn btn-outline-secondary" title="Move up"
+                                <button aria-label="Move up" type="button" class="btn btn-outline-secondary" title="Move up"
                                     onclick="moveIndexer(${idx.id}, -1)" ${i === 0 ? 'disabled' : ''}>
                                     <i class="bi bi-arrow-up"></i>
                                 </button>
-                                <button type="button" class="btn btn-outline-secondary" title="Move down"
+                                <button aria-label="Move down" type="button" class="btn btn-outline-secondary" title="Move down"
                                     onclick="moveIndexer(${idx.id}, 1)" ${i === data.indexers.length - 1 ? 'disabled' : ''}>
                                     <i class="bi bi-arrow-down"></i>
                                 </button>
-                                <button type="button" class="btn btn-outline-info" onclick="testIndexer(${idx.id})">
+                                <button aria-label="Test indexer" title="Test indexer" type="button" class="btn btn-outline-info" onclick="testIndexer(${idx.id})">
                                     <i class="bi bi-lightning"></i>
                                 </button>
-                                <button type="button" class="btn btn-outline-primary" onclick="openIndexerModal(window._indexerCache[${idx.id}])">
+                                <button aria-label="Edit indexer" title="Edit indexer" type="button" class="btn btn-outline-primary" onclick="openIndexerModal(window._indexerCache[${idx.id}])">
                                     <i class="bi bi-pencil"></i>
                                 </button>
-                                <button type="button" class="btn btn-outline-danger" onclick="deleteIndexer(${idx.id})">
+                                <button aria-label="Delete indexer" title="Delete indexer" type="button" class="btn btn-outline-danger" onclick="deleteIndexer(${idx.id})">
                                     <i class="bi bi-trash"></i>
                                 </button>
                             </div>
@@ -5068,7 +5029,7 @@
         const apiKey = document.getElementById('indexerApiKey').value.trim();
         if (apiKey) payload.api_key = apiKey;
         if (!payload.name || !payload.url) {
-            showToast('Name and URL are required', 'warning');
+            CLU.toast('Name and URL are required', 'warning');
             return;
         }
         try {
@@ -5081,14 +5042,14 @@
             });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast('Indexer saved', 'success');
+                CLU.toast('Indexer saved', 'success');
                 indexerModal.hide();
                 loadIndexers();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to save indexer'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to save indexer'), 'error');
             }
         } catch (e) {
-            showToast('Error saving indexer: ' + e.message, 'error');
+            CLU.toast('Error saving indexer: ' + e.message, 'error');
         }
     }
 
@@ -5101,17 +5062,17 @@
             const response = await fetch(`/api/indexers/${indexerId}/test`, { method: 'POST' });
             const data = await readJsonResponse(response);
             if (data.success && data.valid) {
-                showToast('Indexer connection successful!', 'success');
+                CLU.toast('Indexer connection successful!', 'success');
                 setTimeout(loadIndexers, 1200);
             } else {
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
-                showToast('Indexer test failed: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Indexer test failed: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
             btn.innerHTML = originalHtml;
             btn.disabled = false;
-            showToast('Error testing indexer: ' + e.message, 'error');
+            CLU.toast('Error testing indexer: ' + e.message, 'error');
         }
     }
 
@@ -5121,13 +5082,13 @@
             const response = await fetch(`/api/indexers/${indexerId}`, { method: 'DELETE' });
             const data = await readJsonResponse(response);
             if (data.success) {
-                showToast('Indexer deleted', 'success');
+                CLU.toast('Indexer deleted', 'success');
                 loadIndexers();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to delete indexer'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to delete indexer'), 'error');
             }
         } catch (e) {
-            showToast('Error deleting indexer: ' + e.message, 'error');
+            CLU.toast('Error deleting indexer: ' + e.message, 'error');
         }
     }
 
@@ -5148,10 +5109,10 @@
             if (data.success) {
                 loadIndexers();
             } else {
-                showToast('Error: ' + (data.error || 'Failed to reorder'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to reorder'), 'error');
             }
         } catch (e) {
-            showToast('Error reordering indexers: ' + e.message, 'error');
+            CLU.toast('Error reordering indexers: ' + e.message, 'error');
         }
     }
 
@@ -5199,10 +5160,10 @@
                         <label class="form-check-label" for="source-on-${src}">${i + 1}. ${escapeHtml(SOURCE_LABELS[src] || src)}</label>
                     </div>
                     <div class="btn-group btn-group-sm">
-                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, -1)" ${i === 0 ? 'disabled' : ''}>
+                        <button aria-label="Move up" title="Move up" type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, -1)" ${i === 0 ? 'disabled' : ''}>
                             <i class="bi bi-arrow-up"></i>
                         </button>
-                        <button type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, 1)" ${i === enabled.length - 1 ? 'disabled' : ''}>
+                        <button aria-label="Move down" title="Move down" type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, 1)" ${i === enabled.length - 1 ? 'disabled' : ''}>
                             <i class="bi bi-arrow-down"></i>
                         </button>
                     </div>
@@ -5226,7 +5187,7 @@
         const order = (window._sourceOrder || []).filter(s => s !== src);
         if (on) order.push(src);
         if (!order.length) {
-            showToast('At least one download source must stay on.', 'error');
+            CLU.toast('At least one download source must stay on.', 'error');
             loadSourcePriority();
             return;
         }
@@ -5250,10 +5211,10 @@
             });
             const data = await resp.json();
             if (!data.success) {
-                showToast('Error saving source priority: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Error saving source priority: ' + (data.error || 'Unknown error'), 'error');
             }
         } catch (e) {
-            showToast('Error saving source priority: ' + e.message, 'error');
+            CLU.toast('Error saving source priority: ' + e.message, 'error');
         }
         // Re-read either way: on a failure this puts the switches back.
         loadSourcePriority();
@@ -5364,10 +5325,10 @@
                         </label>
                     </div>
                     <div class="btn-group btn-group-sm">
-                        <button type="button" class="btn btn-outline-secondary" onclick="moveProviderUp(${libraryId}, '${provider.type}')" title="Move up">
+                        <button aria-label="Move up" type="button" class="btn btn-outline-secondary" onclick="moveProviderUp(${libraryId}, '${provider.type}')" title="Move up">
                             <i class="bi bi-arrow-up"></i>
                         </button>
-                        <button type="button" class="btn btn-outline-secondary" onclick="moveProviderDown(${libraryId}, '${provider.type}')" title="Move down">
+                        <button aria-label="Move down" type="button" class="btn btn-outline-secondary" onclick="moveProviderDown(${libraryId}, '${provider.type}')" title="Move down">
                             <i class="bi bi-arrow-down"></i>
                         </button>
                     </div>
@@ -5432,7 +5393,7 @@
             const data = await readJsonResponse(response);
 
             if (data.success) {
-                showToast('Library provider settings saved', 'success');
+                CLU.toast('Library provider settings saved', 'success');
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Saved!';
                 btn.classList.remove('btn-primary');
                 btn.classList.add('btn-success');
@@ -5443,12 +5404,12 @@
                     btn.disabled = false;
                 }, 1500);
             } else {
-                showToast('Error: ' + (data.error || 'Failed to save settings'), 'error');
+                CLU.toast('Error: ' + (data.error || 'Failed to save settings'), 'error');
                 btn.innerHTML = originalHtml;
                 btn.disabled = false;
             }
         } catch (e) {
-            showToast('Error saving library providers: ' + e.message, 'error');
+            CLU.toast('Error saving library providers: ' + e.message, 'error');
             btn.innerHTML = originalHtml;
             btn.disabled = false;
         }
@@ -5482,7 +5443,7 @@
             const data = await response.json();
 
             if (!data.success) {
-                showToast('Simulation failed: ' + (data.error || 'Unknown error'), 'error');
+                CLU.toast('Simulation failed: ' + (data.error || 'Unknown error'), 'error');
                 return;
             }
 
@@ -5527,7 +5488,7 @@
             resultsDiv.style.display = 'block';
 
         } catch (e) {
-            showToast('Simulation error: ' + e.message, 'error');
+            CLU.toast('Simulation error: ' + e.message, 'error');
             progressDiv.style.display = 'none';
         } finally {
             btn.disabled = false;

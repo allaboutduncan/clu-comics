@@ -83,6 +83,7 @@
         upBtn.type = 'button';
         upBtn.className = 'btn btn-sm btn-outline-secondary me-1';
         upBtn.title = 'Move up';
+        upBtn.setAttribute('aria-label', upBtn.title);
         upBtn.innerHTML = '<i class="bi bi-arrow-up"></i>';
         upBtn.onclick = function () { moveDashboardSection(listId, idx, idx - 1); };
         btnGroup.appendChild(upBtn);
@@ -92,6 +93,7 @@
         downBtn.type = 'button';
         downBtn.className = 'btn btn-sm btn-outline-secondary';
         downBtn.title = 'Move down';
+        downBtn.setAttribute('aria-label', downBtn.title);
         downBtn.innerHTML = '<i class="bi bi-arrow-down"></i>';
         downBtn.onclick = function () { moveDashboardSection(listId, idx, idx + 1); };
         btnGroup.appendChild(downBtn);
