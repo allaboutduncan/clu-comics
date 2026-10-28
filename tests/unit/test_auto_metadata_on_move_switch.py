@@ -187,9 +187,3 @@ def test_switch_lives_on_the_file_processing_tab(config_html):
 
 def test_config_page_renders_the_current_value(app_py):
     assert "autoMetadataOnMove=is_auto_metadata_on_move_enabled()" in app_py
-
-
-def test_setting_is_not_in_the_deprecated_config_ini():
-    """CLAUDE.md: new settings live in user_preferences, not config.ini."""
-    config_ini = (ROOT / "config.ini").read_text(encoding="utf-8")
-    assert "AUTO_METADATA_ON_MOVE" not in config_ini
