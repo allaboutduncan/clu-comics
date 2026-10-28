@@ -131,12 +131,21 @@ let batchAbortController = null;
 // previous folder rather than replaying every keystroke.
 
 const NAV_VIEWS = ['all', 'missing-xml'];
-let navRestoring = false;  // true while restoreNavState drives the loaders
+let navRestoring = false;    // true while restoreNavState drives the loaders
+let restoreRunning = false;  // one restore loop at a time...
+let pendingRestore = null;   // ...applying only the newest request
+let navSearchSyncTimer = null;
+let navScrollSaveTimer = null;
 
 if ('scrollRestoration' in history) {
     // The grid renders asynchronously, so the browser's own restore fires
     // against an empty page. restoreNavState scrolls once the grid is in.
     history.scrollRestoration = 'manual';
+}
+
+/** The /collection URL as the server spells it, subpath prefix included. */
+function collectionBaseUrl() {
+    return (window.COLLECTION_URL || '/collection').replace(/\/+$/, '');
 }
 
 /** Parse the navigation query params, ignoring anything malformed. */
@@ -153,10 +162,38 @@ function readNavStateFromUrl() {
     };
 }
 
+/**
+ * The folder the current URL names: ?path= when present, otherwise the
+ * /collection/<relative> form under the default library (the same rule as the
+ * server's collection route).
+ */
+function readNavPathFromUrl() {
+    const queryPath = (new URLSearchParams(window.location.search).get('path') || '').trim();
+    if (queryPath) return queryPath;
+    const base = collectionBaseUrl();
+    const pathname = window.location.pathname;
+    if (!pathname.startsWith(base + '/')) return '';
+    const rel = pathname.substring(base.length + 1).split('/')
+        .map(seg => { try { return decodeURIComponent(seg); } catch (e) { return seg; } })
+        .join('/');
+    if (!rel) return '';
+    const defaultRoot = (window.DEFAULT_LIBRARY_ROOT || '').replace(/\/+$/, '');
+    return `${defaultRoot}/${rel}`;
+}
+
 function currentNavView() {
     if (isAllBooksMode) return 'all';
     if (isMissingXmlMode) return 'missing-xml';
     return '';
+}
+
+/**
+ * Views the URL does not record (Recently Added, Continue Reading, On the
+ * Stack). Their letter/search/page/scroll belong to the view, so writing them
+ * would stamp them onto the folder entry underneath.
+ */
+function inUnsyncedView() {
+    return isRecentlyAddedMode || isContinueReadingMode || isOnTheStackMode;
 }
 
 /**
@@ -165,13 +202,17 @@ function currentNavView() {
  * the default root itself and other libraries use ?path= -- concatenating an
  * absolute path onto /collection/ would produce a double slash, which
  * Werkzeug's merge_slashes 308-redirects on refresh and mangles the path.
+ * Each segment is encoded: a raw '#', '?' or '%' in a folder name would
+ * otherwise end the path early or be misread on reload.
  */
 function buildCollectionUrl(path) {
     const defaultRoot = (window.DEFAULT_LIBRARY_ROOT || '').replace(/\/+$/, '');
-    let base = '/collection';
+    const collectionUrl = collectionBaseUrl();
+    let base = collectionUrl;
     const params = new URLSearchParams();
     if (path && defaultRoot && path.startsWith(defaultRoot + '/')) {
-        base = '/collection' + path.substring(defaultRoot.length);
+        base = collectionUrl + '/' + path.substring(defaultRoot.length + 1)
+            .split('/').map(encodeURIComponent).join('/');
     } else if (path) {
         params.set('path', path);
     }
@@ -189,7 +230,9 @@ function buildCollectionUrl(path) {
  * folder or view changed since the current entry, otherwise replaces it.
  */
 function syncNavUrl() {
+    clearTimeout(navSearchSyncTimer);
     if (navRestoring) return;
+    if (inUnsyncedView()) return;
     const state = {
         path: currentPath,
         view: currentNavView(),
@@ -212,48 +255,82 @@ function syncNavUrl() {
 }
 
 /**
+ * syncNavUrl after typing settles. A replaceState per keystroke trips
+ * Safari's history throttle, and the swallowed failure leaves a stale q.
+ */
+function syncNavUrlSoon() {
+    clearTimeout(navSearchSyncTimer);
+    navSearchSyncTimer = setTimeout(syncNavUrl, 300);
+}
+
+/**
  * Store the scroll position on the current history entry. Called before a
- * folder/view load tears the grid down, and when leaving the page (reader,
- * series page...), so Back returns to the same spot.
+ * folder/view load tears the grid down, when leaving the page (reader,
+ * series page...), and shortly after each scroll, so Back returns to the
+ * same spot.
  */
 function rememberScroll() {
-    if (navRestoring || !history.state) return;
+    clearTimeout(navScrollSaveTimer);
+    if (navRestoring || isLoading || inUnsyncedView() || !history.state) return;
     try {
         history.replaceState({ ...history.state, scrollY: window.scrollY }, '');
     } catch (e) { /* ignore */ }
 }
 window.addEventListener('pagehide', rememberScroll);
+// popstate fires after the browser has already switched entries, so the
+// outgoing entry's position cannot be saved then; keep it current instead,
+// or Forward always lands at the top. Debounced to the end of a scroll.
+window.addEventListener('scroll', () => {
+    if (navRestoring || isLoading) return;
+    clearTimeout(navScrollSaveTimer);
+    navScrollSaveTimer = setTimeout(rememberScroll, 200);
+}, { passive: true });
 
 /**
  * Load `path` and re-apply a saved navigation state (from the URL on first
  * load, or from history.state on Back/Forward) without writing new history.
+ *
+ * Requests are serialized: while one restore runs, a newer request replaces
+ * any pending one and the running loop applies it next, so rapid Back presses
+ * neither overlap nor replay stale entries, and navRestoring stays set for
+ * the whole run.
  */
 async function restoreNavState(path, nav) {
-    nav = nav || {};
-    if (isLoading) {
-        // loadDirectory ignores calls while a load runs; retry once it settles.
-        setTimeout(() => restoreNavState(path, nav), 100);
-        return;
-    }
+    pendingRestore = { path, nav: nav || {} };
+    if (restoreRunning) return;
+    restoreRunning = true;
     navRestoring = true;
     try {
-        currentFilter = nav.letter || 'all';
-        gridSearchRaw = nav.q || '';
-        gridSearchTerm = gridSearchRaw.trim().toLowerCase();
-        currentPage = nav.page > 0 ? nav.page : 1;
-
-        await loadDirectory(path, true);
-
-        if (nav.view === 'all' || nav.view === 'missing-xml') {
-            // loadDirectory clamped the page to the folder listing; the view
-            // has its own item count, so put the requested page back.
-            currentPage = nav.page > 0 ? nav.page : 1;
-            if (nav.view === 'all') await loadAllBooks(true);
-            else await loadMissingXml(true);
+        while (pendingRestore) {
+            // The loaders ignore calls while another load runs; let it finish.
+            while (isLoading) await new Promise(resolve => setTimeout(resolve, 50));
+            const next = pendingRestore;
+            pendingRestore = null;
+            await applyNavState(next.path, next.nav);
         }
     } finally {
         navRestoring = false;
+        restoreRunning = false;
     }
+}
+
+async function applyNavState(path, nav) {
+    currentFilter = nav.letter || 'all';
+    gridSearchRaw = nav.q || '';
+    gridSearchTerm = gridSearchRaw.trim().toLowerCase();
+    currentPage = nav.page > 0 ? nav.page : 1;
+
+    if (nav.view === 'all' || nav.view === 'missing-xml') {
+        // Go straight to the view. Loading the folder first fetched and
+        // rendered its whole listing, thumbnails and metadata included, only
+        // for the view to throw it away.
+        enterFolderForView(path);
+        if (nav.view === 'all') await loadAllBooks(true);
+        else await loadMissingXml(true);
+    } else {
+        await loadDirectory(path, true);
+    }
+
     // Normalise the URL (clamped page, dropped junk params) and make sure the
     // entry carries a state object so later pushes can compare against it.
     try {
@@ -266,6 +343,32 @@ async function restoreNavState(path, nav) {
     if (nav.scrollY) {
         requestAnimationFrame(() => window.scrollTo(0, nav.scrollY));
     }
+}
+
+/**
+ * Point the page at `path` without fetching its listing, for a restore that
+ * lands on All Books or Missing XML: those loaders fetch their own items.
+ * The folder's header image and overlay arrive with the listing, so they are
+ * cleared rather than left showing the previous folder's.
+ */
+function enterFolderForView(path) {
+    backgroundLoadingActive = false;
+    hideLoadingMoreIndicator();
+    if (batchAbortController) {
+        batchAbortController.abort();
+        batchAbortController = null;
+    }
+    currentPath = path;
+    clearFileSelection();
+    isAllBooksMode = false;
+    isRecentlyAddedMode = false;
+    isContinueReadingMode = false;
+    isOnTheStackMode = false;
+    isMissingXmlMode = false;
+    allBooksData = null;
+    renderBreadcrumbs(path);
+    showDashboardForPath(path);
+    applyFolderArt(null, null);
 }
 
 /**
@@ -285,7 +388,7 @@ function onGridSearch(value) {
     }
     renderPage();
     loadVisiblePageData();
-    syncNavUrl();
+    syncNavUrlSoon();
 }
 
 /**
@@ -361,16 +464,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
     currentPath = path;
     clearFileSelection();
 
-    // Show/hide dashboard swiper sections based on path (only show at library root level)
-    // Library section visibility is managed separately by renderGrid()
-    const dashboardSections = document.getElementById('dashboard-sections');
-    if (dashboardSections) {
-        const isRoot = !path || path === '/' ||
-            (path.startsWith('/') && path.split('/').filter(Boolean).length <= 1);
-        dashboardSections.querySelectorAll('.dashboard-section:not(#library-section)').forEach(el => {
-            el.style.display = isRoot ? '' : 'none';
-        });
-    }
+    showDashboardForPath(path);
 
     try {
         const url = `/api/browse?path=${encodeURIComponent(path)}${forceRefresh ? '&refresh=true' : ''}`;
@@ -383,37 +477,7 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
         currentIsLibraryRoot = !data.parent;
         renderBreadcrumbs(data.current_path);
 
-        // Handle Header Image
-        const headerImageContainer = document.getElementById('collection-header-image');
-        if (headerImageContainer) {
-            if (data.header_image_url) {
-                headerImageContainer.innerHTML = `<img src="${data.header_image_url}" class="img-fluid rounded shadow-sm w-100" alt="Collection Header" style="max-height: 400px; object-fit: cover;">`;
-                headerImageContainer.classList.remove('d-none');
-            } else {
-                headerImageContainer.classList.add('d-none');
-                headerImageContainer.innerHTML = '';
-            }
-        }
-
-        // Handle Overlay Background
-        const mainElement = document.querySelector('main');
-        if (mainElement) {
-            if (data.overlay_image_url) {
-                // Apply background image overlay
-                mainElement.style.backgroundImage = `url('${data.overlay_image_url}')`;
-                mainElement.style.backgroundSize = 'cover';
-                mainElement.style.backgroundPosition = 'center top';
-                mainElement.style.backgroundAttachment = 'fixed';
-                mainElement.style.backgroundRepeat = 'no-repeat';
-            } else {
-                // Reset background if no overlay exists
-                mainElement.style.backgroundImage = '';
-                mainElement.style.backgroundSize = '';
-                mainElement.style.backgroundPosition = '';
-                mainElement.style.backgroundAttachment = '';
-                mainElement.style.backgroundRepeat = '';
-            }
-        }
+        applyFolderArt(data.header_image_url, data.overlay_image_url);
 
         // Process and store all items
         allItems = [];
@@ -548,6 +612,58 @@ async function loadDirectory(path, preservePage = false, forceRefresh = false) {
         CLU.showError(error.message);
     } finally {
         setLoading(false);
+    }
+}
+
+/**
+ * Show/hide dashboard swiper sections based on path (only show at library root level).
+ * Library section visibility is managed separately by renderGrid().
+ */
+function showDashboardForPath(path) {
+    const dashboardSections = document.getElementById('dashboard-sections');
+    if (dashboardSections) {
+        const isRoot = !path || path === '/' ||
+            (path.startsWith('/') && path.split('/').filter(Boolean).length <= 1);
+        dashboardSections.querySelectorAll('.dashboard-section:not(#library-section)').forEach(el => {
+            el.style.display = isRoot ? '' : 'none';
+        });
+    }
+}
+
+/**
+ * Apply a folder's header image and page overlay; a missing URL clears it.
+ */
+function applyFolderArt(headerImageUrl, overlayImageUrl) {
+    // Handle Header Image
+    const headerImageContainer = document.getElementById('collection-header-image');
+    if (headerImageContainer) {
+        if (headerImageUrl) {
+            headerImageContainer.innerHTML = `<img src="${headerImageUrl}" class="img-fluid rounded shadow-sm w-100" alt="Collection Header" style="max-height: 400px; object-fit: cover;">`;
+            headerImageContainer.classList.remove('d-none');
+        } else {
+            headerImageContainer.classList.add('d-none');
+            headerImageContainer.innerHTML = '';
+        }
+    }
+
+    // Handle Overlay Background
+    const mainElement = document.querySelector('main');
+    if (mainElement) {
+        if (overlayImageUrl) {
+            // Apply background image overlay
+            mainElement.style.backgroundImage = `url('${overlayImageUrl}')`;
+            mainElement.style.backgroundSize = 'cover';
+            mainElement.style.backgroundPosition = 'center top';
+            mainElement.style.backgroundAttachment = 'fixed';
+            mainElement.style.backgroundRepeat = 'no-repeat';
+        } else {
+            // Reset background if no overlay exists
+            mainElement.style.backgroundImage = '';
+            mainElement.style.backgroundSize = '';
+            mainElement.style.backgroundPosition = '';
+            mainElement.style.backgroundAttachment = '';
+            mainElement.style.backgroundRepeat = '';
+        }
     }
 }
 
@@ -965,12 +1081,19 @@ async function fetchAllBooksPage(opts) {
         allBooksTotal = data.total || 0;
         allBooksLetters = Array.isArray(data.letters) ? data.letters : [];
 
-        // A restored page can be past the end if the library shrank.
         const lastPage = Math.max(1, Math.ceil(allBooksTotal / itemsPerPage));
-        if (currentPage > lastPage && allBooksTotal > 0) {
+        if (allBooksTotal === 0) {
+            // Nothing matches, so page 1 is the only page; keeping a restored
+            // page 3 would carry it into the next search.
+            currentPage = 1;
+        } else if (currentPage > lastPage) {
+            // A restored page can be past the end if the library shrank.
+            // Re-fetch inline rather than on a timer, so a caller awaiting
+            // this (restoreNavState) resumes only once the real page is in.
+            // The nested fetch takes over allBooksAbort, so this one's
+            // finally leaves the loading state to it.
             currentPage = lastPage;
-            // Next tick, so this fetch's finally releases the loading state first.
-            setTimeout(() => fetchAllBooksPage(opts), 0);
+            await fetchAllBooksPage(opts);
             return;
         }
 
@@ -3525,10 +3648,14 @@ function badgeIssueNumber(item) {
 // The entry's state carries folder, view, letter, search, page and scroll.
 // Restoring must not push: a push here would wipe the Forward history.
 window.onpopstate = (event) => {
+    // A pending scroll save would land on the entry being entered.
+    clearTimeout(navScrollSaveTimer);
     const nav = event.state || readNavStateFromUrl();
+    // An entry with no state (a fragment jump, or one never stamped) is
+    // described by its URL alone -- not by the folder the page first opened on.
     const path = (event.state && event.state.path !== undefined)
         ? event.state.path
-        : (window.INITIAL_PATH || '');
+        : readNavPathFromUrl();
     restoreNavState(path, nav);
 };
 
