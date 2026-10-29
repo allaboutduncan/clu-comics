@@ -1776,6 +1776,52 @@ class TestScoreGetcomicsResult:
         # No separator, unchanged
         assert _normalize_separators("the flash") == "the flash"
 
+    @pytest.mark.parametrize("title,series,issue", [
+        # Slash + colon in the series, en dashes + curly apostrophe in the title
+        ("Batman – Superman – World’s Finest #56 (2026)",
+         "Batman / Superman: World's Finest", "56"),
+        # Colon in the series, nothing at all in the title
+        ("Flash Gordon Quarterly #9 (2026)", "Flash Gordon: Quarterly", "9"),
+    ])
+    def test_mixed_separators_match_loosely(self, title, series, issue):
+        """A title differing in more than one kind of punctuation still matches."""
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(title, series, issue, 2026)
+        assert series_match is True
+        assert score == 95
+        assert accept_result(score, range_hit, series_match) == "ACCEPT"
+
+    @pytest.mark.parametrize("title,series,issue", [
+        # Arc after the loosely matched series is still a sub-series
+        ("Flash Gordon Quarterly – Kings Cross #9 (2026)", "Flash Gordon: Quarterly", "9"),
+        # Wrong issue
+        ("Batman – Superman – World’s Finest #57 (2026)",
+         "Batman / Superman: World's Finest", "56"),
+        # Collected edition
+        ("Batman – Superman – World’s Finest Vol. 1 TPB (2026)",
+         "Batman / Superman: World's Finest", "56"),
+        # Word continues past the series name
+        ("Flash Gordon Quarterlyish #9 (2026)", "Flash Gordon: Quarterly", "9"),
+        # Shorter series is not the longer one
+        ("Batman / Superman #56 (2026)", "Batman / Superman: World's Finest", "56"),
+    ])
+    def test_loose_match_still_rejects(self, title, series, issue):
+        from models.getcomics import score_getcomics_result, accept_result
+        score, range_hit, series_match = score_getcomics_result(title, series, issue, 2026)
+        assert accept_result(score, range_hit, series_match) != "ACCEPT"
+
+    def test_strip_loose_prefix_cuts_original_title(self):
+        from models.getcomics import _strip_loose_prefix
+        assert _strip_loose_prefix(
+            "batman – superman – world’s finest #56", "batman / superman: world's finest"
+        ) == " #56"
+        # The dash after the series survives, so it still reads as an arc
+        assert _strip_loose_prefix(
+            "flash gordon quarterly – kings cross #9", "flash gordon: quarterly"
+        ) == " – kings cross #9"
+        assert _strip_loose_prefix("flash gordons #9", "flash gordon") is None
+        assert _strip_loose_prefix("spider man #1", "spider-man") is None
+
 
 # ===================================================================
 # get_weekly_pack_url_for_date (pure function)

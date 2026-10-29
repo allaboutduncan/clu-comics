@@ -376,29 +376,8 @@ def _score_series_match(
                 remaining = check_title[len(start):].strip()
                 if series_lower.startswith('the ') and start == series_lower[4:]:
                     used_the_swap = True
-
-                if remaining.startswith(('-', '\u2013', '\u2014')):
-                    dash_part = remaining.lstrip('-\u2013\u2014').strip().lower()
-                    # Try to match a variant keyword
-                    detected_variant = _find_sub_series_keyword(dash_part, VARIANT_KEYWORDS)
-                    if detected_variant:
-                        sub_series_type = 'variant'
-                    else:
-                        has_vol_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', series_lower, re.IGNORECASE)
-                        if not has_vol_before_dash:
-                            sub_series_type = 'arc'
-                        # else: brand/imprint dash — no sub_series_type
-                else:
-                    detected_variant = _find_sub_series_keyword(remaining, VARIANT_KEYWORDS)
-                    if detected_variant:
-                        sub_series_type = 'variant'
-                    # Space-separated sequel/volume: "Season Two", "Volume 3", "Book 4"
-                    if sub_series_type is None:
-                        sequel_keywords = get_sequel_keywords()
-                        sequel_pattern = r'^(' + '|'.join(re.escape(kw) for kw in sequel_keywords) + r')\s+\w+'
-                        if re.match(sequel_pattern, remaining, re.IGNORECASE):
-                            sub_series_type = 'arc'
-
+                sub_series_type, detected_variant = _classify_remaining(
+                    remaining, series_lower, VARIANT_KEYWORDS)
                 series_match = True
                 break
         if series_match:
@@ -416,10 +395,108 @@ def _score_series_match(
             if series_match:
                 break
 
+    # Loose fallback: each strict form above normalizes one kind of
+    # punctuation, so a title that differs in two at once never matched --
+    # "Batman / Superman: World's Finest" vs "Batman – Superman – World’s
+    # Finest", "Flash Gordon: Quarterly" vs "Flash Gordon Quarterly". The
+    # remaining text is cut from the *original* title, so a dash after the
+    # series still reads as an arc.
+    if not series_match:
+        for start in series_starts:
+            rest = _strip_loose_prefix(title_lower, start)
+            if rest is None:
+                continue
+            remaining = rest.strip()
+            if series_lower.startswith('the ') and start == series_lower[4:]:
+                used_the_swap = True
+            sub_series_type, detected_variant = _classify_remaining(
+                remaining, series_lower, VARIANT_KEYWORDS)
+            series_match = True
+            break
+
     if series_match:
         score_delta = 30
 
     return score_delta, series_match, sub_series_type, remaining, used_the_swap, detected_variant
+
+
+def _classify_remaining(remaining: str, series_lower: str,
+                        variant_keywords: list[str]) -> tuple[str | None, str | None]:
+    """Sub-series type and variant keyword for the title text after the series.
+
+    Returns ``(sub_series_type, detected_variant)``.
+    """
+    sub_series_type = None
+    if remaining.startswith(('-', '–', '—')):
+        dash_part = remaining.lstrip('-–—').strip().lower()
+        # Try to match a variant keyword
+        detected_variant = _find_sub_series_keyword(dash_part, variant_keywords)
+        if detected_variant:
+            sub_series_type = 'variant'
+        else:
+            has_vol_before_dash = re.search(r'\bvol\.?\s*\d+\s*$', series_lower, re.IGNORECASE)
+            if not has_vol_before_dash:
+                sub_series_type = 'arc'
+            # else: brand/imprint dash — no sub_series_type
+    else:
+        detected_variant = _find_sub_series_keyword(remaining, variant_keywords)
+        if detected_variant:
+            sub_series_type = 'variant'
+        # Space-separated sequel/volume: "Season Two", "Volume 3", "Book 4"
+        if sub_series_type is None:
+            sequel_keywords = get_sequel_keywords()
+            sequel_pattern = r'^(' + '|'.join(re.escape(kw) for kw in sequel_keywords) + r')\s+\w+'
+            if re.match(sequel_pattern, remaining, re.IGNORECASE):
+                sub_series_type = 'arc'
+    return sub_series_type, detected_variant
+
+
+_LOOSE_QUOTES = {'‘': "'", '’': "'", '“': '"', '”': '"'}
+_LOOSE_SEPARATORS = frozenset(':/+&–—')
+
+
+def _loose_series_key(s: str) -> tuple[str, list[int]]:
+    """``s`` with every series separator turned into one space, plus an index map.
+
+    Colons, slashes, ``+``/``&``, en/em dashes and a free-standing hyphen all
+    become a space; curly quotes become straight ones; runs of space collapse.
+    A hyphen inside a word ("Spider-Man") is kept. ``index[i]`` is the position
+    in ``s`` that produced character ``i`` of the key, so a prefix match on the
+    key maps back to a cut point in ``s``.
+    """
+    out: list[str] = []
+    index: list[int] = []
+    n = len(s)
+    for i, ch in enumerate(s):
+        ch = _LOOSE_QUOTES.get(ch, ch)
+        if ch in _LOOSE_SEPARATORS or (
+                ch == '-' and (i == 0 or i == n - 1 or s[i - 1].isspace() or s[i + 1].isspace())):
+            ch = ' '
+        if ch.isspace():
+            if not out or out[-1] == ' ':
+                continue
+            ch = ' '
+        out.append(ch)
+        index.append(i)
+    return ''.join(out), index
+
+
+def _strip_loose_prefix(title: str, series: str) -> str | None:
+    """``title`` minus a leading ``series`` compared by :func:`_loose_series_key`.
+
+    The cut is made in the original ``title``, so its punctuation survives.
+    Returns None when ``title`` does not start with the series as whole words.
+    """
+    title_key, title_idx = _loose_series_key(title)
+    series_key = _loose_series_key(series)[0].strip()
+    if not series_key or not title_key.startswith(series_key):
+        return None
+    end = len(series_key)
+    if end == len(title_key):
+        return ''
+    if title_key[end].isalnum() and series_key[-1].isalnum():
+        return None     # "flash gordon" must not match "flash gordons"
+    return title[title_idx[end]:]
 
 
 def get_publication_types():
@@ -2398,6 +2475,13 @@ def _score_collected_edition(
     if sub_series_type is not None or variant_accepted:
         return 0
     title_rem = title_lower.replace(series_lower, '', 1)
+    if title_rem == title_lower:
+        # Matched only loosely ("Flash Gordon: Quarterly" vs "Flash Gordon
+        # Quarterly"), so the literal name is not in the title; a keyword that
+        # belongs to the series name must still not count as a format.
+        loose_rem = _strip_loose_prefix(title_lower, series_lower)
+        if loose_rem is not None:
+            title_rem = loose_rem
     for kw in get_format_variants() + [r'\bcompendium\b',
            r'\bcomplete\s+collection\b', r'\blibrary\s+edition\b', r'\bbook\s+\d+\b']:
         if re.search(kw, title_rem):
