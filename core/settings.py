@@ -99,6 +99,9 @@ SETTINGS_SCHEMA = {
     "LIBRARY_HEALTH_RECHECK_DAYS": _s("library_health_recheck_days", _I, 90, "system"),
     # appearance
     "BOOTSTRAP_THEME": _s("bootstrap_theme", _S, "default", "personalization"),
+    # Site-default page width (core/page_width.py); users override it on
+    # /account. Never in an ini.
+    "PAGE_WIDTH": _s("page_width", _S, "auto", "personalization"),
     # Guided Setup (core/setup_state.py). Never in an ini; init_db stamps the
     # state once, and "" (undecided) deliberately does not redirect.
     "GUIDED_SETUP_STATE": _s("guided_setup_state", _S, "", "onboarding"),

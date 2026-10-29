@@ -43,6 +43,13 @@ from core.database import (
     update_last_login,
     verify_password,
 )
+from core.page_width import (
+    DEFAULT_PAGE_WIDTH,
+    chrome_container,
+    is_valid_page_width,
+    shell_classes,
+)
+from core.settings import get_setting, set_setting
 from core.themes import (
     BOOTSWATCH_THEMES,
     is_dark_theme,
@@ -87,6 +94,41 @@ def _resolve_request_theme():
     return theme
 
 
+def _site_page_width():
+    """The owner's site-default page width (5s settings snapshot, no query)."""
+    width = get_setting("PAGE_WIDTH")
+    return width if is_valid_page_width(width) else DEFAULT_PAGE_WIDTH
+
+
+def _resolve_request_page_width():
+    """The page width this request renders with: the user's own choice, else the
+    site default, else ``auto``.
+
+    Same shape and the same reasons as _resolve_request_theme: memoized on
+    ``g`` (cleared in _reset_request_identity), and a DB hiccup degrades to
+    the site default rather than breaking the render.
+    """
+    memo = getattr(g, "_clu_page_width", None)
+    if memo is not None:
+        return memo
+
+    width = None
+    try:
+        user = getattr(g, "current_user", None)
+        if user:
+            width = get_user_setting_override("page_width", user_id=user["id"])
+    except Exception:
+        width = None
+
+    if not is_valid_page_width(width):
+        try:
+            width = _site_page_width()
+        except Exception:
+            width = DEFAULT_PAGE_WIDTH
+    g._clu_page_width = width
+    return width
+
+
 # Every theme global for the <head> and the theme picker, in one place.
 # Registered on this blueprint rather than in app.py so the test app, which
 # registers the blueprints but cannot import app.py, renders the same head.
@@ -101,6 +143,11 @@ def _inject_theme_assets():
         "theme_display_name": theme_display_name,
         "theme_previews": theme_previews(
             lambda path: url_for("static", filename=path)),
+        # Page width (core/page_width.py): base.html resolves the shell from
+        # these, and header.html/footer.html follow it.
+        "page_width": _resolve_request_page_width(),
+        "page_width_shell": shell_classes,
+        "page_width_chrome": chrome_container,
     }
 
 
@@ -159,9 +206,11 @@ def _reset_request_identity(exc=None):
     ``_clu_theme`` (_resolve_request_theme above) is memoized the same way and
     derives from the same identity, so it has to be cleared here for the same
     reason — otherwise one user's theme renders on another user's page.
+    ``_clu_page_width`` likewise.
     """
     g.pop("current_user", None)
     g.pop("_clu_theme", None)
+    g.pop("_clu_page_width", None)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -221,6 +270,10 @@ def account():
 
     site_theme = get_user_preference("bootstrap_theme", default="default") or "default"
     theme_override = get_user_setting_override("bootstrap_theme")
+    site_page_width = _site_page_width()
+    page_width_override = get_user_setting_override("page_width")
+    if not is_valid_page_width(page_width_override):
+        page_width_override = None
 
     return render_template(
         "account.html",
@@ -231,6 +284,10 @@ def account():
         account_theme=theme_override or site_theme,
         theme_is_override=theme_override is not None,
         site_theme=site_theme,
+        # Page width
+        account_page_width=page_width_override or site_page_width,
+        page_width_is_override=page_width_override is not None,
+        site_page_width=site_page_width,
         # Dashboard layout
         dashboard_order=get_dashboard_order(),
         dashboard_hidden=get_user_setting("dashboard_hidden", default=[]) or [],
@@ -269,6 +326,48 @@ def account_save_appearance():
     if not set_user_setting("bootstrap_theme", theme, user_id=user["id"]):
         return jsonify({"success": False, "error": "Could not save theme"}), 500
     return jsonify({"success": True, "theme": theme, "override": True})
+
+
+@auth_bp.route("/api/account/page-width", methods=["POST"])
+def account_save_page_width():
+    """Save (or clear) the current user's personal page width override."""
+    user = current_user()
+    if user is None:
+        return jsonify({"error": "unauthorized"}), 401
+
+    body = request.get_json(silent=True) or {}
+
+    if body.get("useSiteDefault"):
+        delete_user_setting("page_width", user_id=user["id"])
+        return jsonify({"success": True, "pageWidth": _site_page_width(), "override": False})
+
+    width = (body.get("pageWidth") or "").strip()
+    if not is_valid_page_width(width):
+        return jsonify({"success": False, "error": "Unknown page width"}), 400
+
+    if not set_user_setting("page_width", width, user_id=user["id"]):
+        return jsonify({"success": False, "error": "Could not save page width"}), 500
+    return jsonify({"success": True, "pageWidth": width, "override": True})
+
+
+# The site default. Lives here rather than in app.py (where /api/config/styling
+# is) so it can be tested; "/api/config/" is owner-only in core.auth.
+@auth_bp.route("/api/config/page-width", methods=["POST"])
+def save_site_page_width():
+    """Save the site-default page width."""
+    body = request.get_json(silent=True) or {}
+    width = (body.get("pageWidth") or "").strip()
+    if not is_valid_page_width(width):
+        return jsonify({"success": False, "error": "Unknown page width"}), 400
+
+    if not set_setting("PAGE_WIDTH", width):
+        return jsonify({"success": False, "error": "Could not save page width"}), 500
+    # As with the theme: setting the default also resets the owner to follow
+    # it, or an owner with a personal choice would save here and see nothing.
+    user = current_user()
+    if user is not None:
+        delete_user_setting("page_width", user_id=user["id"])
+    return jsonify({"success": True, "pageWidth": width})
 
 
 @auth_bp.route("/api/account/dashboard", methods=["POST"])

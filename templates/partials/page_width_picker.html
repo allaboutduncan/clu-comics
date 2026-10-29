@@ -1,0 +1,26 @@
+{# Page width radios (core/page_width.py), shared by /config (site default) and
+   /account (personal). Expects:
+     picker_name     -- the radio group's name, unique on the page
+     selected_width  -- "auto" | "wide" | "constrained"
+   The caller reads the choice with
+   document.querySelector('input[name="<picker_name>"]:checked'). #}
+{% set _widths = [
+    ('auto', 'bi-magic', 'Auto', 'Cover grids (Browse Library, To Read, Releases...) use the full width; every other page is centred.'),
+    ('wide', 'bi-arrows-expand-vertical', 'Wide', 'Every page, and the navigation bar, uses the full width of the window.'),
+    ('constrained', 'bi-arrows-collapse-vertical', 'Constrained', 'Every page, and the navigation bar, is centred at a comfortable reading width.'),
+] %}
+<div class="row row-cols-1 row-cols-md-3 g-3">
+    {% for value, icon, label, help in _widths %}
+    <div class="col">
+        <input type="radio" class="btn-check" name="{{ picker_name }}"
+            id="{{ picker_name }}-{{ value }}" value="{{ value }}"
+            {% if selected_width == value %}checked{% endif %}>
+        <label class="btn btn-outline-primary w-100 h-100 d-flex flex-column align-items-center text-center p-3"
+            for="{{ picker_name }}-{{ value }}">
+            <i class="bi {{ icon }} fs-3 mb-1" aria-hidden="true"></i>
+            <span class="fw-semibold">{{ label }}</span>
+            <small class="opacity-75">{{ help }}</small>
+        </label>
+    </div>
+    {% endfor %}
+</div>
