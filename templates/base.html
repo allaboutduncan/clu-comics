@@ -103,12 +103,19 @@
 </head>
 
 <body class="d-flex flex-column min-vh-100">
+  {# The page shell's width. A page states what it wants by overriding
+     page_shell (cover grids ask for full width); the page_width setting
+     (core/page_width.py: auto / wide / constrained, per user) decides whether
+     that is honoured. The block is defined here, unprinted, so self.page_shell()
+     returns the page's override; header, footer and banner follow _shell. #}
+  {% if false %}{% block page_shell %}container-lg{% endblock %}{% endif %}
+  {% set _shell = page_width_shell(page_width, self.page_shell()) %}
   {% include 'header.html' %}
 
   <main class="flex-grow-1">
     {% if show_setup_banner %}
     {# Upgraded installs: a one-time invitation to the Guided Setup. #}
-    <div class="container-lg mt-3" id="setup-banner">
+    <div class="{{ page_width_chrome(_shell) }} mt-3" id="setup-banner">
       <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 mb-0" role="status">
         <i class="bi bi-signpost-split"></i>
         <span class="flex-grow-1">New: <strong>Guided Setup</strong> can check your configuration and point out anything missing.</span>
@@ -129,8 +136,9 @@
     {% endif %}
     {# The page shell. Every page gets the same width and top rhythm from here;
        a page never adds its own outer container. Cover grids opt into full
-       width by overriding page_shell (tests/unit/test_page_header.py). #}
-    <div class="clu-shell {% block page_shell %}container-lg{% endblock %}">
+       width by overriding page_shell (tests/unit/test_page_header.py), and
+       the page_width setting can override that (see _shell above). #}
+    <div class="clu-shell {{ _shell }}">
       {% block content %}{% endblock %}
     </div>
   </main>

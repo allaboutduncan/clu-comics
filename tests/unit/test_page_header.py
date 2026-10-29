@@ -110,12 +110,27 @@ def test_only_cover_grids_are_full_width(path):
 
 def test_base_owns_the_shell():
     base = (TEMPLATES / "base.html").read_text(encoding="utf-8")
+    # The page's block is what it wants under page_width=auto; the setting
+    # (core/page_width.py) resolves it into _shell, which the shell renders.
+    assert "{% if false %}{% block page_shell %}container-lg{% endblock %}{% endif %}" in base
+    assert "{% set _shell = page_width_shell(page_width, self.page_shell()) %}" in base
     assert re.search(
-        r'<div class="clu-shell \{% block page_shell %\}container-lg\{% endblock %\}">\s*'
+        r'<div class="clu-shell \{\{ _shell \}\}">\s*'
         r"\{% block content %\}\{% endblock %\}",
         base,
     )
+    # Resolved before the header is included, or the nav cannot follow it.
+    assert base.index("{% set _shell") < base.index("{% include 'header.html' %}")
     assert "css/clu-page.css" in base and "js/clu-page.js" in base
+
+
+@pytest.mark.parametrize("name", ["header.html", "footer.html"])
+def test_nav_and_footer_follow_the_shell(name):
+    """They used to be plain `container`, a third width matching neither the
+    constrained nor the wide shell."""
+    text = (TEMPLATES / name).read_text(encoding="utf-8")
+    assert "page_width_chrome(_shell)" in text
+    assert '<div class="container">' not in text
 
 
 # ---- the macro ------------------------------------------------------------

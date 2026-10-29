@@ -80,7 +80,11 @@ class TestRolePolicy:
         # e.g. /api/settings/* would silently 403 every Reader.
         ("POST", "/api/account/appearance", "reader"),
         ("POST", "/api/account/dashboard", "reader"),
+        ("POST", "/api/account/page-width", "reader"),
         ("GET", "/config", "owner"),
+        # The site-default page width is in routes/auth.py, but its path is
+        # what makes it owner-only.
+        ("POST", "/api/config/page-width", "owner"),
         ("POST", "/api/config/file-processing", "owner"),
         ("POST", "/api/config/folder-paths", "owner"),
         ("GET", "/api/database/stats", "owner"),

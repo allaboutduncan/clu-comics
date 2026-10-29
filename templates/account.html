@@ -70,6 +70,32 @@
           <span class="text-muted">({{ theme_display_name(site_theme) }})</span>
         </button>
       </div>
+
+      <hr class="my-4">
+
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <div>
+          <h5 class="mb-1">Page width</h5>
+          <p class="text-muted small mb-0">How wide pages and the navigation bar are for you.</p>
+        </div>
+        <span class="badge {{ 'bg-primary' if page_width_is_override else 'bg-secondary' }}" id="pageWidthStateBadge">
+          {{ 'Custom' if page_width_is_override else 'Following site default' }}
+        </span>
+      </div>
+
+      {% with picker_name='accountPageWidth', selected_width=account_page_width %}
+      {% include 'partials/page_width_picker.html' %}
+      {% endwith %}
+
+      <div class="mt-3 d-flex gap-2">
+        <button type="button" class="btn btn-primary" id="savePageWidthBtn" onclick="savePageWidth()">
+          <i class="bi bi-floppy me-1"></i>Save Page Width
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="resetPageWidthBtn" onclick="resetPageWidth()">
+          <i class="bi bi-arrow-counterclockwise me-1"></i>Use site default
+          <span class="text-muted">({{ site_page_width | capitalize }})</span>
+        </button>
+      </div>
     </div>
 
     <!-- ── Dashboard Layout ─────────────────────────────────────────────── -->
@@ -244,6 +270,26 @@
     if (result) {
       setBadge("themeStateBadge", false);
       document.getElementById("accountTheme").value = SITE_THEME;
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  async function savePageWidth() {
+    const selected = document.querySelector('input[name="accountPageWidth"]:checked');
+    const result = await withButton("savePageWidthBtn", "Page width saved. Reloading…", () =>
+      postJSON("/api/account/page-width", { pageWidth: selected ? selected.value : "auto" }));
+    if (result) {
+      setBadge("pageWidthStateBadge", true);
+      // Like the theme, the width is rendered server-side.
+      setTimeout(() => window.location.reload(), 600);
+    }
+  }
+
+  async function resetPageWidth() {
+    const result = await withButton("resetPageWidthBtn", "Following the site default. Reloading…", () =>
+      postJSON("/api/account/page-width", { useSiteDefault: true }));
+    if (result) {
+      setBadge("pageWidthStateBadge", false);
       setTimeout(() => window.location.reload(), 600);
     }
   }

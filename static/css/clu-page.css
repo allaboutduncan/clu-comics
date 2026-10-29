@@ -20,6 +20,12 @@
     padding-inline: clamp(0.75rem, 2.5vw, 2.5rem);
 }
 
+/* The nav and footer on a wide page (core/page_width.py): the same gutter as
+   the shell, so the brand lines up with the first column of covers. */
+.clu-shell-wide-chrome {
+    padding-inline: clamp(0.75rem, 2.5vw, 2.5rem);
+}
+
 /* ---- Header ----------------------------------------------------------- */
 
 .clu-page-header {

@@ -1849,6 +1849,30 @@
 
                 <hr>
 
+                <!-- Page Width (site default) -->
+                <div class="container p-4 border rounded shadow-sm mb-4">
+                    <h4><i class="bi bi-arrows-angle-expand me-2"></i>Default Page Width</h4>
+                    <p class="text-muted">
+                        How wide pages and the navigation bar are, for users who haven't picked their own.
+                        To change only your own, go to
+                        <a href="{{ url_for('auth.account') }}#appearance">My Account &rarr; Appearance</a>.
+                    </p>
+
+                    {% with picker_name='sitePageWidth', selected_width=pageWidth|default('auto') %}
+                    {% include 'partials/page_width_picker.html' %}
+                    {% endwith %}
+                </div>
+
+                <!-- Save Button - Page Width -->
+                <div class="mb-3 text-center">
+                    <button type="button" class="btn btn-primary" id="savePageWidthBtn"
+                        onclick="savePageWidthSettings()">
+                        <i class="bi bi-floppy"></i> Save Page Width
+                    </button>
+                </div>
+
+                <hr>
+
                 <!-- Dashboard Layout (site default) -->
                 <div class="container p-4 border rounded shadow-sm mb-4">
                     <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Default Dashboard Layout</h4>
@@ -2547,6 +2571,37 @@
 
             if (result.success) {
                 CLU.toast('Styling settings saved', 'success');
+            } else {
+                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
+            }
+        } catch (e) {
+            CLU.toast('Error saving settings: ' + e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+    }
+
+    async function savePageWidthSettings() {
+        const btn = document.getElementById('savePageWidthBtn');
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+
+        const selected = document.querySelector('input[name="sitePageWidth"]:checked');
+
+        try {
+            const response = await fetch('/api/config/page-width', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pageWidth: selected ? selected.value : 'auto' })
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                CLU.toast('Page width saved. Reloading...', 'success');
+                // The width is applied server-side, so it shows on the next render.
+                setTimeout(() => window.location.reload(), 600);
             } else {
                 CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
             }
