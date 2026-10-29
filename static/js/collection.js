@@ -10,6 +10,8 @@
 document.addEventListener('DOMContentLoaded', () => {
     // Restore saved items-per-page preference before the first directory load
     restoreItemsPerPage();
+    const perPageSelect = document.getElementById('itemsPerPage');
+    if (perPageSelect) perPageSelect.addEventListener('change', () => changeItemsPerPage(perPageSelect.value));
     restoreCardSize();
     initPaginationStickyObserver();
 
@@ -84,7 +86,7 @@ let allItems = []; // Stores all files and folders for the current directory
 let pinnedCover = null;
 let readIssuesSet = new Set(); // Cached set of read issue paths for O(1) lookups
 let currentPage = 1;
-let itemsPerPage = 21; // Default to match the select dropdown
+let itemsPerPage = 24; // Default to match the select dropdown
 
 // Multi-file selection state
 const selectedFiles = new Set();
@@ -97,9 +99,12 @@ let allBooksData = null;
 let folderViewPath = '';
 let backgroundLoadingActive = false; // Track if background loading is happening
 let allBooksTotal = 0;          // Total filtered count returned by the server
+// All Books' total before the search box or a letter narrowed it, per folder:
+// the server reports only the matching total, and the count reads
+// "Showing 3 of 1,204 files" rather than "3 files".
+const allBooksUnnarrowed = {};
 let allBooksLetters = [];       // Available letter buckets returned by the server
 let allBooksAbort = null;       // AbortController for the current paged fetch
-let gridSearchDebounce = null;  // Debounce timer for the search input in all-books mode
 
 // Recently Added mode state
 let isRecentlyAddedMode = false;
@@ -372,7 +377,8 @@ function enterFolderForView(path) {
 }
 
 /**
- * Handle search input changes
+ * Handle search input changes (wired by CLU.bindSearch in updateFilterBar,
+ * which waits for a pause in typing in All Books, where the server answers).
  * @param {string} value - The search term
  */
 function onGridSearch(value) {
@@ -381,9 +387,7 @@ function onGridSearch(value) {
     currentPage = 1; // Reset to first page when searching
 
     if (isAllBooksMode) {
-        // Debounce — search rounds-trip to the server
-        if (gridSearchDebounce) clearTimeout(gridSearchDebounce);
-        gridSearchDebounce = setTimeout(() => fetchAllBooksPage(), 300);
+        fetchAllBooksPage();
         return;
     }
     renderPage();
@@ -1080,6 +1084,9 @@ async function fetchAllBooksPage(opts) {
         allBooksData = data;
         allBooksTotal = data.total || 0;
         allBooksLetters = Array.isArray(data.letters) ? data.letters : [];
+        if (!gridSearchTerm && (!currentFilter || currentFilter === 'all')) {
+            allBooksUnnarrowed[currentPath] = allBooksTotal;
+        }
 
         const lastPage = Math.max(1, Math.ceil(allBooksTotal / itemsPerPage));
         if (allBooksTotal === 0) {
@@ -1302,12 +1309,11 @@ async function loadMissingXml(preservePage = false) {
 
         updateBreadcrumb('Missing XML');
 
-        document.getElementById('gridFilterButtons').style.display = 'none';
-        document.getElementById('gridSearchRow').style.display = 'block';
+        document.getElementById('gridFilterButtons').hidden = true;
 
         const searchInput = document.querySelector('#gridSearchRow input');
         if (searchInput) {
-            searchInput.placeholder = 'Search files missing ComicInfo.xml...';
+            CLU.setSearchLabel(searchInput, gridSearchLabel());
         }
 
         const dashboardSections = document.getElementById('dashboard-sections');
@@ -1454,13 +1460,12 @@ async function loadRecentlyAdded(preservePage = false) {
         updateBreadcrumb('Recently Added');
 
         // Hide filter buttons and show search
-        document.getElementById('gridFilterButtons').style.display = 'none';
-        document.getElementById('gridSearchRow').style.display = 'block';
+        document.getElementById('gridFilterButtons').hidden = true;
 
         // Update search placeholder
         const searchInput = document.querySelector('#gridSearchRow input');
         if (searchInput) {
-            searchInput.placeholder = 'Search recently added files...';
+            CLU.setSearchLabel(searchInput, gridSearchLabel());
         }
 
         // Hide dashboard swiper sections (not library)
@@ -1535,13 +1540,12 @@ async function loadContinueReading(preservePage = false) {
         updateBreadcrumb('Continue Reading');
 
         // Hide filter buttons and show search
-        document.getElementById('gridFilterButtons').style.display = 'none';
-        document.getElementById('gridSearchRow').style.display = 'block';
+        document.getElementById('gridFilterButtons').hidden = true;
 
         // Update search placeholder
         const searchInput = document.querySelector('#gridSearchRow input');
         if (searchInput) {
-            searchInput.placeholder = 'Search in-progress comics...';
+            CLU.setSearchLabel(searchInput, gridSearchLabel());
         }
 
         // Hide dashboard swiper sections (not library)
@@ -1578,10 +1582,20 @@ async function loadContinueReading(preservePage = false) {
  * Render the current page of items.
  */
 function renderPage() {
+    // While a search or letter narrows the grid, the dashboard shelves above
+    // it (Recently Added, Discover...) step aside so the results, or the
+    // no-matches state, are what you see first.
+    const shelves = document.getElementById('dashboard-sections');
+    if (shelves) {
+        shelves.classList.toggle('clu-narrowing',
+            !!gridSearchTerm || (!!currentFilter && currentFilter !== 'all'));
+    }
     if (isAllBooksMode) {
         // Server has already filtered, sorted, and sliced — render directly.
         renderGrid(allItems);
         renderPagination(allBooksTotal);
+        const everything = allBooksUnnarrowed[currentPath];
+        updateCollectionCount(everything == null ? allBooksTotal : everything, allBooksTotal);
         updateFilterBar();
         return;
     }
@@ -1594,7 +1608,71 @@ function renderPage() {
 
     renderGrid(pageItems);
     renderPagination(filteredItems.length);
+    updateCollectionCount(allItems.length, filteredItems.length);
     updateFilterBar();
+}
+
+/**
+ * What the grid's search box matches, by view. Folder views filter the names
+ * on the page; All Books asks the server, which matches file names and series.
+ * @returns {string} The box's accessible name; the placeholder adds an ellipsis
+ */
+function gridSearchLabel() {
+    if (isMissingXmlMode) return 'Search files missing ComicInfo.xml';
+    if (isRecentlyAddedMode) return 'Search recently added files';
+    if (isContinueReadingMode) return 'Search in-progress comics';
+    if (isOnTheStackMode) return 'Search next issues';
+    if (isAllBooksMode) return 'Search file names and series';
+    return 'Search files and folders';
+}
+
+/**
+ * Toolbar count. `everything` is the unfiltered size of the view, `matching`
+ * what the search and letter leave. A paged list reads "Showing a–b of N" (N
+ * the filtered total, as the pager says); a narrowed list that fits one page
+ * reads "Showing n of N". All Books only knows the server's filtered total.
+ * @param {number} everything
+ * @param {number} matching
+ */
+function updateCollectionCount(everything, matching) {
+    const el = document.getElementById('collectionCount');
+    if (!el) return;
+    const special = isAllBooksMode || isRecentlyAddedMode || isContinueReadingMode ||
+        isOnTheStackMode || isMissingXmlMode;
+    const opts = special
+        ? { total: matching, noun: 'files', one: 'file' }
+        : { total: matching, noun: 'items', one: 'item' };
+    if (matching > itemsPerPage) {
+        opts.first = (currentPage - 1) * itemsPerPage + 1;
+        opts.last = Math.min(currentPage * itemsPerPage, matching);
+    } else if (matching !== everything) {
+        opts.total = everything;
+        opts.shown = matching;
+    }
+    CLU.setCount(el, opts);
+}
+
+/**
+ * The no-matches state's button: empties the search, and the letter too when
+ * a letter is what is narrowing the list ("Clear filters").
+ * @param {boolean} clearLetter
+ */
+function clearGridNarrowing(clearLetter) {
+    // Dropping the box (updateFilterBar draws a fresh one) rather than
+    // emptying it: CLU.bindSearch remembers the last value it ran.
+    const searchRow = document.getElementById('gridSearchRow');
+    if (searchRow) searchRow.innerHTML = '';
+    gridSearchRaw = '';
+    gridSearchTerm = '';
+    if (clearLetter) currentFilter = 'all';
+    currentPage = 1;
+    if (isAllBooksMode) {
+        fetchAllBooksPage();
+        return;
+    }
+    renderPage();
+    loadVisiblePageData();
+    syncNavUrl();
 }
 
 /**
@@ -1617,6 +1695,25 @@ function renderGrid(items) {
 
     // Show library section (empty-state and file-grid are inside it)
     if (librarySection) librarySection.style.display = 'block';
+
+    // "Nothing here" and "the search or letter hid it all" are different states.
+    const noMatchesEl = document.getElementById('no-matches');
+    if (noMatchesEl) noMatchesEl.replaceChildren();
+    const narrowed = !!gridSearchTerm || currentFilter !== 'all';
+    if (items.length === 0 && narrowed && (allItems.length > 0 || isAllBooksMode)) {
+        grid.style.display = 'none';
+        emptyState.style.display = 'none';
+        const hint = document.getElementById('selectionHint');
+        if (hint) hint.style.display = 'none';
+        if (noMatchesEl) {
+            const letterOn = currentFilter !== 'all';
+            noMatchesEl.appendChild(CLU.noMatches({
+                noun: 'items', query: gridSearchRaw, filtered: letterOn,
+                onClear: () => clearGridNarrowing(letterOn),
+            }));
+        }
+        return;
+    }
 
     if (items.length === 0 && allItems.length === 0) {
         grid.style.display = 'none';
@@ -2279,7 +2376,10 @@ function toggleCollectionSelectMode() {
     document.body.classList.toggle('collection-select-mode', enabling);
 
     const toggleBtn = document.getElementById('toggleCollectionSelectModeBtn');
-    if (toggleBtn) toggleBtn.classList.toggle('active', enabling);
+    if (toggleBtn) {
+        toggleBtn.classList.toggle('active', enabling);
+        toggleBtn.setAttribute('aria-pressed', String(enabling));
+    }
 
     const hint = document.getElementById('selectionHint');
     if (hint) hint.style.display = enabling ? '' : 'none';
@@ -2751,76 +2851,16 @@ function renderPagination(totalItems) {
 
     const totalPages = Math.max(1, Math.ceil(itemCount / itemsPerPage));
 
-    // The bar is permanently visible now, so wiping innerHTML would steal keyboard focus
-    // mid-navigation. Remember which control was focused and restore it after the rebuild.
-    const active = document.activeElement;
-    const focusKey = (active && paginationList.contains(active)) ? active.dataset.pagerKey : null;
+    // The shared bar keeps keyboard focus across the rebuild.
+    CLU.renderPageLinks(paginationList, currentPage, totalPages, changePage);
 
-    paginationList.innerHTML = '';
-
-    const addItem = (label, page, opts) => {
-        const o = opts || {};
-        const li = document.createElement('li');
-        li.className = 'page-item' + (o.disabled ? ' disabled' : '') + (o.active ? ' active' : '');
-        const a = document.createElement('a');
-        a.className = 'page-link';
-        a.href = '#';
-        a.textContent = label;
-        if (o.key) a.dataset.pagerKey = o.key;
-        if (o.ariaLabel) a.setAttribute('aria-label', o.ariaLabel);
-        if (o.active) a.setAttribute('aria-current', 'page');
-        if (o.disabled) {
-            a.setAttribute('aria-disabled', 'true');
-            a.tabIndex = -1;
-        }
-        a.onclick = (e) => {
-            e.preventDefault();
-            if (o.disabled || o.active) return;
-            changePage(page);
-        };
-        li.appendChild(a);
-        paginationList.appendChild(li);
-    };
-
-    addItem('‹', currentPage - 1, {
-        disabled: currentPage === 1, key: 'prev', ariaLabel: 'Previous page'
-    });
-
-    // Windowed page numbers with ellipsis gaps (same approach as metadata_browser.js)
-    const span = window.matchMedia('(max-width: 575.98px)').matches ? 1 : 2;
-    const pages = new Set([1, totalPages, currentPage]);
-    for (let i = 1; i <= span; i++) {
-        if (currentPage - i >= 1) pages.add(currentPage - i);
-        if (currentPage + i <= totalPages) pages.add(currentPage + i);
-    }
-    let previous = 0;
-    Array.from(pages).sort((a, b) => a - b).forEach(p => {
-        if (p - previous > 1) addItem('…', 0, { disabled: true });
-        addItem(String(p), p, { active: p === currentPage, key: 'p' + p, ariaLabel: `Page ${p}` });
-        previous = p;
-    });
-
-    addItem('›', currentPage + 1, {
-        disabled: currentPage === totalPages, key: 'next', ariaLabel: 'Next page'
-    });
-
+    // The toolbar's count (#collectionCount) says "Showing 1–24 of 79 items";
+    // the sticky bar only says where you are, so the two do not repeat.
     if (readout) {
-        const first = (currentPage - 1) * itemsPerPage + 1;
-        const last = Math.min(currentPage * itemsPerPage, itemCount);
-        readout.textContent = `Showing ${first.toLocaleString()}–${last.toLocaleString()} of ` +
-            `${itemCount.toLocaleString()} · page ${currentPage} of ${totalPages}`;
+        readout.textContent = `Page ${CLU.formatCount(currentPage)} of ${CLU.formatCount(totalPages)}`;
     }
 
     syncPageJumpSelect(totalPages);
-
-    if (focusKey) {
-        // Fall back down the chain for the case where the previously focused control is
-        // now disabled (e.g. clicking Next onto the last page).
-        const target = paginationList.querySelector(`[data-pager-key="${focusKey}"]:not([aria-disabled])`)
-            || paginationList.querySelector('[data-pager-key="next"]:not([aria-disabled])')
-            || paginationList.querySelector('[data-pager-key="prev"]:not([aria-disabled])');
-        if (target) target.focus({ preventScroll: true });
-    }
 }
 
 /**
@@ -2947,16 +2987,18 @@ function restoreItemsPerPage() {
     }
     if (!saved) return;
 
-    const selector = document.getElementById('itemsPerPage');
-    // Only accept values that exist as options in the dropdown.
-    if (selector && !Array.from(selector.options).some(opt => opt.value === saved)) {
-        return;
-    }
-
-    const parsed = parseInt(saved);
-    if (!Number.isNaN(parsed)) {
-        itemsPerPage = parsed;
-        syncItemsPerPageSelects(saved);
+    // A size saved under the old set (21/49/98/252) moves to the nearest
+    // option instead of being dropped, and the snapped value is saved back.
+    const snapped = CLU.snapPerPage(saved, document.getElementById('itemsPerPage'));
+    if (snapped === null) return;
+    itemsPerPage = snapped;
+    syncItemsPerPageSelects(String(snapped));
+    if (String(snapped) !== saved) {
+        try {
+            localStorage.setItem('collectionItemsPerPage', String(snapped));
+        } catch (e) {
+            // Ignore storage errors (e.g. private mode / quota)
+        }
     }
 }
 
@@ -3030,7 +3072,7 @@ function restoreCardSize() {
  * Point the filter-bar per-page select at a value.
  *
  * #itemsPerPage is the single source of truth for the allowed values --
- * restoreItemsPerPage() validates the saved preference against its options.
+ * restoreItemsPerPage() snaps the saved preference to its options.
  * @param {string} value - The option value to select.
  */
 function syncItemsPerPageSelects(value) {
@@ -3082,70 +3124,51 @@ function updateFilterBar() {
     const btnGroup = filterContainer.querySelector('.btn-group');
     if (!btnGroup) return;
 
-    let availableLetters = new Set();
-    let hasNonAlpha = false;
+    // In All Books the letters come from the server (the full filtered
+    // universe, not just this page); otherwise from the folder's names.
+    // CLU.sortLetters files anything that is not A-Z under '#'.
+    const letters = isAllBooksMode
+        ? (allBooksLetters || [])
+        : allItems.map(item => item.name.charAt(0).toUpperCase());
 
-    if (isAllBooksMode) {
-        // Letters come from the server (covers the full filtered universe,
-        // not just the current page).
-        (allBooksLetters || []).forEach(letter => {
-            if (letter === '#') {
-                hasNonAlpha = true;
-            } else if (letter && letter.length === 1) {
-                availableLetters.add(letter.toUpperCase());
-            }
-        });
-    } else {
-        allItems.forEach(item => {
-            const firstChar = item.name.charAt(0).toUpperCase();
-            if (firstChar >= 'A' && firstChar <= 'Z') {
-                availableLetters.add(firstChar);
-            } else {
-                hasNonAlpha = true;
-            }
-        });
-    }
-
-    // Build filter buttons
-    let buttonsHtml = '';
-    buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter === 'all' ? 'active' : ''}" onclick="filterItems('all')">All</button>`;
-
-    if (hasNonAlpha) {
-        buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter === '#' ? 'active' : ''}" onclick="filterItems('#')">#</button>`;
-    }
-
-    for (let i = 65; i <= 90; i++) {
-        const letter = String.fromCharCode(i);
-        if (availableLetters.has(letter)) {
-            buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter === letter ? 'active' : ''}" onclick="filterItems('${letter}')">${letter}</button>`;
-        }
-    }
-
-    btnGroup.innerHTML = buttonsHtml;
+    CLU.letterBar(btnGroup, {
+        letters,
+        active: currentFilter === 'all' ? '' : currentFilter,
+        onChange: filterItems,
+    });
 
     // Show the filter bar if we have items
     const totalItems = isAllBooksMode ? (allBooksTotal || 0) : allItems.length;
-    if (totalItems > 0 || availableLetters.size > 0 || hasNonAlpha) {
-        filterContainer.style.display = 'block';
-    } else {
-        filterContainer.style.display = 'none';
-    }
+    filterContainer.hidden = !(totalItems > 0 || letters.length > 0);
 
     // --- SEARCH BOX LOGIC (show if >25 items) ---
     const searchRow = document.getElementById('gridSearchRow');
     if (searchRow) {
         // Check if search input already exists
         let existingInput = document.getElementById('gridSearch');
+        // Folder views filter rows already here, at once; All Books asks the
+        // server, after a pause. A box bound for the other mode is rebuilt.
+        const mode = isAllBooksMode ? 'server' : 'local';
 
-        if (totalItems > 25) {
-            // Only create input if it doesn't exist
-            if (!existingInput) {
-                searchRow.innerHTML = `<input type="text" id="gridSearch" class="form-control form-control-sm" placeholder="Type to filter..." oninput="onGridSearch(this.value)">`;
+        // A search in progress keeps its box even when it narrows the list
+        // below 25, or the user could not edit or clear it.
+        if (totalItems > 25 || gridSearchRaw.trim()) {
+            // A box out of step with the state (a folder change cleared the
+            // search, or Back restored one) is rebuilt too, so its binding
+            // starts from the new value -- unless the user is typing in it,
+            // when the state is the one lagging (All Books waits 250ms).
+            const stale = existingInput && document.activeElement !== existingInput
+                && existingInput.value.trim() !== gridSearchRaw.trim();
+            if (!existingInput || existingInput.dataset.searchMode !== mode || stale) {
+                searchRow.innerHTML = '';
+                searchRow.appendChild(CLU.searchInput({
+                    id: 'gridSearch', label: gridSearchLabel(), value: gridSearchRaw,
+                }));
                 existingInput = document.getElementById('gridSearch');
-            }
-            // Update value if it doesn't match current search term (use raw for display)
-            if (existingInput && existingInput.value !== gridSearchRaw) {
-                existingInput.value = gridSearchRaw;
+                existingInput.dataset.searchMode = mode;
+                CLU.bindSearch(existingInput, onGridSearch, { delay: isAllBooksMode ? 250 : 0 });
+            } else if (existingInput.getAttribute('aria-label') !== gridSearchLabel()) {
+                CLU.setSearchLabel(existingInput, gridSearchLabel());
             }
         } else {
             // Remove input if items <= 25
@@ -3157,33 +3180,12 @@ function updateFilterBar() {
 }
 
 /**
- * Filter items based on the selected letter.
- * @param {string} letter - The letter to filter by ('all', '#', or A-Z)
+ * Filter items based on the selected letter (the letter bar's onChange; it
+ * marks its own buttons and sends a second click on a letter back to '').
+ * @param {string} letter - '' or 'all' for All, '#', or A-Z
  */
 function filterItems(letter) {
-    // Toggle: if clicking the same filter, reset to 'all'
-    if (currentFilter === letter) {
-        currentFilter = 'all';
-    } else {
-        currentFilter = letter;
-    }
-
-    // Update button states
-    const filterContainer = document.getElementById('gridFilterButtons');
-    if (filterContainer) {
-        const btnGroup = filterContainer.querySelector('.btn-group');
-        if (btnGroup) {
-            const buttons = btnGroup.querySelectorAll('button');
-            buttons.forEach(btn => {
-                const btnText = btn.textContent.trim();
-                if ((currentFilter === 'all' && btnText === 'All') || btnText === currentFilter) {
-                    btn.classList.add('active');
-                } else {
-                    btn.classList.remove('active');
-                }
-            });
-        }
-    }
+    currentFilter = letter && letter !== 'all' ? letter : 'all';
 
     // Reset to first page and re-render
     currentPage = 1;
@@ -3531,6 +3533,8 @@ function setLoading(loading) {
         indicator.style.display = 'block';
         grid.style.display = 'none';
         empty.style.display = 'none';
+        const noMatches = document.getElementById('no-matches');
+        if (noMatches) noMatches.replaceChildren();
         // Hidden only for full view swaps, which collapse the grid anyway — an in-place
         // page change goes through setPageBusy() instead so the pager stays put.
         if (pagination) pagination.style.display = 'none';
@@ -4199,7 +4203,7 @@ function applyReadStateToGridItem(gridItem, isRead) {
 /**
  * Back-fill every item on screen from readIssuesSet.
  *
- * Iterates the grid (one page, 21-500 items) and asks the Set, NOT the other way
+ * Iterates the grid (one page, 24-500 items) and asks the Set, NOT the other way
  * round: readIssuesSet can hold tens of thousands of paths, and one
  * updateReadIcon call per read path would be one querySelectorAll per path.
  */
@@ -4870,12 +4874,11 @@ async function loadOnTheStack(preservePage = false) {
 
         updateBreadcrumb('On the Stack');
 
-        document.getElementById('gridFilterButtons').style.display = 'none';
-        document.getElementById('gridSearchRow').style.display = 'block';
+        document.getElementById('gridFilterButtons').hidden = true;
 
         const searchInput = document.querySelector('#gridSearchRow input');
         if (searchInput) {
-            searchInput.placeholder = 'Search next issues...';
+            CLU.setSearchLabel(searchInput, gridSearchLabel());
         }
 
         const dashboardSections = document.getElementById('dashboard-sections');

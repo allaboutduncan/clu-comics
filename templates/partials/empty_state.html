@@ -22,6 +22,8 @@
   - Script-toggled states pass id= and hidden=True (rendered as
     style="display: none;", which is what the page scripts toggle). The JS twin
     is CLU.emptyState({icon, title, message}) in static/js/clu-page.js.
+  - A search or filter that matched nothing is no_matches(noun, query,
+    filtered, clear_href | clear_id), never a hand-written "No results" line.
   - tone='success' colours the icon for a good empty ("No wanted issues");
     compact=True is for an empty panel or card, not a whole page.
 #}
@@ -40,4 +42,27 @@
   <div class="clu-empty-actions">{{ actions_html }}</div>
   {%- endif %}
 </div>
+{%- endmacro %}
+
+{% macro no_matches(noun, query=None, filtered=False, clear_href=None, clear_id=None, id=None, hidden=False, compact=False) -%}
+{#- The one "a search or filter matched nothing" state, worded as
+    CLU.noMatches words it (static/js/clu-page.js). The button is a link when
+    the server filters (clear_href) or a button a script wires (clear_id). -#}
+{%- set q = (query or '') | trim -%}
+{%- if q and not filtered -%}
+  {%- set title = 'No ' ~ noun ~ ' match “' ~ q ~ '”' -%}
+  {%- set message = 'Check the spelling, or search for part of a name.' -%}
+  {%- set clear = 'Clear search' -%}{%- set icon = 'bi-search' -%}
+{%- else -%}
+  {%- set title = 'No ' ~ noun ~ ' match these filters' -%}
+  {%- set message = 'Nothing matches the search and the filters together.' if q else 'Change or clear a filter to see more.' -%}
+  {%- set clear = 'Clear filters' -%}{%- set icon = 'bi-funnel' -%}
+{%- endif -%}
+{%- call empty_state(title, message, icon, id=id, hidden=hidden, compact=compact) -%}
+  {%- if clear_href -%}
+  <a class="btn btn-outline-secondary" href="{{ clear_href }}">{{ clear }}</a>
+  {%- elif clear_id -%}
+  <button type="button" class="btn btn-outline-secondary" id="{{ clear_id }}">{{ clear }}</button>
+  {%- endif -%}
+{%- endcall -%}
 {%- endmacro %}

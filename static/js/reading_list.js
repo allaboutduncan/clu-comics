@@ -7,43 +7,18 @@ console.log('reading_list.js loaded');
 // Seeded from the buttons the server rendered active (the URL's ?tag=).
 let activeTagFilters = new Set();
 
+// #rlTags is a multi-select filter_bar (partials/filters.html): All clears
+// the others, and the last tag switched off goes back to All.
 function initTagFilters() {
-    document.querySelectorAll('.tag-filter-btn').forEach(btn => {
-        if (btn.classList.contains('active') && btn.dataset.tag !== 'all') {
-            activeTagFilters.add(btn.dataset.tag);
-        }
-        btn.addEventListener('click', () => toggleTagFilter(btn));
+    const group = document.getElementById('rlTags');
+    if (!group || !window.CLU || !CLU.filterBar) return;
+    activeTagFilters = new Set(CLU.filterValue(group));
+    CLU.filterBar(group, {
+        onChange: tags => {
+            activeTagFilters = new Set(tags);
+            applyTagFilters();
+        },
     });
-}
-
-function toggleTagFilter(btn) {
-    const tag = btn.dataset.tag;
-
-    if (tag === 'all') {
-        // Clear all filters, show all
-        activeTagFilters.clear();
-        document.querySelectorAll('.tag-filter-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-    } else {
-        // Remove 'all' active state
-        document.querySelector('.tag-filter-btn[data-tag="all"]')?.classList.remove('active');
-
-        // Toggle this filter
-        if (activeTagFilters.has(tag)) {
-            activeTagFilters.delete(tag);
-            btn.classList.remove('active');
-        } else {
-            activeTagFilters.add(tag);
-            btn.classList.add('active');
-        }
-
-        // If no filters active, activate 'all'
-        if (activeTagFilters.size === 0) {
-            document.querySelector('.tag-filter-btn[data-tag="all"]')?.classList.add('active');
-        }
-    }
-
-    applyTagFilters();
 }
 
 // The server filters (a list must carry ALL active tags), sorts and pages;
@@ -88,12 +63,19 @@ let readingListPager = null;
 const DEFAULT_LIST_SORT = 'date-desc';
 
 function activeListSort() {
-    const btn = document.querySelector('.sort-btn.active');
-    return btn ? btn.dataset.sort : DEFAULT_LIST_SORT;
+    const group = document.getElementById('rlSort');
+    return (group && window.CLU && CLU.filterValue(group)) || DEFAULT_LIST_SORT;
+}
+
+// The search box (?q=): the server matches it against list names.
+function activeListQuery() {
+    const box = document.getElementById('rlSearch');
+    return box ? box.value.trim() : '';
 }
 
 function listFilterState() {
     return {
+        q: activeListQuery(),
         tag: [...activeTagFilters],
         sort: activeListSort() === DEFAULT_LIST_SORT ? '' : activeListSort(),
     };
@@ -102,6 +84,7 @@ function listFilterState() {
 function fetchMatchingListIds() {
     const nav = document.getElementById('rlPagination');
     const p = new URLSearchParams();
+    if (activeListQuery()) p.set('q', activeListQuery());
     activeTagFilters.forEach(t => p.append('tag', t));
     return fetch(nav.dataset.idsEndpoint + '?' + p.toString(), { headers: { Accept: 'application/json' } })
         .then(r => {
@@ -113,6 +96,40 @@ function fetchMatchingListIds() {
             return data.ids || [];
         });
 }
+
+// The toolbar's result count, worded like the server-rendered one.
+function updateListCount(data, grid) {
+    const el = document.getElementById('rlCount');
+    if (!el || !window.CLU) return;
+    const total = data.total || 0;
+    const allLists = parseInt(grid.dataset.totalLists, 10) || 0;
+    // Narrowed to one page (or to nothing): "Showing 12 of 222 reading lists".
+    const narrowed = activeListQuery() !== '' || activeTagFilters.size > 0;
+    if (total === 0 || (narrowed && (data.total_pages || 1) <= 1)) {
+        CLU.setCount(el, { total: allLists, noun: 'reading lists', one: 'reading list', shown: total });
+        return;
+    }
+    const start = ((data.page || 1) - 1) * (data.per_page || 0);
+    const shown = grid.querySelectorAll('.reading-list-card').length;
+    CLU.setCount(el, {
+        total, noun: 'reading lists', one: 'reading list',
+        first: start + 1, last: start + shown,
+    });
+}
+
+// The no-matches state's button (rendered inside the grid): back to no
+// search and All tags, page 1. "Clear search" only appears when no tag is on,
+// so clearing both is right for either label. The sort is a view order, not a
+// filter, and stays.
+document.addEventListener('click', e => {
+    if (!e.target.closest('#rlClearFilters')) return;
+    const group = document.getElementById('rlTags');
+    if (group && window.CLU) CLU.setFilterValue(group, []);
+    activeTagFilters = new Set();
+    const box = document.getElementById('rlSearch');
+    if (box) box.value = '';
+    applyTagFilters();
+});
 
 // Everything a freshly rendered card needs that its markup cannot carry.
 function initListCards() {
@@ -126,6 +143,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Before the pager: its state() reads the active tags, and it writes
     // them to the URL as soon as it is created.
     initTagFilters();
+    // The server answers the search, so wait for a pause in typing. It narrows
+    // the selection the same way a tag change does.
+    const searchBox = document.getElementById('rlSearch');
+    if (searchBox && window.CLU) CLU.bindSearch(searchBox, () => applyTagFilters());
     const grid = document.querySelector('.reading-list-grid');
     const nav = document.getElementById('rlPagination');
     if (!grid || !nav || !window.CLU || !CLU.createServerPager) return;
@@ -133,19 +154,19 @@ document.addEventListener('DOMContentLoaded', () => {
         endpoint: nav.dataset.endpoint,
         nav,
         perPageSelect: document.getElementById('rlPerPage'),
-        // The grid is 4 cards wide on a typical screen; 50 left a gap.
-        defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 40,
+        defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 60,
         rememberAs: nav.dataset.perPageCookie,
-        scrollTarget: document.querySelector('.sort-bar') || grid,
+        scrollTarget: document.getElementById('rlFilters') || grid,
         initial: {
             page: parseInt(nav.dataset.page, 10) || 1,
-            perPage: parseInt(nav.dataset.perPage, 10) || 40,
+            perPage: parseInt(nav.dataset.perPage, 10) || 60,
             totalPages: parseInt(nav.dataset.totalPages, 10) || 1,
         },
         state: listFilterState,
         onData: data => {
             grid.classList.remove('opacity-50');
             grid.innerHTML = data.html;
+            updateListCount(data, grid);
             initListCards();
         },
         // The tag chips may already show what failed to load; dim the cards
@@ -214,20 +235,31 @@ document.addEventListener('DOMContentLoaded', observeCardTags);
 // Sort System
 // ==========================================
 
+// #rlSort is a single-choice filter_bar; the server sorts, so a new order
+// shows its page 1.
 function initSortButtons() {
-    document.querySelectorAll('.sort-btn').forEach(btn => {
-        btn.addEventListener('click', () => applySort(btn));
+    const group = document.getElementById('rlSort');
+    if (!group || !window.CLU || !CLU.filterBar) return;
+    CLU.filterBar(group, {
+        onChange: () => { if (readingListPager) readingListPager.load({ resetPage: true }); },
     });
 }
 
-function applySort(btn) {
-    document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    // The server sorts; show page 1 of the new order.
-    if (readingListPager) readingListPager.load({ resetPage: true });
+document.addEventListener('DOMContentLoaded', initSortButtons);
+
+// The import modals' search boxes (search_input in reading_lists.html).
+// The repository filter runs over rows already loaded, so at once; the
+// Metron and ComicVine boxes ask a server, so after a pause in the typing.
+function initModalSearches() {
+    if (!window.CLU || !CLU.bindSearch) return;
+    const byId = id => document.getElementById(id);
+    CLU.bindSearch(byId('githubTreeFilter'), filterTree, { delay: 0 });
+    CLU.bindSearch(byId('metronSearchInput'), searchMetronLists);
+    CLU.bindSearch(byId('metronArcSearchInput'), searchMetronArcs);
+    CLU.bindSearch(byId('cvArcSearchInput'), searchCVArcs);
 }
 
-document.addEventListener('DOMContentLoaded', initSortButtons);
+document.addEventListener('DOMContentLoaded', initModalSearches);
 
 // ==========================================
 // Want to Read (dashboard bookmark)
@@ -1242,6 +1274,18 @@ function openMapModal(entryId, series, number, volume, year, issueYear) {
         });
 }
 
+// The file pickers' "nothing found": the button empties the box and the results.
+function fileSearchNoMatches(inputId, resultsDiv) {
+    const input = document.getElementById(inputId);
+    return CLU.noMatches({
+        noun: 'files', query: input ? input.value : '', compact: true,
+        onClear: () => {
+            if (input) { input.value = ''; input.focus(); }
+            resultsDiv.replaceChildren();
+        },
+    });
+}
+
 function searchFiles(retryWithoutFirstWord = false) {
     let query = document.getElementById('fileSearchInput').value;
     if (!query) return;
@@ -1276,7 +1320,7 @@ function searchFiles(retryWithoutFirstWord = false) {
                         return;
                     }
                 }
-                resultsDiv.innerHTML = '<div class="p-3 text-center text-muted">No files found</div>';
+                resultsDiv.replaceChildren(fileSearchNoMatches('fileSearchInput', resultsDiv));
                 return;
             }
 
@@ -1483,7 +1527,7 @@ function searchFilesForAdd() {
         .then(results => {
             resultsDiv.innerHTML = '';
             if (results.length === 0) {
-                resultsDiv.innerHTML = '<div class="p-3 text-center text-muted">No files found</div>';
+                resultsDiv.replaceChildren(fileSearchNoMatches('addIssueSearchInput', resultsDiv));
                 return;
             }
             results.forEach(file => {
@@ -2049,8 +2093,25 @@ function importSelectedFiles() {
 // Metron Reading List Browser
 // ==========================================
 
+// A provider that returned nothing: "no matches" for a query, a plain empty
+// state when there was no query. The button empties the search box.
+function showProviderEmpty(empty, inputId, noun, query) {
+    if (!empty || !window.CLU) return;
+    const node = query
+        ? CLU.noMatches({
+            noun, query, compact: true,
+            onClear: () => {
+                const input = document.getElementById(inputId);
+                if (!input) return;
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+            },
+        })
+        : CLU.emptyState({ icon: 'bi-inbox', title: 'No ' + noun + ' available', compact: true });
+    empty.replaceChildren(node);
+}
+
 let _metronListsData = null;
-let _metronSearchTimeout = null;
 
 function loadMetronLists() {
     if (_metronListsData) {
@@ -2080,6 +2141,7 @@ function loadMetronLists() {
                 _metronListsData = data.lists;
                 if (data.lists.length === 0) {
                     empty.classList.remove('d-none');
+                    showProviderEmpty(empty, 'metronSearchInput', 'reading lists', '');
                 } else {
                     renderMetronLists(data.lists);
                     content.classList.remove('d-none');
@@ -2100,54 +2162,50 @@ function loadMetronLists() {
         });
 }
 
-function searchMetronLists() {
-    clearTimeout(_metronSearchTimeout);
-    _metronSearchTimeout = setTimeout(() => {
-        const query = document.getElementById('metronSearchInput').value.trim();
+function searchMetronLists(query) {
+    const loading = document.getElementById('metronListLoading');
+    const content = document.getElementById('metronListContent');
+    const error = document.getElementById('metronListError');
+    const empty = document.getElementById('metronListEmpty');
+    const notConfigured = document.getElementById('metronNotConfigured');
 
-        const loading = document.getElementById('metronListLoading');
-        const content = document.getElementById('metronListContent');
-        const error = document.getElementById('metronListError');
-        const empty = document.getElementById('metronListEmpty');
-        const notConfigured = document.getElementById('metronNotConfigured');
+    loading.classList.remove('d-none');
+    content.classList.add('d-none');
+    error.classList.add('d-none');
+    empty.classList.add('d-none');
+    notConfigured.classList.add('d-none');
 
-        loading.classList.remove('d-none');
-        content.classList.add('d-none');
-        error.classList.add('d-none');
-        empty.classList.add('d-none');
-        notConfigured.classList.add('d-none');
+    const url = query
+        ? `/api/reading-lists/metron-browse?search=${encodeURIComponent(query)}`
+        : '/api/reading-lists/metron-browse';
 
-        const url = query
-            ? `/api/reading-lists/metron-browse?search=${encodeURIComponent(query)}`
-            : '/api/reading-lists/metron-browse';
-
-        fetch(url)
-            .then(r => r.json())
-            .then(data => {
-                loading.classList.add('d-none');
-                if (data.success) {
-                    if (!query) _metronListsData = data.lists;
-                    if (data.lists.length === 0) {
-                        empty.classList.remove('d-none');
-                    } else {
-                        renderMetronLists(data.lists);
-                        content.classList.remove('d-none');
-                    }
+    fetch(url)
+        .then(r => r.json())
+        .then(data => {
+            loading.classList.add('d-none');
+            if (data.success) {
+                if (!query) _metronListsData = data.lists;
+                if (data.lists.length === 0) {
+                    empty.classList.remove('d-none');
+                    showProviderEmpty(empty, 'metronSearchInput', 'reading lists', query);
                 } else {
-                    if (data.message && data.message.includes('not configured')) {
-                        notConfigured.classList.remove('d-none');
-                    } else {
-                        error.classList.remove('d-none');
-                        error.textContent = data.message || 'Failed to search';
-                    }
+                    renderMetronLists(data.lists);
+                    content.classList.remove('d-none');
                 }
-            })
-            .catch(err => {
-                loading.classList.add('d-none');
-                error.classList.remove('d-none');
-                error.textContent = 'Search failed: ' + err.message;
-            });
-    }, 300);
+            } else {
+                if (data.message && data.message.includes('not configured')) {
+                    notConfigured.classList.remove('d-none');
+                } else {
+                    error.classList.remove('d-none');
+                    error.textContent = data.message || 'Failed to search';
+                }
+            }
+        })
+        .catch(err => {
+            loading.classList.add('d-none');
+            error.classList.remove('d-none');
+            error.textContent = 'Search failed: ' + err.message;
+        });
 }
 
 function renderMetronLists(lists) {
@@ -2268,7 +2326,6 @@ let _metronArcsSearchQuery = '';
 let _metronArcsLoaded = false;  // true after first successful load
 let _metronArcsTotalCount = 0;
 let _metronArcsDisplayed = 0;
-let _metronArcSearchTimeout = null;
 let _metronArcsFetching = false;
 let _metronArcsObserver = null;
 
@@ -2301,18 +2358,14 @@ function loadMetronArcs() {
     fetchMetronArcsPage(1);
 }
 
-function searchMetronArcs() {
-    clearTimeout(_metronArcSearchTimeout);
-    _metronArcSearchTimeout = setTimeout(() => {
-        const query = document.getElementById('metronArcSearchInput').value.trim();
-        _metronArcsSearchQuery = query;
-        _metronArcsPage = 0;
-        _metronArcsDisplayed = 0;
-        if (!query) {
-            _metronArcsLoaded = false; // allow browse reload
-        }
-        fetchMetronArcsPage(1);
-    }, 300);
+function searchMetronArcs(query) {
+    _metronArcsSearchQuery = query;
+    _metronArcsPage = 0;
+    _metronArcsDisplayed = 0;
+    if (!query) {
+        _metronArcsLoaded = false; // allow browse reload
+    }
+    fetchMetronArcsPage(1);
 }
 
 function fetchMetronArcsPage(page) {
@@ -2362,6 +2415,7 @@ function fetchMetronArcsPage(page) {
 
                 if (data.results.length === 0 && !append) {
                     empty.classList.remove('d-none');
+                    showProviderEmpty(empty, 'metronArcSearchInput', 'story arcs', _metronArcsSearchQuery);
                     if (sentinel) sentinel.classList.add('d-none');
                 } else {
                     renderMetronArcs(data.results, append);
@@ -2538,28 +2592,29 @@ function importSelectedMetronArcs() {
 
 let _cvArcsLoaded = false;
 let _cvArcsSearchQuery = '';
-let _cvArcSearchTimeout = null;
 
 function loadCVArcs() {
     if (_cvArcsLoaded && !_cvArcsSearchQuery) {
         return;
     }
-    _cvArcsSearchQuery = '';
     const searchInput = document.getElementById('cvArcSearchInput');
-    if (searchInput) searchInput.value = '';
+    if (searchInput && searchInput.value) {
+        // Cleared through its input event, so CLU.bindSearch sees the empty
+        // box and searchCVArcs('') reloads the browse list.
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+    }
+    _cvArcsSearchQuery = '';
     fetchCVArcs();
 }
 
-function searchCVArcs() {
-    clearTimeout(_cvArcSearchTimeout);
-    _cvArcSearchTimeout = setTimeout(() => {
-        const query = document.getElementById('cvArcSearchInput').value.trim();
-        _cvArcsSearchQuery = query;
-        if (!query) {
-            _cvArcsLoaded = false;
-        }
-        fetchCVArcs();
-    }, 300);
+function searchCVArcs(query) {
+    _cvArcsSearchQuery = query;
+    if (!query) {
+        _cvArcsLoaded = false;
+    }
+    fetchCVArcs();
 }
 
 function fetchCVArcs() {
@@ -2589,6 +2644,7 @@ function fetchCVArcs() {
             if (data.success) {
                 if (!data.arcs || data.arcs.length === 0) {
                     empty.classList.remove('d-none');
+                    showProviderEmpty(empty, 'cvArcSearchInput', 'story arcs', _cvArcsSearchQuery);
                 } else {
                     renderCVArcs(data.arcs);
                     content.classList.remove('d-none');

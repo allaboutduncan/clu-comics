@@ -26,6 +26,7 @@ from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
 from core import app_state
 from helpers import find_folder_thumbnail
+from helpers.paging import COLLECTION_DEFAULT_PER_PAGE, DEFAULT_PER_PAGE
 from helpers.library import (get_library_roots,
                              get_default_library_root, is_library_root,
                              is_valid_library_path, is_allowed_path)
@@ -292,6 +293,9 @@ def _parse_metadata_filters(args):
     search = args.get("search")
     if search:
         filters["search"] = search
+    letter = (args.get("letter") or "").strip().upper()
+    if letter == "#" or (len(letter) == 1 and "A" <= letter <= "Z"):
+        filters["letter"] = letter
     return filters
 
 
@@ -307,9 +311,9 @@ def api_metadata_browse():
         sort = 'alpha'
     try:
         offset = max(0, int(request.args.get('offset', 0)))
-        limit = min(500, max(1, int(request.args.get('limit', 50))))
+        limit = min(500, max(1, int(request.args.get('limit', DEFAULT_PER_PAGE))))
     except (TypeError, ValueError):
-        offset, limit = 0, 50
+        offset, limit = 0, DEFAULT_PER_PAGE
 
     filters = _parse_metadata_filters(request.args)
     prefixes = accessible_folder_prefixes(current_user())
@@ -814,7 +818,7 @@ def api_browse_recursive():
     Query params:
         path:   Directory path to list under (defaults to the default library).
         offset: Pagination offset (default 0, clamped >= 0).
-        limit:  Page size (default 21, clamped 1-500).
+        limit:  Page size (default 24, clamped 1-500).
         letter: Optional first-letter filter ('A'-'Z' or '#').
         search: Optional case-insensitive substring against name/ci_series.
 
@@ -848,9 +852,9 @@ def api_browse_recursive():
     except (TypeError, ValueError):
         offset = 0
     try:
-        limit = max(1, min(500, int(request.args.get('limit', 21))))
+        limit = max(1, min(500, int(request.args.get('limit', COLLECTION_DEFAULT_PER_PAGE))))
     except (TypeError, ValueError):
-        limit = 21
+        limit = COLLECTION_DEFAULT_PER_PAGE
 
     letter = request.args.get('letter') or None
     if letter:

@@ -1,29 +1,23 @@
 {% extends "base.html" %}
 {% from 'partials/page_header.html' import page_header %}
-{% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/empty_state.html' import empty_state, no_matches %}
+{% from 'partials/filters.html' import toolbar, filter_bar, search_input, result_count %}
 
 {% block title %}Weekly Releases{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}">
+{% endblock %}
 
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 
 {% block content %}
 <div>
+    {#- The week links are where you are (like a breadcrumb), so they stay in
+        the header's top right; the toolbar only changes what this week shows. -#}
     {% call(slot) page_header('Weekly Releases', 'bi-calendar-week', subtitle=(date_range if date_range and date_range != 'N/A' else None)) %}
-        {% if slot == 'actions' %}
-            {% if releases %}
-            <div class="btn-group" role="group" aria-label="View mode" id="view-toggle">
-                <button aria-label="Card view" type="button" class="btn btn-sm btn-outline-secondary" data-view="cards" title="Card view"
-                    aria-pressed="false">
-                    <i class="bi bi-grid-3x3-gap-fill" aria-hidden="true"></i>
-                </button>
-                <button aria-label="Table view" type="button" class="btn btn-sm btn-outline-secondary" data-view="table" title="Table view"
-                    aria-pressed="false">
-                    <i class="bi bi-list-ul" aria-hidden="true"></i>
-                </button>
-            </div>
-            {% endif %}
-            {% if view_mode != 'error' %}
-            <div class="btn-group" role="group" aria-label="Week">
+        {% if slot == 'actions' and view_mode != 'error' %}
+            <div class="btn-group" role="group" aria-label="Week" data-clu-keep>
                 <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-sm btn-outline-secondary week-nav">
                     <i class="bi bi-chevron-left" aria-hidden="true"></i> Previous Week
                 </a>
@@ -34,7 +28,6 @@
                     Next Week <i class="bi bi-chevron-right" aria-hidden="true"></i>
                 </a>
             </div>
-            {% endif %}
         {% endif %}
     {% endcall %}
 
@@ -55,72 +48,77 @@
     {% endif %}
 
     {% if releases %}
-    <!-- Filters. Each group narrows the releases independently and they
-         combine (AND); every pill's count is what you would get by picking it. -->
-    <div class="release-filters mb-4 fade-in-down" id="release-filters">
-        <div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="subscribed">
-            <span class="filter-label text-muted small text-uppercase fw-semibold">
-                <i class="bi bi-bookmark-star me-1"></i>Subscription
-            </span>
-            <div class="d-flex flex-wrap gap-2 filter-pills"></div>
+    {#- The view toggle, then the filters. Each filter group narrows the
+        releases independently and they combine (AND); every button's count
+        is what you would get by picking it. The options (with counts) are
+        drawn by the filter script below. -#}
+    {% call toolbar('Filter releases', id='release-filters') %}
+        <div class="clu-toolbar-row">
+            {% set release_query = request.args.get('q', '') %}
+            {{ search_input('releasesSearch', 'Search series', value=release_query) }}
+            <div class="clu-toolbar-end">
+                {{ result_count('releases-count', releases|length, 'releases', one='release') }}
+                <div class="btn-group btn-group-sm" role="group" aria-label="View mode" id="view-toggle">
+                    <button aria-label="Card view" type="button" class="btn btn-outline-secondary" data-view="cards" title="Card view"
+                        aria-pressed="false">
+                        <i class="bi bi-grid-3x3-gap-fill" aria-hidden="true"></i>
+                    </button>
+                    <button aria-label="Table view" type="button" class="btn btn-outline-secondary" data-view="table" title="Table view"
+                        aria-pressed="false">
+                        <i class="bi bi-list-ul" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
         </div>
-        <div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="publisher"
-            id="publisher-filter" hidden>
-            <span class="filter-label text-muted small text-uppercase fw-semibold">
-                <i class="bi bi-building me-1"></i>Publisher
-            </span>
-            <div class="d-flex flex-wrap gap-2 filter-pills" id="publisher-pills"></div>
+        <div class="clu-toolbar-row" data-filter-group="subscribed">
+            {{ filter_bar('subscription-pills', [], label='Subscription', toggle_off=True) }}
+        </div>
+        <div class="clu-toolbar-row" data-filter-group="publisher" id="publisher-filter" hidden>
+            {{ filter_bar('publisher-pills', [], label='Publisher', toggle_off=True) }}
             <span id="publisher-loading"
-                class="text-muted small ms-1{% if not publisher_pending %} d-none{% endif %}">
+                class="clu-toolbar-count{% if not publisher_pending %} d-none{% endif %}">
                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
                 Identifying publishers&hellip;
             </span>
         </div>
-    </div>
-
-    {# releases.html's filter script toggles .d-none on it. #}
-    {% call empty_state('No releases match these filters', icon='bi-funnel', id='releases-no-match', classes='d-none') %}
-        <button type="button" class="btn btn-outline-secondary" id="clear-filters">
-            <i class="bi bi-x-circle me-1" aria-hidden="true"></i>Clear filters
-        </button>
     {% endcall %}
+    {% endif %}
 
-    <div class="releases-grid" id="releases-cards">
+    {% if releases %}
+    {# releases.html's filter script shows it by clearing its inline display:none. #}
+    {{ no_matches('releases', filtered=True, id='releases-no-match', clear_id='clear-filters', hidden=True) }}
+
+    {#- The shared cover card (collection.css): 2:3 frame, issue sticker top
+        right, title and meta below. .release-card is the script's hook. -#}
+    <div class="file-grid releases-grid" id="releases-cards">
         {% for issue in releases %}
         {% set issue_slug = generate_series_slug(issue.series.name, issue.id, issue.series.volume) %}
         {% set is_tracked = issue.series.id in tracked_ids or (normalize_name(issue.series.name), issue.series.volume or 0) in tracked_lookup %}
         <a href="{% if issue_slug %}{{ url_for('series.issue_view', slug=issue_slug) }}{% else %}{{ issue.resource_url }}{% endif %}"
-            {% if not series_slug %} {% endif %}
             data-series-id="{{ issue.series.id }}" data-subscribed="{{ 1 if is_tracked else 0 }}"
-            class="release-card stagger-load{% if is_tracked %} tracked{% endif %}">
-            <!-- Cover Image -->
-            <div class="release-cover">
-                {% if is_tracked %}
-                <div class="ribbon-wrapper">
-                    <div class="ribbon">Subscribed</div>
-                </div>
-                {% endif %}
+            data-title="{{ issue.series.name|lower }}"
+            class="grid-item release-card text-decoration-none">
+            <div class="thumbnail-container">
                 {% if issue.image %}
-                <img src="{{ issue.image }}" alt="{{ issue.series.name }}">
+                <img src="{{ issue.image }}" alt="{{ issue.series.name }}" class="thumbnail" loading="lazy">
                 {% else %}
-                <div class="no-cover-placeholder">
-                    <i class="bi bi-journal-text"></i>
-                </div>
+                <div class="icon-overlay release-no-cover"><i class="bi bi-journal-text" aria-hidden="true"></i></div>
+                {% endif %}
+                {% if issue.number %}
+                <span class="issue-badge"><span class="issue-number">#{{ issue.number }}</span></span>
+                {% endif %}
+                {% if is_tracked %}
+                <span class="release-subscribed" title="Subscribed">
+                    <i class="bi bi-bookmark-check-fill" aria-hidden="true"></i><span class="visually-hidden">Subscribed</span>
+                </span>
                 {% endif %}
             </div>
-
-            <!-- Content -->
-            <div class="release-content">
-                <h3 class="release-title text-truncate" title="{{ issue.series.name }}">
-                    {{ issue.series.name }}
-                </h3>
-                <div class="release-meta">
-                    <span class="issue-number">
-                        {% if issue.number %}#{{ issue.number }}{% endif %}
-                        {% if issue.series.volume %} <span class="text-muted">Vol. {{ issue.series.volume }}</span>{%
-                        endif %} |
-                        <i class="bi bi-calendar-event me-1"></i>{{ issue.cover_date }}
-                    </span>
+            <div class="item-info">
+                <div class="item-details text-truncate">
+                    <div class="item-name text-truncate" title="{{ issue.series.name }}">{{ issue.series.name }}</div>
+                    <div class="item-meta text-truncate">
+                        {%- if issue.series.volume %}Vol. {{ issue.series.volume }} &middot; {% endif %}{{ issue.cover_date }}
+                    </div>
                 </div>
             </div>
         </a>
@@ -181,316 +179,62 @@
         </div>
     </div>
     {% elif not error %}
-    {% call empty_state('No releases this week', 'Check back later or browse other weeks.', 'bi-calendar-x') %}
-        <a href="{{ url_for('series.releases', date=prev_date) }}" class="btn btn-outline-secondary week-nav">
-            <i class="bi bi-chevron-left me-1" aria-hidden="true"></i>Previous week
-        </a>
-        <a href="{{ url_for('series.releases', date=next_date) }}" class="btn btn-outline-secondary week-nav">
-            Next week<i class="bi bi-chevron-right ms-1" aria-hidden="true"></i>
-        </a>
-    {% endcall %}
+    {{ empty_state('No releases this week', 'Nothing is listed for this week. Try the week before or after.', 'bi-calendar-x') }}
     {% endif %}
 </div>
 
 <style>
-    .releases-grid {
-        display: grid;
+    /* Releases are browsed for their covers, so they get bigger ones than a
+       library folder: 200px columns at any page width (Auto, Wide or
+       Constrained), two columns on a phone. */
+    .file-grid.releases-grid {
         grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-        gap: 1.5rem;
-        padding: 1rem 0;
     }
 
-    .release-filters {
-        display: flex;
-        flex-direction: column;
-        gap: 0.6rem;
+    @media (max-width: 480px) {
+        .file-grid.releases-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
 
-    /* The groups are d-flex, which beats the bare [hidden] rule. */
-    .filter-group[hidden] {
-        display: none !important;
-    }
-
-    .filter-label {
-        min-width: 8rem;
-    }
-
-    .publisher-pill {
-        border-radius: 999px;
-        font-size: 0.85rem;
-        padding: 0.25rem 0.85rem;
-        white-space: nowrap;
-    }
-
-    .publisher-pill .badge {
-        font-size: 0.7rem;
-        margin-left: 0.35rem;
-        opacity: 0.85;
-    }
-
-    .release-card {
-        position: relative;
-        border-radius: 12px;
-        background-color: var(--bs-card-bg);
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-        transition: all 0.3s ease;
-        cursor: pointer;
-        text-decoration: none;
-        color: inherit;
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-    }
-
-    .release-card:hover {
-        transform: translateY(-8px);
-        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
-        color: inherit;
-    }
-
-    .release-card.tracked {
-        border: 2px solid var(--bs-success);
-        box-shadow: 0 4px 15px rgba(25, 135, 84, 0.2);
-    }
-
-    .release-card.tracked:hover {
-        box-shadow: 0 12px 30px rgba(25, 135, 84, 0.3);
-    }
-
-    .ribbon-wrapper {
-        width: 110px;
-        height: 110px;
-        overflow: hidden;
-        position: absolute;
-        top: -3px;
-        right: -3px;
-        z-index: 5;
-    }
-
-    .ribbon {
-        font-family: var(--bs-body-font-family);
-        font-weight: bold;
-        color: #fff;
-        text-align: center;
-        transform: rotate(45deg);
-        position: relative;
-        padding: 10px 0;
-        left: -30px;
-        top: 25px;
-        width: 200px;
-        background-color: var(--bs-success);
-        box-shadow: 0px 0px 3px rgba(0, 0, 0, 0.3);
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-
-    .ribbon::before,
-    .ribbon::after {
-        content: "";
-        border-top: 3px solid #0e5b26;
-        /* Darker shade of success green for depth */
-        border-left: 3px solid transparent;
-        border-right: 3px solid transparent;
-        position: absolute;
-        bottom: -3px;
-    }
-
-    .ribbon::before {
-        left: 0;
-    }
-
-    .ribbon::after {
-        right: 0;
-    }
-
-    .release-cover {
-        position: relative;
-        width: 100%;
-        aspect-ratio: 2/3;
-        overflow: hidden;
-        /* Important for ribbon containment if we want it clipped to card, but card handles it */
-        /* To make ribbon sit on top of image but clipped by card corners */
-        background: linear-gradient(135deg, var(--bs-gray-200) 0%, var(--bs-gray-300) 100%);
-    }
-
-    .release-cover img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        transition: transform 0.3s ease;
-    }
-
-    .release-card:hover .release-cover img {
-        transform: scale(1.05);
-    }
-
-    .no-cover-placeholder {
-        width: 100%;
-        height: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: linear-gradient(135deg, var(--bs-gray-700) 0%, var(--bs-gray-800) 100%);
-        color: var(--bs-gray-500);
-    }
-
-    .no-cover-placeholder i {
-        font-size: 4rem;
-        opacity: 0.5;
-    }
-
-    .release-content {
-        padding: 1rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-    }
-
-    .release-title {
-        font-size: 1rem;
-        font-weight: 600;
-        margin: 0;
-        line-height: 1.3;
-    }
-
-    .release-meta {
-        font-size: 0.9rem;
-    }
-
-    .issue-number {
-        font-weight: 500;
-        color: var(--bs-primary);
-    }
-
-    .release-date {
-        font-size: 0.8rem;
-        color: var(--bs-secondary);
-    }
-
-    .series-content {
-        padding: 0.5rem 1rem 1rem;
-        border-top: 1px solid rgba(128, 128, 128, 0.1);
-    }
-
-    .series-info {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        font-size: 0.75rem;
-        color: var(--bs-secondary);
-    }
-
-    .series-link {
-        color: var(--bs-primary);
-        text-decoration: none;
-        opacity: 0.8;
-    }
-
-    .series-link:hover {
+    /* A release with no cover art: the shared empty frame with a muted icon. */
+    .release-no-cover {
         opacity: 1;
-        text-decoration: underline;
+        background-color: var(--bs-secondary-bg);
     }
 
-    .series-year {
-        opacity: 0.7;
-        margin-top: 0.25rem;
+    .release-no-cover i {
+        font-size: 3rem;
+        color: var(--bs-secondary-color);
     }
 
-    /* Animations */
-    @keyframes slideUpFade {
-        from {
-            opacity: 0;
-            transform: translateY(20px);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
+    /* Subscribed sticker: bottom left, 8px in, like the other cover stickers.
+       Fixed Cover Scrim + white ink (DESIGN.md Sticker Exception) so it reads
+       on any artwork; deliberately not Missing-Tag Red or Favourite Amber. */
+    .release-subscribed {
+        position: absolute;
+        bottom: 8px;
+        left: 8px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-size: 0.7rem;
+        font-weight: 700;
+        line-height: 1.5;
+        z-index: 10;
     }
 
-    .stagger-load {
-        animation: slideUpFade 0.4s ease backwards;
-    }
-
-    .stagger-load:nth-child(1) {
-        animation-delay: 0.05s;
-    }
-
-    .stagger-load:nth-child(2) {
-        animation-delay: 0.1s;
-    }
-
-    .stagger-load:nth-child(3) {
-        animation-delay: 0.15s;
-    }
-
-    .stagger-load:nth-child(4) {
-        animation-delay: 0.2s;
-    }
-
-    .stagger-load:nth-child(5) {
-        animation-delay: 0.25s;
-    }
-
-    .stagger-load:nth-child(6) {
-        animation-delay: 0.3s;
-    }
-
-    .stagger-load:nth-child(7) {
-        animation-delay: 0.35s;
-    }
-
-    .stagger-load:nth-child(8) {
-        animation-delay: 0.4s;
-    }
-
-    .stagger-load:nth-child(9) {
-        animation-delay: 0.45s;
-    }
-
-    .stagger-load:nth-child(10) {
-        animation-delay: 0.5s;
-    }
-
-    .stagger-load:nth-child(n+11) {
-        animation-delay: 0.5s;
-    }
-
-    .fade-in-down {
-        animation: fadeInDown 0.3s ease-out;
-    }
-
-    @keyframes fadeInDown {
-        from {
-            opacity: 0;
-            transform: translateY(-10px);
-        }
-
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-
-    .fade-in-up {
-        animation: slideUpFade 0.5s ease-out;
-    }
-
-    /* Loading overlay */
+    /* Shown while an issue page is loading after a click. */
     .release-card .loading-overlay {
         position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        inset: 0;
         background: rgba(0, 0, 0, 0.6);
         display: none;
         align-items: center;
         justify-content: center;
-        z-index: 10;
-        border-radius: 12px;
+        z-index: 11;
+        border-radius: 8px;
     }
 
     .release-card.loading .loading-overlay {
@@ -705,15 +449,22 @@
         const selected = {};
         FILTERS.forEach(function (f) { selected[f.key] = params.get(f.param) || ''; });
 
-        // Does `el` pass every active filter, ignoring the one named `skip`?
-        // Skipping lets each group count against the others' selections.
+        // The search box narrows by series name, on top of every group (so the
+        // pills count what the search left). It is ?q= in the URL.
+        const searchEl = document.getElementById('releasesSearch');
+        let query = (params.get('q') || '').trim();
+
+        // Does `el` pass the search and every active filter, ignoring the one
+        // named `skip`? Skipping lets each group count against the others.
         function matches(el, skip) {
+            if (query && (el.dataset.title || '').indexOf(query.toLowerCase()) === -1) return false;
             return FILTERS.every(function (f) {
                 return f.key === skip || !selected[f.key] || f.valueOf(el) === selected[f.key];
             });
         }
 
         const noMatchEl = document.getElementById('releases-no-match');
+        const countEl = document.getElementById('releases-count');
         // True until the publisher poll's last answer: a publisher named in the
         // URL (e.g. carried over from the previous week) may simply not be in
         // the map yet, so it must not be cleared or reported as "no match".
@@ -728,10 +479,28 @@
             });
             rows.forEach(function (el) { el.classList.toggle('d-none', !matches(el)); });
             const waiting = warming && selected.publisher;
-            if (noMatchEl) noMatchEl.classList.toggle('d-none', shown > 0 || !!waiting);
+            if (noMatchEl) {
+                const none = shown === 0 && !waiting;
+                if (none) {
+                    // Reworded for the search: "No releases match “bat”".
+                    const filtered = FILTERS.some(function (f) { return selected[f.key]; });
+                    const fresh = CLU.noMatches({
+                        noun: 'releases', query: query, filtered: filtered || !query,
+                        onClear: clearAll
+                    });
+                    noMatchEl.replaceChildren.apply(noMatchEl, Array.from(fresh.childNodes));
+                }
+                noMatchEl.style.display = none ? '' : 'none';
+            }
+            if (countEl) {
+                CLU.setCount(countEl, {
+                    total: cards.length, noun: 'releases', one: 'release', shown: shown
+                });
+            }
         }
 
         function filterQuery(url) {
+            if (query) url.searchParams.set('q', query); else url.searchParams.delete('q');
             FILTERS.forEach(function (f) {
                 if (selected[f.key]) {
                     url.searchParams.set(f.param, selected[f.key]);
@@ -749,23 +518,6 @@
             document.querySelectorAll('a.week-nav').forEach(function (a) {
                 a.href = filterQuery(new URL(a.href, window.location.href)).toString();
             });
-        }
-
-        function pill(label, count, active, onClick) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-sm publisher-pill '
-                + (active ? 'btn-primary' : 'btn-outline-secondary');
-            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-            btn.textContent = label;
-            // A pill that would empty the page stays visible but inert.
-            btn.disabled = !active && count === 0;
-            const badge = document.createElement('span');
-            badge.className = 'badge ' + (active ? 'text-bg-light' : 'text-bg-secondary');
-            badge.textContent = count;
-            btn.appendChild(badge);
-            btn.addEventListener('click', onClick);
-            return btn;
         }
 
         function render() {
@@ -786,7 +538,7 @@
             FILTERS.forEach(function (f) {
                 const group = document.querySelector('[data-filter-group="' + f.key + '"]');
                 if (!group) return;
-                const pillsEl = group.querySelector('.filter-pills');
+                const pillsEl = group.querySelector('[role="group"]');
                 const options = optionsByKey[f.key];
 
                 if (f.key === 'publisher') {
@@ -801,18 +553,29 @@
                     counts.set(v, (counts.get(v) || 0) + 1);
                 });
 
-                pillsEl.innerHTML = '';
-                if (!options.length) return;
-                [{ value: '', label: 'All' }].concat(options).forEach(function (opt) {
+                if (!options.length) {
+                    pillsEl.innerHTML = '';
+                    return;
+                }
+                // A button that would empty the page stays visible but inert.
+                CLU.renderFilterOptions(pillsEl, [{ value: '', label: 'All' }].concat(options).map(function (opt) {
                     const count = opt.value ? (counts.get(opt.value) || 0) : pool.length;
-                    const active = opt.value === selected[f.key];
-                    pillsEl.appendChild(pill(opt.label, count, active, function () {
-                        selected[f.key] = active ? '' : opt.value;
-                        update();
-                    }));
-                });
+                    return { value: opt.value, label: opt.label, count: count, disabled: count === 0 };
+                }), selected[f.key]);
             });
         }
+
+        // A second click on the selected button goes back to All.
+        FILTERS.forEach(function (f) {
+            const group = document.querySelector('[data-filter-group="' + f.key + '"] [role="group"]');
+            CLU.filterBar(group, {
+                toggleOff: true,
+                onChange: function (value) {
+                    selected[f.key] = value;
+                    update();
+                }
+            });
+        });
 
         function update() {
             syncUrl();
@@ -820,12 +583,19 @@
             applyFilter();
         }
 
+        // "Clear filters" resets the pills and the search; "Clear search"
+        // (a search with no pill on) is the same thing.
+        function clearAll() {
+            FILTERS.forEach(function (f) { selected[f.key] = ''; });
+            query = '';
+            if (searchEl) searchEl.value = '';
+            update();
+        }
         const clearBtn = document.getElementById('clear-filters');
-        if (clearBtn) {
-            clearBtn.addEventListener('click', function () {
-                FILTERS.forEach(function (f) { selected[f.key] = ''; });
-                update();
-            });
+        if (clearBtn) clearBtn.addEventListener('click', clearAll);
+
+        if (searchEl) {
+            CLU.bindSearch(searchEl, function (v) { query = v; update(); }, { delay: 0 });
         }
 
         update();
@@ -874,7 +644,7 @@
             const overlay = document.createElement('div');
             overlay.className = 'loading-overlay';
             overlay.innerHTML = '<div class="spinner-border text-light" role="status"><span class="visually-hidden">Loading...</span></div>';
-            card.appendChild(overlay);
+            (card.querySelector('.thumbnail-container') || card).appendChild(overlay);
 
             // Show loading on click
             card.addEventListener('click', function (e) {

@@ -446,7 +446,7 @@
                 </table>
             </div>
         </div>
-        <div class="card-footer bg-white d-flex justify-content-between align-items-center py-3 px-4">
+        <div class="card-footer bg-body d-flex justify-content-between align-items-center py-3 px-4">
             {% if mapped_path and issue_status %}
             {% set found_count = issue_status.values()|selectattr('found')|list|length %}
             {% set manual_count = manual_status|length if manual_status else 0 %}
@@ -577,12 +577,12 @@
                         <p class="mb-0"><strong>Please select the correct series from the GCD database:</strong></p>
                         <div class="btn-group" role="group" aria-label="Sort options">
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="sortBySeries"
-                                onclick="sortGCDSeries('series')">
-                                <i class="bi bi-sort-alpha-down me-1"></i>Series
+                                data-value="series" aria-pressed="false" onclick="sortGCDSeries('series')">
+                                <i class="bi bi-sort-alpha-down me-1" aria-hidden="true"></i>Series
                             </button>
                             <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByYear"
-                                onclick="sortGCDSeries('year')">
-                                <i class="bi bi-sort-numeric-down me-1"></i>Year
+                                data-value="year" aria-pressed="false" onclick="sortGCDSeries('year')">
+                                <i class="bi bi-sort-numeric-down me-1" aria-hidden="true"></i>Year
                             </button>
                         </div>
                     </div>
@@ -796,8 +796,8 @@
                 </div>
                 <!-- Filter buttons -->
                 <div id="directory-filter" class="mb-2">
-                    <div class="btn-group d-flex flex-wrap gap-1" role="group" aria-label="Directory Filter">
-                        <!-- Dynamically inserted buttons go here -->
+                    <div class="clu-letter-bar clu-filter-scroll" role="group" aria-label="Directory Filter">
+                        <!-- CLU.letterBar draws the buttons (series.js updateFilterBar) -->
                     </div>
                 </div>
                 <p id="current-path-display" class="fw-bold text-primary mb-2">/data</p>
@@ -869,7 +869,7 @@
             <div class="modal-body">
                 <div class="mb-3">
                     <div class="input-group">
-                        <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
+                        <input type="text" class="form-control" id="getcomicsQuery" aria-label="Search GetComics" placeholder="Search GetComics…"
                             onkeypress="if(event.key==='Enter')doGetComicsSearch()">
                         <button aria-label="Search GetComics" title="Search GetComics" class="btn btn-primary" onclick="doGetComicsSearch()">
                             <i class="bi bi-search"></i>

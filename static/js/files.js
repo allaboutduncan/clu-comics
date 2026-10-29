@@ -260,6 +260,35 @@ function appendEmptyListing(container, title, message, icon) {
   container.appendChild(li);
 }
 
+// A letter or a search hid every entry: the shared no-matches state, compact,
+// in a list row. "Clear filters" also resets the letter; "Clear search" only
+// the panel's search box.
+function appendNoMatchesListing(container, panel, letterOn) {
+  const query = panelSearch[panel];
+  const li = document.createElement('li');
+  li.className = 'list-group-item files-empty-listing';
+  li.appendChild(CLU.noMatches({
+    noun: 'folders', query: query, filtered: letterOn, compact: true,
+    onClear: () => clearDirectoryNarrowing(panel, letterOn),
+  }));
+  container.appendChild(li);
+}
+
+function clearDirectoryNarrowing(panel, clearLetter) {
+  const data = panel === 'source' ? sourceDirectoriesData : destinationDirectoriesData;
+  if (clearLetter) {
+    currentFilter[panel] = 'all';
+    if (data) updateFilterBar(panel, data.directories, data.files);
+  }
+  const box = document.getElementById(panel + '-directory-search');
+  if (box) {
+    box.value = '';
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  panelSearch[panel] = '';
+  if (data) renderDirectoryListing(data, panel);
+}
+
 function createDropTargetItem(container, currentPath, panel) {
   let dropTargetItem = document.createElement("li");
   dropTargetItem.className = "list-group-item text-center drop-target-item";
@@ -1333,104 +1362,79 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
   return li;
 }
 
-// Function to dynamically build the filter bar.
-function updateFilterBar(panel, directories) {
+// First letters present in a folder listing: 'A'..'Z', or '#' for the rest.
+function directoryLetters(directories) {
+  const letters = new Set();
+  (Array.isArray(directories) ? directories : []).forEach(dir => {
+    const firstChar = dir.charAt(0).toUpperCase();
+    letters.add(firstChar >= 'A' && firstChar <= 'Z' ? firstChar : '#');
+  });
+  return letters;
+}
+
+// Draw a panel's A-Z bar. A second click on the selected letter goes back
+// to All (CLU.letterBar); the list is filtered here, in the browser.
+function updateFilterBar(panel, directories, files) {
   const outerContainer = document.getElementById(`${panel}-directory-filter`);
   if (!outerContainer) return;
-  const btnGroup = outerContainer.querySelector('.btn-group');
-  if (!btnGroup) return;
+  const bar = outerContainer.querySelector('.clu-letter-bar');
+  if (!bar) return;
 
-  // Handle undefined or null directories - provide empty array as fallback
-  if (!directories) {
-    directories = [];
-  }
   if (!Array.isArray(directories)) {
-    console.warn("directories is not an array in updateFilterBar:", directories);
+    if (directories) console.warn("directories is not an array in updateFilterBar:", directories);
     directories = [];
   }
 
-  let availableLetters = new Set();
-  let hasNonAlpha = false;
-
-  directories.forEach(dir => {
-    const firstChar = dir.charAt(0).toUpperCase();
-    if (firstChar >= 'A' && firstChar <= 'Z') {
-      availableLetters.add(firstChar);
-    } else {
-      hasNonAlpha = true;
+  CLU.letterBar(bar, {
+    letters: Array.from(directoryLetters(directories)),
+    active: currentFilter[panel] === 'all' ? '' : currentFilter[panel],
+    onChange: value => {
+      currentFilter[panel] = value || 'all';
+      const data = panel === 'source' ? sourceDirectoriesData : destinationDirectoriesData;
+      if (data) renderDirectoryListing(data, panel);
     }
   });
 
-  let buttonsHtml = '';
-  buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter[panel] === 'all' ? 'active' : ''}" onclick="filterDirectories('all', '${panel}')">All</button>`;
-
-  if (hasNonAlpha) {
-    buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter[panel] === '#' ? 'active' : ''}" onclick="filterDirectories('#', '${panel}')">#</button>`;
-  }
-
-  for (let i = 65; i <= 90; i++) {
-    const letter = String.fromCharCode(i);
-    if (availableLetters.has(letter)) {
-      buttonsHtml += `<button type="button" class="btn btn-outline-secondary ${currentFilter[panel] === letter ? 'active' : ''}" onclick="filterDirectories('${letter}', '${panel}')">${letter}</button>`;
-    }
-  }
-  btnGroup.innerHTML = buttonsHtml;
-  // --- SEARCH BOX LOGIC (destination only, >25 dirs) ---
-  if (panel === 'destination') {
-    const searchRow = document.getElementById('destination-directory-search-row');
-    if (directories.length > 25) {
-      searchRow.innerHTML = `<input type="text" id="destination-directory-search" class="form-control mb-2" placeholder="Type to filter directories..." oninput="onDestinationDirectorySearch(this.value)">`;
-    } else {
-      searchRow.innerHTML = '';
-    }
+  // --- SEARCH BOX (both panels, once a folder holds more than a screenful) ---
+  // It stays while a search is on, so a search that hides everything can
+  // still be cleared from the box.
+  const searchRow = document.getElementById(panel + '-directory-search-row');
+  if (!searchRow) return;
+  const entries = directories.length + (Array.isArray(files) ? files.length : 0);
+  if (entries > 12 || panelSearch[panel]) {
+    const box = CLU.searchInput({
+      id: panel + '-directory-search',
+      label: 'Search files and folders',
+      value: panelSearch[panel],
+    });
+    box.classList.add('mb-2');
+    searchRow.replaceChildren(box);
+    CLU.bindSearch(box.querySelector('input'), val => onPanelSearch(panel, val), { delay: 0 });
+  } else {
+    searchRow.innerHTML = '';
   }
 }
 
 // Function to restore filter from history if valid for the given path
 function restoreFilterIfValid(panel, path, directories) {
-  if (!filterHistory[panel][path]) {
-    return; // No saved filter for this path
-  }
-
   const savedFilter = filterHistory[panel][path];
+  if (!savedFilter || savedFilter === 'all') return;
 
-  // Build set of available letters from current directories
-  const availableLetters = new Set();
-  let hasNonAlpha = false;
-
-  if (directories && Array.isArray(directories)) {
-    directories.forEach(dir => {
-      const firstChar = dir.charAt(0).toUpperCase();
-      if (firstChar >= 'A' && firstChar <= 'Z') {
-        availableLetters.add(firstChar);
-      } else {
-        hasNonAlpha = true;
-      }
-    });
-  }
-
-  // Only restore if the saved filter is still valid
-  let shouldRestore = false;
-  if (savedFilter === '#' && hasNonAlpha) {
-    shouldRestore = true;
-  } else if (savedFilter !== '#' && savedFilter !== 'all' && availableLetters.has(savedFilter)) {
-    shouldRestore = true;
-  }
-
-  if (shouldRestore) {
+  // Only restore if the saved letter is still in this folder
+  if (directoryLetters(directories).has(savedFilter)) {
     currentFilter[panel] = savedFilter;
-    // Re-run updateFilterBar to reflect the restored filter in button states
-    updateFilterBar(panel, directories);
+    // Redraw the bar to reflect the restored filter
+    const data = panel === 'source' ? sourceDirectoriesData : destinationDirectoriesData;
+    updateFilterBar(panel, directories, data && data.files);
   }
 }
 
-// --- SEARCH STATE FOR DESTINATION PANEL ---
-let destinationSearchTerm = '';
-function onDestinationDirectorySearch(val) {
-  destinationSearchTerm = val.trim().toLowerCase();
-  if (destinationDirectoriesData) {
-    renderDirectoryListing(destinationDirectoriesData, 'destination');
-  }
+// --- SEARCH STATE, ONE PER PANEL (cleared on navigation) ---
+const panelSearch = { source: '', destination: '' };
+function onPanelSearch(panel, val) {
+  panelSearch[panel] = val.trim();
+  const data = panel === 'source' ? sourceDirectoriesData : destinationDirectoriesData;
+  if (data) renderDirectoryListing(data, panel);
 }
 
 // Save scroll position before navigating away
@@ -1513,7 +1517,9 @@ function loadDirectories(path, panel) {
         resetFileTracking(panel, data.current_path);
         updateBreadcrumb('source', data.current_path);
         sourceDirectoriesData = data;
-        updateFilterBar('source', data.directories);
+        // Reset the search on navigation (updateFilterBar redraws its box)
+        panelSearch.source = '';
+        updateFilterBar('source', data.directories, data.files);
 
         // Restore filter if previously set for this path
         restoreFilterIfValid('source', data.current_path, data.directories);
@@ -1527,11 +1533,9 @@ function loadDirectories(path, panel) {
         resetFileTracking(panel, data.current_path);
         updateBreadcrumb('destination', data.current_path);
         destinationDirectoriesData = data;
-        // Reset search filter and input on navigation
-        destinationSearchTerm = '';
-        const searchInput = document.getElementById('destination-directory-search');
-        if (searchInput) searchInput.value = '';
-        updateFilterBar('destination', data.directories);
+        // Reset the search on navigation (updateFilterBar redraws its box)
+        panelSearch.destination = '';
+        updateFilterBar('destination', data.directories, data.files);
 
         // Restore filter if previously set for this path
         restoreFilterIfValid('destination', data.current_path, data.directories);
@@ -1573,12 +1577,9 @@ function renderDirectoryListing(data, panel) {
   }
 
   let filter = currentFilter[panel];
+  const term = panelSearch[panel].toLowerCase();
   let directoriesToShow = data.directories.filter(dir => {
-    // --- SEARCH FILTER FOR DESTINATION PANEL ---
-    if (panel === 'destination' && destinationSearchTerm) {
-      if (!dir.toLowerCase().includes(destinationSearchTerm)) return false;
-    }
-    // --- END SEARCH FILTER ---
+    if (term && !dir.toLowerCase().includes(term)) return false;
     if (filter === 'all') return true;
     if (filter === '#') return !/^[A-Za-z]/.test(dir.charAt(0));
     return dir.charAt(0).toUpperCase() === filter;
@@ -1590,6 +1591,7 @@ function renderDirectoryListing(data, panel) {
     container.appendChild(item);
   });
 
+  let filesShown = 0;
   if (filter === 'all') {
     // Handle undefined or null files - provide empty array as fallback
     if (!data.files) {
@@ -1602,6 +1604,8 @@ function renderDirectoryListing(data, panel) {
 
     data.files.forEach(file => {
       const fileData = normalizeFile(file);
+      if (term && !String(fileData.name).toLowerCase().includes(term)) return;
+      filesShown++;
       const fullPath = data.current_path + "/" + fileData.name;
       let fileItem = createListItem(fileData, fullPath, "file", panel, true);
       container.appendChild(fileItem);
@@ -1616,41 +1620,9 @@ function renderDirectoryListing(data, panel) {
     appendEmptyListing(container, 'This folder is empty');
   } else if (directoriesToShow.length === 0 && filter !== 'all') {
     // Only folders are filtered; files are hidden while a letter is picked.
-    appendEmptyListing(container,
-      filter === '#' ? 'No folders starting with a number or symbol' : `No folders starting with ${filter}`,
-      'Choose All to see everything in this folder.', 'bi-funnel');
-  } else if (panel === 'destination' && directoriesToShow.length === 0 && destinationSearchTerm &&
-    (!data.files || data.files.length === 0 || filter !== 'all')) {
-    appendEmptyListing(container, 'No folders match your search', null, 'bi-search');
-  }
-}
-
-// Function to filter directories based on the selected letter.
-function filterDirectories(letter, panel) {
-  if (currentFilter[panel] === letter) {
-    currentFilter[panel] = 'all';
-  } else {
-    currentFilter[panel] = letter;
-  }
-  let filterContainer = document.getElementById(panel + "-directory-filter");
-  if (filterContainer) {
-    let btnGroup = filterContainer.querySelector('.btn-group');
-    if (btnGroup) {
-      let buttons = btnGroup.querySelectorAll("button");
-      buttons.forEach(btn => {
-        let btnText = btn.textContent.trim();
-        if ((currentFilter[panel] === 'all' && btnText === 'All') || btnText === currentFilter[panel]) {
-          btn.classList.add("active");
-        } else {
-          btn.classList.remove("active");
-        }
-      });
-    }
-  }
-  if (panel === 'source' && sourceDirectoriesData) {
-    renderDirectoryListing(sourceDirectoriesData, panel);
-  } else if (panel === 'destination' && destinationDirectoriesData) {
-    renderDirectoryListing(destinationDirectoriesData, panel);
+    appendNoMatchesListing(container, panel, true);
+  } else if (term && directoriesToShow.length === 0 && filesShown === 0) {
+    appendNoMatchesListing(container, panel, false);
   }
 }
 
@@ -1669,6 +1641,11 @@ function loadDownloads(path, panel) {
   if (filterBar) {
     filterBar.style.display = 'block';
   }
+  // The search box filters a library folder's listing; Downloads lists
+  // something else, so it goes until the panel is back on a folder.
+  panelSearch[panel] = '';
+  const downloadsSearchRow = document.getElementById(panel + '-directory-search-row');
+  if (downloadsSearchRow) downloadsSearchRow.innerHTML = '';
 
   window.scrollTo({ top: 0, behavior: "smooth" });
   let container = panel === 'source' ? document.getElementById("source-list")
@@ -3884,14 +3861,19 @@ function displaySearchResults(results, query) {
 
   // Always show the results container with the search term
   resultsDiv.style.display = 'block';
+  CLU.setCount(document.getElementById('searchResultsCount'),
+    { total: results.length, noun: 'results', one: 'result' });
 
   if (results.length === 0) {
-    resultsContainer.innerHTML = `
-          <div class="text-center text-muted p-3">
-            <i class="bi bi-search me-2"></i>
-            No results found for "${query}"
-          </div>
-        `;
+    // The search box is on the same modal, so the button just empties it.
+    resultsContainer.appendChild(CLU.noMatches({
+      noun: 'files or folders', query: query, compact: true,
+      onClear: () => {
+        const box = document.getElementById('searchQuery');
+        if (box) { box.value = ''; box.focus(); }
+        resultsDiv.style.display = 'none';
+      },
+    }));
   } else {
     results.forEach(item => {
       const resultItem = document.createElement('div');
@@ -4132,78 +4114,6 @@ function searchGCDMetadata(filePath, fileName) {
     });
 }
 
-
-// Function to sort GCD series results
-function sortGCDSeries(sortBy) {
-  // Update button states
-  document.querySelectorAll('#sortBySeries, #sortByYear').forEach(btn => {
-    btn.classList.remove('btn-secondary');
-    btn.classList.add('btn-outline-secondary');
-  });
-
-  const activeButton = sortBy === 'series' ? document.getElementById('sortBySeries') : document.getElementById('sortByYear');
-  activeButton.classList.remove('btn-outline-secondary');
-  activeButton.classList.add('btn-secondary');
-
-  // Sort the data
-  let sortedData = [...currentSeriesData];
-
-  if (sortBy === 'series') {
-    sortedData.sort((a, b) => a.name.localeCompare(b.name));
-  } else if (sortBy === 'year') {
-    sortedData.sort((a, b) => {
-      const yearA = a.year_began || 9999; // Put unknown years at the end
-      const yearB = b.year_began || 9999;
-      return yearA - yearB;
-    });
-  }
-
-  // Re-render the series list - detect if this is directory mode or single file mode
-  if (Array.isArray(currentIssueNumber)) {
-    // Directory mode - currentIssueNumber contains the comicFiles array
-    renderDirectorySeriesList(sortedData, currentFilePath, currentFileName, currentIssueNumber);
-  } else {
-    // Single file mode - currentIssueNumber is a number
-    renderSeriesList(sortedData);
-  }
-}
-
-// Function to render the series list
-function renderSeriesList(seriesData) {
-  const seriesList = document.getElementById('gcdSeriesList');
-  seriesList.innerHTML = '';
-
-  seriesData.forEach(series => {
-    const seriesItem = document.createElement('div');
-    seriesItem.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-start';
-    seriesItem.style.cursor = 'pointer';
-
-    const yearRange = series.year_began
-      ? (series.year_ended ? `${series.year_began}-${series.year_ended}` : `${series.year_began}-ongoing`)
-      : 'Unknown';
-
-    seriesItem.innerHTML = `
-          <div class="ms-2 me-auto">
-            <div class="fw-bold">${series.name}</div>
-            <small class="text-muted">Publisher: ${series.publisher_name || 'Unknown'}<br>Issue Count: ${series.issue_count || 'Unknown'}</small>
-          </div>
-          <span class="badge bg-primary rounded-pill">${yearRange}</span>
-        `;
-
-    seriesItem.addEventListener('click', () => {
-      // Highlight selected item
-      seriesList.querySelectorAll('.list-group-item').forEach(item => {
-        item.classList.remove('active');
-      });
-      seriesItem.classList.add('active');
-
-      // Call the backend with the selected series
-      selectGCDSeries(currentFilePath, currentFileName, series.id, currentIssueNumber);
-    });
-
-    seriesList.appendChild(seriesItem);
-  });
-}
 
 // Function to search GCD for all comics in a directory
 function searchGCDMetadataForDirectory(directoryPath, directoryName) {
@@ -4629,10 +4539,7 @@ function showGCDDirectorySeriesSelectionModal(data, directoryPath, directoryName
   currentIssueNumber = comicFiles;
 
   // Reset sort buttons
-  document.querySelectorAll('#sortBySeries, #sortByYear').forEach(btn => {
-    btn.classList.remove('btn-secondary');
-    btn.classList.add('btn-outline-secondary');
-  });
+  markGCDSort('');
 
   // Render the series list with initial order (directory mode)
   renderDirectorySeriesList(currentSeriesData, directoryPath, directoryName, comicFiles);
@@ -4968,10 +4875,7 @@ function showGCDSeriesSelectionModal(data, filePath, fileName, skipProviders) {
   currentIssueNumber = data.parsed_filename.issue_number;
 
   // Reset sort buttons
-  document.querySelectorAll('#sortBySeries, #sortByYear').forEach(btn => {
-    btn.classList.remove('btn-secondary');
-    btn.classList.add('btn-outline-secondary');
-  });
+  markGCDSort('');
 
   // Render the series list with initial order
   renderSeriesList(currentSeriesData);
@@ -5050,17 +4954,19 @@ function selectGCDSeries(filePath, fileName, seriesId, issueNumber) {
 }
 
 
+// Mark the GCD sort buttons (#sortBySeries / #sortByYear, data-value);
+// '' clears both, which is how the modal opens.
+function markGCDSort(sortBy) {
+  document.querySelectorAll('#sortBySeries, #sortByYear').forEach(btn => {
+    const on = btn.getAttribute('data-value') === sortBy;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
 // Function to sort GCD series results
 function sortGCDSeries(sortBy) {
-  // Update button states
-  document.querySelectorAll('#sortBySeries, #sortByYear').forEach(btn => {
-    btn.classList.remove('btn-secondary');
-    btn.classList.add('btn-outline-secondary');
-  });
-
-  const activeButton = sortBy === 'series' ? document.getElementById('sortBySeries') : document.getElementById('sortByYear');
-  activeButton.classList.remove('btn-outline-secondary');
-  activeButton.classList.add('btn-secondary');
+  markGCDSort(sortBy);
 
   // Sort the data
   let sortedData = [...currentSeriesData];
@@ -5461,7 +5367,7 @@ function showGCDApiSeriesSelectionModal(data, filePath, fileName) {
 
   // Add language filter if multiple languages present
   if (Object.keys(langSet).length > 1) {
-    const filterContainer = document.getElementById('cvFilterInput');
+    const filterContainer = document.getElementById('cvFilterWrap') || document.getElementById('cvFilterInput');
     if (filterContainer && filterContainer.parentNode) {
       const selectEl = document.createElement('select');
       selectEl.id = 'gcdApiLangFilterFiles';

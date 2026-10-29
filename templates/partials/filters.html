@@ -1,0 +1,168 @@
+{#
+  The list toolbar's controls: one look and one behaviour on every screen.
+
+    {% from 'partials/filters.html' import toolbar, filter_bar, letter_bar,
+           search_input, select_field, per_page_select, result_count, pager_nav %}
+
+  filter_bar(id, options, active='', label=None, icon=None, aria_label=None,
+             multi=False, toggle_off=False, classes=None)
+      A row of toggle buttons that narrows a list (status, source, tag...).
+      options: a list of dicts {value, label, icon?, icon_class?, count?,
+      disabled?} or (value, label) pairs. Put the "All" option in the list
+      yourself (value ''), so its wording stays the page's. active is the
+      selected value (or, with multi=True, a list of values; none means All).
+      toggle_off=True lets a second click on the selected button go back to
+      ''. Wire it with CLU.filterBar(el, {onChange}) from clu-filters.js;
+      CLU.renderFilterOptions draws the same buttons from a script.
+
+  letter_bar(id, letters, active='', aria_label='Filter by first letter')
+      All, then '#', then A-Z, joined as one button group. A second click on
+      the selected letter goes back to All. CLU.letterBar draws the same bar
+      from a script, which is how most screens build theirs.
+
+  search_input(id, label, value='', classes=None)
+      type="search" with an accessible name, a theme-coloured icon box
+      (bg-body: never bg-white, which is a white block on dark Bootswatch
+      themes) and Escape-to-clear. Wire it with CLU.bindSearch(el, fn).
+      label is "Search <what the box matches>" ("Search series", "Search
+      file names"); the placeholder is always the label plus an ellipsis.
+
+  result_count(id, total, noun, one=None, shown=None, first=None, last=None)
+      The toolbar's count: "4,132 series", "Showing 12 of 245 publishers"
+      (shown: a filter over rows on the page), "Showing 1–60 of 4,132 series"
+      (first/last: a paged list). one is the singular when it differs
+      ("publisher"). CLU.countText / CLU.setCount say the same from a script.
+
+  select_field(id, label, classes=None)            (a call block: the <option>s)
+      A labelled select for a toolbar row: "Publisher  All", "Sort  A-Z".
+
+  per_page_select(id, current, sizes=None)
+      select_field "Per page", offering clu_page_sizes() (helpers/paging.py)
+      unless a page passes its own.
+
+  toolbar(aria_label, id=None, classes=None)         (a call block: the rows)
+      The panel every list's controls sit in. Rows are .clu-toolbar-row:
+      search and selects first, then .clu-toolbar-end (result count, view
+      toggle, per page) pushed right; one row per filter_bar; the letter bar
+      last. Never a .card, never two panels.
+
+  pager_nav(id, aria_label, attrs=None, classes='mt-4')
+      The <nav> + .pagination that CLU.renderPageLinks / createServerPager
+      fill. Hidden until there is more than one page.
+
+  Every row scrolls sideways on a phone (.clu-filter-scroll in clu-page.css).
+  Styles: static/css/clu-page.css ("Filters"). DESIGN.md "Filters, search and
+  pagers" has the rules. tests/unit/test_shared_filters.py is the ratchet.
+#}
+
+
+{% macro filter_bar(id, options, active='', label=None, icon=None, aria_label=None, multi=False, toggle_off=False, classes=None) -%}
+{%- set selected = (active if active is not string else [active]) if multi else [active] -%}
+{%- set selected = selected if selected | reject('equalto', '') | list else [''] -%}
+<div class="clu-filter{% if classes %} {{ classes }}{% endif %}">
+  {%- if label %}
+  <span class="clu-filter-label" id="{{ id }}-label">
+    {%- if icon %}<i class="bi {{ icon }} me-1" aria-hidden="true"></i>{% endif %}{{ label }}</span>
+  {%- endif %}
+  <div class="clu-filter-options clu-filter-scroll" id="{{ id }}" role="group"
+       {%- if label %} aria-labelledby="{{ id }}-label"{% else %} aria-label="{{ aria_label or 'Filter' }}"{% endif %}
+       data-clu-filter="{{ 'multi' if multi else 'single' }}"{% if toggle_off %} data-clu-toggle-off{% endif %}>
+    {%- for opt in options %}
+    {#- The raw value, not _opt(): a macro returns escaped Markup, and Writer's
+        would then never match the active tag. #}
+    {%- set value = (opt.get('value', '') if opt is mapping else opt[0]) | string %}
+    {%- set on = value in selected %}
+    <button type="button" class="btn btn-sm btn-outline-secondary{% if on %} active{% endif %}"
+            data-value="{{ value }}" aria-pressed="{{ 'true' if on else 'false' }}"
+            {%- if opt is mapping and opt.get('disabled') and not on %} disabled{% endif %}>
+      {%- if opt is mapping and opt.get('icon') %}<i class="bi {{ opt.icon }}{% if opt.get('icon_class') %} {{ opt.icon_class }}{% endif %} me-1" aria-hidden="true"></i>{% endif -%}
+      {{ opt.get('label', '') if opt is mapping else opt[1] }}
+      {%- if opt is mapping and opt.get('count') is not none and opt.get('count') != '' %}<span class="clu-filter-count">{{ opt.count }}</span>{% endif -%}
+    </button>
+    {%- endfor %}
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro letter_bar(id, letters, active='', aria_label='Filter by first letter') -%}
+{%- set active = active if active else '' -%}
+{%- set ordered = (['#'] if '#' in letters else []) + (letters | reject('equalto', '#') | sort | list) -%}
+<div class="btn-group btn-group-sm clu-letter-bar clu-filter-scroll" id="{{ id }}" role="group"
+     aria-label="{{ aria_label }}" data-clu-filter="single" data-clu-toggle-off>
+  <button type="button" class="btn btn-outline-secondary{% if not active %} active{% endif %}" data-value=""
+          aria-pressed="{{ 'false' if active else 'true' }}">All</button>
+  {%- for letter in ordered %}
+  <button type="button" class="btn btn-outline-secondary{% if active == letter %} active{% endif %}"
+          data-value="{{ letter }}" aria-pressed="{{ 'true' if active == letter else 'false' }}">{{ letter }}</button>
+  {%- endfor %}
+</div>
+{%- endmacro %}
+
+{% macro search_input(id, label, value='', classes=None) -%}
+{#- One wording everywhere: the label names what is searched ("Search series")
+    and the placeholder is the label with an ellipsis, so what is seen and what
+    is announced never drift apart. -#}
+<div class="input-group input-group-sm clu-search{% if classes %} {{ classes }}{% endif %}">
+  <span class="input-group-text bg-body" aria-hidden="true"><i class="bi bi-search"></i></span>
+  <input type="search" class="form-control" id="{{ id }}" aria-label="{{ label }}"
+         placeholder="{{ label }}…" value="{{ value or '' }}"
+         autocomplete="off" spellcheck="false" enterkeyhint="search">
+</div>
+{%- endmacro %}
+
+{% macro count_text(total, noun, one=None, shown=None, first=None, last=None) -%}
+{#- The words of a result count; result_count wraps them in the toolbar span.
+    CLU.countText is the script twin and must read the same. -#}
+{%- set fmt = '{:,}' -%}
+{%- set name = (one or noun) if total == 1 else noun -%}
+{%- if first is not none and last is not none and total and not (first == 1 and last == total) -%}
+Showing {{ fmt.format(first) }}–{{ fmt.format(last) }} of {{ fmt.format(total) }} {{ name }}
+{%- elif shown is not none and shown != total -%}
+Showing {{ fmt.format(shown) }} of {{ fmt.format(total) }} {{ name }}
+{%- else -%}
+{{ fmt.format(total) }} {{ name }}
+{%- endif -%}
+{%- endmacro %}
+
+{% macro result_count(id, total, noun, one=None, shown=None, first=None, last=None) -%}
+<span class="clu-toolbar-count" id="{{ id }}" aria-live="polite">{{ count_text(total, noun, one, shown, first, last) }}</span>
+{%- endmacro %}
+
+{% macro select_field(id, label, classes=None) -%}
+{#- A labelled select for a toolbar row: the label sits inside the control, so
+    "Publisher  All" and "Per page  60" read the same on every screen. Call it
+    with the <option>s: {% call select_field('pubFilter', 'Publisher') %}...{% endcall %} -#}
+<div class="input-group input-group-sm flex-nowrap clu-select{% if classes %} {{ classes }}{% endif %}">
+  <label class="input-group-text" for="{{ id }}">{{ label }}</label>
+  <select class="form-select" id="{{ id }}">
+    {{- caller() -}}
+  </select>
+</div>
+{%- endmacro %}
+
+{% macro per_page_select(id, current, sizes=None) -%}
+{% call select_field(id, 'Per page', classes='clu-per-page') -%}
+    {%- for n in (sizes or clu_page_sizes()) %}
+    <option value="{{ n }}"{% if n == current %} selected{% endif %}>{{ n }}</option>
+    {%- endfor %}
+{%- endcall %}
+{%- endmacro %}
+
+{% macro toolbar(aria_label, id=None, classes=None) -%}
+{#- The one panel a list's controls sit in, between the page header and the
+    results. Fill it with rows:
+      <div class="clu-toolbar-row"> search, selects ... <div class="clu-toolbar-end">
+          count, view toggle, per page </div></div>
+      <div class="clu-toolbar-row"> filter_bar(...) </div>   one per filter
+      <div class="clu-toolbar-row"> letter_bar(...) </div>    always last -#}
+<section class="clu-toolbar{% if classes %} {{ classes }}{% endif %}"{% if id %} id="{{ id }}"{% endif %} aria-label="{{ aria_label }}">
+  {{- caller() -}}
+</section>
+{%- endmacro %}
+
+{% macro pager_nav(id, aria_label, attrs=None, classes='mt-4') -%}
+<nav id="{{ id }}" class="clu-pager{% if classes %} {{ classes }}{% endif %}" aria-label="{{ aria_label }}" style="display: none;"
+     {%- if attrs %}{{ attrs | xmlattr }}{% endif %}>
+  <ul class="pagination pagination-sm justify-content-center flex-wrap mb-0"></ul>
+</nav>
+{%- endmacro %}

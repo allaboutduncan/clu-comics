@@ -42,10 +42,6 @@
         opacity: 1;
     }
 
-    .grid-filter-buttons {
-        grid-template-columns: repeat(auto-fill, minmax(50px, 1fr));
-    }
-
     #destination-list,
     #source-list {
         /* 100vh is the full height of the screen.
@@ -389,4 +385,10 @@
 .files-source-views > *,
 .files-source-views > .dropdown > .btn {
     min-width: 0;
+}
+
+/* One line per label: a wrapped "Recent / Files" broke the joined group on a
+   phone. "Recent Files" reads "Recent" below 576px so the group fits. */
+.files-source-views .btn {
+    white-space: nowrap;
 }

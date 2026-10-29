@@ -218,6 +218,35 @@
 
   function _renderCVList(items) {
     (_cvRenderFn || _renderCVVolumeList)(items);
+    _renderCVListState(items);
+  }
+
+  // The modal's count, its search label and, when the filter hid every row,
+  // the shared no-matches state (the list is empty, not failed).
+  function _renderCVListState(items) {
+    var noun = _cvRenderFn ? 'issues' : 'volumes';
+    var one = _cvRenderFn ? 'issue' : 'volume';
+    var input = document.getElementById('cvFilterInput');
+    CLU.setSearchLabel(input, 'Search ' + noun);
+    CLU.setCount(document.getElementById('cvCount'),
+      { total: _cvVolumes.length, noun: noun, one: one, shown: items.length });
+    var list = document.getElementById('cvVolumeList');
+    if (!list || items.length || !_cvVolumes.length) return;
+    var langSel = document.getElementById('gcdApiLangFilter');
+    list.appendChild(CLU.noMatches({
+      noun: noun,
+      query: input ? input.value : '',
+      filtered: !!(_gcdApiLangFilter),
+      compact: true,
+      onClear: function () {
+        if (input) input.value = '';
+        if (_gcdApiLangFilter) {
+          _gcdApiLangFilter = '';
+          if (langSel) langSel.value = '';
+        }
+        _renderCVList((_cvFilterFn || _getFilteredVolumes)());
+      }
+    }));
   }
 
   function _renderCVVolumeList(volumes) {
@@ -300,6 +329,16 @@
     });
   }
 
+  // Selection is .active + aria-pressed; the icon shows the direction the
+  // next click sorts in.
+  function _markCVSort(btn, on, icon) {
+    if (!btn) return;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    var i = btn.querySelector('i');
+    if (i) i.className = 'bi ' + icon + ' me-1';
+  }
+
   function _wireCVSortAndFilter() {
     var nameBtn = document.getElementById('cvSortByName');
     var yearBtn = document.getElementById('cvSortByYear');
@@ -310,12 +349,8 @@
     var sortGroup = document.getElementById('cvSortGroup');
     if (sortGroup) sortGroup.style.display = '';
     if (filterInput) filterInput.value = '';
-    if (nameBtn) {
-      nameBtn.className = 'btn btn-outline-secondary btn-sm';
-    }
-    if (yearBtn) {
-      yearBtn.className = 'btn btn-outline-secondary btn-sm';
-    }
+    _markCVSort(nameBtn, false, 'bi-sort-alpha-down');
+    _markCVSort(yearBtn, false, 'bi-sort-numeric-down');
 
     // Reset sort direction
     _cvSortNameAsc = true;
@@ -330,12 +365,9 @@
         _cvVolumes.sort(function (a, b) {
           return dir * (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
         });
-        newNameBtn.className = 'btn btn-secondary btn-sm';
-        newNameBtn.querySelector('i').className = _cvSortNameAsc ? 'bi bi-sort-alpha-down me-1' : 'bi bi-sort-alpha-up me-1';
+        _markCVSort(newNameBtn, true, _cvSortNameAsc ? 'bi-sort-alpha-down' : 'bi-sort-alpha-up');
         _cvSortNameAsc = !_cvSortNameAsc;
-        var otherBtn = document.getElementById('cvSortByYear');
-        otherBtn.className = 'btn btn-outline-secondary btn-sm';
-        otherBtn.querySelector('i').className = 'bi bi-sort-numeric-down me-1';
+        _markCVSort(document.getElementById('cvSortByYear'), false, 'bi-sort-numeric-down');
         _cvSortYearAsc = true;
         _renderCVList((_cvFilterFn || _getFilteredVolumes)());
       });
@@ -348,22 +380,20 @@
         _cvVolumes.sort(function (a, b) {
           return dir * ((parseInt(a.start_year) || 0) - (parseInt(b.start_year) || 0));
         });
-        newYearBtn.className = 'btn btn-secondary btn-sm';
-        newYearBtn.querySelector('i').className = _cvSortYearAsc ? 'bi bi-sort-numeric-down me-1' : 'bi bi-sort-numeric-up me-1';
+        _markCVSort(newYearBtn, true, _cvSortYearAsc ? 'bi-sort-numeric-down' : 'bi-sort-numeric-up');
         _cvSortYearAsc = !_cvSortYearAsc;
-        var otherBtn = document.getElementById('cvSortByName');
-        otherBtn.className = 'btn btn-outline-secondary btn-sm';
-        otherBtn.querySelector('i').className = 'bi bi-sort-alpha-down me-1';
+        _markCVSort(document.getElementById('cvSortByName'), false, 'bi-sort-alpha-down');
         _cvSortNameAsc = true;
         _renderCVList((_cvFilterFn || _getFilteredVolumes)());
       });
     }
     if (filterInput) {
+      // A fresh clone per open drops the previous open's listener.
       var newFilterInput = filterInput.cloneNode(true);
       filterInput.parentNode.replaceChild(newFilterInput, filterInput);
-      newFilterInput.addEventListener('input', function () {
+      CLU.bindSearch(newFilterInput, function () {
         _renderCVList((_cvFilterFn || _getFilteredVolumes)());
-      });
+      }, { delay: 0 });
     }
   }
 
@@ -743,7 +773,7 @@
     if (existingLangFilter) existingLangFilter.parentNode.removeChild(existingLangFilter);
 
     if (Object.keys(langSet).length > 1) {
-      var filterContainer = document.getElementById('cvFilterInput');
+      var filterContainer = document.getElementById('cvFilterWrap') || document.getElementById('cvFilterInput');
       if (filterContainer && filterContainer.parentNode) {
         var selectEl = document.createElement('select');
         selectEl.id = 'gcdApiLangFilter';

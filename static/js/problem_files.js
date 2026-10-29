@@ -3,7 +3,7 @@
  *
  * DOM contract (templates/problem_files.html):
  *   #pf-tbody, #pf-summary, #pf-refresh, #pf-search, #pf-show-dismissed,
- *   #pf-source-filter [data-source], and the modals
+ *   #pf-source-filter [data-value], and the modals
  *   #pf-rebuild-modal / #pf-salvage-modal / #pf-delete-modal / #pf-sources-modal,
  *   plus #editCBZModal from partials/modal_cbz_edit.html.
  *
@@ -290,24 +290,55 @@
                     openCount + ' entries are recorded but could not be listed. ' +
                     'Check the logs, and the database status under Settings.';
             } else if (filtered) {
-                message = '<i class="bi bi-funnel me-2"></i>No entries match this filter.';
+                message = null;
             } else {
                 message = '<i class="bi bi-check-circle me-2"></i>' +
                     'Nothing has failed. Files appear here when an operation cannot read them.';
             }
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' +
-                message + '</td></tr>';
+            if (message === null) {
+                var cell = document.createElement('td');
+                cell.colSpan = 5;
+                cell.className = 'border-0';
+                cell.appendChild(CLU.noMatches({
+                    noun: 'entries', query: state.query, filtered: !!state.source,
+                    onClear: clearListFilters
+                }));
+                var emptyRow = document.createElement('tr');
+                emptyRow.appendChild(cell);
+                tbody.replaceChildren(emptyRow);
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">' +
+                    message + '</td></tr>';
+            }
         } else {
             tbody.innerHTML = state.rows.map(renderRow).join('');
         }
 
+        // The toolbar's result count. counts are page-wide (not filtered),
+        // so a filter or the listing cap reads "Showing a of N".
         if (summary) {
             var c = state.counts || {};
-            var bits = [];
-            if (c.open) bits.push(c.open + ' open');
-            if (c.dismissed) bits.push(c.dismissed + ' dismissed');
-            summary.textContent = bits.join(' · ');
+            var total = (c.open || 0) + (state.includeDismissed ? (c.dismissed || 0) : 0);
+            var shown = state.rows.length;
+            var text = CLU.countText({
+                total: total, noun: 'entries', one: 'entry', shown: shown
+            });
+            if (!state.includeDismissed && c.dismissed) {
+                text += ' \u00b7 ' + CLU.formatCount(c.dismissed) + ' dismissed';
+            }
+            summary.textContent = text;
         }
+    }
+
+    /** "Clear search" / "Clear filters": the box, and the source back to All. */
+    function clearListFilters() {
+        var search = document.getElementById('pf-search');
+        state.query = '';
+        if (search) search.value = '';
+        state.source = '';
+        CLU.setFilterValue(document.getElementById('pf-source-filter'), '');
+        writeUrl();
+        refresh();
     }
 
     function refresh() {
@@ -584,12 +615,32 @@
     /** Highlight one source filter button and show that source. */
     function showSource(source) {
         state.source = source;
+        CLU.setFilterValue(document.getElementById('pf-source-filter'), source);
+        writeUrl();
+    }
+
+    /** `source` and `q` live in the query string, so reload and Back keep them. */
+    function writeUrl() {
+        var url = new URL(window.location.href);
+        if (state.source) url.searchParams.set('source', state.source);
+        else url.searchParams.delete('source');
+        if (state.query) url.searchParams.set('q', state.query);
+        else url.searchParams.delete('q');
+        if (url.href !== window.location.href) history.replaceState(history.state, '', url);
+    }
+
+    /** Take the source and search from the URL, before the first load. */
+    function readUrl() {
+        var params = new URLSearchParams(window.location.search);
         var filter = document.getElementById('pf-source-filter');
-        if (filter) {
-            filter.querySelectorAll('[data-source]').forEach(function (b) {
-                b.classList.toggle('active', b.getAttribute('data-source') === source);
-            });
+        var source = params.get('source') || '';
+        if (filter && source && filter.querySelector('[data-value="' + CSS.escape(source) + '"]')) {
+            state.source = source;
+            CLU.setFilterValue(filter, source);
         }
+        var search = document.getElementById('pf-search');
+        state.query = (params.get('q') || '').trim();
+        if (search) search.value = state.query;
     }
 
     /**
@@ -962,30 +1013,19 @@
             });
         }
 
-        var filter = document.getElementById('pf-source-filter');
-        if (filter) {
-            filter.addEventListener('click', function (ev) {
-                var btn = ev.target.closest('[data-source]');
-                if (!btn) return;
-                filter.querySelectorAll('[data-source]').forEach(function (b) {
-                    b.classList.toggle('active', b === btn);
-                });
-                state.source = btn.getAttribute('data-source');
+        readUrl();
+        CLU.filterBar(document.getElementById('pf-source-filter'), {
+            onChange: function (source) {
+                state.source = source;
+                writeUrl();
                 refresh();
-            });
-        }
-
-        var search = document.getElementById('pf-search');
-        if (search) {
-            var timer = null;
-            search.addEventListener('input', function () {
-                clearTimeout(timer);
-                timer = setTimeout(function () {
-                    state.query = search.value.trim();
-                    refresh();
-                }, 250);
-            });
-        }
+            }
+        });
+        CLU.bindSearch(document.getElementById('pf-search'), function (q) {
+            state.query = q;
+            writeUrl();
+            refresh();
+        });
 
         var dismissed = document.getElementById('pf-show-dismissed');
         if (dismissed) {

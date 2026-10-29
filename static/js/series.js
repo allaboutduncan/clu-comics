@@ -82,57 +82,28 @@ function loadDirectories(path) {
 }
 
 /**
- * Update the alphabetical filter bar
+ * Draw the A-Z bar (CLU.letterBar: a second click on the selected letter goes
+ * back to All). Same name as files.js's updateFilterBar(panel, dirs), which
+ * this page also loads: this one, loaded later, is the one that runs here.
  */
 function updateFilterBar(directories) {
-    const filterContainer = document.getElementById('directory-filter');
-    if (!filterContainer) return;
+    const bar = document.querySelector('#directory-filter .clu-letter-bar');
+    if (!bar) return;
 
-    // Analyze available first letters
-    let availableLetters = new Set();
-    let hasNonAlpha = false;
-
-    directories.forEach(dir => {
+    const letters = new Set();
+    (directories || []).forEach(dir => {
         const firstChar = dir.charAt(0).toUpperCase();
-        if (firstChar >= 'A' && firstChar <= 'Z') {
-            availableLetters.add(firstChar);
-        } else {
-            hasNonAlpha = true;
+        letters.add(firstChar >= 'A' && firstChar <= 'Z' ? firstChar : '#');
+    });
+
+    CLU.letterBar(bar, {
+        letters: Array.from(letters),
+        active: currentModalFilter === 'all' ? '' : currentModalFilter,
+        onChange: value => {
+            currentModalFilter = value || 'all';
+            renderDirectoryList(modalDirectoryData, currentModalFilter);
         }
     });
-
-    // Build filter buttons
-    let buttonsHtml = '<button type="button" class="btn btn-sm btn-outline-secondary active" onclick="filterDirectories(\'all\')">All</button>';
-
-    if (hasNonAlpha) {
-        buttonsHtml += '<button type="button" class="btn btn-sm btn-outline-secondary" onclick="filterDirectories(\'#\')">#</button>';
-    }
-
-    const sortedLetters = Array.from(availableLetters).sort();
-    sortedLetters.forEach(letter => {
-        buttonsHtml += `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="filterDirectories('${letter}')">${letter}</button>`;
-    });
-
-    filterContainer.querySelector('.btn-group').innerHTML = buttonsHtml;
-}
-
-/**
- * Filter directories by letter
- */
-function filterDirectories(filter) {
-    currentModalFilter = filter;
-
-    // Update button states
-    const buttons = document.querySelectorAll('#directory-filter button');
-    buttons.forEach(btn => {
-        if (btn.textContent === filter || (filter === 'all' && btn.textContent === 'All')) {
-            btn.classList.add('active');
-        } else {
-            btn.classList.remove('active');
-        }
-    });
-
-    renderDirectoryList(modalDirectoryData, filter);
 }
 
 /**

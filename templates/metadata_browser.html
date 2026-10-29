@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
-{% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, search_input, select_field, per_page_select, pager_nav, result_count %}
 {% block title %}Library{% endblock %}
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 {% block extra_css %}
@@ -19,65 +19,54 @@
         {% endif %}
     {% endcall %}
 
-    {# One toolbar row on desktop (view, sort, page size, refresh, then search
-       pushed right); it wraps on narrower screens. The letter filter is its
-       own row because metadata_browser.js fills it with up to 27 letters. #}
-    <div class="mb-toolbar bg-body-tertiary p-3 rounded-3 shadow-sm mb-3">
-        <div class="d-flex flex-wrap align-items-center gap-2" role="toolbar" aria-label="Library view">
-                <div class="btn-group btn-group-sm" role="group" aria-label="Primary axis">
-                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisPublisher" value="publisher" autocomplete="off" checked>
-                    <label class="btn btn-outline-primary" for="mbAxisPublisher"><i class="bi bi-building me-1"></i>Publisher</label>
+    {# Search, then the axis and sort, refresh and page size pushed right; the
+       letter row last (metadata_browser.js fills it and hides it when there
+       are no letters). #}
+    {% call toolbar('Library view') %}
+        <div class="clu-toolbar-row">
+            {{ search_input('mbSearch', 'Search title or series') }}
 
-                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisSeries" value="series" autocomplete="off">
-                    <label class="btn btn-outline-primary" for="mbAxisSeries"><i class="bi bi-journal-text me-1"></i>Series</label>
+            <div class="btn-group btn-group-sm" role="group" aria-label="Primary axis">
+                <input type="radio" class="btn-check" name="mbAxis" id="mbAxisPublisher" value="publisher" autocomplete="off" checked>
+                <label class="btn btn-outline-secondary" for="mbAxisPublisher"><i class="bi bi-building me-1" aria-hidden="true"></i>Publisher</label>
 
-                    <input type="radio" class="btn-check" name="mbAxis" id="mbAxisYear" value="year" autocomplete="off">
-                    <label class="btn btn-outline-primary" for="mbAxisYear"><i class="bi bi-calendar3 me-1"></i>Year</label>
-                </div>
+                <input type="radio" class="btn-check" name="mbAxis" id="mbAxisSeries" value="series" autocomplete="off">
+                <label class="btn btn-outline-secondary" for="mbAxisSeries"><i class="bi bi-journal-text me-1" aria-hidden="true"></i>Series</label>
 
-                <div class="input-group input-group-sm w-auto">
-                    <label class="input-group-text bg-body border-0" for="mbSort">Sort</label>
-                    <select class="form-select border-0 shadow-none bg-body text-body" id="mbSort">
-                        <option value="alpha" selected>A–Z</option>
-                        <option value="count">Count</option>
-                        <option value="year">Year</option>
-                        <option value="recent">Recent</option>
-                    </select>
-                </div>
+                <input type="radio" class="btn-check" name="mbAxis" id="mbAxisYear" value="year" autocomplete="off">
+                <label class="btn btn-outline-secondary" for="mbAxisYear"><i class="bi bi-calendar3 me-1" aria-hidden="true"></i>Year</label>
+            </div>
 
-                <div class="input-group input-group-sm w-auto">
-                    <label class="input-group-text bg-body border-0" for="mbPerPage"><span class="d-none d-sm-inline">Per page</span><span class="d-sm-none">Show</span></label>
-                    <select class="form-select border-0 shadow-none bg-body text-body" id="mbPerPage">
-                        <option value="24">24</option>
-                        <option value="50" selected>50</option>
-                        <option value="100">100</option>
-                        <option value="250">250</option>
-                    </select>
-                </div>
+            {% call select_field('mbSort', 'Sort') %}
+                <option value="alpha" selected>A–Z</option>
+                <option value="count">Count</option>
+                <option value="year">Year</option>
+                <option value="recent">Recent</option>
+            {% endcall %}
 
-                <button aria-label="Refresh" class="btn btn-light border btn-sm" id="mbRefreshBtn" title="Refresh">
-                    <i class="bi bi-arrow-clockwise text-muted"></i>
+            <div class="clu-toolbar-end">
+                {{ result_count('mbCount', 0, 'items') }}
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="mbRefreshBtn" aria-label="Refresh" title="Refresh">
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                 </button>
-            <div class="mb-toolbar-search">
-                <label class="visually-hidden" for="mbSearch">Search title or series</label>
-                <input type="search" id="mbSearch" class="form-control form-control-sm" placeholder="Search title / series…">
+                {{ per_page_select('mbPerPage', 60) }}
             </div>
         </div>
-        <div id="mbLetterFilter" class="mt-2" style="overflow-x: auto;">
-            <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter"></div>
+        <div class="clu-toolbar-row" id="mbLetterFilter">
+            {# Drawn by CLU.letterBar in metadata_browser.js renderLetterFilter(). #}
+            <div class="btn-group btn-group-sm clu-letter-bar clu-filter-scroll" role="group" aria-label="Filter by first letter"></div>
         </div>
-    </div>
+    {% endcall %}
 
     <div id="mbGrid" class="file-grid"></div>
-    {{ empty_state('No matches', 'Try another letter or filter.', 'bi-inbox', id='mbEmpty', hidden=True) }}
+    {# Drawn by metadata_browser.js renderGrid(): no matches, or an empty library. #}
+    <div id="mbEmpty" style="display: none;"></div>
     <div id="mbLoading" class="text-center py-5">
         <div class="spinner-border text-primary" role="status">
             <span class="visually-hidden">Loading…</span>
         </div>
     </div>
-    <nav id="mbPagination" class="mt-4" aria-label="Metadata pagination" style="display:none;">
-        <ul class="pagination justify-content-center"></ul>
-    </nav>
+    {{ pager_nav('mbPagination', 'Metadata pagination') }}
 </div>
 
 <!-- Grid Item Template (matches collection.html) -->
@@ -226,6 +215,5 @@
 <script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/metadata_browser.js') }}?v={{ range(1, 10000) | random }}"></script>
 {% endblock %}

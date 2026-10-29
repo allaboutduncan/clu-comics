@@ -63,7 +63,9 @@ def test_library_uses_the_shared_renderer():
     body = body[:body.index("\n    }\n")]
     assert "CLU.renderPageLinks" in body
     assert "addItem" not in body, "a private copy of the bar is back"
-    assert "js/clu-pager.js" in _read("templates/metadata_browser.html")
+    # base.html ships the pager on every page; /library has no copy of its own.
+    assert "js/clu-pager.js" in _read("templates/base.html")
+    assert "js/clu-pager.js" not in _read("templates/metadata_browser.html")
 
 
 # --- The routes ask for one page --------------------------------------------
@@ -93,31 +95,31 @@ def test_first_page_and_fetched_pages_share_a_partial():
 
 def test_page_sizes_match_between_route_and_select():
     from routes.reading_lists import READING_LIST_PAGE_SIZES, READING_LIST_DEFAULT_PER_PAGE
-    # The card grid is 4 (or 5) wide; a size like 50 left a gap at the end.
-    assert READING_LIST_PAGE_SIZES == (20, 40, 80, 160, 300)
-    assert all(n % 4 == 0 for n in READING_LIST_PAGE_SIZES)
-    assert READING_LIST_DEFAULT_PER_PAGE == 40
-    # Both selects are drawn from the route's tuple, so they cannot disagree.
-    assert "{% for n in page_sizes %}" in _between(
-        _read("templates/reading_lists.html"), 'id="rlPerPage"', "</select>"
-    )
-    assert "{% for n in page_sizes %}" in _between(
-        _read("templates/pull_list.html"), 'id="plPerPage"', "</select>"
-    )
+    # The app's one set (helpers/paging.py): each fills whole rows of cards.
+    assert READING_LIST_PAGE_SIZES == (24, 60, 120, 240)
+    assert all(n % 4 == 0 and n % 6 == 0 for n in READING_LIST_PAGE_SIZES)
+    assert READING_LIST_DEFAULT_PER_PAGE == 60
+    # Both selects are the shared macro fed the route's tuple, so they
+    # cannot disagree.
+    assert "per_page_select('rlPerPage', grid.per_page, sizes=page_sizes)" in \
+        _read("templates/reading_lists.html")
+    assert "per_page_select('plPerPage', pager.per_page, sizes=page_sizes)" in \
+        _read("templates/pull_list.html")
 
 
 # --- The pages drive the server pager ----------------------------------------
 
 def test_pull_list_page_is_wired():
     html = _read("templates/pull_list.html")
-    assert "js/clu-pager.js" in html
-    assert 'id="plPagination"' in html and 'id="plPerPage"' in html
-    nav = _between(html, '<nav id="plPagination"', ">\n")
+    # base.html loads the pager on every page.
+    assert "js/clu-pager.js" in _read("templates/base.html")
+    assert "js/clu-pager.js" not in html
+    assert "pager_nav('plPagination'" in html and "per_page_select('plPerPage'" in html
+    nav = _between(html, "pager_nav('plPagination'", "}) }}")
     # Through url_for: CLU runs behind ProxyFix(x_prefix=1).
-    assert "url_for('series.pull_list_rows')" in html
-    assert "url_for('series.pull_list_ids')" in html
-    assert "data-page=" in html and "data-total-pages=" in html
-    assert nav
+    assert "url_for('series.pull_list_rows')" in nav
+    assert "url_for('series.pull_list_ids')" in nav
+    assert "'data-page'" in nav and "'data-total-pages'" in nav
     assert "CLU.createServerPager" in html
     on_data = _between(html, "onData: data => {", "},")
     assert "tbody.innerHTML = data.html" in on_data
@@ -128,11 +130,15 @@ def test_pull_list_page_is_wired():
 
 def test_reading_lists_page_is_wired():
     html = _read("templates/reading_lists.html")
-    assert "js/clu-pager.js" in html
-    assert 'id="rlPagination"' in html and 'id="rlPerPage"' in html
-    assert html.index("js/clu-pager.js") < html.index("js/reading_list.js")
-    assert "url_for('reading_lists.grid_page')" in html
-    assert "url_for('reading_lists.grid_ids')" in html
+    # base.html loads the pager on every page, before the page's scripts.
+    base = _read("templates/base.html")
+    assert "js/clu-pager.js" in base
+    assert base.index("js/clu-pager.js") < base.index("{% block scripts %}")
+    assert "js/clu-pager.js" not in html
+    assert "pager_nav('rlPagination'" in html and "per_page_select('rlPerPage'" in html
+    nav = _between(html, "pager_nav('rlPagination'", "}) }}")
+    assert "url_for('reading_lists.grid_page')" in nav
+    assert "url_for('reading_lists.grid_ids')" in nav
 
     js = _read("static/js/reading_list.js")
     assert "CLU.createServerPager" in js
@@ -216,7 +222,8 @@ def test_tag_chips_are_read_before_the_pager_writes_the_url():
 def test_pull_list_search_is_debounced():
     html = _read("templates/pull_list.html")
     assert "searchInput.addEventListener('input', applyFilters)" not in html
-    assert "setTimeout(applyFilters" in html
+    # CLU.bindSearch waits 250ms by default: each keystroke is not a request.
+    assert "CLU.bindSearch(searchInput, applyFilters);" in html
 
 
 def test_pull_list_reports_errors_without_native_dialogs():

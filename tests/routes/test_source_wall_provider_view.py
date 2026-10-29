@@ -206,7 +206,7 @@ class TestSourceWallWiring:
         html = _read("templates/source_wall.html")
         for needle in ("modal_metadata_tools.html", "modal_bulk_metadata_review.html",
                        "clu-metadata-tools.js", "bulk-metadata-review.js",
-                       'id="swViewSelect"', 'id="swLoadMore"', "retagSelectedSW"):
+                       "select_field('swViewSelect', 'View')", 'id="swLoadMore"', "retagSelectedSW"):
             assert needle in html, needle
 
     def test_row_dropdown_and_column(self):

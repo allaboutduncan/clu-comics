@@ -855,7 +855,7 @@ class TestBrowseRecursivePagination:
             assert key in data, f"missing {key}"
         assert data["total"] == 1
         assert data["offset"] == 0
-        assert data["limit"] == 21
+        assert data["limit"] == 24
         assert len(data["files"]) == 1
 
         f = data["files"][0]
@@ -1197,3 +1197,43 @@ class TestApiBrowseLibraryRoots:
         resp = client.get(f"/api/browse?path={series}")
 
         assert resp.get_json()["parent"] == app.config["DATA_DIR"]
+
+
+class TestSearchCountNoMatchesWiring:
+    """Collection and the file manager use the shared search/count/no-matches pieces."""
+
+    @staticmethod
+    def _read(rel):
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, rel), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_collection_page_has_count_and_no_matches_slot(self, client):
+        sections = [{"id": "library", "title": "Library", "icon": "bi-collection"}]
+        with patch('routes.collection.get_dashboard_sections', return_value=sections):
+            html = client.get('/collection').get_data(as_text=True)
+        assert 'id="collectionCount"' in html
+        assert 'clu-toolbar-count' in html
+        assert 'id="no-matches"' in html
+
+    def test_collection_js_wording(self):
+        src = self._read("static/js/collection.js")
+        assert "Filter this view" not in src and "Type to filter" not in src
+        assert ".placeholder =" not in src.replace("input.placeholder = label", "")
+        assert src.count("CLU.setSearchLabel(searchInput, gridSearchLabel())") == 4
+        assert "CLU.setCount(el, opts)" in src
+        assert "CLU.noMatches(" in src
+
+    def test_files_js_wording(self):
+        src = self._read("static/js/files.js")
+        assert "label: 'Search files and folders'" in src
+        # The search narrows files as well as folders, in either pane.
+        assert "if (term && !String(fileData.name).toLowerCase().includes(term)) return;" in src
+        assert "const panelSearch = { source: '', destination: '' };" in src
+        assert "Type to filter" not in src and "No folders match your search" not in src
+        assert "No results found for" not in src
+        assert src.count("CLU.noMatches(") == 2
+        html = self._read("templates/files.html")
+        assert "Enter search term" not in html
+        assert 'id="searchResultsCount"' in html

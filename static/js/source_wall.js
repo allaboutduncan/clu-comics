@@ -12,7 +12,11 @@ let swSortColumn = 'name';
 let swSortAsc = true;
 let swSelectedFiles = new Set();
 let swLastSelectedPath = null;
-let swActiveFilter = null;
+// ?letter= and the folder it was picked in (?letter_in=): a reload restores
+// the letter only if the same folder opens.
+const swUrlParams = new URLSearchParams(window.location.search);
+let swActiveFilter = (swUrlParams.get('letter') || '').toUpperCase();
+let swFilterPath = swActiveFilter ? (swUrlParams.get('letter_in') || '') : null;
 let swReadIssuesSet = new Set();
 
 // 'folders' = browse the tree; 'provider' = flat list of every file in the
@@ -241,85 +245,110 @@ function renderBreadcrumb() {
 
 // ── Directory Filter Bar ──
 
+function swLetterOf(name) {
+    const first = (name || '').charAt(0).toUpperCase();
+    return /[A-Z]/.test(first) ? first : '#';
+}
+
 function renderFilterBar() {
     const bar = document.getElementById('swFilterBar');
-    const btnContainer = document.getElementById('swFilterButtons');
+    const group = document.getElementById('swFilterButtons');
     const searchRow = document.getElementById('swSearchRow');
+
+    // The letter belongs to the folder it was picked in: a new folder starts
+    // at All. On the first render it comes from the URL (?letter=, ?letter_in=).
+    if (swFilterPath !== null && swFilterPath !== swCurrentPath) swActiveFilter = '';
+    swFilterPath = swCurrentPath;
+
+    const letters = new Set(swDirectories.map(d => swLetterOf(d.name)));
+    if (swActiveFilter && !letters.has(swActiveFilter)) swActiveFilter = '';
+    swWriteLetterToUrl();
 
     if (swDirectories.length === 0) {
         bar.style.display = 'none';
+        searchRow.style.display = 'none';
         return;
     }
-
     bar.style.display = '';
-    btnContainer.innerHTML = '';
-    swActiveFilter = null;
 
-    // Collect first letters
-    const letters = new Set();
-    swDirectories.forEach(d => {
-        const first = d.name.charAt(0).toUpperCase();
-        letters.add(/[A-Z]/.test(first) ? first : '#');
-    });
-
-    const sorted = [...letters].sort();
-
-    // "All" button
-    const allBtn = document.createElement('button');
-    allBtn.className = 'btn btn-sm btn-primary';
-    allBtn.textContent = 'All';
-    allBtn.addEventListener('click', () => {
-        swActiveFilter = null;
-        document.querySelectorAll('#swFilterButtons .btn').forEach(b => b.classList.remove('btn-primary'));
-        document.querySelectorAll('#swFilterButtons .btn').forEach(b => b.classList.add('btn-outline-secondary'));
-        allBtn.classList.remove('btn-outline-secondary');
-        allBtn.classList.add('btn-primary');
-        applyDirectoryFilter();
-    });
-    btnContainer.appendChild(allBtn);
-
-    sorted.forEach(letter => {
-        const btn = document.createElement('button');
-        btn.className = 'btn btn-sm btn-outline-secondary';
-        btn.textContent = letter;
-        btn.addEventListener('click', () => {
+    CLU.letterBar(group, {
+        letters: letters,
+        active: swActiveFilter,
+        onChange: (letter) => {
             swActiveFilter = letter;
-            document.querySelectorAll('#swFilterButtons .btn').forEach(b => {
-                b.classList.remove('btn-primary');
-                b.classList.add('btn-outline-secondary');
-            });
-            btn.classList.remove('btn-outline-secondary');
-            btn.classList.add('btn-primary');
-            applyDirectoryFilter();
-        });
-        btnContainer.appendChild(btn);
+            swWriteLetterToUrl();
+            applyDirectoryFilters();
+        },
     });
 
-    // Show search if >25 directories
+    // Show search if >25 directories; a new folder starts with an empty box.
     searchRow.style.display = swDirectories.length > 25 ? '' : 'none';
     const searchInput = document.getElementById('swDirSearch');
-    if (searchInput) searchInput.value = '';
+    if (searchInput && searchInput.value) {
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input'));
+    }
 }
 
-function filterDirectoriesSW() {
-    const query = (document.getElementById('swDirSearch')?.value || '').toLowerCase();
-    const rows = document.querySelectorAll('.sw-directory-row');
-    rows.forEach(row => {
-        const name = (row.dataset.name || '').toLowerCase();
-        row.style.display = name.includes(query) ? '' : 'none';
+function swWriteLetterToUrl() {
+    const url = new URL(window.location.href);
+    if (swActiveFilter) {
+        url.searchParams.set('letter', swActiveFilter);
+        url.searchParams.set('letter_in', swCurrentPath || '');
+    } else {
+        url.searchParams.delete('letter');
+        url.searchParams.delete('letter_in');
+    }
+    if (url.href !== window.location.href) history.replaceState(history.state, '', url);
+}
+
+// The letter and the search box narrow the folder rows together.
+function applyDirectoryFilters() {
+    const query = (document.getElementById('swDirSearch')?.value || '').trim();
+    const needle = query.toLowerCase();
+    let visibleDirs = 0;
+    document.querySelectorAll('.sw-directory-row').forEach(row => {
+        const name = row.dataset.name || '';
+        const show = (!swActiveFilter || swLetterOf(name) === swActiveFilter)
+            && (!needle || name.toLowerCase().includes(needle));
+        row.style.display = show ? '' : 'none';
+        if (show) visibleDirs++;
     });
+    updateWallCount(visibleDirs);
+
+    // Folders hid everything and there are no files beside them: say so
+    // instead of leaving a bare header.
+    const holder = document.getElementById('swNoMatches');
+    const table = document.getElementById('swTable');
+    const nothing = swDirectories.length > 0 && visibleDirs === 0 && swFiles.length === 0;
+    if (!holder) return;
+    holder.replaceChildren();
+    holder.style.display = nothing ? '' : 'none';
+    if (table && swDirectories.length) table.style.display = nothing ? 'none' : '';
+    if (nothing) {
+        holder.appendChild(CLU.noMatches({
+            noun: 'folders', query, filtered: !!swActiveFilter,
+            onClear: () => {
+                const box = document.getElementById('swDirSearch');
+                if (box && box.value) { box.value = ''; box.dispatchEvent(new Event('input', { bubbles: true })); }
+                if (swActiveFilter) {
+                    swActiveFilter = '';
+                    swWriteLetterToUrl();
+                    renderFilterBar();
+                    applyDirectoryFilters();
+                }
+            },
+        }));
+    }
 }
 
-function applyDirectoryFilter() {
-    const rows = document.querySelectorAll('.sw-directory-row');
-    rows.forEach(row => {
-        if (!swActiveFilter) {
-            row.style.display = '';
-            return;
-        }
-        const first = (row.dataset.name || '').charAt(0).toUpperCase();
-        const matchLetter = /[A-Z]/.test(first) ? first : '#';
-        row.style.display = matchLetter === swActiveFilter ? '' : 'none';
+// Folders and files in the view; the folder search and letter narrow the folders.
+function updateWallCount(visibleDirs) {
+    const total = swDirectories.length + swFiles.length;
+    const end = document.getElementById('swCountEnd');
+    if (end) end.classList.remove('d-none');
+    CLU.setCount(document.getElementById('swCount'), {
+        total, noun: 'items', one: 'item', shown: visibleDirs + swFiles.length,
     });
 }
 
@@ -331,6 +360,11 @@ function renderTable() {
 
     if (swDirectories.length === 0 && swFiles.length === 0) {
         table.style.display = 'none';
+        // The empty state says what is missing; a "0 items" count beside it
+        // only repeats it.
+        const end = document.getElementById('swCountEnd');
+        if (end) end.classList.add('d-none');
+        document.getElementById('swNoMatches').style.display = 'none';
         const empty = document.getElementById('swEmptyState');
         empty.style.display = '';
         empty.querySelector('.clu-empty-title').textContent = swView === 'provider'
@@ -525,6 +559,8 @@ function renderTable() {
 
         tbody.appendChild(tr);
     });
+
+    applyDirectoryFilters();
 }
 
 function renderTableHeader() {
@@ -1299,6 +1335,8 @@ function updateScopeButtons() {
     if (!f || !l) return;
     f.classList.toggle('active', swProviderScope === 'folder');
     l.classList.toggle('active', swProviderScope === 'library');
+    f.setAttribute('aria-pressed', String(swProviderScope === 'folder'));
+    l.setAttribute('aria-pressed', String(swProviderScope === 'library'));
 }
 
 function setProviderScope(scope) {
@@ -1394,6 +1432,7 @@ function loadProviderView(provider, offset) {
 
             renderProviderBreadcrumb(provider);
             document.getElementById('swFilterBar').style.display = 'none';
+            document.getElementById('swSearchRow').style.display = 'none';
             renderTable();
             renderLoadMore();
         })
@@ -1744,6 +1783,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (savedScope === 'folder' || savedScope === 'library') swProviderScope = savedScope;
     } catch (e) { /* private mode */ }
     updateScopeButtons();
+    CLU.bindSearch(document.getElementById('swDirSearch'), applyDirectoryFilters, { delay: 0 });
+    // select_field() renders the bare <select>; the view switch is wired here.
+    const viewSel = document.getElementById('swViewSelect');
+    if (viewSel) {
+        viewSel.title = 'Show every file tagged by one metadata provider';
+        viewSel.addEventListener('change', onViewChange);
+    }
     loadLibraryDropdowns();
     loadColumnPreferences();
 

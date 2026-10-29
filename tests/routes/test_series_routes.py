@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import time
 import pytest
 from unittest.mock import patch, MagicMock
@@ -869,6 +870,19 @@ class TestWantedPage:
         assert 'data-year="2026"' in html
         assert "searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)" in html
 
+    def test_search_box_count_and_rows(self, app, client_with_data):
+        self._register_slug_global(app)
+        self._seed_wanted()
+        html = client_with_data.get("/wanted").get_data(as_text=True)
+        assert 'id="wantedToolbar" aria-label="Filter wanted issues"' in html
+        assert 'placeholder="Search series and reading lists…"' in html
+        assert 'id="wantedCount" aria-live="polite">1 wanted issue</span>' in html
+        # Each row carries what the search matches; sections hide when empty.
+        assert 'class="wanted-row" data-search="iron man chapter eight"' in html
+        assert "wanted-section-count" in html
+        assert "CLU.bindSearch(box, apply, { delay: 0 })" in html
+        assert "CLU.noMatches({" in html and "noun: 'wanted issues'" in html
+
     def test_falls_back_to_cover_date(self, app, client_with_data):
         self._register_slug_global(app)
         self._seed_wanted(store_date=None, cover_date="2019-05-01")
@@ -1007,6 +1021,10 @@ class TestPullListPage:
         # Legend/filter chips and per-row color hooks are present.
         assert 'id="statusFilter"' in html
         assert "data-status-color=" in html
+        # The status colour sits on the icon; every button stays outline-secondary.
+        status = html.split('id="statusFilter"', 1)[1].split("</div>", 1)[0]
+        assert "bi-square-fill text-danger" in status
+        assert "btn-outline-danger" not in status and "btn-outline-success" not in status
         # Multi-select controls for the bulk Monitored toggle.
         assert 'id="selectAll"' in html
         assert "row-select" in html
@@ -1063,7 +1081,8 @@ class TestPullListPaging:
         assert resp.status_code == 200
         html = resp.get_data(as_text=True)
         assert html.count("data-series-id=") == 2
-        assert 'data-per-page="50"' in html
+        # 7 is not a size: it snaps to the nearest one (helpers.paging).
+        assert 'data-per-page="24"' in html
 
     def test_page_size_falls_back_to_the_remembered_one(self, app, client_with_data):
         TestPullListPage._register_slug_global(app)
@@ -1076,15 +1095,33 @@ class TestPullListPaging:
         data = client_with_data.get("/api/pull-list/rows?page=2").get_json()
         assert (data["per_page"], data["page"]) == (24, 2)
         # The URL wins over the cookie, and a junk cookie is ignored.
-        # A junk or unoffered ?per_page falls through to the cookie.
+        # A junk ?per_page falls through to the cookie (#681); a size outside
+        # the set snaps to the nearest one, here 24 as well.
         for bad in ("abc", "7"):
             html = client_with_data.get("/pull-list?per_page=" + bad).get_data(as_text=True)
             assert 'data-per-page="24"' in html
-        html = client_with_data.get("/pull-list?per_page=100").get_data(as_text=True)
-        assert 'data-per-page="100"' in html
-        client_with_data.set_cookie("clu_per_page_pull_list", "7")
+        html = client_with_data.get("/pull-list?per_page=120").get_data(as_text=True)
+        assert 'data-per-page="120"' in html
+        client_with_data.set_cookie("clu_per_page_pull_list", "junk")
         html = client_with_data.get("/pull-list").get_data(as_text=True)
-        assert 'data-per-page="50"' in html
+        assert 'data-per-page="60"' in html
+
+    def test_page_sizes_and_default(self, app, client_with_data):
+        TestPullListPage._register_slug_global(app)
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        assert 'data-per-page="60"' in html
+        assert 'data-default-per-page="60"' in html
+        select = html.split('id="plPerPage"', 1)[1].split("</select>", 1)[0]
+        assert re.findall(r'<option value="(\d+)"', select) == ["24", "60", "120", "240"]
+
+    def test_a_size_from_the_old_set_snaps_to_the_nearest(self, app, client_with_data):
+        """The select used to offer 24/50/100/250: a remembered 50 or 250
+        must not reset to the default."""
+        TestPullListPage._register_slug_global(app)
+        for old, new in (("50", "60"), ("250", "240"), ("100", "120")):
+            client_with_data.set_cookie("clu_per_page_pull_list", old)
+            html = client_with_data.get("/pull-list").get_data(as_text=True)
+            assert f'data-per-page="{new}"' in html, old
 
     def test_rows_endpoint(self, app, client_with_data):
         TestPullListPage._register_slug_global(app)
@@ -1100,7 +1137,19 @@ class TestPullListPaging:
         TestPullListPage._register_slug_global(app)
         data = client_with_data.get("/api/pull-list/rows?q=nothing").get_json()
         assert data["total"] == 0
-        assert "No series match" in data["html"]
+        assert "No series match “nothing”" in data["html"]
+        assert "Clear search" in data["html"] and 'id="plClear"' in data["html"]
+        data = client_with_data.get("/api/pull-list/rows?q=nothing&status=missing").get_json()
+        assert "No series match these filters" in data["html"]
+        assert "Clear filters" in data["html"]
+
+    def test_count_uses_the_shared_wording(self, app, client_with_data):
+        TestPullListPage._register_slug_global(app)
+        self._seed()
+        html = client_with_data.get("/pull-list?q=nothing").get_data(as_text=True)
+        count = html.split('id="resultCount"', 1)[1].split(">", 1)[1].split("</span>", 1)[0]
+        assert count.startswith("Showing 0 of ") and count.endswith(" series")
+        assert "Search series…" in html and "matching (" not in html
 
     def test_ids_endpoint_spans_pages(self, client_with_data):
         self._seed()
@@ -1120,7 +1169,7 @@ class TestPullListPaging:
             html = client_with_data.get("/pull-list").get_data(as_text=True)
             assert "Could not read the pull list" in html
             assert "No series match these filters" not in html
-            count = html.split('id="resultCount">', 1)[1].split("</span>", 1)[0]
+            count = html.split('id="resultCount"', 1)[1].split(">", 1)[1].split("</span>", 1)[0]
             assert "No series match" not in count
         with patch("core.database.get_pull_list_matching_ids", return_value=None):
             resp = client_with_data.get("/api/pull-list/ids")
@@ -1142,13 +1191,16 @@ class TestPullListPaging:
         TestPullListPage._register_slug_global(app)
         html = client_with_data.get("/pull-list?letter=Q&publisher=999").get_data(as_text=True)
         assert html.count("data-series-id=") == 2
-        assert 'class="btn btn-sm btn-outline-secondary active" data-letter="all"' in html
+        bar = html.split('id="alphabetFilter"', 1)[1].split("</div>", 1)[0]
+        assert re.search(r'class="btn btn-outline-secondary active"\s+data-value=""\s+aria-pressed="true"', bar)
 
     def test_letters_and_publishers_render(self, app, client_with_data):
         TestPullListPage._register_slug_global(app)
         html = client_with_data.get("/pull-list?letter=B").get_data(as_text=True)
-        assert 'data-letter="A"' in html and 'data-letter="B"' in html
-        assert 'class="btn btn-sm btn-outline-secondary active" data-letter="B"' in html
+        bar = html.split('id="alphabetFilter"', 1)[1].split("</div>", 1)[0]
+        assert 'data-value="A"' in bar and 'data-value="B"' in bar
+        assert re.search(r'class="btn btn-outline-secondary active"\s+data-value="B" aria-pressed="true"', bar)
+        assert 'data-value="A" aria-pressed="false"' in bar
         assert html.count("data-series-id=") == 1
 
 
@@ -1637,14 +1689,14 @@ class TestReleasesPublisherFilter:
 
         assert 'id="publisher-filter"' in html
         # Both views carry the tag -- the filter hides cards and rows alike.
-        assert html.count("release-card stagger-load") == 2
+        assert html.count('class="grid-item release-card') == 2
         assert html.count('class="release-row"') == 2
         assert html.count("data-series-id=") == 4
         # JSON keys are strings, matching the dataset lookup in the template.
         assert 'const publisherMap = {"11": "Marvel"}' in html
         assert "const pendingWarm = true" in html
 
-    def test_subscribed_ribbon_matches_on_series_id(self, client, app):
+    def test_subscribed_sticker_matches_on_series_id(self, client, app):
         # A mapped series whose stored name/volume differs from what the
         # releases feed reports still has to be flagged: the Metron id is the
         # reliable key, (name, volume) only the fallback.
@@ -1652,20 +1704,52 @@ class TestReleasesPublisherFilter:
                 patch("core.database.get_tracked_series_lookup", return_value=set()):
             html = self._render_releases_page(client, app)
 
-        # Series 11 is subscribed (card ribbon + table badge); series 99 is not.
-        assert html.count('<div class="ribbon">Subscribed</div>') == 1
+        # Series 11 is subscribed (cover sticker + table badge); series 99 is not.
+        assert html.count('<span class="release-subscribed" title="Subscribed">') == 1
         assert html.count('<span class="badge bg-success ms-1">Subscribed</span>') == 1
-        assert html.count("release-card stagger-load tracked") == 1
+
+    def test_cards_are_the_shared_cover_card(self, client, app):
+        # Releases uses collection.css's cover card like every other cover
+        # grid: no page-built card, ribbon, tracked border or entrance animation.
+        html = self._render_releases_page(client, app)
+
+        assert "css/collection.css" in html
+        # releases-grid only widens the columns: release covers are bigger.
+        assert '<div class="file-grid releases-grid" id="releases-cards">' in html
+        assert "minmax(200px, 1fr)" in html
+        cards = html[html.index('id="releases-cards"'):html.index('id="releases-table"')]
+        assert cards.count('class="thumbnail-container"') == 2
+        assert cards.count('class="item-name text-truncate"') == 2
+        # The issue number lives in the shared gold sticker.
+        assert cards.count('<span class="issue-badge"><span class="issue-number">#1</span></span>') == 2
+        for old in ("ribbon", "stagger-load", "fade-in",
+                    "release-cover", "no-cover-placeholder"):
+            assert old not in html
+        from pathlib import Path
+        source = (Path(__file__).resolve().parents[2] / "templates/releases.html").read_text()
+        assert "@keyframes" not in source
 
     def test_cards_and_rows_carry_their_subscription_state(self, client, app):
         # The Subscription filter reads data-subscribed client-side, on both
-        # views, so it has to agree with the ribbon/badge for every release.
+        # views, so it has to agree with the sticker/badge for every release.
         with patch("core.database.get_mapped_series_ids", return_value={11}), \
                 patch("core.database.get_tracked_series_lookup", return_value=set()):
             html = self._render_releases_page(client, app)
 
         assert html.count('data-subscribed="1"') == 2  # series 11: card + row
         assert html.count('data-subscribed="0"') == 2  # series 99: card + row
+
+    def test_search_box_filters_by_series(self, client, app):
+        html = self._render_releases_page(client, app)
+        assert 'id="releasesSearch" aria-label="Search series"' in html
+        # Search first in the toolbar's first row, before the count.
+        assert html.index('id="releasesSearch"') < html.index('id="releases-count"')
+        assert 'data-title="series 11"' in html  # cards and rows both carry it
+        assert "if (query && (el.dataset.title || '').indexOf(query.toLowerCase()) === -1) return false;" in html
+        assert "if (query) url.searchParams.set('q', query); else url.searchParams.delete('q');" in html
+        assert "CLU.bindSearch(searchEl, function (v) { query = v; update(); }, { delay: 0 });" in html
+        # Clear resets the pills and the box; the no-match state follows the search.
+        assert "noun: 'releases', query: query" in html
 
     def test_page_renders_every_filter_group(self, client, app):
         html = self._render_releases_page(client, app)
@@ -1677,11 +1761,22 @@ class TestReleasesPublisherFilter:
             assert f"key: '{key}',\n                param: '{key}'," in html
         # Subscription is known server-side, so its group is never hidden; the
         # publisher group waits for the map.
-        assert '<div class="filter-group d-flex align-items-center flex-wrap gap-2" data-filter-group="subscribed">' in html
+        assert '<div class="clu-toolbar-row" data-filter-group="subscribed">' in html
         assert 'id="publisher-filter" hidden' in html
-        # .d-flex is !important and beats Bootstrap's bare [hidden] rule, so
-        # without this override `group.hidden = true` would hide nothing.
-        assert ".filter-group[hidden] {\n        display: none !important;" in html
+        # Both groups are the shared filter_bar, filled by the script with
+        # counts; the old pill-shaped buttons and their badges are gone.
+        assert 'id="subscription-pills" role="group"' in html
+        assert 'aria-labelledby="subscription-pills-label"' in html
+        assert 'id="publisher-pills" role="group"' in html
+        assert html.count("data-clu-toggle-off") >= 2
+        assert "CLU.renderFilterOptions(pillsEl" in html
+        assert not re.search(r"publisher-pill(?!s)", html)
+        assert "function pill(" not in html
+        # Toolbar rows are display:flex, which beats Bootstrap's bare [hidden]
+        # rule, so without this override `group.hidden = true` hides nothing.
+        from pathlib import Path
+        page_css = (Path(__file__).resolve().parents[2] / "static/css/clu-page.css").read_text()
+        assert ".clu-toolbar-row[hidden] {\n    display: none !important;" in page_css
         # A publisher carried over from another week must survive until the
         # map has finished loading, rather than being cleared on first render.
         assert "if (selected[f.key] && !warming" in html
@@ -1689,13 +1784,17 @@ class TestReleasesPublisherFilter:
         # Filtering everything away says so, with a way back.
         assert 'id="releases-no-match"' in html
         assert 'id="clear-filters"' in html
+        assert "No releases match these filters" in html
 
     def test_week_navigation_links_are_tagged_to_keep_filters(self, client, app):
         # syncUrl() rewrites a.week-nav so Previous/Next keeps the filters on.
         html = self._render_releases_page(client, app)
 
+        # The week links sit in the page header's top right, ahead of the
+        # toolbar and the cards.
         header = html[:html.index('id="release-filters"')]
-        assert header.count("week-nav") == 3
+        assert header.count('class="btn btn-sm btn-outline-secondary week-nav"') == 3
+        assert "This Week" in header
         assert "document.querySelectorAll('a.week-nav')" in html
 
     def test_page_renders_both_views_with_a_toggle(self, client, app):
@@ -1724,7 +1823,8 @@ class TestReleasesPublisherFilter:
         # Publisher is resolved client-side, so each row ships an empty cell
         # that syncPublisherCells() fills as the map arrives.
         assert html.count('class="publisher-cell text-muted"') == 2
-        assert html.count('data-title="series 11"') == 1
+        # The card and the row both carry the title: the search matches on it.
+        assert html.count('data-title="series 11"') == 2
         assert html.count('data-issue="1"') == 2
 
     # -- warm pass --------------------------------------------------------

@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
+{% from 'partials/filters.html' import search_input, result_count %}
 
 {% block title %}CLU: Import from Mylar3{% endblock %}
 
@@ -112,7 +113,8 @@
       <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         <span><strong>3.</strong> Series <span class="text-muted small" id="mi-series-summary"></span></span>
         <span class="d-flex gap-2">
-          <input type="search" class="form-control form-control-sm" id="mi-series-filter" placeholder="Filter" style="max-width: 12rem;">
+          {{ result_count('mi-series-count', 0, 'series') }}
+          {{ search_input('mi-series-filter', 'Search series') }}
           <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-select-all">All</button>
           <button type="button" class="btn btn-outline-secondary btn-sm" id="mi-select-none">None</button>
         </span>

@@ -307,9 +307,9 @@ window.BulkMetadataReview = (function () {
                              search box visible even though a candidate exists. -->
                         <div class="manual-search mt-2 ${candidates.length && item.reason !== 'date_conflict' ? 'd-none' : ''}">
                             <div class="input-group input-group-sm">
-                                <input type="text" class="form-control manual-query"
-                                    placeholder="Search series name…" value="${_escape(item.parsed_series || '')}">
-                                <input type="number" class="form-control manual-year" style="max-width: 6rem;"
+                                <input type="text" class="form-control manual-query" aria-label="Search series"
+                                    placeholder="Search series…" value="${_escape(item.parsed_series || '')}">
+                                <input type="number" class="form-control manual-year" style="max-width: 6rem;" aria-label="Year"
                                     placeholder="Year" value="${item.parsed_year || ''}">
                                 <button aria-label="Search" title="Search" class="btn btn-outline-primary action-manual-search" type="button">
                                     <i class="bi bi-search"></i>

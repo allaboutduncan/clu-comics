@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, select_field, per_page_select, result_count %}
 {% block title %}Browse Library{% endblock %}
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 {% block extra_css %}
@@ -42,92 +43,74 @@
     <!-- Header Image Container -->
     <div id="collection-header-image" class="mb-3 d-none"></div>
 
-    <!-- Integrated Navigation System -->
-    <div class="bg-body-tertiary p-3 rounded-3 shadow-sm mb-4 d-flex flex-column gap-3">
-        
-        <!-- Top Row: Controls (the breadcrumb lives in the page header) -->
-        <div class="d-flex flex-column flex-md-row justify-content-md-end align-items-md-center gap-3" id="collectionOptions">
-            <div class="d-flex flex-wrap align-items-center gap-2">
-                <!-- Library Selector -->
-                <div id="librarySelectorContainer" style="display: none;">
-                    <select class="form-select form-select-sm" id="librarySelector" onchange="switchLibrary(this.value)"
-                        style="min-width: 150px;">
-                        <!-- Options populated by JavaScript -->
-                    </select>
-                </div>
-                
-                <!-- View Toggle Buttons -->
-                <div id="viewToggleButtons" class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" id="allBooksBtn" onclick="loadAllBooks()"
-                        style="display: none;">
-                        <i class="bi bi-collection"></i> All Books
-                    </button>
-                    <button class="btn btn-outline-warning" id="missingXmlBtn" onclick="loadMissingXml()"
-                        style="display: none;">
-                        <i class="bi bi-file-earmark-x"></i> Missing XML
-                    </button>
-                    <button class="btn btn-outline-warning" id="rescanMissingXmlBtn" onclick="rescanMissingXml()"
-                        style="display: none;" title="Re-check ComicInfo.xml for files currently flagged as missing">
-                        <i class="bi bi-arrow-repeat"></i> Rescan
-                    </button>
-                    <button class="btn btn-primary" id="folderViewBtn" onclick="returnToFolderView()"
-                        style="display: none;">
-                        <i class="bi bi-folder"></i> Collection View
-                    </button>
-                </div>
+    {# The grid's controls. collection.js fills #gridSearchRow (only past 25
+       items), shows #librarySelectorContainer when there is more than one
+       library, the view buttons per mode, and the letter row once it has
+       letters. Multi-Select, Refresh, card size and per page are always
+       there, so the panel never renders empty on the dashboard. #}
+    {% call toolbar('Browse controls', id='collectionToolbar') %}
+        <div class="clu-toolbar-row" id="collectionOptions">
+            <div id="gridSearchRow" class="collection-search-slot"></div>
 
-                <!-- Multi-Select Toggle & Refresh -->
-                <div class="d-flex align-items-center gap-2">
-                    {% if _can_manage %}
-                    <button class="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1"
-                        id="toggleCollectionSelectModeBtn" onclick="toggleCollectionSelectMode()"
-                        title="Toggle multi-select mode">
-                        <i class="bi bi-check2-square"></i>
-                        <span>Multi-Select</span>
-                    </button>
-                    {% endif %}
-                    <button aria-label="Refresh" class="btn btn-light border btn-sm" onclick="refreshCurrentView(true, true)" title="Refresh">
-                        <i class="bi bi-arrow-clockwise text-muted"></i>
-                    </button>
-                </div>
+            <div id="librarySelectorContainer" style="display: none;">
+                {% call select_field('librarySelector', 'Library') %}
+                    {# Options populated by loadLibrarySelector(). #}
+                {% endcall %}
             </div>
-        </div>
 
-        <!-- Bottom Row: Filters -->
-        <div class="d-flex flex-column flex-md-row gap-2 border-top pt-3" id="filterBar">
-            <div id="gridFilterButtons" style="display: none; flex: 1 1 auto; overflow-x: auto;" class="pb-1 pb-md-0">
-                <div class="btn-group btn-group-sm text-nowrap" role="group" aria-label="Filter by first letter">
-                    <!-- Filter buttons will be dynamically populated by JS -->
-                </div>
+            <div id="viewToggleButtons" class="d-flex flex-wrap gap-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="folderViewBtn" onclick="returnToFolderView()"
+                    style="display: none;">
+                    <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Collection View
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="allBooksBtn" onclick="loadAllBooks()"
+                    style="display: none;">
+                    <i class="bi bi-collection me-1" aria-hidden="true"></i>All Books
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="missingXmlBtn" onclick="loadMissingXml()"
+                    style="display: none;">
+                    <i class="bi bi-file-earmark-x me-1" aria-hidden="true"></i>Missing XML
+                </button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="rescanMissingXmlBtn" onclick="rescanMissingXml()"
+                    style="display: none;" title="Re-check ComicInfo.xml for files currently flagged as missing">
+                    <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>Rescan
+                </button>
             </div>
-            <div id="gridSearchRow" style="flex: 0 0 auto; width: 100%; max-width: 250px;">
-                <!-- Search input will be dynamically populated by JS -->
-            </div>
-            <div class="d-flex align-items-center" style="flex: 0 0 auto;">
+
+            <div class="clu-toolbar-end">
+                {# Worded and updated by updateCollectionCount() in collection.js. #}
+                {{ result_count('collectionCount', 0, 'items', one='item') }}
+                {% if _can_manage %}
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                    id="toggleCollectionSelectModeBtn" onclick="toggleCollectionSelectMode()"
+                    title="Toggle multi-select mode" aria-pressed="false">
+                    <i class="bi bi-check2-square me-1" aria-hidden="true"></i>Multi-Select
+                </button>
+                {% endif %}
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="collectionRefreshBtn"
+                    onclick="refreshCurrentView(true, true)" aria-label="Refresh" title="Refresh">
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                </button>
                 <div class="btn-group btn-group-sm" role="group" aria-label="Card size">
                     <button aria-label="Standard card size" type="button" class="btn btn-outline-secondary" id="cardSizeStandardBtn"
                         onclick="changeCardSize('standard')" title="Standard card size" aria-pressed="true">
-                        <i class="bi bi-grid-3x3-gap-fill"></i>
+                        <i class="bi bi-grid-3x3-gap-fill" aria-hidden="true"></i>
                     </button>
                     <button aria-label="Large card size" type="button" class="btn btn-outline-secondary" id="cardSizeLargeBtn"
                         onclick="changeCardSize('large')" title="Large card size" aria-pressed="false">
-                        <i class="bi bi-grid-fill"></i>
+                        <i class="bi bi-grid-fill" aria-hidden="true"></i>
                     </button>
                 </div>
-            </div>
-            <div class="d-flex align-items-center" style="flex: 0 0 auto;">
-                <div class="input-group input-group-sm">
-                    <label class="input-group-text bg-body border-0" for="itemsPerPage">Per page</label>
-                    <select class="form-select border-0 shadow-none bg-body text-body" id="itemsPerPage" onchange="changeItemsPerPage(this.value)">
-                        <option value="21" selected>20</option>
-                        <option value="49">50</option>
-                        <option value="98">100</option>
-                        <option value="252">250</option>
-                    </select>
-                </div>
+                {{ per_page_select('itemsPerPage', 24) }}
             </div>
         </div>
-    </div>
+
+        {# Drawn by CLU.letterBar in collection.js updateFilterBar(), which
+           also toggles the row's hidden attribute. #}
+        <div class="clu-toolbar-row" id="gridFilterButtons" hidden>
+            <div class="btn-group btn-group-sm clu-letter-bar clu-filter-scroll" role="group" aria-label="Filter by first letter"></div>
+        </div>
+    {% endcall %}
 
     <!-- Dashboard Sections -->
     <div id="dashboard-sections" class="mb-5">
@@ -147,6 +130,8 @@
             <div id="file-grid" class="file-grid">
             </div>
             {{ empty_state('This folder is empty', icon='bi-folder2-open', id='empty-state', hidden=True) }}
+            {# A search or letter that hid everything: filled by renderGrid(). #}
+            <div id="no-matches"></div>
             <nav id="pagination-controls" aria-label="File browser pagination" class="collection-pager mt-4"
                 style="display: none;">
                 <div
@@ -681,6 +666,7 @@
                         selector.appendChild(option);
                     });
 
+                    selector.onchange = () => switchLibrary(selector.value);
                     container.style.display = 'block';
 
                     // Store libraries for header title lookup

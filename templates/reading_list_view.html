@@ -345,7 +345,7 @@
                 <p>Select a file to map to: <strong id="mapTargetName"></strong></p>
 
                 <div class="input-group mb-3">
-                    <input type="text" class="form-control" id="fileSearchInput" placeholder="Search for file...">
+                    <input type="text" class="form-control" id="fileSearchInput" aria-label="Search file names" placeholder="Search file names…">
                     <button class="btn btn-outline-secondary" type="button" onclick="searchFiles()">Search</button>
                     <button class="btn btn-outline-danger" type="button" onclick="clearMapping()">Clear Mapping</button>
                 </div>
@@ -458,7 +458,7 @@
             <div class="modal-body">
                 <div class="mb-3">
                     <div class="input-group">
-                        <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
+                        <input type="text" class="form-control" id="getcomicsQuery" aria-label="Search GetComics" placeholder="Search GetComics…"
                             onkeypress="if(event.key==='Enter')doGetComicsSearch()">
                         <button aria-label="Search GetComics" title="Search GetComics" class="btn btn-primary" onclick="doGetComicsSearch()">
                             <i class="bi bi-search"></i>
@@ -486,7 +486,7 @@
             </div>
             <div class="modal-body">
                 <div class="input-group mb-3">
-                    <input type="text" class="form-control" id="addIssueSearchInput" placeholder="Search for file...">
+                    <input type="text" class="form-control" id="addIssueSearchInput" aria-label="Search file names" placeholder="Search file names…">
                     <button class="btn btn-outline-secondary" type="button" onclick="searchFilesForAdd()">Search</button>
                 </div>
                 <div id="addIssueResults" class="list-group" style="max-height: 400px; overflow-y: auto;"></div>

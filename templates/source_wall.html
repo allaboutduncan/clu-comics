@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, search_input, select_field, result_count %}
 {% block title %}Source Wall - Metadata Editor{% endblock %}
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 
@@ -25,44 +26,48 @@
   {% endcall %}
 
   {# What the wall shows: which library, which view, and how wide the provider
-     counts look. These change the content, so they sit with it, not in the header. #}
-  <div class="d-flex flex-wrap align-items-center gap-2 mb-3" role="toolbar" aria-label="Source Wall view">
-    <!-- Library Dropdown -->
-    <div class="dropdown">
-      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
-              id="swLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-        <i class="bi bi-folder2-open me-1" aria-hidden="true"></i><span id="swLibraryName">Library</span>
-      </button>
-      <ul class="dropdown-menu" id="swLibraryMenu">
-        <!-- Populated by JavaScript -->
-      </ul>
+     counts look. These change the content, so they sit with it, not in the
+     header. source_wall.js shows the search (past 25 folders) and the letter
+     row only while a folder is being browsed. #}
+  {% call toolbar('Source Wall view') %}
+    <div class="clu-toolbar-row">
+      <div id="swSearchRow" class="sw-search-slot" style="display: none;">
+        {{ search_input('swDirSearch', 'Search folders') }}
+      </div>
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
+                id="swLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+          <i class="bi bi-folder2-open me-1" aria-hidden="true"></i><span id="swLibraryName">Library</span>
+        </button>
+        <ul class="dropdown-menu" id="swLibraryMenu">
+          <!-- Populated by JavaScript -->
+        </ul>
+      </div>
+      {# Browse folders, or every file tagged by one provider; options by loadProviderViewOptions(). #}
+      {% call select_field('swViewSelect', 'View') %}
+        <option value="">Browse folders</option>
+      {% endcall %}
+      <div class="btn-group btn-group-sm" role="group" aria-label="Provider view scope">
+        <button type="button" class="btn btn-outline-secondary active" id="swScopeFolder"
+                onclick="setProviderScope('folder')" title="Only the folder you are browsing, and its subfolders"
+                aria-pressed="true">
+          <i class="bi bi-folder2 me-1" aria-hidden="true"></i>This folder
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="swScopeLibrary"
+                onclick="setProviderScope('library')" title="The whole library" aria-pressed="false">
+          <i class="bi bi-collection me-1" aria-hidden="true"></i>All
+        </button>
+      </div>
+      {#- Hidden until a folder has loaded: before that "0 items" reads as an
+          empty library. source_wall.js updateWallCount shows it. -#}
+      <div class="clu-toolbar-end d-none" id="swCountEnd">
+        {{ result_count('swCount', 0, 'items') }}
+      </div>
     </div>
-    <!-- View: browse folders, or every file tagged by one provider -->
-    <select id="swViewSelect" class="form-select form-select-sm w-auto" onchange="onViewChange()"
-            aria-label="View" title="Show every file tagged by one metadata provider">
-      <option value="">Browse folders</option>
-    </select>
-    <!-- Where the provider counts and the "Tagged by" view look -->
-    <div class="btn-group btn-group-sm" role="group" aria-label="Provider view scope">
-      <button type="button" class="btn btn-outline-secondary active" id="swScopeFolder"
-              onclick="setProviderScope('folder')" title="Only the folder you are browsing, and its subfolders">
-        <i class="bi bi-folder2 me-1" aria-hidden="true"></i>This folder
-      </button>
-      <button type="button" class="btn btn-outline-secondary" id="swScopeLibrary"
-              onclick="setProviderScope('library')" title="The whole library">
-        <i class="bi bi-collection me-1" aria-hidden="true"></i>All
-      </button>
+    <div class="clu-toolbar-row" id="swFilterBar" style="display: none;">
+      <div id="swFilterButtons" role="group" aria-label="Filter folders by first letter"></div>
     </div>
-  </div>
-
-  <!-- Directory Filter Bar -->
-  <div id="swFilterBar" class="mb-2" style="display: none;">
-    <div id="swFilterButtons" class="sw-filter-buttons mb-1"></div>
-    <div id="swSearchRow" class="pt-1" style="display: none;">
-      <input type="text" id="swDirSearch" class="form-control form-control-sm"
-             placeholder="Filter directories..." oninput="filterDirectoriesSW()">
-    </div>
-  </div>
+  {% endcall %}
 
   <!-- Table -->
   <div class="sw-table-container">
@@ -70,6 +75,8 @@
       <thead id="swTableHead"></thead>
       <tbody id="swTableBody"></tbody>
     </table>
+    {# Drawn by source_wall.js applyDirectoryFilters() when the letter or search hides every folder. #}
+    <div id="swNoMatches" style="display: none;"></div>
     <div id="swLoadMore" class="text-center py-3" style="display: none;">
       <button type="button" class="btn btn-outline-primary btn-sm" onclick="loadMoreProviderFiles()">Load more</button>
     </div>

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, search_input, select_field %}
 
 {% block title %}Series Search{% endblock %}
 
@@ -25,45 +26,30 @@
     </div>
     {% else %}
 
-    <!-- Search Card -->
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body">
-            <div class="row align-items-center g-3">
-                <div class="col-md-6">
-                    <div class="input-group">
-                        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
-                        <input type="text" class="form-control" id="searchInput" placeholder="Enter series name..."
-                            onkeypress="if(event.key==='Enter')doSeriesSearch()">
-                        <button class="btn btn-primary" type="button" onclick="doSeriesSearch()">
-                            <i class="bi bi-search me-1"></i>Search
-                        </button>
-                    </div>
-                </div>
-                <div class="col-md-3">
-                    <select class="form-select" id="publisherFilter" title="Filter by publisher">
-                        <option value="">All Publishers</option>
-                    </select>
-                </div>
-                <div class="col-md-3 text-md-end">
-                    <span class="text-muted" id="resultCount"></span>
-                </div>
+    <!-- Search and filters: the shared list toolbar (partials/filters.html).
+         The series query is a remote search, so it runs on Enter or Search
+         rather than on every keystroke; the result filter is local. -->
+    {% call toolbar('Search series') %}
+        <div class="clu-toolbar-row">
+            <div class="input-group input-group-sm clu-search">
+                <span class="input-group-text bg-body" aria-hidden="true"><i class="bi bi-search"></i></span>
+                <input type="search" class="form-control" id="searchInput" aria-label="Search Metron series" placeholder="Search Metron series…"
+                    autocomplete="off" spellcheck="false" enterkeyhint="search"
+                    onkeypress="if(event.key==='Enter')doSeriesSearch()">
+                <button class="btn btn-outline-secondary" type="button" onclick="doSeriesSearch()">Search</button>
+            </div>
+            {% call select_field('publisherFilter', 'Publisher') %}
+                <option value="">All</option>
+            {% endcall %}
+            <div class="clu-toolbar-end">
+                <span class="clu-toolbar-count" id="resultCount" aria-live="polite"></span>
             </div>
         </div>
-    </div>
-
-    <!-- Filter Row (appears after search) -->
-    <div class="card border-0 shadow-sm mb-4" id="filterCard" style="display: none;">
-        <div class="card-body">
-            <div class="row align-items-center">
-                <div class="col-md-6">
-                    <div class="input-group">
-                        <span class="input-group-text bg-white"><i class="bi bi-funnel"></i></span>
-                        <input type="text" class="form-control" id="filterInput" placeholder="Filter results...">
-                    </div>
-                </div>
-            </div>
+        {# Shown once a search has results. #}
+        <div class="clu-toolbar-row" id="filterCard" hidden>
+            {{ search_input('filterInput', 'Search these series') }}
         </div>
-    </div>
+    {% endcall %}
 
     <!-- Results Table -->
     <div class="card border-0 shadow-sm" id="resultsCard" style="display: none;">
@@ -104,7 +90,11 @@
 
     {{ empty_state('Search for a series', 'Enter a series name above to search the Metron database.', 'bi-search', id='emptyState') }}
 
-    {{ empty_state('No results', 'Try a different search term.', 'bi-search', id='noResultsState', hidden=True) }}
+    {# Filled by the search script with CLU.noMatches: Metron found nothing. #}
+    <div id="noResultsState" style="display: none;"></div>
+
+    {# The result filter hid every row. #}
+    <div id="filterNoMatches" style="display: none;"></div>
 
     {% endif %}
 </div>
@@ -123,7 +113,7 @@
 
             const fillOptions = (publishers) => {
                 const selected = select.value;
-                select.innerHTML = '<option value="">All Publishers</option>';
+                select.innerHTML = '<option value="">All</option>';
                 publishers.forEach(pub => {
                     const opt = document.createElement('option');
                     opt.value = pub.id;
@@ -169,8 +159,9 @@
             document.getElementById('loadingState').style.display = 'block';
             document.getElementById('emptyState').style.display = 'none';
             document.getElementById('noResultsState').style.display = 'none';
+            document.getElementById('filterNoMatches').style.display = 'none';
             document.getElementById('resultsCard').style.display = 'none';
-            document.getElementById('filterCard').style.display = 'none';
+            document.getElementById('filterCard').hidden = true;
             document.getElementById('resultCount').textContent = '';
 
             try {
@@ -190,7 +181,18 @@
                 }
 
                 if (data.series.length === 0) {
-                    document.getElementById('noResultsState').style.display = 'block';
+                    const noResults = document.getElementById('noResultsState');
+                    noResults.replaceChildren(CLU.noMatches({
+                        noun: 'series', query: query, filtered: !!publisherId,
+                        onClear: function () {
+                            document.getElementById('searchInput').value = '';
+                            document.getElementById('publisherFilter').value = '';
+                            noResults.style.display = 'none';
+                            document.getElementById('emptyState').style.display = 'block';
+                            document.getElementById('searchInput').focus();
+                        }
+                    }));
+                    noResults.style.display = 'block';
                     return;
                 }
 
@@ -199,8 +201,8 @@
                 renderTable(allResults);
 
                 document.getElementById('resultsCard').style.display = 'block';
-                document.getElementById('filterCard').style.display = 'block';
-                document.getElementById('resultCount').textContent = `Found ${data.count} series`;
+                document.getElementById('filterCard').hidden = false;
+                CLU.setCount(document.getElementById('resultCount'), { total: data.count, noun: 'series' });
 
             } catch (e) {
                 document.getElementById('loadingState').style.display = 'none';
@@ -294,10 +296,28 @@
                 }
             });
 
-            document.getElementById('resultCount').textContent = `Showing ${visibleCount} of ${allResults.length} series`;
+            CLU.setCount(document.getElementById('resultCount'), {
+                total: allResults.length, noun: 'series', shown: visibleCount
+            });
+
+            const none = document.getElementById('filterNoMatches');
+            none.replaceChildren();
+            if (visibleCount === 0 && allResults.length) {
+                none.appendChild(CLU.noMatches({
+                    noun: 'series', query: textFilter,
+                    onClear: function () {
+                        const box = document.getElementById('filterInput');
+                        box.value = '';
+                        box.dispatchEvent(new Event('input', { bubbles: true }));
+                        box.focus();
+                    }
+                }));
+            }
+            none.style.display = visibleCount === 0 && allResults.length ? 'block' : 'none';
+            document.getElementById('resultsCard').style.display = visibleCount === 0 ? 'none' : 'block';
         }
 
-        document.getElementById('filterInput')?.addEventListener('input', applyFilters);
+        CLU.bindSearch(document.getElementById('filterInput'), applyFilters, { delay: 0 });
 
         // Sorting functionality
         document.querySelectorAll('.sortable').forEach(header => {

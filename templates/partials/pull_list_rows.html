@@ -1,3 +1,4 @@
+{% from 'partials/empty_state.html' import no_matches %}
 {# One page of Pull List rows. Rendered by /pull-list for the first page and by
 /api/pull-list/rows for every later one, so the two cannot drift. #}
 {% for series in series_list %}
@@ -73,7 +74,11 @@
     {% if load_error %}
     <td colspan="8" class="text-center text-danger py-4">{{ load_error }}</td>
     {% else %}
-    <td colspan="8" class="text-center text-muted py-4">No series match these filters.</td>
+    <td colspan="8" class="border-0">
+        {{ no_matches('series', query=filters.q if filters else '',
+                      filtered=filters and (filters.publisher_id or filters.letter or filters.status),
+                      clear_id='plClear') }}
+    </td>
     {% endif %}
 </tr>
 {% endfor %}

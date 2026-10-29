@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, search_input, result_count %}
 
 {% block title %}Wanted Issues{% endblock %}
 
@@ -49,14 +50,24 @@
         </a>
     {% endcall %}
     {% else %}
+    {% set wanted_rows = missing|length + upcoming|length + reading_list_wanted|length %}
+    {% call toolbar('Filter wanted issues', id='wantedToolbar') %}
+        <div class="clu-toolbar-row">
+            {{ search_input('wantedSearch', 'Search series and reading lists') }}
+            <div class="clu-toolbar-end">
+                {{ result_count('wantedCount', wanted_rows, 'wanted issues', one='wanted issue') }}
+            </div>
+        </div>
+    {% endcall %}
+    <div id="wantedNoMatches" hidden></div>
 
     <!-- Missing Issues Section -->
     {% if missing %}
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card border-0 shadow-sm mb-4 wanted-section">
         <div class="card-header bg-danger bg-opacity-10 d-flex justify-content-between align-items-center">
             <h5 class="mb-0">
                 <i class="bi bi-x-circle me-2 text-danger"></i>Missing Issues
-                <span class="badge bg-danger ms-2">{{ missing|length }}</span>
+                <span class="badge bg-danger ms-2 wanted-section-count">{{ missing|length }}</span>
             </h5>
             <button aria-label="Show or hide missing issues" title="Show or hide missing issues" class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse"
                 data-bs-target="#missingCollapse" aria-expanded="true">
@@ -77,7 +88,7 @@
                         </thead>
                         <tbody>
                             {% for item in missing %}
-                            <tr>
+                            <tr class="wanted-row" data-search="{{ (item.series_name ~ ' ' ~ (item.issue.name or ''))|lower }}">
                                 <td class="ps-4">
                                     <a href="{{ url_for('series.series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
                                         class="text-decoration-none fw-bold">
@@ -132,11 +143,11 @@
 
     <!-- Upcoming Releases Section -->
     {% if upcoming %}
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card border-0 shadow-sm mb-4 wanted-section">
         <div class="card-header bg-info bg-opacity-10 d-flex justify-content-between align-items-center">
             <h5 class="mb-0">
                 <i class="bi bi-calendar-plus me-2 text-info"></i>Upcoming Releases
-                <span class="badge bg-info ms-2">{{ upcoming|length }}</span>
+                <span class="badge bg-info ms-2 wanted-section-count">{{ upcoming|length }}</span>
             </h5>
             <button aria-label="Show or hide upcoming issues" title="Show or hide upcoming issues" class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse"
                 data-bs-target="#upcomingCollapse" aria-expanded="true">
@@ -157,7 +168,7 @@
                         </thead>
                         <tbody>
                             {% for item in upcoming %}
-                            <tr>
+                            <tr class="wanted-row" data-search="{{ (item.series_name ~ ' ' ~ (item.issue.name or ''))|lower }}">
                                 <td class="ps-4">
                                     <a href="{{ url_for('series.series_view', slug=generate_series_slug(item.series_name, item.series_id, item.series_volume)) }}"
                                         class="text-decoration-none fw-bold">
@@ -201,11 +212,11 @@
        tracks no series at all, the loading branch is the only one that ever
        renders. #}
     {% if reading_list_wanted %}
-    <div class="card border-0 shadow-sm mb-4">
+    <div class="card border-0 shadow-sm mb-4 wanted-section">
         <div class="card-header bg-primary bg-opacity-10 d-flex justify-content-between align-items-center">
             <h5 class="mb-0">
                 <i class="bi bi-journal-bookmark me-2 text-primary"></i>From Reading Lists
-                <span class="badge bg-primary ms-2">{{ reading_list_wanted|length }}</span>
+                <span class="badge bg-primary ms-2 wanted-section-count">{{ reading_list_wanted|length }}</span>
             </h5>
             <button aria-label="Show or hide reading-list issues" title="Show or hide reading-list issues" class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse"
                 data-bs-target="#readingListCollapse" aria-expanded="true">
@@ -226,7 +237,7 @@
                         </thead>
                         <tbody>
                             {% for item in reading_list_wanted %}
-                            <tr>
+                            <tr class="wanted-row" data-search="{{ (item.series ~ ' ' ~ (item.reading_list_name or ''))|lower }}">
                                 <td class="ps-4 fw-bold">{{ item.series }}</td>
                                 <td>
                                     <span class="badge bg-primary">#{{ item.issue_number }}</span>
@@ -277,7 +288,7 @@
             <div class="modal-body">
                 <div class="mb-3">
                     <div class="input-group">
-                        <input type="text" class="form-control" id="getcomicsQuery" placeholder="Search query..."
+                        <input type="text" class="form-control" id="getcomicsQuery" aria-label="Search GetComics" placeholder="Search GetComics…"
                             onkeypress="if(event.key==='Enter')doGetComicsSearch()">
                         <button aria-label="Search GetComics" title="Search GetComics" class="btn btn-primary" onclick="doGetComicsSearch()">
                             <i class="bi bi-search"></i>
@@ -467,6 +478,52 @@
             })
             .finally(() => clearTimeout(t));
     }
+
+    // The search narrows every section's rows by series (and, for reading-list
+    // rows, the list's name). A section with nothing left hides, and its
+    // header badge counts what is shown.
+    document.addEventListener('DOMContentLoaded', function () {
+        const box = document.getElementById('wantedSearch');
+        if (!box) return;
+        const rows = Array.from(document.querySelectorAll('.wanted-row'));
+        const countEl = document.getElementById('wantedCount');
+        const noMatches = document.getElementById('wantedNoMatches');
+
+        function apply(value) {
+            const q = (value || '').trim();
+            const needle = q.toLowerCase();
+            let shown = 0;
+            rows.forEach(function (row) {
+                const ok = !needle || (row.dataset.search || '').indexOf(needle) !== -1;
+                row.classList.toggle('d-none', !ok);
+                if (ok) shown += 1;
+            });
+            document.querySelectorAll('.wanted-section').forEach(function (section) {
+                const visible = section.querySelectorAll('.wanted-row:not(.d-none)').length;
+                section.classList.toggle('d-none', visible === 0);
+                const badge = section.querySelector('.wanted-section-count');
+                if (badge) badge.textContent = CLU.formatCount(visible);
+            });
+            CLU.setCount(countEl, {
+                total: rows.length, noun: 'wanted issues', one: 'wanted issue', shown: shown
+            });
+            if (shown === 0 && q) {
+                noMatches.replaceChildren(CLU.noMatches({
+                    noun: 'wanted issues', query: q,
+                    onClear: function () {
+                        box.value = '';
+                        box.dispatchEvent(new Event('input', { bubbles: true }));
+                    }
+                }));
+                noMatches.hidden = false;
+            } else {
+                noMatches.hidden = true;
+                noMatches.replaceChildren();
+            }
+        }
+
+        CLU.bindSearch(box, apply, { delay: 0 });
+    });
 
     // Auto-poll when in loading state
     {% if loading or refreshing %}

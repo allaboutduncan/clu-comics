@@ -517,7 +517,7 @@
             resultsEl.innerHTML = `
             <div class="text-center py-4">
                 <div class="spinner-border text-primary"></div>
-                <p class="mt-2">Searching...</p>
+                <p class="mt-2">Searching…</p>
             </div>`;
 
             const order = await fetchSourceOrder();
@@ -535,11 +535,11 @@
             }));
 
             const combined = sections.join('');
-            resultsEl.innerHTML = combined.trim() ? combined : `
-            <div class="text-center text-muted py-4">
-                <i class="bi bi-emoji-frown display-4 opacity-25"></i>
-                <p class="mt-2">No results found</p>
-            </div>`;
+            if (combined.trim()) {
+                resultsEl.innerHTML = combined;
+            } else {
+                resultsEl.replaceChildren(CLU.noMatches({ noun: 'downloads', query: query, compact: true }));
+            }
 
             // A fresh render arms every button again, including ones already
             // sent — narrowing a query and re-running it must not invite a

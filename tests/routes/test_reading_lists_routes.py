@@ -1,4 +1,5 @@
 """Tests for reading_lists.py blueprint -- reading list API endpoints."""
+import re
 import pytest
 from unittest.mock import patch, MagicMock
 from io import BytesIO
@@ -23,7 +24,7 @@ class TestReadingListGridPaging:
     "Select All"."""
 
     @staticmethod
-    def _seed(n=45):
+    def _seed(n=65):
         from core.database import create_reading_list, update_reading_list_tags
         ids = []
         for i in range(n):
@@ -35,16 +36,54 @@ class TestReadingListGridPaging:
     def test_first_page_only(self, client):
         self._seed()
         html = client.get("/reading-lists").get_data(as_text=True)
-        assert html.count('class="reading-list-card') == 40
+        assert html.count('class="reading-list-card') == 60
         assert 'data-total-pages="2"' in html
-        assert 'data-total-lists="45"' in html
+        assert 'data-total-lists="65"' in html
+
+    def test_search_narrows_by_name_on_the_server(self, client):
+        from core.database import create_reading_list
+        self._seed(5)
+        create_reading_list("Batman: Year One")
+        create_reading_list("The Dark Knight Returns")
+        html = client.get("/reading-lists?q=batman").get_data(as_text=True)
+        assert html.count('class="reading-list-card') == 1
+        assert "Batman: Year One" in html
+        # The box keeps the search, worded like every other list's.
+        assert 'id="rlSearch" aria-label="Search reading lists"' in html
+        assert 'placeholder="Search reading lists…" value="batman"' in html
+        assert 'id="rlCount" aria-live="polite">Showing 1 of 7 reading lists</span>' in html
+        data = client.get("/api/reading-lists/page?q=dark").get_json()
+        assert data["total"] == 1 and "The Dark Knight Returns" in data["html"]
+        ids = client.get("/api/reading-lists/ids?q=dark&tag=odd").get_json()["ids"]
+        assert ids == []  # the search and the tag combine
+
+    def test_search_matches_percent_and_underscore_literally(self, client):
+        from core.database import create_reading_list
+        create_reading_list("100% Marvel")
+        create_reading_list("X_Men Events")
+        create_reading_list("Plain List")
+        assert client.get("/api/reading-lists/page?q=%25").get_json()["total"] == 1
+        assert client.get("/api/reading-lists/page?q=_").get_json()["total"] == 1
+
+    def test_search_with_no_match_offers_clear_search(self, client):
+        self._seed(3)
+        html = client.get("/api/reading-lists/page?q=zzzqx").get_json()["html"]
+        assert "No reading lists match “zzzqx”" in html
+        assert 'id="rlClearFilters">Clear search</button>' in html
+        html = client.get("/api/reading-lists/page?q=zzzqx&tag=odd").get_json()["html"]
+        assert "No reading lists match these filters" in html
+        assert 'id="rlClearFilters">Clear filters</button>' in html
 
     def test_tag_and_sort_from_the_query_string(self, client):
         self._seed()
         html = client.get("/reading-lists?tag=odd&sort=name-asc").get_data(as_text=True)
-        assert html.count('class="reading-list-card') == 22
-        assert 'class="tag-filter-btn active" data-tag="odd"' in html
-        assert 'class="sort-btn active" data-sort="name-asc"' in html
+        assert html.count('class="reading-list-card') == 32
+        tags = html.split('id="rlTags"', 1)[1].split("</div>", 1)[0]
+        assert 'data-clu-filter="multi"' in tags
+        assert re.search(r'class="btn btn-sm btn-outline-secondary active"\s+data-value="odd" aria-pressed="true"', tags)
+        assert 'data-value="" aria-pressed="false"' in tags
+        sort = html.split('id="rlSort"', 1)[1].split("</div>", 1)[0]
+        assert re.search(r'class="btn btn-sm btn-outline-secondary active"\s+data-value="name-asc" aria-pressed="true"', sort)
         assert html.index("List 01") < html.index("List 03")
 
     def test_unknown_tag_and_bad_params_fall_back(self, client):
@@ -53,30 +92,48 @@ class TestReadingListGridPaging:
         assert resp.status_code == 200
         html = resp.get_data(as_text=True)
         assert html.count('class="reading-list-card') == 3
-        assert 'data-per-page="40"' in html
+        # 13 is not a size: it snaps to the nearest one (helpers.paging).
+        assert 'data-per-page="24"' in html
 
     def test_page_size_falls_back_to_the_remembered_one(self, client):
         self._seed()
-        client.set_cookie("clu_per_page_reading_lists", "20")
+        client.set_cookie("clu_per_page_reading_lists", "24")
         html = client.get("/reading-lists").get_data(as_text=True)
-        assert html.count('class="reading-list-card') == 20
+        assert html.count('class="reading-list-card') == 24
         assert 'data-per-page-cookie="clu_per_page_reading_lists"' in html
-        assert client.get("/api/reading-lists/page").get_json()["per_page"] == 20
-        # A junk or unoffered ?per_page falls through to the cookie.
+        assert client.get("/api/reading-lists/page").get_json()["per_page"] == 24
+        # A junk ?per_page falls through to the cookie (#681); a size outside
+        # the set snaps to the nearest one, here 24 as well.
         for bad in ("abc", "7"):
             html = client.get("/reading-lists?per_page=" + bad).get_data(as_text=True)
-            assert 'data-per-page="20"' in html
-        html = client.get("/reading-lists?per_page=80").get_data(as_text=True)
-        assert 'data-per-page="80"' in html
+            assert 'data-per-page="24"' in html
+        html = client.get("/reading-lists?per_page=120").get_data(as_text=True)
+        assert 'data-per-page="120"' in html
         client.set_cookie("clu_per_page_reading_lists", "abc")
         html = client.get("/reading-lists").get_data(as_text=True)
-        assert 'data-per-page="40"' in html
+        assert 'data-per-page="60"' in html
+
+    def test_page_sizes_and_default(self, client):
+        self._seed(3)
+        html = client.get("/reading-lists").get_data(as_text=True)
+        assert 'data-per-page="60"' in html and 'data-default-per-page="60"' in html
+        select = html.split('id="rlPerPage"', 1)[1].split("</select>", 1)[0]
+        assert re.findall(r'<option value="(\d+)"', select) == ["24", "60", "120", "240"]
+
+    def test_a_size_from_the_old_set_snaps_to_the_nearest(self, client):
+        """The select used to offer 20/40/80/160/300: a remembered size must
+        not reset to the default. Nearest, ties to the smaller."""
+        self._seed(3)
+        for old, new in (("40", "24"), ("300", "240"), ("20", "24"), ("80", "60"), ("160", "120")):
+            client.set_cookie("clu_per_page_reading_lists", old)
+            html = client.get("/reading-lists").get_data(as_text=True)
+            assert f'data-per-page="{new}"' in html, old
 
     def test_page_endpoint(self, client):
         self._seed()
         data = client.get("/api/reading-lists/page?page=2").get_json()
         assert data["success"] is True
-        assert (data["page"], data["total"], data["total_pages"]) == (2, 45, 2)
+        assert (data["page"], data["total"], data["total_pages"]) == (2, 65, 2)
         assert data["html"].count('class="reading-list-card') == 5
 
     def test_page_endpoint_no_match(self, client):
@@ -84,6 +141,14 @@ class TestReadingListGridPaging:
         data = client.get("/api/reading-lists/page?tag=even&tag=odd").get_json()
         assert data["total"] == 0
         assert "reading-list-no-match" in data["html"]
+        assert "No reading lists match these filters" in data["html"]
+        assert 'id="rlClearFilters"' in data["html"]
+
+    def test_toolbar_count_uses_the_shared_wording(self, client):
+        self._seed()
+        html = client.get("/reading-lists").get_data(as_text=True)
+        assert "Showing 1\u201360 of 65 reading lists" in html
+        assert "No reading lists match (" not in html
 
     def test_non_string_tags_do_not_take_the_page_down(self, client, db_connection):
         """A tag stored as a number made the tag-bar sort raise for everyone,
@@ -99,8 +164,9 @@ class TestReadingListGridPaging:
         resp = client.get("/reading-lists")
         assert resp.status_code == 200
         html = resp.get_data(as_text=True)
-        assert 'data-tag="dc"' in html
-        assert 'data-tag="2024"' not in html and 'data-tag="marvel"' not in html
+        tags = html.split('id="rlTags"', 1)[1].split("</div>", 1)[0]
+        assert 'data-value="dc"' in tags
+        assert 'data-value="2024"' not in tags and 'data-value="marvel"' not in tags
 
     def test_covers_follow_the_script_root(self, client, db_connection):
         """A hardcoded /api/thumbnail 404s behind a subpath proxy."""

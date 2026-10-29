@@ -12,10 +12,24 @@
     color: var(--bs-body-color);
 }
 
+/* The search box sits in a slot source_wall.js shows past 25 folders; the
+   slot sizes like .clu-search does as a direct child of a toolbar row. */
+.clu-toolbar-row > .sw-search-slot {
+    flex: 1 1 14rem;
+    max-width: 22rem;
+    min-width: 0;
+}
+
+@media (max-width: 575.98px) {
+    .clu-toolbar-row > .sw-search-slot {
+        flex-basis: 100%;
+        max-width: none;
+    }
+}
+
 /* Table container */
 .sw-table-container {
-    width: 90%;
-    margin: 0 auto;
+    /* As wide as the toolbar above it: the shell sets the page width. */
     overflow-x: auto;
 }
 
@@ -220,18 +234,6 @@
     font-style: italic;
     cursor: default;
     pointer-events: none;
-}
-
-/* Filter bar reuse */
-.sw-filter-buttons {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(38px, 1fr));
-    gap: 2px;
-}
-
-.sw-filter-buttons .btn {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.8rem;
 }
 
 /* Selected row highlight */

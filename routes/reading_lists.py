@@ -8,6 +8,7 @@ import hashlib
 import threading
 import time as time_module
 from urllib.parse import urlparse
+from helpers.paging import DEFAULT_PER_PAGE, PAGE_SIZES, per_page_from
 from core.database import (
     create_reading_list,
     add_reading_list_entry,
@@ -68,7 +69,6 @@ from models.comicvine import (
     fetch_cv_arc_issues,
 )
 from core.app_logging import app_logger
-from helpers.paging import per_page_arg
 import core.app_state as app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
@@ -85,27 +85,30 @@ _github_tree_lock = threading.Lock()
 _import_semaphore = threading.Semaphore(5)
 
 
-# Multiples of 4 (and 5) so the last row of cards is full; the select in
-# templates/reading_lists.html offers exactly these.
-READING_LIST_PAGE_SIZES = (20, 40, 80, 160, 300)
-READING_LIST_DEFAULT_PER_PAGE = 40
+# The app's one set of page sizes (helpers/paging.py): each fills whole rows
+# of cards at 2, 3, 4 and 6 columns.
+READING_LIST_PAGE_SIZES = PAGE_SIZES
+READING_LIST_DEFAULT_PER_PAGE = DEFAULT_PER_PAGE
 # The size last picked in the select; used when the URL does not say.
 READING_LIST_PER_PAGE_COOKIE = 'clu_per_page_reading_lists'
 
 
 def _reading_list_grid_args():
-    """The grid's filter, sort and page from the query string. Anything the
-    page does not offer falls back to its default."""
+    """The grid's search, filter, sort and page from the query string.
+    Anything the page does not offer falls back to its default."""
     args = request.args
+    query = (args.get('q') or '').strip()
     tags = [t for t in args.getlist('tag') if t and t != 'all']
     sort = args.get('sort') or READING_LIST_DEFAULT_SORT
     try:
         page = max(1, int(args.get('page', 1)))
     except (TypeError, ValueError):
         page = 1
-    per_page = per_page_arg(args, request.cookies, READING_LIST_PER_PAGE_COOKIE,
-                            READING_LIST_PAGE_SIZES, READING_LIST_DEFAULT_PER_PAGE)
-    return tags, sort, page, per_page
+    # A size saved under the old set (20, 40, 80...) snaps to the nearest one.
+    per_page = per_page_from(args.get('per_page'),
+                             request.cookies.get(READING_LIST_PER_PAGE_COOKIE),
+                             default=READING_LIST_DEFAULT_PER_PAGE)
+    return query, tags, sort, page, per_page
 
 
 @reading_lists_bp.route('/reading-lists')
@@ -117,16 +120,19 @@ def index():
     layer. The tag filter, sort and page come from the query string, and
     later changes fetch /api/reading-lists/page.
     """
-    tags, sort, page, per_page = _reading_list_grid_args()
+    query, tags, sort, page, per_page = _reading_list_grid_args()
     total_lists = count_reading_lists()
     all_tags = sorted(get_all_reading_list_tags(), key=lambda t: (t.lower(), t))
     # A tag no list carries any more would filter on something invisible.
     tags = [t for t in tags if t in all_tags]
-    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page)
+    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page,
+                                    query=query)
     return render_template(
         'reading_lists.html',
         lists=result['lists'],
         grid=result,
+        grid_query=query,
+        grid_filtered=bool(tags),
         total_lists=total_lists,
         all_tags=all_tags,
         active_tags=tags,
@@ -143,9 +149,11 @@ def grid_page():
 
     Rendered from the same partial as the full page so the two cannot drift.
     """
-    tags, sort, page, per_page = _reading_list_grid_args()
-    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page)
-    html = render_template('partials/reading_list_cards.html', lists=result['lists'])
+    query, tags, sort, page, per_page = _reading_list_grid_args()
+    result = get_reading_lists_page(tags=tags, sort=sort, page=page, per_page=per_page,
+                                    query=query)
+    html = render_template('partials/reading_list_cards.html', lists=result['lists'],
+                           grid_query=query, grid_filtered=bool(tags))
     return jsonify({
         'success': True,
         'html': html,
@@ -158,9 +166,10 @@ def grid_page():
 
 @reading_lists_bp.route('/api/reading-lists/ids')
 def grid_ids():
-    """Every list id matching the tag filter, on every page: "Select All"."""
-    tags, _sort, _page, _per_page = _reading_list_grid_args()
-    return jsonify({'success': True, 'ids': get_reading_list_matching_ids(tags)})
+    """Every list id matching the search and tag filter, on every page:
+    "Select All"."""
+    query, tags, _sort, _page, _per_page = _reading_list_grid_args()
+    return jsonify({'success': True, 'ids': get_reading_list_matching_ids(tags, query=query)})
 
 @reading_lists_bp.route('/reading-lists/<int:list_id>')
 def view_list(list_id):

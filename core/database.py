@@ -7868,6 +7868,39 @@ def _build_metadata_where(filters, allowed_prefixes=None):
     return "WHERE " + " AND ".join(clauses), params
 
 
+# The A-Z bar on /library filters on the grouped column, so a letter is applied
+# here, before LIMIT/OFFSET: filtering the loaded page in the browser showed
+# only the matches that happened to be on that page. '#' is everything that
+# does not start with an ASCII letter, as on /collection and /pull-list.
+_MB_FIRST_CHAR = "UPPER(SUBSTR(TRIM({col}), 1, 1))"
+
+
+def _mb_letter_clause(column, letter):
+    """(sql, params) restricting `column` to one A-Z bar letter, or ("", [])."""
+    if not letter:
+        return "", []
+    first = _MB_FIRST_CHAR.format(col=column)
+    if letter == "#":
+        return " AND NOT (" + first + " BETWEEN 'A' AND 'Z')", []
+    if len(letter) == 1 and "A" <= letter.upper() <= "Z":
+        return " AND " + first + " = ?", [letter.upper()]
+    return "", []
+
+
+def _mb_letters(c, column, where_sql, params):
+    """Every first letter present across all pages, '#' first (as every letter bar orders them)."""
+    first = _MB_FIRST_CHAR.format(col=column)
+    c.execute(
+        "SELECT DISTINCT CASE WHEN " + first + " BETWEEN 'A' AND 'Z'"
+        " THEN " + first + " ELSE '#' END AS l"
+        " FROM file_index " + where_sql +
+        " AND " + column + " IS NOT NULL AND TRIM(" + column + ") != ''",
+        params,
+    )
+    # '#' sorts before 'A', so a plain sort puts it first.
+    return sorted(r["l"] for r in c.fetchall())
+
+
 def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
                     allowed_prefixes=None):
     """
@@ -7885,11 +7918,18 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
     axis='issue'     -> flat list of issue files
 
     sort: 'alpha' | 'count' | 'year' | 'recent'
-    Returns {items, total, level}
+
+    filters['letter'] ('A'-'Z' or '#') narrows the publisher, series and issue
+    levels by first character, before paging. `letters` in the result lists
+    every first letter present across all pages (ignoring the letter itself),
+    so the A-Z bar does not depend on which page is loaded; the year levels
+    have no letters.
+    Returns {items, total, level, letters}
     """
     filters = dict(filters or {})
+    letter = filters.pop("letter", None) or ""
     cache_key = _mb_cache_key(
-        "browse", axis, filters, sort, offset, limit, allowed_prefixes)
+        "browse", axis, filters, letter, sort, offset, limit, allowed_prefixes)
     cached = _mb_cache_get(cache_key)
     if cached is not None:
         return cached
@@ -7906,6 +7946,9 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
 
         if axis == "issue":
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
+            letters = _mb_letters(c, "name", where_sql, params)
+            l_sql, l_params = _mb_letter_clause("name", letter)
+            where_sql, params = where_sql + l_sql, params + l_params
             c.execute(
                 "SELECT COUNT(*) AS n FROM file_index " + where_sql, params
             )
@@ -7937,18 +7980,22 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
                     "has_comicinfo": r["has_comicinfo"],
                 })
             conn.close()
-            out = {"items": items, "total": total, "level": "issue"}
+            out = {"items": items, "total": total, "level": "issue",
+                   "letters": letters}
             _mb_cache_put(cache_key, out)
             return out
 
         if axis == "publisher":
             column = "ci_publisher"
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
+            letters = _mb_letters(c, column, where_sql, params)
+            l_sql, l_params = _mb_letter_clause(column, letter)
+            where_sql, params = where_sql + l_sql, params + l_params
             c.execute(
                 "SELECT " + column + " AS v, COUNT(*) AS n,"
                 " MIN(path) AS cover_path"
                 " FROM file_index " + where_sql +
-                " AND " + column + " IS NOT NULL AND " + column + " != ''"
+                " AND " + column + " IS NOT NULL AND TRIM(" + column + ") != ''"
                 " GROUP BY " + column,
                 params,
             )
@@ -7972,18 +8019,22 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
                 for r in sliced
             ]
             conn.close()
-            out = {"items": items, "total": total, "level": "publisher"}
+            out = {"items": items, "total": total, "level": "publisher",
+                   "letters": letters}
             _mb_cache_put(cache_key, out)
             return out
 
         if axis == "series":
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
+            letters = _mb_letters(c, "ci_series", where_sql, params)
+            l_sql, l_params = _mb_letter_clause("ci_series", letter)
+            where_sql, params = where_sql + l_sql, params + l_params
             c.execute(
                 "SELECT ci_series AS v, ci_publisher AS publisher,"
                 " COUNT(*) AS n, MIN(CAST(ci_year AS INTEGER)) AS year,"
                 " MIN(path) AS cover_path"
                 " FROM file_index " + where_sql +
-                " AND ci_series IS NOT NULL AND ci_series != ''"
+                " AND ci_series IS NOT NULL AND TRIM(ci_series) != ''"
                 " GROUP BY ci_series, ci_publisher",
                 params,
             )
@@ -8009,7 +8060,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
                 for r in sliced
             ]
             conn.close()
-            out = {"items": items, "total": total, "level": "series"}
+            out = {"items": items, "total": total, "level": "series",
+                   "letters": letters}
             _mb_cache_put(cache_key, out)
             return out
 
@@ -8053,7 +8105,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
                     "cover_path": r["cover_path"],
                 })
             conn.close()
-            out = {"items": items, "total": total, "level": level}
+            out = {"items": items, "total": total, "level": level,
+                   "letters": []}
             _mb_cache_put(cache_key, out)
             return out
 
@@ -11482,8 +11535,20 @@ def _reading_list_tag_where(tags):
     return (" AND ".join(clauses) or "1"), params
 
 
+def _reading_list_where(tags, query=None):
+    """The tag filter plus the search box: the list's name contains ``query``
+    (SQLite LIKE: case-insensitive for ASCII; % and _ are matched literally)."""
+    where, params = _reading_list_tag_where(tags)
+    q = (query or "").strip()
+    if q:
+        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where = f"({where}) AND rl.name LIKE ? ESCAPE '\\'"
+        params = params + [f"%{escaped}%"]
+    return where, params
+
+
 def get_reading_lists_page(viewer_id=None, tags=None, sort=READING_LIST_DEFAULT_SORT,
-                           page=1, per_page=40):
+                           page=1, per_page=40, query=None):
     """One page of the Reading Lists grid, filtered and sorted in SQL.
 
     Every list is visible to every user (so a reader can browse lists an
@@ -11499,7 +11564,7 @@ def get_reading_lists_page(viewer_id=None, tags=None, sort=READING_LIST_DEFAULT_
     per_page = max(1, int(per_page or 40))
     page = max(1, int(page or 1))
     order = _READING_LIST_SORTS.get(sort) or _READING_LIST_SORTS[READING_LIST_DEFAULT_SORT]
-    where, params = _reading_list_tag_where(tags)
+    where, params = _reading_list_where(tags, query)
     empty = {"lists": [], "total": 0, "page": 1, "per_page": per_page, "total_pages": 1}
     try:
         uid = _resolve_user_id(viewer_id)
@@ -11549,12 +11614,13 @@ def get_reading_lists_page(viewer_id=None, tags=None, sort=READING_LIST_DEFAULT_
         return empty
 
 
-def get_reading_list_matching_ids(tags=None):
-    """Every reading-list id carrying all of ``tags``, on every page.
+def get_reading_list_matching_ids(tags=None, query=None):
+    """Every reading-list id carrying all of ``tags`` (and matching the search
+    ``query``), on every page.
 
     Backs the grid's "Select All": a page holds only its own cards.
     """
-    where, params = _reading_list_tag_where(tags)
+    where, params = _reading_list_where(tags, query)
     try:
         with db_conn() as conn:
             if not conn:

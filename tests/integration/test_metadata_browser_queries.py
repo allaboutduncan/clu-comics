@@ -116,6 +116,65 @@ def test_metadata_browse_search(library):
     assert names == ["Batman"]
 
 
+
+def _seed_letters(conn):
+    """Publishers spread across the alphabet, plus one that starts with a digit."""
+    for i, pub in enumerate(["Archie", "Boom", "Dark Horse", "Dynamite",
+                             "IDW", "Oni", "2000 AD", " marvel"]):
+        _seed(conn, name=f"x{i}.cbz", path=f"/data/L/{i}.cbz", parent="/data/L",
+              ci_publisher=pub, ci_series=f"S{i}", ci_number="1", ci_year="2020")
+
+
+def test_letter_filter_runs_before_paging(library):
+    """A letter must find every match, not only those on the loaded page."""
+    from core.database import metadata_browse
+    _seed_letters(library)
+    # Alphabetical page 1 of size 2 is "2000 AD", "Archie": no D on it.
+    r = metadata_browse("publisher", {"letter": "D"}, limit=2, offset=0)
+    assert [i["name"] for i in r["items"]] == ["Dark Horse", "DC"]
+    assert r["total"] == 3          # Dark Horse, DC, Dynamite
+    page2 = metadata_browse("publisher", {"letter": "D"}, limit=2, offset=2)
+    assert [i["name"] for i in page2["items"]] == ["Dynamite"]
+
+
+def test_letter_hash_is_everything_not_a_to_z(library):
+    from core.database import metadata_browse
+    _seed_letters(library)
+    r = metadata_browse("publisher", {"letter": "#"})
+    assert [i["name"] for i in r["items"]] == ["2000 AD"]
+
+
+def test_letter_ignores_case_and_leading_space(library):
+    from core.database import metadata_browse
+    _seed_letters(library)
+    r = metadata_browse("publisher", {"letter": "m"})
+    assert [i["name"] for i in r["items"]] == [" marvel"]
+
+
+def test_letters_cover_every_page_and_ignore_the_letter(library):
+    from core.database import metadata_browse
+    _seed_letters(library)
+    expected = ["#", "A", "B", "D", "I", "M", "O"]
+    first = metadata_browse("publisher", {}, limit=1, offset=0)
+    assert first["letters"] == expected
+    narrowed = metadata_browse("publisher", {"letter": "B"}, limit=1)
+    assert narrowed["letters"] == expected
+
+
+def test_letter_applies_to_series_and_issue_levels(library):
+    from core.database import metadata_browse
+    series = metadata_browse("series", {"letter": "S"})
+    assert {i["name"] for i in series["items"]} == {"Saga"}
+    assert series["letters"] == ["B", "S"]
+    issues = metadata_browse("issue", {"letter": "S"})
+    assert [i["name"] for i in issues["items"]] == ["Saga 001.cbz"]
+
+
+def test_year_levels_have_no_letters(library):
+    from core.database import metadata_browse
+    assert metadata_browse("year", {})["letters"] == []
+
+
 def test_series_representative_path(library):
     from core.database import series_representative_path
     p = series_representative_path("Batman")

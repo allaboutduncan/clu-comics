@@ -582,7 +582,7 @@ class TestEmptyFolders:
              patch("core.problem_files.count_problems",
                    return_value={"open": 0, "dismissed": 0, "by_source": {}}):
             resp = client.get("/problem-files")
-        assert b'data-source="empty-folder"' in resp.data
+        assert b'data-value="empty-folder"' in resp.data
         assert b'id="pf-scan-empty"' in resp.data
 
     def test_scan_starts_in_the_background(self, client):

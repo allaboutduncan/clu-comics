@@ -71,9 +71,11 @@ def test_status_row_actions_are_buttons():
 
 def test_library_toolbar_is_one_row_on_desktop():
     html = (ROOT / "templates" / "metadata_browser.html").read_text(encoding="utf-8")
-    toolbar = html[html.index('role="toolbar" aria-label="Library view"'):html.index('id="mbLetterFilter"')]
-    # View, sort, page size, refresh and search share one row; no divider row.
-    for needle in ('name="mbAxis"', 'id="mbSort"', 'id="mbPerPage"', 'id="mbRefreshBtn"', 'id="mbSearch"'):
+    toolbar = html[html.index("{% call toolbar('Library view') %}"):html.index('id="mbLetterFilter"')]
+    # Search, view, sort, refresh and page size share one row; no divider row.
+    for needle in ('name="mbAxis"', "select_field('mbSort', 'Sort')", "per_page_select('mbPerPage'",
+                   'id="mbRefreshBtn"', "search_input('mbSearch', 'Search title or series'"):
         assert needle in toolbar
-    assert "border-top" not in html[html.index("mb-toolbar"):html.index('id="mbGrid"')]
-    assert '<label class="visually-hidden" for="mbSearch">' in html
+    # Search comes first in the row.
+    assert toolbar.index("search_input('mbSearch'") < toolbar.index('name="mbAxis"')
+    assert "border-top" not in html[html.index("{% call toolbar('Library view') %}"):html.index('id="mbGrid"')]
