@@ -316,7 +316,8 @@ _OWNER_PREFIXES = (
     "/api/rebuild-file-index",
     "/api/providers",          # provider credentials (secrets)
     "/users",                  # user-management page
-    "/problem-files",          # damaged-file worklist (page + its API)
+    "/library-health",         # Library Health page (damaged-file worklist, duplicates)
+    "/problem-files",          # its old URL (redirects)
     "/api/problem-files",
     "/setup-owner",            # first-run owner setup page
     "/import",                 # Mylar3 importer page (writes client/indexer secrets)

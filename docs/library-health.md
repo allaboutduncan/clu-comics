@@ -1,11 +1,11 @@
-# Problem Files
+# Library Health
 
 Comics go bad. A download truncates, a scan bit-rots on disk, an archive turns
 out to be a RAR wearing a `.cbz` name. Until now the only sign was a grey
 placeholder where the cover should be, and an error line in a log that scrolls
 away.
 
-**Problem Files** is the page that collects those failures. It is under the gear
+**Library Health** is the page that collects those failures. It is under the gear
 menu, next to Settings, and is visible to the Store Owner only.
 
 ## What appears here
@@ -119,7 +119,7 @@ be true.
 ## Library health scan
 
 By default nothing looks for damage on its own, so an empty list means *nothing
-has failed*, not *the library is clean*. The **Library health** card at the top of
+has failed*, not *the library is clean*. The **Health scan** card at the top of
 the page changes that — it is **off by default**, because it reads every comic.
 
 Turn on **Scan automatically** (or press **Run scan now**) and CLU checks a batch
@@ -152,7 +152,7 @@ tagged as the same series, issue and year *and* named alike (a tag that contradi
 by a copy marker like `(1)` (*likely* — they may be variants, so check). Pick the
 copy to keep; the others go to the Trash. Nothing is removed automatically.
 
-The score beside **Problem Files** in the gear menu is 100 minus a capped penalty
+The score beside **Library Health** in the gear menu is 100 minus a capped penalty
 for open damage, duplicate groups and strays. It turns red when a file has failed
 its integrity check. If a library is not mounted, CLU skips it rather than
 reporting its files as damaged.

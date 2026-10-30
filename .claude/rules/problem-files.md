@@ -18,12 +18,13 @@ paths:
   - "app.py"
 ---
 
-# Problem Files, damaged-file replacement and the library health scan
+# Library Health, damaged-file replacement and the library health scan
 
-### Problem Files
+### Library Health
 
 `core/problem_files.py` owns the `problem_files` table and the owner-only
-`/problem-files` page (`routes/problem_files.py`). A damaged comic used to
+`/library-health` page (`routes/problem_files.py`; the old `/problem-files`
+URL redirects). A damaged comic used to
 produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
 `status='error'` with no message — so the only user-facing surface was a generic
 `error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
@@ -150,7 +151,7 @@ Things that look arbitrary and are not:
 
 `core/problem_replacements.py` files a downloaded replacement straight onto the
 damaged file it replaces. The user already told us the destination when they hit
-Search from a Problem Files row: the damaged file's own path.
+Search from a Library Health row: the damaged file's own path.
 
 **Nothing else would ever claim that download.** `process_incoming_wanted_issues`
 only files issues that are *missing*, and a corrupt file is still a file, so the
@@ -280,7 +281,7 @@ comic.
 
 ### Library Health Scan
 
-Problem Files is report-only, so an empty page meant "nothing has failed", not
+Library Health is report-only, so an empty page meant "nothing has failed", not
 "the library is clean". `core/library_health.py` is the opt-in answer
 (`library_health_scan_enabled`, default **off** — it reads every comic). Findings
 land in the existing `problem_files` ledger under three new sources, `integrity`
@@ -289,7 +290,7 @@ comic left in WATCH for over a day — never TARGET, where files are expected to
 wait; rows under TARGET from before that are cleared by the next scan or a
 recheck) and `empty-folder` (a library folder
 with no comics: nothing, or only cvinfo/series.json/folder art). Duplicates are *derived* and shown on
-`/problem-files/duplicates`; they are not ledger rows.
+`/library-health/duplicates`; they are not ledger rows.
 
 Things that look arbitrary and are not:
 

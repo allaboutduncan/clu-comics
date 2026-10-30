@@ -181,7 +181,7 @@ re-ask "the provider that tagged *this* file" (#579).
   index-only edit. A known provider is changed by re-tagging, never by relabelling, and the route
   skips those. Side effect to remember: the stamp is a *trusted* Notes, so the auto-taggers will
   leave that file alone afterwards. `manual` is labelled "Manual" in the UI.
-- The Problem Files page deliberately has no provider-mismatch source: it is a
+- The Library Health page deliberately has no provider-mismatch source: it is a
   ledger of failures, and a mixed series is not one.
 
 Tests: `test_provider_from_notes.py`, `test_provider_tracking.py`,

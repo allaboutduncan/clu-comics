@@ -756,7 +756,7 @@ def process_incoming_wanted_issues():
     # before the wanted pass runs. These are deliberately NOT wanted issues --
     # the damaged file exists, so the issue is not missing and nothing below
     # would ever claim the download. This is the hook that makes the swap
-    # happen even when the user has closed the Problem Files page.
+    # happen even when the user has closed the Library Health page.
     #
     # The app context is required, not decorative: api.py calls this function
     # from a bare daemon thread (check_wanted_after_watch_empty), and the swap

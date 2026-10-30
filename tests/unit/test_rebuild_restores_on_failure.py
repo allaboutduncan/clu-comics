@@ -3,7 +3,7 @@
 `rebuild_single_cbz_file` renames the comic to `.zip` as step 1 and to
 `.zip.bak` before recompressing, then extracts every entry inside one `try`. A
 per-entry CRC error -- the commonest failure on a damaged archive, and exactly
-what the Problem Files page points this operation at -- aborted mid-way and left
+what the Library Health page points this operation at -- aborted mid-way and left
 the comic stranded under a name nothing in the library recognises, beside a
 scratch folder of loose pages. Clicking Rebuild made the comic disappear.
 

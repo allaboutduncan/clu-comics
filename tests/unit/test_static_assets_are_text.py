@@ -1,7 +1,7 @@
 """Static assets must be clean text.
 
 A single stray NUL byte inside `static/js/problem_files.js` — in a string
-literal used as a lookup key — made every button on the Problem Files page do
+literal used as a lookup key — made every button on the Library Health page do
 nothing, silently. The HTML parser rewrites a NUL inside an attribute value to
 U+FFFD, so the value written into the DOM was not the value read back out, the
 row lookup missed, and each handler returned early with no error anywhere.

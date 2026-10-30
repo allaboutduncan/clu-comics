@@ -108,9 +108,10 @@ class TestRolePolicy:
         ("POST", "/api/libraries", "owner"),          # library CRUD → owner
         ("DELETE", "/api/publishers/10", "owner"),
         ("GET", "/users", "owner"),
-        # Damaged-file worklist: the page and its API are both owner-only, and
+        # Library Health: the page and its API are both owner-only, and
         # /api/problem-files is NOT covered by the /api/config/ prefix.
-        ("GET", "/problem-files", "owner"),
+        ("GET", "/library-health", "owner"),
+        ("GET", "/problem-files", "owner"),           # old URL, redirects
         ("GET", "/api/problem-files", "owner"),
         ("POST", "/api/problem-files/retry", "owner"),
         ("POST", "/api/problem-files/delete", "owner"),

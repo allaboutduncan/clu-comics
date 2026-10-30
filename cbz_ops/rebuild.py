@@ -149,7 +149,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
 
 
 def _record_rebuild_problem(cbz_path, exc=None, error_class=None, error_message=None):
-    """Best-effort hand-off to the problem-files worklist. Never raises.
+    """Best-effort hand-off to the Library Health worklist. Never raises.
 
     Imported lazily: this module is also run as a subprocess by /stream, and a
     diagnostic must never be the thing that breaks the operation it describes.

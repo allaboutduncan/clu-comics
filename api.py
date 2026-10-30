@@ -408,7 +408,7 @@ def _finish_download_in_watch(file_path, full_pipeline=True):
                     elif os.path.exists(cbz_path):
                         monitor_logger.warning(
                             f"Conversion failed but left '{cbz_path}' behind; "
-                            f"keeping '{file_path}'. See the Problem Files page."
+                            f"keeping '{file_path}'. See the Library Health page."
                         )
                     else:
                         monitor_logger.warning(f"Conversion did not produce expected file: {cbz_path}")

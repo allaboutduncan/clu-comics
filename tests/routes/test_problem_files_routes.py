@@ -1,4 +1,4 @@
-"""Routes for the Problem Files page.
+"""Routes for the Library Health page.
 
 Patch targets follow the module they live in: `routes/problem_files.py` imports
 everything inside its views, so the symbols are patched at their real home
@@ -44,9 +44,16 @@ class TestPage:
     @patch("core.problem_files.count_problems", return_value={"open": 0, "dismissed": 0, "by_source": {}})
     @patch("core.problem_files.list_problems", return_value=[])
     def test_page_renders(self, _list, _counts, client):
-        resp = client.get("/problem-files")
+        resp = client.get("/library-health")
         assert resp.status_code == 200
-        assert b"Problem Files" in resp.data
+        assert b"Library Health" in resp.data
+        assert b"Problem Files" not in resp.data
+
+    def test_old_url_redirects(self, client):
+        """The page used to be called Problem Files; bookmarks must still land."""
+        resp = client.get("/problem-files")
+        assert resp.status_code == 301
+        assert resp.headers["Location"].endswith("/library-health")
 
     @patch("core.problem_files.count_problems", return_value={"open": 0, "dismissed": 0, "by_source": {}})
     @patch("core.problem_files.list_problems", return_value=[])
@@ -54,7 +61,7 @@ class TestPage:
         """"Report only" is a promise; an empty page must not read as "your
         library is clean". With the health scan opt-in, the page still says an
         empty list means nothing has *failed*."""
-        resp = client.get("/problem-files")
+        resp = client.get("/library-health")
         assert b"nothing has failed" in resp.data
 
 
@@ -528,7 +535,7 @@ class TestRefreshAllSeriesJson:
     def test_page_has_the_button_the_panel_and_the_confirmation(self, client):
         with patch("core.problem_files.count_problems", return_value={}), \
              patch("core.problem_files.list_problems", return_value=[]):
-            body = client.get("/problem-files").data
+            body = client.get("/library-health").data
         assert b'id="pf-refresh-sj-all"' in body
         assert b'id="pf-sj-result"' in body
         assert b'id="pf-sj-all-modal"' in body
@@ -581,7 +588,7 @@ class TestEmptyFolders:
         with patch("core.problem_files.list_problems", return_value=[]), \
              patch("core.problem_files.count_problems",
                    return_value={"open": 0, "dismissed": 0, "by_source": {}}):
-            resp = client.get("/problem-files")
+            resp = client.get("/library-health")
         assert b'data-source="empty-folder"' in resp.data
         assert b'id="pf-scan-empty"' in resp.data
 

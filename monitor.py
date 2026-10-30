@@ -27,7 +27,7 @@ from core.app_logging import MONITOR_LOG
 from core.database import init_db
 # monitor.py is a separate process, but it shares the one SQLite file, so the
 # worklist is a plain import -- a download that will not unpack is exactly the
-# kind of damaged file /problem-files exists to surface.
+# kind of damaged file /library-health exists to surface.
 from core.problem_files import record_problem, clear_problem, SOURCE_UNPACK
 
 load_config()
@@ -1112,7 +1112,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                                 elif os.path.exists(expected_cbz):
                                     monitor_logger.error(
                                         f"Conversion failed but left '{expected_cbz}' behind; "
-                                        f"'{target_path}' has been kept. See the Problem Files page."
+                                        f"'{target_path}' has been kept. See the Library Health page."
                                     )
                                 else:
                                     monitor_logger.error(f"Conversion did not produce expected file: {expected_cbz}")
