@@ -1,3 +1,4 @@
+{% from 'partials/filters.html' import search_input, result_count %}
 <!-- GCD Series Selection Modal -->
 <div class="modal fade" id="gcdSeriesModal" tabindex="-1" aria-labelledby="gcdSeriesModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">
@@ -20,12 +21,12 @@
             <p class="mb-0"><strong>Please select the correct series from the GCD database:</strong></p>
             <div class="btn-group" role="group" aria-label="Sort options">
               <button type="button" class="btn btn-outline-secondary btn-sm" id="sortBySeries"
-                onclick="sortGCDSeries('series')">
-                <i class="bi bi-sort-alpha-down me-1"></i>Series
+                data-value="series" aria-pressed="false" onclick="sortGCDSeries('series')">
+                <i class="bi bi-sort-alpha-down me-1" aria-hidden="true"></i>Series
               </button>
               <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByYear"
-                onclick="sortGCDSeries('year')">
-                <i class="bi bi-sort-numeric-down me-1"></i>Year
+                data-value="year" aria-pressed="false" onclick="sortGCDSeries('year')">
+                <i class="bi bi-sort-numeric-down me-1" aria-hidden="true"></i>Year
               </button>
             </div>
           </div>
@@ -66,7 +67,7 @@
         <!-- Scoped to the refine row only — Enter in #cvFilterInput below must stay inert. -->
         <div class="mb-3" id="cvRefineSearchRow" data-enter-confirm="cvRefineSearchBtn">
           <div class="input-group">
-            <input type="text" class="form-control" id="cvRefineSearchInput" placeholder="Refine search term...">
+            <input type="search" class="form-control" id="cvRefineSearchInput" aria-label="Search series" placeholder="Search series&hellip;">
             <button class="btn btn-outline-primary" type="button" id="cvRefineSearchBtn">
               <i class="bi bi-search me-1"></i>Refine
             </button>
@@ -74,16 +75,19 @@
         </div>
         <div class="mb-3">
           <div class="d-flex justify-content-between align-items-center mb-2">
-            <p class="mb-0"><strong>Please select the correct volume:</strong></p>
+            <p class="mb-0"><strong>Please select the correct volume:</strong>
+              <span class="ms-2">{{ result_count('cvCount', 0, 'volumes', one='volume') }}</span></p>
             <div class="d-flex align-items-center gap-2">
-              <input type="text" class="form-control form-control-sm" id="cvFilterInput"
-                placeholder="Filter..." style="width: 150px;">
+              {#- The GCD language select is inserted before #cvFilterWrap. #}
+              <div id="cvFilterWrap" style="width: 12rem;">
+                {{ search_input('cvFilterInput', 'Search volumes') }}
+              </div>
               <div class="btn-group" role="group" aria-label="Sort options" id="cvSortGroup">
-                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByName">
-                  <i class="bi bi-sort-alpha-down me-1"></i>Name
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByName" aria-pressed="false">
+                  <i class="bi bi-sort-alpha-down me-1" aria-hidden="true"></i>Name
                 </button>
-                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByYear">
-                  <i class="bi bi-sort-numeric-down me-1"></i>Year
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="cvSortByYear" aria-pressed="false">
+                  <i class="bi bi-sort-numeric-down me-1" aria-hidden="true"></i>Year
                 </button>
               </div>
             </div>

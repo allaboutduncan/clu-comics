@@ -1,28 +1,24 @@
-/* Filter bar styling */
-#gridFilterButtons {
-    overflow-x: auto;
-    overflow-y: hidden;
-    white-space: nowrap;
-    -webkit-overflow-scrolling: touch;
+/* The letter bar and search box are .clu-letter-bar / .clu-search (clu-page.css).
+   collection.js builds the search box inside this slot (only past 25 items), so
+   the slot takes the place .clu-search takes as a direct child of a toolbar row,
+   and drops out of the row while it is empty. */
+.clu-toolbar-row > .collection-search-slot {
+    flex: 1 1 14rem;
+    max-width: 22rem;
+    min-width: 0;
 }
 
-#gridFilterButtons .btn-group {
-    display: inline-flex;
-    flex-wrap: nowrap;
+/* The view buttons are shown and hidden one by one with inline display; with
+   none showing (a library root), the empty group must not leave a gap. */
+.collection-search-slot:empty,
+#viewToggleButtons:not(:has(> .btn:not([style*="display: none"]))) {
+    display: none !important;
 }
 
-#gridFilterButtons .btn {
-    flex-shrink: 0;
-}
-
-/* Search box styling */
-#gridSearchRow input {
-    width: 100%;
-}
-
-@media (max-width: 768px) {
-    #gridSearchRow {
-        max-width: 100% !important;
+@media (max-width: 575.98px) {
+    .clu-toolbar-row > .collection-search-slot {
+        flex-basis: 100%;
+        max-width: none;
     }
 }
 
@@ -375,8 +371,8 @@ body.collection-select-mode {
     margin: 0;
 }
 
+/* .page-link touch targets are global (clu-page.css); the Back to top button is ours. */
 @media (pointer: coarse) {
-    #pagination-controls .page-link,
     #pagination-controls .pager-top {
         min-width: 2.75rem;
         min-height: 2.75rem;
@@ -994,4 +990,10 @@ body.collection-select-mode .grid-item.file {
     .grid-item.drag-over {
         transform: none;
     }
+}
+
+/* A search or letter is narrowing the grid: the shelves above it step aside
+   (collection.js renderPage). Important: the shelves carry inline display. */
+#dashboard-sections.clu-narrowing .dashboard-section:not(#library-section) {
+    display: none !important;
 }

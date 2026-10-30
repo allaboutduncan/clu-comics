@@ -1,6 +1,7 @@
 {# One page of reading-list cards. Rendered by /reading-lists for the first
 page and by /api/reading-lists/page for every later one, so the two cannot
 drift. Role gating mirrors reading_lists.html. #}
+{% from 'partials/empty_state.html' import no_matches %}
 {% set _can_manage = (g.current_user.role if g.get('current_user') else 'owner') in ['clerk', 'owner'] %}
 {% for list in lists %}
 <div class="reading-list-card stagger-load" data-list-id="{{ list.id }}"
@@ -101,8 +102,10 @@ drift. Role gating mirrors reading_lists.html. #}
     </div>
 </div>
 {% else %}
-<div class="reading-list-no-match text-center text-muted py-5" style="grid-column: 1 / -1;">
-    <i class="bi bi-funnel display-6 d-block mb-2 opacity-50"></i>
-    No reading lists carry every selected tag.
+<div class="reading-list-no-match" style="grid-column: 1 / -1;">
+    {#- A search alone reads "No reading lists match “x”" + Clear search; a tag
+        (with or without a search) reads "...match these filters" + Clear filters. -#}
+    {{ no_matches('reading lists', query=grid_query, filtered=grid_filtered or not grid_query,
+                  clear_id='rlClearFilters') }}
 </div>
 {% endfor %}

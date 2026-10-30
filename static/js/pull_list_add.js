@@ -187,7 +187,11 @@
     if (!body) return;
 
     if (!series.length) {
-      if (status) status.textContent = 'No matches — try a different name.';
+      var input = document.getElementById('pullListSearchInput');
+      var q = input ? input.value.trim() : '';
+      if (status) {
+        status.textContent = 'No series match \u201c' + q + '\u201d. Check the spelling, or search for part of a name.';
+      }
       return;
     }
     if (status) status.textContent = '';

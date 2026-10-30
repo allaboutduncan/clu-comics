@@ -855,7 +855,7 @@ class TestBrowseRecursivePagination:
             assert key in data, f"missing {key}"
         assert data["total"] == 1
         assert data["offset"] == 0
-        assert data["limit"] == 21
+        assert data["limit"] == 24
         assert len(data["files"]) == 1
 
         f = data["files"][0]
@@ -881,6 +881,26 @@ class TestBrowseRecursivePagination:
         assert by_name["Captain America 008 (2005).cbz"]["ci_number"] == "8"
         # Blank reads as absent so the client falls back to the filename.
         assert by_name["Captain America 009 (2005).cbz"]["ci_number"] is None
+
+    def test_all_total_is_the_count_before_search_and_letter(self, client, app, db_connection):
+        """The "of N" in "Showing 1 of 3 files" comes from the server on every
+        load; the page used to remember it, so it went stale after indexing."""
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Avengers 001.cbz", "Avengers", "2018", "1"),
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            ("Zatanna 001.cbz", "Zatanna", "2010", "1"),
+        ])
+        plain = client.get(f"/api/browse-recursive?path={data_dir}").get_json()
+        assert (plain["total"], plain["all_total"]) == (3, 3)
+        searched = client.get(f"/api/browse-recursive?path={data_dir}&search=bat").get_json()
+        assert (searched["total"], searched["all_total"]) == (1, 3)
+        lettered = client.get(f"/api/browse-recursive?path={data_dir}&letter=Z").get_json()
+        assert (lettered["total"], lettered["all_total"]) == (1, 3)
+        # A file indexed since: the next narrowed load counts it.
+        _seed_file_index(data_dir, [("Daredevil 001.cbz", "Daredevil", "2019", "1")])
+        again = client.get(f"/api/browse-recursive?path={data_dir}&search=bat").get_json()
+        assert again["all_total"] == 4
 
     def test_offset_and_limit(self, client, app, db_connection):
         data_dir = app.config["DATA_DIR"]
@@ -1197,3 +1217,43 @@ class TestApiBrowseLibraryRoots:
         resp = client.get(f"/api/browse?path={series}")
 
         assert resp.get_json()["parent"] == app.config["DATA_DIR"]
+
+
+class TestSearchCountNoMatchesWiring:
+    """Collection and the file manager use the shared search/count/no-matches pieces."""
+
+    @staticmethod
+    def _read(rel):
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(root, rel), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_collection_page_has_count_and_no_matches_slot(self, client):
+        sections = [{"id": "library", "title": "Library", "icon": "bi-collection"}]
+        with patch('routes.collection.get_dashboard_sections', return_value=sections):
+            html = client.get('/collection').get_data(as_text=True)
+        assert 'id="collectionCount"' in html
+        assert 'clu-toolbar-count' in html
+        assert 'id="no-matches"' in html
+
+    def test_collection_js_wording(self):
+        src = self._read("static/js/collection.js")
+        assert "Filter this view" not in src and "Type to filter" not in src
+        assert ".placeholder =" not in src.replace("input.placeholder = label", "")
+        assert src.count("CLU.setSearchLabel(searchInput, gridSearchLabel())") == 4
+        assert "CLU.setCount(el, opts)" in src
+        assert "CLU.noMatches(" in src
+
+    def test_files_js_wording(self):
+        src = self._read("static/js/files.js")
+        assert "label: 'Search files and folders'" in src
+        # The search narrows files as well as folders, in either pane.
+        assert "if (term && !String(fileData.name).toLowerCase().includes(term)) return;" in src
+        assert "const panelSearch = { source: '', destination: '' };" in src
+        assert "Type to filter" not in src and "No folders match your search" not in src
+        assert "No results found for" not in src
+        assert src.count("CLU.noMatches(") == 2
+        html = self._read("templates/files.html")
+        assert "Enter search term" not in html
+        assert 'id="searchResultsCount"' in html

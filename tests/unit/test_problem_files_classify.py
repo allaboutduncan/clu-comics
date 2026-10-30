@@ -178,8 +178,10 @@ class TestSourceCatalogStaysInSync:
         from core.problem_files import KNOWN_SOURCES
 
         html = self._template()
+        bar = html[html.index("filter_bar('pf-source-filter'"):]
+        bar = bar[:bar.index("}}")]
         for source in KNOWN_SOURCES:
-            assert 'data-source="%s"' % source in html, \
+            assert "('%s'," % source in bar, \
                 "%s has no filter button on the page" % source
 
     def test_every_known_source_has_a_retry_branch(self, tmp_path):

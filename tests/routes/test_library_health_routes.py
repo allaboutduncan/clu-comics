@@ -163,8 +163,8 @@ class TestDuplicates:
              patch("core.problem_files.list_problems", return_value=[]):
             body = client.get("/library-health").data
         assert b"pf-health" in body
-        assert b'data-source="integrity"' in body
-        assert b'data-source="orphan"' in body
+        assert b'data-value="integrity"' in body
+        assert b'data-value="orphan"' in body
 
     def test_list_shape_and_totals(self, client):
         found = {"exact": [_group()], "likely": [_group("def456", "likely")]}

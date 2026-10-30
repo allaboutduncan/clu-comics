@@ -31,7 +31,7 @@
       <div class="btn-group mb-2 files-source-views" role="group" aria-label="View Options">
         <!-- Library Dropdown -->
         <div class="dropdown">
-          <button class="btn btn-outline-primary dropdown-toggle" type="button"
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
                   id="sourceLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-folder2-open me-1"></i><span id="sourceLibraryName">Library</span>
           </button>
@@ -39,17 +39,17 @@
             <!-- Populated by JavaScript -->
           </ul>
         </div>
-        <button type="button" id="btnDownloads" class="btn btn-outline-primary"
+        <button type="button" id="btnDownloads" class="btn btn-sm btn-outline-secondary"
           onclick="loadDownloads('{{ target_dir }}', 'source');" data-bs-toggle="button">Downloads</button>
-        <button type="button" id="btnRecentFiles" class="btn btn-outline-primary" onclick="loadRecentFiles('source');"
-          data-bs-toggle="button">Recent Files</button>
-        <button type="button" id="btnTrash" class="btn btn-outline-danger" onclick="loadTrash('source');"
+        <button type="button" id="btnRecentFiles" class="btn btn-sm btn-outline-secondary" onclick="loadRecentFiles('source');"
+          data-bs-toggle="button" aria-label="Recent Files">Recent<span class="d-none d-sm-inline"> Files</span></button>
+        <button type="button" id="btnTrash" class="btn btn-sm btn-outline-secondary" onclick="loadTrash('source');"
           data-bs-toggle="button"><i class="bi bi-trash3 me-1"></i>Trash<span id="trashBadge" class="badge rounded-pill text-bg-warning ms-1" style="display:none"></span></button>
       </div>
       <!-- Filter buttons for source panel -->
       <div id="source-directory-filter" class="mb-2">
-        <div class="btn-group d-grid grid-filter-buttons" role="group" aria-label="Directory Filter">
-          <!-- Dynamically inserted buttons go here -->
+        <div class="clu-letter-bar" role="group" aria-label="Directory Filter">
+          <!-- CLU.letterBar draws the buttons (files.js updateFilterBar) -->
         </div>
         <div id="source-directory-search-row" class="pt-2"></div>
         <div id="source-directory-rename-row" class="pt-2"></div>
@@ -68,7 +68,7 @@
       <div class="d-flex gap-2 mb-2">
         <!-- Library Dropdown -->
         <div class="dropdown">
-          <button class="btn btn-outline-primary dropdown-toggle" type="button"
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button"
                   id="destLibraryDropdown" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-folder2-open me-1"></i><span id="destLibraryName">Library</span>
           </button>
@@ -78,17 +78,16 @@
         </div>
         <!-- Action Buttons -->
         <div class="btn-group" role="group" aria-label="Folder Options">
-          <button type="button" class="btn btn-outline-primary" onclick="openCreateFolderModal()"><i
-              class="bi bi-folder-plus"></i> Create Folder</button>
-          <button type="button" class="btn btn-outline-primary" onclick="openSearchModal()"><i class="bi bi-search"></i>
-            Search Files</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openCreateFolderModal()"><i
+              class="bi bi-folder-plus me-1" aria-hidden="true"></i>Create Folder</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="openSearchModal()"><i class="bi bi-search me-1" aria-hidden="true"></i>Search Files</button>
         </div>
       </div>
 
       <!-- Filter buttons for destination panel -->
       <div id="destination-directory-filter" class="mb-2">
-        <div class="btn-group d-grid grid-filter-buttons" role="group" aria-label="Directory Filter">
-          <!-- Dynamically inserted buttons go here -->
+        <div class="clu-letter-bar" role="group" aria-label="Directory Filter">
+          <!-- CLU.letterBar draws the buttons (files.js updateFilterBar) -->
         </div>
         <div id="destination-directory-search-row" class="pt-2"></div>
         <div id="destination-directory-rename-row" class="pt-2"></div>
@@ -468,9 +467,9 @@
       </div>
       <div class="modal-body">
         <div class="mb-3">
-          <label for="searchQuery" class="form-label">Search Query:</label>
+          <label for="searchQuery" class="form-label">Search files and folders</label>
           <div class="input-group">
-            <input type="text" class="form-control" id="searchQuery" placeholder="Enter search term..."
+            <input type="text" class="form-control" id="searchQuery" placeholder="e.g. Saga 2012"
               autocomplete="off">
             <button aria-label="Search" title="Search" class="btn btn-outline-secondary" type="button" onclick="performSearch()">
               <i class="bi bi-search"></i>
@@ -482,6 +481,7 @@
         </div>
         <div id="searchResults" class="mt-3" style="display: none;">
           <h6>Search Results for: <span id="currentSearchTerm" class="text-primary"></span></h6>
+          <p class="clu-toolbar-count small mb-2" id="searchResultsCount" aria-live="polite"></p>
           <div id="searchResultsList" class="list-group" style="max-height: 400px; overflow-y: auto;"></div>
         </div>
         <div id="searchLoading" class="text-center mt-3" style="display: none;">

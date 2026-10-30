@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, select_field, result_count %}
 
 {% block title %}Download Status{% endblock %}
 
@@ -57,14 +58,21 @@
 
     <div class="tab-content">
       <div class="tab-pane fade show active" id="downloads-pane" role="tabpanel" aria-labelledby="downloads-tab">
-        <div class="d-flex flex-wrap gap-2 mb-3" role="toolbar" aria-label="Download list">
-          <button type="button" id="clear-downloads-btn" class="btn btn-sm btn-outline-secondary" disabled>
-            <i class="bi bi-check2-all me-1" aria-hidden="true"></i>Clear completed and cancelled
-          </button>
-          <button type="button" id="clear-errors-btn" class="btn btn-sm btn-outline-secondary" disabled>
-            <i class="bi bi-x-circle me-1" aria-hidden="true"></i>Clear failed
-          </button>
-        </div>
+        {#- Hidden until the table has a row: over the empty state its count
+            read "0 downloads" beside two disabled buttons. -#}
+        {% call toolbar('Download list', id='downloads-toolbar', classes='d-none') %}
+          <div class="clu-toolbar-row">
+            <div class="clu-toolbar-end">
+              {{ result_count('downloadsCount', 0, 'downloads', one='download') }}
+              <button type="button" id="clear-downloads-btn" class="btn btn-sm btn-outline-secondary" disabled>
+                <i class="bi bi-check2-all me-1" aria-hidden="true"></i>Clear completed and cancelled
+              </button>
+              <button type="button" id="clear-errors-btn" class="btn btn-sm btn-outline-secondary" disabled>
+                <i class="bi bi-x-circle me-1" aria-hidden="true"></i>Clear failed
+              </button>
+            </div>
+          </div>
+        {% endcall %}
         {# Shown by fetchStatus() when no store has a row: an empty table header
            reads as "still loading", not as "nothing is running". The same box
            reports a status endpoint that cannot be reached. #}
@@ -90,20 +98,25 @@
       </div>
 
       <div class="tab-pane fade" id="runs-pane" role="tabpanel" aria-labelledby="runs-tab">
-        <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
-          <select id="runs-kind" class="form-select form-select-sm w-auto" aria-label="Which runs to show">
-            <option value="">All automatic runs</option>
-            <option value="getcomics">GetComics Auto-Download</option>
-            <option value="weekly_packs">Weekly Packs</option>
-          </select>
-          <button type="button" class="btn btn-outline-secondary btn-sm" id="runs-refresh">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-          </button>
-          <span class="text-muted small ms-md-auto">
-            What each automatic run searched for, queued and could not find, and how its downloads finished.
-            Already-owned and unreleased issues are counted, not listed.
-          </span>
-        </div>
+        <p class="text-muted small mb-2">
+          What each automatic run searched for, queued and could not find, and how its downloads finished.
+          Already-owned and unreleased issues are counted, not listed.
+        </p>
+        {% call toolbar('Run history') %}
+          <div class="clu-toolbar-row">
+            {% call select_field('runs-kind', 'Runs') %}
+              <option value="">All automatic</option>
+              <option value="getcomics">GetComics Auto-Download</option>
+              <option value="weekly_packs">Weekly Packs</option>
+            {% endcall %}
+            <div class="clu-toolbar-end">
+              {{ result_count('runsCount', 0, 'runs', one='run') }}
+              <button type="button" class="btn btn-outline-secondary btn-sm" id="runs-refresh">
+                <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh
+              </button>
+            </div>
+          </div>
+        {% endcall %}
         <div id="runs-list" class="list-group">
           <div class="list-group-item text-muted">Loading run history...</div>
         </div>
@@ -490,8 +503,11 @@
           if (again) again.focus();
         }
         const hasRows = tbody.rows.length > 0;
+        CLU.setCount(document.getElementById('downloadsCount'),
+          { total: tbody.rows.length, noun: 'downloads', one: 'download' });
         document.getElementById('clear-downloads-btn').disabled = !hasRows;
         document.getElementById('clear-errors-btn').disabled = !hasRows;
+        document.getElementById('downloads-toolbar').classList.toggle('d-none', !hasRows);
         showEmpty(hasRows ? null : (data === null ? 'unreachable' : 'idle'));
       }).catch(err => { if (err.name !== 'AbortError') throw err; });
     }
@@ -602,14 +618,20 @@
       not_searched_cap_reached: 'not searched (per-run cap reached)',
       not_ready: 'pack links not ready yet',
     };
+    // '' is All; the server's name for it is 'all' (runFilterParam).
     const RUN_FILTERS = [
-      ['all', 'All'], ['queued', 'Queued'], ['downloaded', 'Downloaded'],
-      ['failed', 'Failed'], ['not_found', 'Not found'], ['missing', 'Still missing'],
+      { value: '', label: 'All' }, { value: 'queued', label: 'Queued' },
+      { value: 'downloaded', label: 'Downloaded' }, { value: 'failed', label: 'Failed' },
+      { value: 'not_found', label: 'Not found' }, { value: 'missing', label: 'Still missing' },
     ];
 
     let runsLoaded = false;
     let expandedRunId = null;
-    let expandedFilter = 'all';
+    let expandedFilter = '';
+
+    function runFilterParam() {
+      return encodeURIComponent(expandedFilter || 'all');
+    }
 
     function el(tag, cls, text) {
       const node = document.createElement(tag);
@@ -699,21 +721,17 @@
       box.id = `run-detail-${run.id}`;
 
       const bar = el('div', 'd-flex flex-wrap gap-2 align-items-center mb-2');
-      const pills = el('div', 'btn-group btn-group-sm flex-wrap');
+      const pills = el('div', 'clu-filter-options clu-filter-scroll');
       pills.setAttribute('role', 'group');
       pills.setAttribute('aria-label', 'Filter issues');
-      RUN_FILTERS.forEach(([key, label]) => {
-        const b = el('button', `btn ${key === expandedFilter ? 'btn-primary' : 'btn-outline-primary'}`, label);
-        b.type = 'button';
-        b.addEventListener('click', () => { expandedFilter = key; loadRunDetail(run.id); });
-        pills.appendChild(b);
-      });
+      CLU.renderFilterOptions(pills, RUN_FILTERS, expandedFilter);
+      CLU.filterBar(pills, { onChange: (key) => { expandedFilter = key; loadRunDetail(run.id); } });
       bar.appendChild(pills);
 
       const exports = el('div', 'ms-auto d-flex gap-2');
       ['json', 'csv'].forEach(fmt => {
         const a = el('a', 'btn btn-sm btn-outline-secondary');
-        a.href = `${RUNS_URL}/${run.id}/export?format=${fmt}&filter=${encodeURIComponent(expandedFilter)}`;
+        a.href = `${RUNS_URL}/${run.id}/export?format=${fmt}&filter=${runFilterParam()}`;
         a.setAttribute('download', '');
         a.appendChild(el('i', 'bi bi-filetype-' + fmt + ' me-1'));
         a.appendChild(document.createTextNode(`Export ${fmt.toUpperCase()}`));
@@ -723,9 +741,20 @@
       box.appendChild(bar);
 
       const items = run.items || [];
+      // The server filters, so this is the filtered total.
+      const tally = el('span', 'clu-toolbar-count small text-muted');
+      tally.setAttribute('aria-live', 'polite');
+      CLU.setCount(tally, { total: items.length, noun: 'issues', one: 'issue' });
+      bar.insertBefore(tally, exports);
       if (!items.length) {
-        box.appendChild(el('div', 'text-muted small',
-          expandedFilter === 'all' ? 'This run searched for nothing.' : 'No issues match this filter.'));
+        if (!expandedFilter) {
+          box.appendChild(el('div', 'text-muted small', 'This run searched for nothing.'));
+        } else {
+          box.appendChild(CLU.noMatches({
+            noun: 'issues', filtered: true, compact: true,
+            onClear: () => { expandedFilter = ''; loadRunDetail(run.id); },
+          }));
+        }
         return box;
       }
 
@@ -762,7 +791,7 @@
     }
 
     function loadRunDetail(runId, signal) {
-      const url = `${RUNS_URL}/${runId}?filter=${encodeURIComponent(expandedFilter)}`;
+      const url = `${RUNS_URL}/${runId}?filter=${runFilterParam()}`;
       return fetch(url, { signal })
         .then(r => r.json().then(d => { if (!r.ok || !d.success) throw new Error(d.error || `HTTP ${r.status}`); return d; }))
         .then(d => {
@@ -784,7 +813,7 @@
       document.querySelectorAll('#runs-list [data-run-id]').forEach(n => n.setAttribute('aria-expanded', 'false'));
       if (expandedRunId === runId) { expandedRunId = null; return; }
       expandedRunId = runId;
-      expandedFilter = 'all';
+      expandedFilter = '';
       const header = document.querySelector(`#runs-list [data-run-id="${runId}"]`);
       if (header) header.setAttribute('aria-expanded', 'true');
       loadRunDetail(runId);
@@ -799,9 +828,19 @@
         .then(d => {
           runsLoaded = true;
           list.replaceChildren();
+          CLU.setCount(document.getElementById('runsCount'),
+            { total: d.runs.length, noun: 'runs', one: 'run' });
           if (!d.runs.length) {
-            list.appendChild(el('div', 'list-group-item text-muted',
-              'No automatic download runs recorded yet. They appear here after the next scheduled run, or after Run Now on the Schedules page.'));
+            if (kind) {
+              // Runs exist, just not of this kind: a filter, not a first use.
+              list.appendChild(CLU.noMatches({
+                noun: 'runs', filtered: true,
+                onClear: () => { document.getElementById('runs-kind').value = ''; expandedRunId = null; loadRuns(); },
+              }));
+            } else {
+              list.appendChild(el('div', 'list-group-item text-muted',
+                'No automatic download runs recorded yet. They appear here after the next scheduled run, or after Run Now on the Schedules page.'));
+            }
             expandedRunId = null;
             return;
           }

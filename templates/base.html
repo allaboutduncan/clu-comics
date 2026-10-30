@@ -42,11 +42,6 @@
       background-color: rgba(var(--bs-primary-rgb), 0.15);
     }
 
-    #source-directory-filter .btn {
-      flex: 1 0 80px;
-      /* Each button grows equally with a minimum width of 80px */
-    }
-
     .folder-hover {
       background-color: rgba(var(--bs-info-rgb), 0.2);
       /* Adjust color to your preference */
@@ -100,6 +95,12 @@
   </style>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/clu-page.css') }}">
   {% block extra_css %}{% endblock %}
+  {# The list toolbar helpers (partials/filters.html's script twins and the
+     page bar) load in the head, not the footer: several pages run inline
+     scripts inside their content block that call them while the page parses.
+     Neither touches the DOM when it loads. #}
+  <script src="{{ url_for('static', filename='js/clu-filters.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/clu-pager.js') }}"></script>
 </head>
 
 <body class="d-flex flex-column min-vh-100">

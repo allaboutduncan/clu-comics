@@ -42,8 +42,8 @@ from core.database import (
     get_wanted_issues,
     get_libraries,
 )
+from helpers.paging import DEFAULT_PER_PAGE, PAGE_SIZES, per_page_from
 from helpers.library import get_library_for_path
-from helpers.paging import per_page_arg
 
 series_bp = Blueprint("series", __name__)
 
@@ -478,9 +478,9 @@ def wanted():
     )
 
 
-# The "Per page" select in templates/pull_list.html offers exactly these.
-PULL_LIST_PAGE_SIZES = (24, 50, 100, 250)
-PULL_LIST_DEFAULT_PER_PAGE = 50
+# The app's one set of page sizes (helpers/paging.py).
+PULL_LIST_PAGE_SIZES = PAGE_SIZES
+PULL_LIST_DEFAULT_PER_PAGE = DEFAULT_PER_PAGE
 # The size last picked in the select; used when the URL does not say.
 PULL_LIST_PER_PAGE_COOKIE = "clu_per_page_pull_list"
 _PULL_LIST_SORT_KEYS = ("name", "status", "publisher", "issues", "collection", "synced")
@@ -505,8 +505,10 @@ def _pull_list_args():
         page = max(1, int(args.get("page", 1)))
     except (TypeError, ValueError):
         page = 1
-    per_page = per_page_arg(args, request.cookies, PULL_LIST_PER_PAGE_COOKIE,
-                            PULL_LIST_PAGE_SIZES, PULL_LIST_DEFAULT_PER_PAGE)
+    # A size saved under the old set (50, 100, 250) snaps to the nearest one.
+    per_page = per_page_from(args.get("per_page"),
+                             request.cookies.get(PULL_LIST_PER_PAGE_COOKIE),
+                             default=PULL_LIST_DEFAULT_PER_PAGE)
     return {
         "q": (args.get("q") or "").strip(),
         "publisher_id": publisher_id,
@@ -570,7 +572,11 @@ def pull_list_rows():
     result = get_pull_list_page(today, **a)
     if result.get("error"):
         return jsonify({"success": False, "error": result["error"]}), 500
-    html = render_template("partials/pull_list_rows.html", series_list=result["rows"])
+    html = render_template(
+        "partials/pull_list_rows.html",
+        series_list=result["rows"],
+        filters=a,
+    )
     return jsonify({
         "success": True,
         "html": html,

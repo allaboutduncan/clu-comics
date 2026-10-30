@@ -9,20 +9,25 @@
 (function () {
     'use strict';
 
+    // Page sizes are #mbPerPage's options and the default its
+    // data-default-per-page (per_page_select, helpers/paging.py).
+    const DEFAULT_PER_PAGE = CLU.defaultPerPage(document.getElementById('mbPerPage'));
+
     const state = {
         axis: 'publisher',
         sort: 'alpha',
         page: 1,
-        perPage: 50,
+        perPage: DEFAULT_PER_PAGE,
         // Drill-down filters (set by clicking group cards, not a sidebar)
         publisher: '',
         series: '',
         year_from: null,
         year_to: null,
         search: '',
-        letter: '__ALL__',
-        // Result cache for letter filter / pagination
-        currentItems: [],
+        // A–Z bar: '' (All), 'A'–'Z' or '#'. Applied by the server before
+        // paging, like every other filter here.
+        letter: '',
+        // Result cache for pagination
         currentTotal: 0,
         currentLevel: 'publisher',
     };
@@ -30,18 +35,7 @@
     // The size last picked in the select; used when the URL does not say.
     const PER_PAGE_COOKIE = 'clu_per_page_library';
 
-    // The sizes the select offers, so the two lists cannot drift apart.
-    function pageSizes() {
-        const per = document.getElementById('mbPerPage');
-        return per ? Array.from(per.options, o => parseInt(o.value, 10)) : [24, 50, 100, 250];
-    }
-
-    function rememberedPerPage() {
-        return window.CLU && CLU.rememberedPerPage ? CLU.rememberedPerPage(PER_PAGE_COOKIE) : null;
-    }
-
     let browseAbort = null;
-    let searchTimer = null;
 
     // ------- URL sync -------
 
@@ -51,17 +45,21 @@
         state.sort = p.get('sort') || 'alpha';
         state.search = p.get('search') || '';
         state.page = parseInt(p.get('page') || '1', 10) || 1;
-        // A size the select does not offer falls through to the cookie.
-        const sizes = pageSizes();
-        const fromUrl = parseInt(p.get('per_page') || '', 10);
-        const remembered = rememberedPerPage();
-        state.perPage = sizes.includes(fromUrl) ? fromUrl
-            : sizes.includes(remembered) ? remembered : 50;
+        // A size from an older set (50, 100, 250) moves to the nearest one
+        // offered instead of being dropped; a remembered one is saved back.
+        const select = document.getElementById('mbPerPage');
+        const fromUrl = CLU.snapPerPage(p.get('per_page'), select);
+        const saved = CLU.rememberedPerPage(PER_PAGE_COOKIE);
+        const fromCookie = CLU.snapPerPage(saved, select);
+        if (fromCookie !== null && fromCookie !== saved) CLU.rememberPerPage(PER_PAGE_COOKIE, fromCookie);
+        state.perPage = fromUrl || fromCookie || DEFAULT_PER_PAGE;
         state.publisher = p.get('publisher') || '';
         state.series = p.get('series') || '';
         const yf = p.get('year_from'); const yt = p.get('year_to');
         state.year_from = yf ? parseInt(yf, 10) : null;
         state.year_to = yt ? parseInt(yt, 10) : null;
+        const letter = (p.get('letter') || '').toUpperCase();
+        state.letter = (letter === '#' || /^[A-Z]$/.test(letter)) ? letter : '';
     }
 
     function writeStateToUrl() {
@@ -70,13 +68,16 @@
         if (state.sort !== 'alpha') p.set('sort', state.sort);
         if (state.page !== 1) p.set('page', String(state.page));
         // With a remembered size a missing per_page means "the cookie", not
-        // 50, so the URL must name the size to reproduce it.
-        if (state.perPage !== 50 || rememberedPerPage() !== null) p.set('per_page', String(state.perPage));
+        // the default, so the URL must name the size to reproduce it (#681).
+        if (state.perPage !== DEFAULT_PER_PAGE || CLU.rememberedPerPage(PER_PAGE_COOKIE) !== null) {
+            p.set('per_page', String(state.perPage));
+        }
         if (state.search) p.set('search', state.search);
         if (state.publisher) p.set('publisher', state.publisher);
         if (state.series) p.set('series', state.series);
         if (state.year_from != null) p.set('year_from', String(state.year_from));
         if (state.year_to != null) p.set('year_to', String(state.year_to));
+        if (state.letter) p.set('letter', state.letter);
         const qs = p.toString();
         const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
         window.history.replaceState(null, '', url);
@@ -91,6 +92,7 @@
         if (state.year_from != null) p.set('year_from', String(state.year_from));
         if (state.year_to != null) p.set('year_to', String(state.year_to));
         if (state.search) p.set('search', state.search);
+        if (state.letter) p.set('letter', state.letter);
         if (extra) Object.entries(extra).forEach(([k, v]) => p.set(k, String(v)));
         return p;
     }
@@ -140,7 +142,7 @@
         } : null);
         if (state.publisher) {
             push(`Publisher: ${state.publisher}`, state.series
-                ? () => { state.series = ''; state.page = 1; reload(); }
+                ? () => { state.series = ''; state.page = 1; state.letter = ''; reload(); }
                 : null);
         }
         if (state.series) {
@@ -162,7 +164,7 @@
         state.year_from = null;
         state.year_to = null;
         state.page = 1;
-        state.letter = '__ALL__';
+        state.letter = '';
     }
 
     // The axis the user was on before drilling into the current filter.
@@ -182,9 +184,10 @@
         if (!grid || !template) return;
 
         grid.innerHTML = '';
-        const items = filterByLetter(data.items || []);
+        const items = data.items || [];
         if (!items.length) {
             grid.style.display = 'none';
+            empty.replaceChildren(emptyContent(data.level));
             empty.style.display = 'block';
             return;
         }
@@ -210,12 +213,74 @@
         grid.appendChild(frag);
     }
 
-    function filterByLetter(items) {
-        if (state.letter === '__ALL__') return items;
-        if (state.letter === '#') {
-            return items.filter(i => !/^[a-z]/i.test(((i.name || i.value) || '').trim()));
+    // The noun a level's cards are: the count and the empty state name it.
+    const LEVEL_NOUNS = {
+        publisher: ['publishers', 'publisher'], series: ['series', 'series'],
+        decade: ['decades', 'decade'], year: ['years', 'year'], issue: ['issues', 'issue'],
+    };
+
+    function levelNoun(level) {
+        return LEVEL_NOUNS[level] || ['items', 'item'];
+    }
+
+    function hasNarrowing() {
+        return !!(state.search || state.letter || state.publisher || state.series ||
+                  state.year_from != null || state.year_to != null);
+    }
+
+    // Nothing at all (an empty library) is not the same as a search or letter
+    // that hid everything.
+    function emptyContent(level) {
+        if (!hasNarrowing()) {
+            return CLU.emptyState({
+                icon: 'bi-inbox', title: 'Nothing to show yet',
+                message: 'Comics appear here once the library has files.',
+            });
         }
-        return items.filter(i => ((i.name || i.value) || '').trim().toUpperCase().startsWith(state.letter));
+        return CLU.noMatches({
+            noun: levelNoun(level)[0],
+            query: state.search,
+            filtered: !!(state.letter || state.publisher || state.series ||
+                         state.year_from != null || state.year_to != null),
+            onClear: clearNarrowing,
+        });
+    }
+
+    // "Clear search" empties the box; "Clear filters" also drops the letter
+    // and the drill-down, back to the level the page opened on.
+    function clearNarrowing() {
+        const hadFilters = !!(state.letter || state.publisher || state.series ||
+                              state.year_from != null || state.year_to != null);
+        state.search = '';
+        const box = document.getElementById('mbSearch');
+        if (box) box.value = '';
+        if (hadFilters) {
+            state.axis = rootAxis();
+            clearDrilldown();
+            syncControlsFromState();
+        }
+        state.page = 1;
+        reload();
+    }
+
+    // The server sends the total before the search box and the letter
+    // narrowed it (all_total), so a search that finds 3 reads "Showing 3 of
+    // 76 publishers", not "3 publishers". Asked for on every load rather than
+    // remembered here, so files indexed since the page opened are counted.
+    function renderCount(data) {
+        const noun = levelNoun(data.level);
+        const total = data.total || 0;
+        const narrowed = !!(state.search || state.letter);
+        const all = typeof data.all_total === 'number' ? data.all_total : null;
+        const el = document.getElementById('mbCount');
+        const onePage = total <= state.perPage;
+        if (narrowed && all != null && onePage) {
+            CLU.setCount(el, { total: all, noun: noun[0], one: noun[1], shown: total });
+            return;
+        }
+        const first = total ? (state.page - 1) * state.perPage + 1 : 0;
+        const last = total ? Math.min(total, first + (data.items || []).length - 1) : 0;
+        CLU.setCount(el, { total, noun: noun[0], one: noun[1], first, last });
     }
 
     function buildGroupCard(item, level, template) {
@@ -272,7 +337,7 @@
                 state.axis = 'series';
             }
             state.page = 1;
-            state.letter = '__ALL__';
+            state.letter = '';
             reload();
         };
 
@@ -401,42 +466,45 @@
 
     // ------- A–Z filter + pagination -------
 
-    function renderLetterFilter(items) {
+    // The letters come from the server (`letters`: every first letter across
+    // all pages), so the bar is the same on every page and a letter finds
+    // every match, not just the ones on the page that happened to be loaded.
+    function renderLetterFilter(serverLetters, level) {
         const container = document.getElementById('mbLetterFilter');
         const grp = container.querySelector('.btn-group');
-        grp.innerHTML = '';
 
-        const firstChars = new Set();
-        (items || []).forEach(i => {
-            const s = ((i.name || i.value) || '').trim();
-            if (!s) return;
-            const c = s[0].toUpperCase();
-            firstChars.add(/^[A-Z]$/.test(c) ? c : '#');
-        });
-        const letters = ['__ALL__', ...Array.from(firstChars).sort((a, b) => {
-            if (a === '#') return 1; if (b === '#') return -1; return a.localeCompare(b);
-        })];
-        if (letters.length <= 1) {
+        // The year levels have no letters, so a letter from an old URL there
+        // means nothing: drop it rather than show it as active.
+        if (level === 'year' || level === 'decade') {
+            state.letter = '';
+            container.style.display = 'none';
+            return;
+        }
+        // CLU.letterBar keeps an active letter on the bar even when a search
+        // or drill-down has emptied it, so it can still be switched off.
+        if (!(serverLetters || []).length && !state.letter) {
             container.style.display = 'none';
             return;
         }
         container.style.display = '';
-        letters.forEach(l => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'btn btn-outline-secondary' + (l === state.letter ? ' active' : '');
-            btn.textContent = l === '__ALL__' ? 'All' : l;
-            btn.onclick = () => { state.letter = l; renderBrowse(lastBrowseData); renderPagination(); };
-            grp.appendChild(btn);
+        CLU.letterBar(grp, {
+            letters: serverLetters || [],
+            active: state.letter,
+            onChange: (letter) => {
+                state.letter = letter;
+                state.page = 1;
+                reload();
+            },
         });
     }
 
     function renderPagination() {
         const nav = document.getElementById('mbPagination');
         const ul = nav.querySelector('ul');
-        ul.innerHTML = '';
         const totalPages = Math.max(1, Math.ceil((state.currentTotal || 0) / state.perPage));
-        if (totalPages <= 1) { nav.style.display = 'none'; return; }
+        // renderPageLinks empties the list itself, after noting which link
+        // had focus; emptying it here first would lose that.
+        if (totalPages <= 1) { nav.style.display = 'none'; ul.innerHTML = ''; return; }
         nav.style.display = '';
 
         // Shared with /reading-lists and /pull-list (static/js/clu-pager.js).
@@ -447,14 +515,11 @@
 
     // ------- Orchestration -------
 
-    let lastBrowseData = { items: [], total: 0, level: 'publisher' };
-
     function renderBrowse(data) {
-        lastBrowseData = data;
-        state.currentItems = data.items || [];
         state.currentTotal = data.total || 0;
         state.currentLevel = data.level;
         renderGrid(data);
+        renderCount(data);
     }
 
     async function reload() {
@@ -468,7 +533,8 @@
 
         if (browse) {
             renderBrowse(browse);
-            renderLetterFilter(browse.items || []);
+            renderLetterFilter(browse.letters || [], browse.level);
+            writeStateToUrl();
             renderPagination();
         }
     }
@@ -490,7 +556,7 @@
                 if (!r.checked) return;
                 state.axis = r.value;
                 state.page = 1;
-                state.letter = '__ALL__';
+                state.letter = '';
                 reload();
             });
         });
@@ -500,8 +566,8 @@
         });
         const per = document.getElementById('mbPerPage');
         if (per) per.addEventListener('change', () => {
-            state.perPage = parseInt(per.value, 10) || 50; state.page = 1;
-            if (window.CLU && CLU.rememberPerPage) CLU.rememberPerPage(PER_PAGE_COOKIE, state.perPage);
+            state.perPage = parseInt(per.value, 10) || DEFAULT_PER_PAGE; state.page = 1;
+            CLU.rememberPerPage(PER_PAGE_COOKIE, state.perPage);
             reload();
         });
         const refresh = document.getElementById('mbRefreshBtn');
@@ -510,13 +576,10 @@
         const search = document.getElementById('mbSearch');
         if (search) {
             search.value = state.search;
-            search.addEventListener('input', (e) => {
-                clearTimeout(searchTimer);
-                searchTimer = setTimeout(() => {
-                    state.search = e.target.value.trim();
-                    state.page = 1;
-                    reload();
-                }, 250);
+            CLU.bindSearch(search, (value) => {
+                state.search = value;
+                state.page = 1;
+                reload();
             });
         }
     }

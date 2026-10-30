@@ -164,6 +164,20 @@ def test_browse_pagination(client, seeded_library):
     assert seen == {"DC Comics", "Image", "Marvel"}
 
 
+
+def test_browse_letter_filter(client, seeded_library):
+    r = client.get("/api/metadata/browse?axis=publisher&letter=m&limit=1")
+    data = r.get_json()
+    assert [i["name"] for i in data["items"]] == ["Marvel"]
+    assert data["total"] == 1
+    assert data["letters"] == ["D", "I", "M"]
+
+
+def test_browse_ignores_an_invalid_letter(client, seeded_library):
+    r = client.get("/api/metadata/browse?axis=publisher&letter=zz")
+    assert r.get_json()["total"] == 3
+
+
 def test_browse_invalid_axis_returns_400(client):
     r = client.get("/api/metadata/browse?axis=bogus")
     assert r.status_code == 400

@@ -95,9 +95,9 @@ function loadDirectories(path = "/data") {
         .then(data => {
             // Save the fetched data for later filtering in the modal
             modalDirectoryData = data;
-            currentModalFilter = 'all';
 
-            // Build the filter bar buttons (like files.html does)
+            // A new folder starts at All, as in the other folder pickers.
+            currentModalFilter = 'all';
             updateModalFilterBar(data.directories);
             // Render the directory list with the current filter applied
             renderModalDirectoryListing(data, currentModalFilter);
@@ -116,58 +116,27 @@ function loadDirectories(path = "/data") {
         .catch(error => console.error("Error fetching directories:", error));
 }
 
-// Build the filter bar for the modal using the directory names.
+// Build the modal's A-Z bar from the directory names. CLU.letterBar keeps the
+// current letter selected, and a second click on it goes back to All.
 function updateModalFilterBar(directories) {
-    const outerContainer = document.getElementById("source-directory-filter");
-    if (!outerContainer) return;
-    const btnGroup = outerContainer.querySelector('.btn-group');
-    if (!btnGroup) return;
+    const bar = document.querySelector("#source-directory-filter .clu-letter-bar");
+    if (!bar) return;
 
-    let availableLetters = new Set();
-    let hasNonAlpha = false;
-    directories.forEach(dir => {
-        const firstChar = dir.charAt(0).toUpperCase();
-        if (firstChar >= 'A' && firstChar <= 'Z') {
-            availableLetters.add(firstChar);
-        } else {
-            hasNonAlpha = true;
+    // CLU.sortLetters buckets each first character ('#' for a non-letter).
+    const letters = CLU.sortLetters(directories.map(dir => dir.charAt(0)));
+    // Keep the selection only while this folder still has that letter.
+    if (currentModalFilter !== 'all' && letters.indexOf(currentModalFilter) === -1) {
+        currentModalFilter = 'all';
+    }
+
+    CLU.letterBar(bar, {
+        letters,
+        active: currentModalFilter === 'all' ? '' : currentModalFilter,
+        onChange: value => {
+            currentModalFilter = value || 'all';
+            renderModalDirectoryListing(modalDirectoryData, currentModalFilter);
         }
     });
-
-    let buttonsHtml = '';
-    buttonsHtml += `<button type="button" class="btn btn-outline-secondary active" onclick="filterModalDirectories('all')">All</button>`;
-    if (hasNonAlpha) {
-        buttonsHtml += `<button type="button" class="btn btn-outline-secondary" onclick="filterModalDirectories('#')">#</button>`;
-    }
-    for (let i = 65; i <= 90; i++) {
-        const letter = String.fromCharCode(i);
-        if (availableLetters.has(letter)) {
-            buttonsHtml += `<button type="button" class="btn btn-outline-secondary" onclick="filterModalDirectories('${letter}')">${letter}</button>`;
-        }
-    }
-    btnGroup.innerHTML = buttonsHtml;
-}
-
-// When a modal filter button is clicked, update the active filter and re-render the list.
-function filterModalDirectories(letter) {
-    // If clicking the same letter that's already active, toggle to 'all'
-    if (currentModalFilter === letter) {
-        letter = 'all';
-    }
-    currentModalFilter = letter;
-    const outerContainer = document.getElementById("source-directory-filter");
-    if (outerContainer) {
-        const buttons = outerContainer.querySelectorAll("button");
-        buttons.forEach(btn => {
-            let btnText = btn.textContent.trim();
-            if ((letter === 'all' && btnText === 'All') || btnText === letter) {
-                btn.classList.add("active");
-            } else {
-                btn.classList.remove("active");
-            }
-        });
-    }
-    renderModalDirectoryListing(modalDirectoryData, currentModalFilter);
 }
 
 // Render the modal's directory (and file) list based on the current filter.

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, search_input, result_count %}
 
 {% block title %}Publishers{% endblock %}
 
@@ -30,22 +31,16 @@
     {% endcall %}
     {% else %}
 
-    <!-- Search/Filter -->
-    <div class="card border-0 shadow-sm mb-4">
-        <div class="card-body">
-            <div class="row align-items-center">
-                <div class="col-md-6">
-                    <div class="input-group">
-                        <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
-                        <input type="text" class="form-control" id="searchInput" placeholder="Search publishers...">
-                    </div>
-                </div>
-                <div class="col-md-6 text-md-end mt-3 mt-md-0">
-                    <span class="text-muted" id="resultCount">Showing {{ total_publishers }} publishers</span>
-                </div>
+    {% call toolbar('Filter publishers') %}
+        <div class="clu-toolbar-row">
+            {{ search_input('searchInput', 'Search publishers') }}
+            <div class="clu-toolbar-end">
+                {{ result_count('resultCount', total_publishers, 'publishers', one='publisher') }}
             </div>
         </div>
-    </div>
+    {% endcall %}
+
+    <div id="publishersNoMatches" style="display: none;"></div>
 
     <!-- Publishers Table -->
     <div class="card border-0 shadow-sm">
@@ -150,8 +145,8 @@
             </div>
             <div class="modal-body">
                 <div class="input-group mb-4">
-                    <input type="text" class="form-control form-control-lg" id="metronSearchInput"
-                        placeholder="Enter publisher name..." autocomplete="off">
+                    <input type="search" class="form-control" id="metronSearchInput" aria-label="Search Metron publishers"
+                        placeholder="Search Metron publishers…" autocomplete="off">
                     <button aria-label="Search Metron" title="Search Metron" class="btn btn-primary" type="button" onclick="searchMetron()">
                         <i class="bi bi-search"></i>
                     </button>
@@ -251,6 +246,7 @@
         const searchInput = document.getElementById('searchInput');
         const table = document.getElementById('publishersTable');
         const resultCount = document.getElementById('resultCount');
+        const noMatches = document.getElementById('publishersNoMatches');
 
         if (!searchInput || !table) return;
 
@@ -258,9 +254,15 @@
         const rows = Array.from(tbody.querySelectorAll('tr'));
         const totalCount = rows.length;
 
+        function clearSearch() {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+            searchInput.focus();
+        }
+
         // Search/Filter functionality
-        searchInput.addEventListener('input', function () {
-            const searchTerm = this.value.toLowerCase().trim();
+        CLU.bindSearch(searchInput, function (value) {
+            const searchTerm = value.toLowerCase();
             let visibleCount = 0;
 
             rows.forEach(row => {
@@ -271,10 +273,19 @@
                 if (matches) visibleCount++;
             });
 
-            if (resultCount) {
-                resultCount.textContent = `Showing ${visibleCount} of ${totalCount} publishers`;
+            CLU.setCount(resultCount, {
+                total: totalCount, noun: 'publishers', one: 'publisher', shown: visibleCount
+            });
+            const tableCard = table.closest('.card');
+            if (tableCard) tableCard.style.display = visibleCount === 0 ? 'none' : '';
+            if (noMatches) {
+                noMatches.replaceChildren();
+                if (visibleCount === 0) {
+                    noMatches.appendChild(CLU.noMatches({ noun: 'publishers', query: value, onClear: clearSearch }));
+                }
+                noMatches.style.display = visibleCount === 0 ? '' : 'none';
             }
-        });
+        }, { delay: 0 });
 
         // Sorting functionality
         let currentSort = { column: null, ascending: true };
@@ -380,12 +391,7 @@
             }
 
             if (data.publishers.length === 0) {
-                resultsDiv.innerHTML = `
-                <div class="text-center text-muted py-4">
-                    <i class="bi bi-inbox display-4 opacity-25"></i>
-                    <p class="mt-2">No publishers found</p>
-                </div>
-            `;
+                resultsDiv.replaceChildren(CLU.noMatches({ noun: 'publishers', query: query, compact: true }));
                 return;
             }
 

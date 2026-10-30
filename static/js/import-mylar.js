@@ -168,10 +168,14 @@
   function renderSeries() {
     var p = state.preview;
     $('mi-series-card').classList.toggle('d-none', !p.has_db);
-    var filter = ($('mi-series-filter').value || '').toLowerCase();
-    var html = p.series.filter(function (row) {
+    var query = ($('mi-series-filter').value || '').trim();
+    var filter = query.toLowerCase();
+    var visible = p.series.filter(function (row) {
       return !filter || row.name.toLowerCase().indexOf(filter) !== -1;
-    }).map(function (row) {
+    });
+    CLU.setCount($('mi-series-count'),
+      { total: p.series.length, noun: 'series', shown: visible.length });
+    var html = visible.map(function (row) {
       var label = STATE_LABELS[row.state] || [row.state, 'secondary'];
       var importable = !!IMPORTABLE[row.state];
       var marks = [];
@@ -189,8 +193,25 @@
         (row.reason ? '<div class="small text-muted">' + esc(row.reason) + '</div>' : '') + '</td>' +
         '<td class="small">' + marks.join(', ') + '</td></tr>';
     }).join('');
-    $('mi-series-body').innerHTML = html ||
-      '<tr><td colspan="5" class="text-center text-muted py-3">No series</td></tr>';
+    if (!html && p.series.length) {
+      var cell = document.createElement('td');
+      cell.colSpan = 5;
+      cell.className = 'border-0';
+      cell.appendChild(CLU.noMatches({
+        noun: 'series', query: query, compact: true,
+        onClear: function () {
+          var box = $('mi-series-filter');
+          box.value = '';
+          box.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }));
+      var row = document.createElement('tr');
+      row.appendChild(cell);
+      $('mi-series-body').replaceChildren(row);
+    } else {
+      $('mi-series-body').innerHTML = html ||
+        '<tr><td colspan="5" class="text-center text-muted py-3">No series</td></tr>';
+    }
     updateSummary();
   }
 
@@ -208,7 +229,7 @@
     updateSummary();
   });
 
-  $('mi-series-filter').addEventListener('input', renderSeries);
+  CLU.bindSearch($('mi-series-filter'), renderSeries, { delay: 0 });
 
   function selectVisible(on) {
     document.querySelectorAll('#mi-series-body input[data-cv]:not(:disabled)').forEach(function (box) {

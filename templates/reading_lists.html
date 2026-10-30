@@ -1,6 +1,7 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
 {% from 'partials/empty_state.html' import empty_state %}
+{% from 'partials/filters.html' import toolbar, filter_bar, search_input, per_page_select, pager_nav, result_count %}
 {% block title %}Reading Lists{% endblock %}
 
 {% block extra_css %}
@@ -74,49 +75,39 @@ owner, so everything shows exactly as before. #}
     {% endif %}
     {% endwith %}
 
-    <!-- Sort Bar -->
+    <!-- Sort and tag filter: the shared list toolbar (partials/filters.html) -->
     {% if total_lists %}
-    <div class="sort-bar mb-3">
-        <div class="d-flex align-items-center gap-2 flex-wrap">
-            <span class="text-muted me-2"><i class="bi bi-sort-down"></i> Sort:</span>
-            <button class="sort-btn {{ 'active' if active_sort == 'date-desc' }}" data-sort="date-desc">
-                <i class="bi bi-calendar3 me-1"></i>Newest First
-            </button>
-            <button class="sort-btn {{ 'active' if active_sort == 'date-asc' }}" data-sort="date-asc">
-                <i class="bi bi-calendar3 me-1"></i>Oldest First
-            </button>
-            <button class="sort-btn {{ 'active' if active_sort == 'name-asc' }}" data-sort="name-asc">
-                <i class="bi bi-sort-alpha-down me-1"></i>Name (A-Z)
-            </button>
-            <button class="sort-btn {{ 'active' if active_sort == 'name-desc' }}" data-sort="name-desc">
-                <i class="bi bi-sort-alpha-up me-1"></i>Name (Z-A)
-            </button>
-            <div class="input-group input-group-sm flex-nowrap ms-auto" style="width: auto;">
-                <label class="input-group-text bg-body border-0" for="rlPerPage">Per page</label>
-                <select class="form-select border-0 shadow-none bg-body text-body" id="rlPerPage" style="width: auto;">
-                    {# Multiples of 4 (and 5): a full last row of cards #}
-                    {% for n in page_sizes %}
-                    <option value="{{ n }}" {% if n == grid.per_page %}selected{% endif %}>{{ n }}</option>
-                    {% endfor %}
-                </select>
+    {% call toolbar('Sort and filter reading lists', id='rlFilters') %}
+        <div class="clu-toolbar-row">
+            {{ search_input('rlSearch', 'Search reading lists', value=grid_query) }}
+            <div class="clu-toolbar-end">
+                {#- A search or tag that fits on one page reads "Showing 12 of 222";
+                    a paged result reads "Showing 1–60 of 150" (the matching total). -#}
+                {%- set _narrowed = grid_query or active_tags -%}
+                {{ result_count('rlCount', total_lists if (grid.total == 0 or (_narrowed and grid.total_pages == 1)) else grid.total,
+                                'reading lists', one='reading list',
+                                shown=grid.total if (grid.total == 0 or (_narrowed and grid.total_pages == 1)) else None,
+                                first=(grid.page - 1) * grid.per_page + 1 if grid.total_pages > 1 else None,
+                                last=(grid.page - 1) * grid.per_page + lists|length if grid.total_pages > 1 else None) }}
+                {{ per_page_select('rlPerPage', grid.per_page, sizes=page_sizes, default=default_per_page) }}
             </div>
         </div>
-    </div>
-    {% endif %}
-
-    <!-- Tag Filter -->
-    {% if total_lists %}
-    {% if all_tags|length > 0 %}
-    <div class="tag-filter-bar mb-4">
-        <div class="d-flex align-items-center gap-2 flex-wrap">
-            <span class="text-muted me-2"><i class="bi bi-funnel"></i> Filter:</span>
-            <button class="tag-filter-btn {{ 'active' if not active_tags }}" data-tag="all">All</button>
-            {% for tag in all_tags %}
-            <button class="tag-filter-btn {{ 'active' if tag in active_tags }}" data-tag="{{ tag }}">{{ tag }}</button>
-            {% endfor %}
+        <div class="clu-toolbar-row">
+            {{ filter_bar('rlSort', [
+                {'value': 'date-desc', 'label': 'Newest First', 'icon': 'bi-calendar3'},
+                {'value': 'date-asc', 'label': 'Oldest First', 'icon': 'bi-calendar3'},
+                {'value': 'name-asc', 'label': 'Name (A-Z)', 'icon': 'bi-sort-alpha-down'},
+                {'value': 'name-desc', 'label': 'Name (Z-A)', 'icon': 'bi-sort-alpha-up'},
+            ], active=active_sort, label='Sort') }}
         </div>
-    </div>
-    {% endif %}
+        {% if all_tags|length > 0 %}
+        {%- set _tag_opts = [('', 'All')] -%}
+        {%- for tag in all_tags %}{% set _ = _tag_opts.append((tag, tag)) %}{% endfor -%}
+        <div class="clu-toolbar-row">
+            {{ filter_bar('rlTags', _tag_opts, active=active_tags, label='Tags', multi=True) }}
+        </div>
+        {% endif %}
+    {% endcall %}
     {% endif %}
 
     <!-- Reading Lists Grid -->
@@ -124,15 +115,14 @@ owner, so everything shows exactly as before. #}
     <div class="reading-list-grid" data-total-lists="{{ total_lists }}">
         {% include "partials/reading_list_cards.html" %}
     </div>
-    <nav id="rlPagination" class="mt-4" aria-label="Reading list pagination" style="display:none;"
-         data-endpoint="{{ url_for('reading_lists.grid_page') }}"
-         data-ids-endpoint="{{ url_for('reading_lists.grid_ids') }}"
-         data-page="{{ grid.page }}" data-per-page="{{ grid.per_page }}"
-         data-default-per-page="{{ default_per_page }}"
-         data-per-page-cookie="{{ per_page_cookie }}"
-         data-total-pages="{{ grid.total_pages }}" data-total="{{ grid.total }}">
-        <ul class="pagination justify-content-center"></ul>
-    </nav>
+    {{ pager_nav('rlPagination', 'Reading list pagination', attrs={
+        'data-endpoint': url_for('reading_lists.grid_page'),
+        'data-ids-endpoint': url_for('reading_lists.grid_ids'),
+        'data-page': grid.page, 'data-per-page': grid.per_page,
+        'data-default-per-page': default_per_page,
+        'data-per-page-cookie': per_page_cookie,
+        'data-total-pages': grid.total_pages, 'data-total': grid.total,
+    }) }}
     {% else %}
     {% if _can_manage %}
     {% call empty_state('No reading lists yet', 'Create a list, upload a CBL file, or import one from More.', 'bi-journal-bookmark') %}
@@ -237,11 +227,7 @@ owner, so everything shows exactly as before. #}
                     <!-- Tab 1: Browse Repository -->
                     <div class="tab-pane fade show active" id="browseRepoTab" role="tabpanel">
                         <div class="mb-3">
-                            <div class="input-group">
-                                <span class="input-group-text"><i class="bi bi-search"></i></span>
-                                <input type="text" class="form-control" id="githubTreeFilter"
-                                    placeholder="Filter lists..." oninput="filterTree(this.value)">
-                            </div>
+                            {{ search_input('githubTreeFilter', 'Search lists') }}
                         </div>
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <div class="btn-group btn-group-sm">
@@ -330,11 +316,7 @@ owner, so everything shows exactly as before. #}
                     <!-- Tab 1: Reading Lists -->
                     <div class="tab-pane fade show active" id="metronRLPane" role="tabpanel">
                         <div class="mb-3">
-                            <div class="input-group">
-                                <span class="input-group-text"><i class="bi bi-search"></i></span>
-                                <input type="text" class="form-control" id="metronSearchInput"
-                                    placeholder="Search reading lists..." oninput="searchMetronLists()">
-                            </div>
+                            {{ search_input('metronSearchInput', 'Search Metron reading lists') }}
                         </div>
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <div class="btn-group btn-group-sm">
@@ -352,8 +334,7 @@ owner, so everything shows exactly as before. #}
                             </div>
                             <div id="metronListContent" class="d-none"></div>
                             <div id="metronListError" class="text-center py-4 text-danger d-none"></div>
-                            <div id="metronListEmpty" class="text-center py-4 text-muted d-none">No reading lists found
-                            </div>
+                            <div id="metronListEmpty" class="d-none"></div>
                         </div>
                         <div id="metronNotConfigured" class="alert alert-warning mt-3 d-none">
                             <i class="bi bi-exclamation-triangle me-2"></i>
@@ -365,11 +346,7 @@ owner, so everything shows exactly as before. #}
                     <!-- Tab 2: Story Arcs -->
                     <div class="tab-pane fade" id="metronArcPane" role="tabpanel">
                         <div class="mb-3">
-                            <div class="input-group">
-                                <span class="input-group-text"><i class="bi bi-search"></i></span>
-                                <input type="text" class="form-control" id="metronArcSearchInput"
-                                    placeholder="Search story arcs..." oninput="searchMetronArcs()">
-                            </div>
+                            {{ search_input('metronArcSearchInput', 'Search Metron story arcs') }}
                         </div>
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <div class="btn-group btn-group-sm">
@@ -387,8 +364,7 @@ owner, so everything shows exactly as before. #}
                             </div>
                             <div id="metronArcListContent" class="d-none"></div>
                             <div id="metronArcListError" class="text-center py-4 text-danger d-none"></div>
-                            <div id="metronArcListEmpty" class="text-center py-4 text-muted d-none">No story arcs found
-                            </div>
+                            <div id="metronArcListEmpty" class="d-none"></div>
                             <div id="metronArcScrollSentinel" class="d-none">
                                 <div class="text-center py-2" id="metronArcSentinelSpinner">
                                     <span class="spinner-border spinner-border-sm me-1"></span>
@@ -440,11 +416,7 @@ owner, so everything shows exactly as before. #}
             <div class="modal-body p-3">
                 <h6 class="text-muted mb-3"><i class="bi bi-signpost-split me-1"></i>Story Arcs</h6>
                 <div class="mb-3">
-                    <div class="input-group">
-                        <span class="input-group-text"><i class="bi bi-search"></i></span>
-                        <input type="text" class="form-control" id="cvArcSearchInput" placeholder="Search story arcs..."
-                            oninput="searchCVArcs()">
-                    </div>
+                    {{ search_input('cvArcSearchInput', 'Search ComicVine story arcs') }}
                 </div>
                 <div class="d-flex justify-content-between align-items-center mb-2">
                     <div class="btn-group btn-group-sm">
@@ -460,7 +432,7 @@ owner, so everything shows exactly as before. #}
                     </div>
                     <div id="cvArcListContent" class="d-none"></div>
                     <div id="cvArcListError" class="text-center py-4 text-danger d-none"></div>
-                    <div id="cvArcListEmpty" class="text-center py-4 text-muted d-none">No story arcs found</div>
+                    <div id="cvArcListEmpty" class="d-none"></div>
                 </div>
                 <div id="cvArcNotConfigured" class="alert alert-warning mt-3 d-none">
                     <i class="bi bi-exclamation-triangle me-2"></i>
@@ -544,7 +516,6 @@ owner, so everything shows exactly as before. #}
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-pager.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     // Load Metron data on tab shown

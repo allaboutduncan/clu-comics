@@ -1,49 +1,41 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
+{% from 'partials/filters.html' import toolbar, search_input, select_field, per_page_select, pager_nav, result_count %}
 {% block title %}Metadata History{% endblock %}
 {% block content %}
 <div>
   {{ page_header('Metadata History', 'bi-clock-history') }}
   <p class="text-muted">Every metadata write performed by a bulk job is recorded here. Revert restores the prior ComicInfo.xml (or removes it entirely if the file previously had none).</p>
 
-  <div class="card mb-3">
-    <div class="card-body">
-      <div class="row g-2 align-items-end">
-        <div class="col-md-4">
-          <label for="auditSearch" class="form-label small mb-1">Search</label>
-          <input type="text" class="form-control form-control-sm" id="auditSearch" placeholder="File or series name…">
-        </div>
-        <div class="col-md-3">
-          <label for="auditProvider" class="form-label small mb-1">Provider</label>
-          <select id="auditProvider" class="form-select form-select-sm">
-            <option value="">All</option>
-            <option value="metron">Metron</option>
-            <option value="comicvine">ComicVine</option>
-            <option value="gcd">GCD</option>
-            <option value="gcd_api">GCD API</option>
-            <option value="inducks">INDUCKS</option>
-            <option value="anilist">AniList</option>
-            <option value="mangadex">MangaDex</option>
-            <option value="mangaupdates">MangaUpdates</option>
-            <option value="bedetheque">Bedetheque</option>
-          </select>
-        </div>
-        <div class="col-md-3">
-          <label for="auditStatus" class="form-label small mb-1">Status</label>
-          <select id="auditStatus" class="form-select form-select-sm">
-            <option value="">All</option>
-            <option value="written">Written</option>
-            <option value="reverted">Reverted</option>
-          </select>
-        </div>
-        <div class="col-md-2">
-          <button id="auditRefresh" class="btn btn-primary btn-sm w-100">
-            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
-          </button>
-        </div>
+  {% call toolbar('Filter metadata history') %}
+    <div class="clu-toolbar-row">
+      {{ search_input('auditSearch', 'Search file and series names') }}
+      {% call select_field('auditProvider', 'Provider') %}
+        <option value="">All</option>
+        <option value="metron">Metron</option>
+        <option value="comicvine">ComicVine</option>
+        <option value="gcd">GCD</option>
+        <option value="gcd_api">GCD API</option>
+        <option value="inducks">INDUCKS</option>
+        <option value="anilist">AniList</option>
+        <option value="mangadex">MangaDex</option>
+        <option value="mangaupdates">MangaUpdates</option>
+        <option value="bedetheque">Bedetheque</option>
+      {% endcall %}
+      {% call select_field('auditStatus', 'Status') %}
+        <option value="">All</option>
+        <option value="written">Written</option>
+        <option value="reverted">Reverted</option>
+      {% endcall %}
+      <div class="clu-toolbar-end">
+        {{ result_count('auditCount', 0, 'writes', one='write') }}
+        <button id="auditRefresh" type="button" class="btn btn-outline-secondary btn-sm">
+          <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh
+        </button>
+        {{ per_page_select('auditPerPage', clu_default_per_page()) }}
       </div>
     </div>
-  </div>
+  {% endcall %}
 
   <div id="auditBulkBar" class="d-flex align-items-center gap-2 mb-2 d-none">
     <span class="fw-bold"><span id="auditBulkCount">0</span> selected</span>
@@ -77,9 +69,7 @@
     </table>
   </div>
 
-  <nav>
-    <ul class="pagination pagination-sm" id="auditPagination"></ul>
-  </nav>
+  {{ pager_nav('auditPagination', 'Metadata history pages') }}
 </div>
 
 {% include 'partials/modal_cbz_info.html' %}
@@ -111,13 +101,50 @@
 <script>
 (function () {
   const tbody = document.getElementById('auditTbody');
-  const pageEl = document.getElementById('auditPagination');
+  const pagerNav = document.getElementById('auditPagination');
+  const pageEl = pagerNav.querySelector('.pagination');
+  const perPageSel = document.getElementById('auditPerPage');
+  const searchEl = document.getElementById('auditSearch');
+  const providerEl = document.getElementById('auditProvider');
+  const statusEl = document.getElementById('auditStatus');
   const bulkBar = document.getElementById('auditBulkBar');
   const bulkCount = document.getElementById('auditBulkCount');
   const masterCheckbox = document.getElementById('auditSelectAll');
-  const limit = 50;
-  let offset = 0;
+  const DEFAULT_PER_PAGE = CLU.defaultPerPage(perPageSel);
+  const PER_PAGE_COOKIE = 'clu_per_page_metadata_history';
   let total = 0;
+  let loadSeq = 0;
+
+  // page, per_page and the filters live in the query string, so reload and
+  // Back keep your place. A size remembered under an older set is snapped.
+  const initial = new URLSearchParams(window.location.search);
+  let limit = CLU.snapPerPage(initial.get('per_page'), perPageSel)
+    || CLU.snapPerPage(CLU.rememberedPerPage(PER_PAGE_COOKIE), perPageSel)
+    || DEFAULT_PER_PAGE;
+  perPageSel.value = String(limit);
+  let offset = (Math.max(1, parseInt(initial.get('page'), 10) || 1) - 1) * limit;
+  searchEl.value = initial.get('q') || '';
+  if (initial.get('provider')) providerEl.value = initial.get('provider');
+  if (initial.get('status')) statusEl.value = initial.get('status');
+  if (providerEl.selectedIndex < 0) providerEl.value = '';
+  if (statusEl.selectedIndex < 0) statusEl.value = '';
+
+  function writeUrl() {
+    const url = new URL(window.location.href);
+    const page = Math.floor(offset / limit) + 1;
+    const state = {
+      q: searchEl.value.trim(),
+      provider: providerEl.value,
+      status: statusEl.value,
+      page: page > 1 ? String(page) : '',
+      per_page: limit !== DEFAULT_PER_PAGE ? String(limit) : '',
+    };
+    Object.keys(state).forEach(k => {
+      if (state[k]) url.searchParams.set(k, state[k]);
+      else url.searchParams.delete(k);
+    });
+    if (url.href !== window.location.href) history.replaceState(history.state, '', url);
+  }
   const selected = new Set();  // audit ids checked across renders on the current page
 
   function fmtTime(ts) {
@@ -208,9 +235,11 @@
       limit: String(limit),
       offset: String(offset)
     });
-    const search = document.getElementById('auditSearch').value.trim();
-    const provider = document.getElementById('auditProvider').value;
-    const status = document.getElementById('auditStatus').value;
+    const search = searchEl.value.trim();
+    const provider = providerEl.value;
+    const status = statusEl.value;
+    const seq = ++loadSeq;
+    writeUrl();
     if (search) params.set('search', search);
     if (provider) params.set('provider', provider);
     if (status) params.set('status', status);
@@ -223,10 +252,19 @@
     try {
       const r = await fetch('/api/bulk-metadata/audit?' + params.toString());
       const d = await r.json();
+      if (seq !== loadSeq) return;  // a newer load is on its way
       total = d.total || 0;
+      if (offset > 0 && offset >= total) {
+        // The page in the URL is past the end now: show the last one.
+        offset = Math.max(0, Math.ceil(total / limit) - 1) * limit;
+        load();
+        return;
+      }
       renderRows(d.items || []);
+      renderCount((d.items || []).length);
       renderPagination();
     } catch (e) {
+      if (seq !== loadSeq) return;
       tbody.innerHTML = `<tr><td colspan="8" class="text-danger text-center">Error: ${esc(e.message)}</td></tr>`;
       notifyError('Failed to load audit history: ' + (e.message || 'unknown error'));
     }
@@ -234,7 +272,28 @@
 
   function renderRows(items) {
     if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-4">No matching entries.</td></tr>';
+      const query = searchEl.value.trim();
+      const filtered = !!(providerEl.value || statusEl.value);
+      const cell = document.createElement('td');
+      cell.colSpan = 8;
+      cell.className = 'border-0';
+      cell.appendChild(query || filtered
+        ? CLU.noMatches({
+            noun: 'writes', query, filtered,
+            onClear: () => {
+              searchEl.value = '';
+              if (filtered) { providerEl.value = ''; statusEl.value = ''; }
+              offset = 0;
+              load();
+            },
+          })
+        : CLU.emptyState({
+            icon: 'bi-clock-history', title: 'No metadata writes yet',
+            message: 'Bulk metadata jobs record each file they write here.',
+          }));
+      const row = document.createElement('tr');
+      row.appendChild(cell);
+      tbody.replaceChildren(row);
       return;
     }
     tbody.innerHTML = '';
@@ -368,27 +427,24 @@
     }
   }
 
+  // The toolbar's result count: "Showing a–b of N writes" once it pages.
+  // The server filters, so total is the filtered total.
+  function renderCount(shown) {
+    CLU.setCount(document.getElementById('auditCount'), {
+      total, noun: 'writes', one: 'write',
+      first: shown ? offset + 1 : 0, last: offset + shown,
+    });
+  }
+
   function renderPagination() {
     const pages = Math.max(1, Math.ceil(total / limit));
     const current = Math.floor(offset / limit) + 1;
-    pageEl.innerHTML = '';
-    function add(label, page, disabled, active) {
-      const li = document.createElement('li');
-      li.className = 'page-item' + (disabled ? ' disabled' : '') + (active ? ' active' : '');
-      li.innerHTML = `<a class="page-link" href="#">${label}</a>`;
-      li.addEventListener('click', e => {
-        e.preventDefault();
-        if (disabled || active) return;
-        offset = (page - 1) * limit;
-        load();
-      });
-      pageEl.appendChild(li);
-    }
-    add('«', Math.max(1, current - 1), current === 1, false);
-    for (let p = Math.max(1, current - 3); p <= Math.min(pages, current + 3); p++) {
-      add(String(p), p, false, p === current);
-    }
-    add('»', Math.min(pages, current + 1), current === pages, false);
+    pagerNav.style.display = pages > 1 ? '' : 'none';
+    if (pages <= 1) { pageEl.innerHTML = ''; return; }
+    CLU.renderPageLinks(pageEl, current, pages, page => {
+      offset = (page - 1) * limit;
+      load();
+    });
   }
 
   masterCheckbox.addEventListener('change', () => {
@@ -405,11 +461,15 @@
   document.getElementById('auditBulkRevert').addEventListener('click', doBulkRevert);
 
   document.getElementById('auditRefresh').addEventListener('click', () => { offset = 0; load(); });
-  ['auditSearch', 'auditProvider', 'auditStatus'].forEach(id => {
-    document.getElementById(id).addEventListener('change', () => { offset = 0; load(); });
+  [providerEl, statusEl].forEach(el => {
+    el.addEventListener('change', () => { offset = 0; load(); });
   });
-  document.getElementById('auditSearch').addEventListener('keydown', e => {
-    if (e.key === 'Enter') { offset = 0; load(); }
+  CLU.bindSearch(searchEl, () => { offset = 0; load(); });
+  perPageSel.addEventListener('change', () => {
+    limit = parseInt(perPageSel.value, 10) || DEFAULT_PER_PAGE;
+    CLU.rememberPerPage(PER_PAGE_COOKIE, limit);
+    offset = 0;
+    load();
   });
 
   load();

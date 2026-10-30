@@ -26,6 +26,7 @@ from core.metadata_normalize import strip_provider_ids
 from core import folder_thumbnails
 from core import app_state
 from helpers import find_folder_thumbnail
+from helpers.paging import COLLECTION_DEFAULT_PER_PAGE, DEFAULT_PER_PAGE
 from helpers.library import (get_library_roots,
                              get_default_library_root, is_library_root,
                              is_valid_library_path, is_allowed_path)
@@ -39,6 +40,7 @@ from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
     search_file_index, get_user_preference, get_files_recursive_paged,
+    count_files_recursive,
     get_user_setting, get_folder_pin, set_folder_pin, delete_folder_pin
 )
 
@@ -292,6 +294,9 @@ def _parse_metadata_filters(args):
     search = args.get("search")
     if search:
         filters["search"] = search
+    letter = (args.get("letter") or "").strip().upper()
+    if letter == "#" or (len(letter) == 1 and "A" <= letter <= "Z"):
+        filters["letter"] = letter
     return filters
 
 
@@ -307,9 +312,9 @@ def api_metadata_browse():
         sort = 'alpha'
     try:
         offset = max(0, int(request.args.get('offset', 0)))
-        limit = min(500, max(1, int(request.args.get('limit', 50))))
+        limit = min(500, max(1, int(request.args.get('limit', DEFAULT_PER_PAGE))))
     except (TypeError, ValueError):
-        offset, limit = 0, 50
+        offset, limit = 0, DEFAULT_PER_PAGE
 
     filters = _parse_metadata_filters(request.args)
     prefixes = accessible_folder_prefixes(current_user())
@@ -814,7 +819,7 @@ def api_browse_recursive():
     Query params:
         path:   Directory path to list under (defaults to the default library).
         offset: Pagination offset (default 0, clamped >= 0).
-        limit:  Page size (default 21, clamped 1-500).
+        limit:  Page size (default 24, clamped 1-500).
         letter: Optional first-letter filter ('A'-'Z' or '#').
         search: Optional case-insensitive substring against name/ci_series.
 
@@ -848,9 +853,9 @@ def api_browse_recursive():
     except (TypeError, ValueError):
         offset = 0
     try:
-        limit = max(1, min(500, int(request.args.get('limit', 21))))
+        limit = max(1, min(500, int(request.args.get('limit', COLLECTION_DEFAULT_PER_PAGE))))
     except (TypeError, ValueError):
-        limit = 21
+        limit = COLLECTION_DEFAULT_PER_PAGE
 
     letter = request.args.get('letter') or None
     if letter:
@@ -860,10 +865,16 @@ def api_browse_recursive():
 
     search = request.args.get('search') or None
 
+    prefixes = accessible_folder_prefixes(current_user())
     rows, total, letters = get_files_recursive_paged(
         path, offset=offset, limit=limit, letter=letter, search=search,
-        allowed_prefixes=accessible_folder_prefixes(current_user())
+        allowed_prefixes=prefixes
     )
+    # The total before the search and letter narrowed it, for "Showing 3 of
+    # 1,204 files". Only worth a second count when something narrowed.
+    all_total = total
+    if search or letter:
+        all_total = count_files_recursive(path, allowed_prefixes=prefixes)
 
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css",
                            ".ds_store", ".json", ".db", ".xml"}
@@ -917,6 +928,7 @@ def api_browse_recursive():
         "current_path": path,
         "files": files,
         "total": total,
+        "all_total": all_total,
         "offset": offset,
         "limit": limit,
         "letters": letters,

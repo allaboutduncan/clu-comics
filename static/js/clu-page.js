@@ -98,9 +98,17 @@
 })();
 
 /*
- * CLU.emptyState({icon, title, message, compact}) -> element.
+ * CLU.emptyState({icon, title, message, compact, tone, actions}) -> element.
  * The JS twin of partials/empty_state.html, for empty states a page script
- * renders. Every value is set as text.
+ * renders. Every value is set as text. actions: [{label, icon, onClick, href,
+ * primary, id}] -- at most one primary; the rest are outline-secondary.
+ *
+ * CLU.noMatches({noun, query, filtered, onClear, compact}) -> element.
+ * The one "a search or filter matched nothing" state, the twin of
+ * no_matches() in empty_state.html. query is the search text; filtered says
+ * another filter is narrowing the list too. onClear runs from its button
+ * ("Clear search", or "Clear filters" when a filter is on) and should clear
+ * every narrowing control the button names.
  */
 (function () {
     'use strict';
@@ -126,6 +134,129 @@
             p.textContent = opts.message;
             root.appendChild(p);
         }
+        if (opts.actions && opts.actions.length) {
+            var bar = document.createElement('div');
+            bar.className = 'clu-empty-actions';
+            opts.actions.forEach(function (a) {
+                var b = document.createElement(a.href ? 'a' : 'button');
+                if (a.href) b.href = a.href; else b.type = 'button';
+                b.className = 'btn ' + (a.primary ? 'btn-primary' : 'btn-outline-secondary');
+                if (a.id) b.id = a.id;
+                if (a.icon) {
+                    var ic = document.createElement('i');
+                    ic.className = 'bi ' + a.icon + ' me-2';
+                    ic.setAttribute('aria-hidden', 'true');
+                    b.appendChild(ic);
+                }
+                b.appendChild(document.createTextNode(a.label));
+                if (a.onClick) b.addEventListener('click', a.onClick);
+                bar.appendChild(b);
+            });
+            root.appendChild(bar);
+        }
         return root;
     };
+
+    CLU.noMatchesText = function (o) {
+        var opts = o || {};
+        var q = (opts.query || '').trim();
+        var noun = opts.noun || 'items';
+        if (q && !opts.filtered) {
+            return {
+                title: 'No ' + noun + ' match \u201c' + q + '\u201d',
+                message: 'Check the spelling, or search for part of a name.',
+                clear: 'Clear search', icon: 'bi-search'
+            };
+        }
+        return {
+            title: 'No ' + noun + ' match these filters',
+            message: q ? 'Nothing matches the search and the filters together.'
+                       : 'Change or clear a filter to see more.',
+            clear: 'Clear filters', icon: 'bi-funnel'
+        };
+    };
+
+    CLU.noMatches = function (o) {
+        var opts = o || {};
+        var t = CLU.noMatchesText(opts);
+        return CLU.emptyState({
+            icon: t.icon, title: t.title, message: t.message, compact: opts.compact,
+            actions: opts.onClear ? [{ label: t.clear, onClick: opts.onClear }] : []
+        });
+    };
+})();
+
+/*
+ * Filter rows that scroll sideways on a phone (.clu-filter-scroll; the layout
+ * is in clu-page.css). Marks the edges that have more to scroll to
+ * (data-more-start / data-more-end, which fade that edge) and keeps the active
+ * choice (.active or aria-pressed="true") in view: on load, so ?letter=T does
+ * not open on a row showing A-F, and whenever a page script redraws the row,
+ * which would otherwise jump it back to the start.
+ */
+(function () {
+    'use strict';
+
+    var ACTIVE = '.active, [aria-pressed="true"]';
+
+    function edges(row) {
+        var max = row.scrollWidth - row.clientWidth;
+        var x = Math.abs(row.scrollLeft);
+        row.toggleAttribute('data-more-start', max > 1 && x > 1);
+        row.toggleAttribute('data-more-end', max > 1 && max - x > 1);
+    }
+
+    // scrollLeft only: scrollIntoView would also scroll the page vertically
+    // to a row below the fold.
+    function reveal(row) {
+        if (row.scrollWidth <= row.clientWidth) return;
+        var item = row.querySelector(ACTIVE);
+        if (!item) return;
+        var pad = parseFloat(getComputedStyle(row).scrollPaddingInlineStart) || 0;
+        var r = row.getBoundingClientRect();
+        var i = item.getBoundingClientRect();
+        if (i.left < r.left + pad) {
+            row.scrollLeft -= (r.left + pad) - i.left;
+        } else if (i.right > r.right - pad) {
+            row.scrollLeft += i.right - (r.right - pad);
+        }
+    }
+
+    function watch(row) {
+        if (row._cluFilterScroll) return;
+        row._cluFilterScroll = true;
+        var queued = false;
+        function refresh() {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(function () {
+                queued = false;
+                reveal(row);
+                edges(row);
+            });
+        }
+        row.addEventListener('scroll', function () { edges(row); }, { passive: true });
+        if (window.ResizeObserver) new ResizeObserver(refresh).observe(row);
+        new MutationObserver(refresh).observe(row, {
+            childList: true, subtree: true,
+            attributes: true, attributeFilter: ['class', 'aria-pressed', 'hidden'],
+        });
+        refresh();
+    }
+
+    function init() {
+        document.querySelectorAll('.clu-filter-scroll').forEach(watch);
+    }
+
+    // For rows a script builds after load (CLU.letterBar, CLU.filterBar).
+    window.CLU = window.CLU || {};
+    CLU.watchFilterScroll = function (row) {
+        if (row && row.classList.contains('clu-filter-scroll')) watch(row);
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
 })();

@@ -3,9 +3,17 @@
  *
  * Provides:
  *   CLU.renderPageLinks(ul, page, totalPages, onGo)
- *       Fills a Bootstrap `.pagination` <ul> with « 1 … 4 5 6 … 20 ».
- *       /library (metadata_browser.js) calls this directly, so every pager in
- *       the app looks the same.
+ *       Fills a Bootstrap `.pagination` <ul> with ‹ 1 … 4 5 6 … 20 ›: the
+ *       current page ±2 (±1 on a phone), the first and last, gaps between.
+ *       This is the app's only page bar: /collection, /library,
+ *       /metadata-history and the createServerPager pages all draw with it.
+ *       The <nav> around it comes from pager_nav() in partials/filters.html.
+ *
+ *   CLU.snapPerPage(value, select)
+ *       `value` as one of the select's page sizes (the nearest; ties go to
+ *       the smaller), or null. For a size the browser remembered under an
+ *       older set of sizes: it is moved to the nearest one instead of being
+ *       dropped. helpers/paging.py does the same on the server.
  *
  *   CLU.createServerPager(opts)
  *       Pages a list the server filters, sorts and pages (/pull-list,
@@ -59,25 +67,64 @@
   window.CLU = window.CLU || {};
 
   CLU.renderPageLinks = function (ul, page, totalPages, onGo) {
+    // The bar is rebuilt on every page change, which would drop keyboard
+    // focus to <body>. Remember the focused control and put focus back on it
+    // (or its nearest live neighbour) afterwards, as /collection's bar does.
+    const focused = document.activeElement;
+    const focusKey = (focused && ul.contains(focused)) ? focused.dataset.pagerKey : null;
+
     ul.innerHTML = '';
-    const addItem = (label, target, disabled, active) => {
+    const addItem = (label, target, opts) => {
+      const o = opts || {};
       const li = document.createElement('li');
-      li.className = 'page-item' + (disabled ? ' disabled' : '') + (active ? ' active' : '');
+      li.className = 'page-item' + (o.disabled ? ' disabled' : '') + (o.active ? ' active' : '');
       const a = document.createElement('a');
       a.className = 'page-link';
       a.href = '#';
-      a.textContent = label;
+      if (typeof label === 'string') a.textContent = label;
+      else a.appendChild(label);
+      if (o.key) a.dataset.pagerKey = o.key;
+      if (o.ariaLabel) a.setAttribute('aria-label', o.ariaLabel);
+      if (o.active) a.setAttribute('aria-current', 'page');
+      if (o.disabled) {
+        // Out of the tab order and announced as unavailable; Bootstrap's
+        // .disabled only stops the pointer.
+        a.setAttribute('aria-disabled', 'true');
+        a.tabIndex = -1;
+      }
       a.onclick = (e) => {
         e.preventDefault();
-        if (disabled || active) return;
+        if (o.disabled || o.active) return;
         onGo(target);
       };
       li.appendChild(a);
       ul.appendChild(li);
     };
+    // A gap is not a control: a plain span, hidden from screen readers (the
+    // page numbers either side already say what is missing).
+    const addGap = () => {
+      const li = document.createElement('li');
+      li.className = 'page-item disabled';
+      const span = document.createElement('span');
+      span.className = 'page-link';
+      span.setAttribute('aria-hidden', 'true');
+      span.textContent = '…';
+      li.appendChild(span);
+      ul.appendChild(li);
+    };
 
-    addItem('«', Math.max(1, page - 1), page === 1, false);
-    const span = 2;
+    const arrow = (dir) => {
+      const i = document.createElement('i');
+      i.className = 'bi bi-chevron-' + dir;
+      i.setAttribute('aria-hidden', 'true');
+      return i;
+    };
+    addItem(arrow('left'), Math.max(1, page - 1), {
+      disabled: page === 1, key: 'prev', ariaLabel: 'Previous page',
+    });
+    const phone = typeof window.matchMedia === 'function'
+      && window.matchMedia('(max-width: 575.98px)').matches;
+    const span = phone ? 1 : 2;
     const pages = new Set([1, totalPages, page]);
     for (let i = 1; i <= span; i++) {
       if (page - i >= 1) pages.add(page - i);
@@ -85,11 +132,43 @@
     }
     let prev = 0;
     Array.from(pages).sort((a, b) => a - b).forEach(p => {
-      if (p - prev > 1) addItem('…', 0, true, false);
-      addItem(String(p), p, false, p === page);
+      if (p - prev > 1) addGap();
+      addItem(String(p), p, { active: p === page, key: 'p' + p, ariaLabel: 'Page ' + p });
       prev = p;
     });
-    addItem('»', Math.min(totalPages, page + 1), page === totalPages, false);
+    addItem(arrow('right'), Math.min(totalPages, page + 1), {
+      disabled: page === totalPages, key: 'next', ariaLabel: 'Next page',
+    });
+
+    if (focusKey) {
+      // The control may now be disabled (Next onto the last page) or gone
+      // (a page number that left the window): fall back to the current page.
+      const live = ':not([aria-disabled])';
+      const target = ul.querySelector('[data-pager-key="' + focusKey + '"]' + live)
+        || ul.querySelector('[aria-current="page"]');
+      if (target) target.focus({ preventScroll: true });
+    }
+  };
+
+  CLU.snapPerPage = function (value, select) {
+    const n = parseInt(value, 10);
+    if (!select || !Number.isFinite(n) || n <= 0) return null;
+    const sizes = Array.from(select.options)
+      .map(o => parseInt(o.value, 10)).filter(v => Number.isFinite(v) && v > 0);
+    if (!sizes.length) return null;
+    return sizes.reduce((best, s) => {
+      const d = Math.abs(s - n);
+      const bd = Math.abs(best - n);
+      return d < bd || (d === bd && s < best) ? s : best;
+    });
+  };
+
+  // The size a list starts on, as the server rendered it onto the select
+  // (per_page_select's data-default-per-page, helpers/paging.py). Read here so
+  // no page script keeps its own copy of the number.
+  CLU.defaultPerPage = function (select) {
+    const n = parseInt(select && select.getAttribute('data-default-per-page'), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
   };
 
   const PER_PAGE_COOKIE_AGE = 365 * 24 * 60 * 60;
