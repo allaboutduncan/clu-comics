@@ -101,9 +101,9 @@ def test_page_sizes_match_between_route_and_select():
     assert READING_LIST_DEFAULT_PER_PAGE == 60
     # Both selects are the shared macro fed the route's tuple, so they
     # cannot disagree.
-    assert "per_page_select('rlPerPage', grid.per_page, sizes=page_sizes)" in \
+    assert "per_page_select('rlPerPage', grid.per_page, sizes=page_sizes, default=default_per_page)" in \
         _read("templates/reading_lists.html")
-    assert "per_page_select('plPerPage', pager.per_page, sizes=page_sizes)" in \
+    assert "per_page_select('plPerPage', pager.per_page, sizes=page_sizes, default=default_per_page)" in \
         _read("templates/pull_list.html")
 
 

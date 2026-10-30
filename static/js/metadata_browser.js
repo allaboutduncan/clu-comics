@@ -9,8 +9,9 @@
 (function () {
     'use strict';
 
-    // Page sizes are #mbPerPage's options (per_page_select, helpers/paging.py).
-    const DEFAULT_PER_PAGE = 60;
+    // Page sizes are #mbPerPage's options and the default its
+    // data-default-per-page (per_page_select, helpers/paging.py).
+    const DEFAULT_PER_PAGE = CLU.defaultPerPage(document.getElementById('mbPerPage'));
 
     const state = {
         axis: 'publisher',
@@ -262,22 +263,15 @@
         reload();
     }
 
-    // The server reports only the matching total, so the total before the
-    // search box and the letter narrowed it is remembered per view: a search
-    // that finds 3 reads "Showing 3 of 76 publishers", not "3 publishers".
-    const unnarrowedTotals = {};
-    function viewKey(level) {
-        return [level, state.axis, state.publisher, state.series,
-                state.year_from, state.year_to].join('\u0001');
-    }
-
+    // The server sends the total before the search box and the letter
+    // narrowed it (all_total), so a search that finds 3 reads "Showing 3 of
+    // 76 publishers", not "3 publishers". Asked for on every load rather than
+    // remembered here, so files indexed since the page opened are counted.
     function renderCount(data) {
         const noun = levelNoun(data.level);
         const total = data.total || 0;
-        const key = viewKey(data.level);
         const narrowed = !!(state.search || state.letter);
-        if (!narrowed) unnarrowedTotals[key] = total;
-        const all = unnarrowedTotals[key];
+        const all = typeof data.all_total === 'number' ? data.all_total : null;
         const el = document.getElementById('mbCount');
         const onePage = total <= state.perPage;
         if (narrowed && all != null && onePage) {

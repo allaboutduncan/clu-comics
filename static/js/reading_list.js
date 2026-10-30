@@ -102,6 +102,9 @@ function updateListCount(data, grid) {
     const el = document.getElementById('rlCount');
     if (!el || !window.CLU) return;
     const total = data.total || 0;
+    // The server sends the unnarrowed total with every page; keep the grid's
+    // copy current too, since Delete All reads it.
+    if (typeof data.all_total === 'number') grid.dataset.totalLists = String(data.all_total);
     const allLists = parseInt(grid.dataset.totalLists, 10) || 0;
     // Narrowed to one page (or to nothing): "Showing 12 of 222 reading lists".
     const narrowed = activeListQuery() !== '' || activeTagFilters.size > 0;
@@ -150,16 +153,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const grid = document.querySelector('.reading-list-grid');
     const nav = document.getElementById('rlPagination');
     if (!grid || !nav || !window.CLU || !CLU.createServerPager) return;
+    const perPageSelect = document.getElementById('rlPerPage');
+    // The server's default (helpers/paging.py), never a copy of it here.
+    const defaultPerPage = parseInt(nav.dataset.defaultPerPage, 10) || CLU.defaultPerPage(perPageSelect);
     readingListPager = CLU.createServerPager({
         endpoint: nav.dataset.endpoint,
         nav,
-        perPageSelect: document.getElementById('rlPerPage'),
-        defaultPerPage: parseInt(nav.dataset.defaultPerPage, 10) || 60,
+        perPageSelect,
+        defaultPerPage,
         rememberAs: nav.dataset.perPageCookie,
         scrollTarget: document.getElementById('rlFilters') || grid,
         initial: {
             page: parseInt(nav.dataset.page, 10) || 1,
-            perPage: parseInt(nav.dataset.perPage, 10) || 60,
+            perPage: parseInt(nav.dataset.perPage, 10) || defaultPerPage,
             totalPages: parseInt(nav.dataset.totalPages, 10) || 1,
         },
         state: listFilterState,
@@ -2352,6 +2358,15 @@ function loadMetronArcs() {
     if (_metronArcsLoaded && !_metronArcsSearchQuery) {
         return; // already showing browse results
     }
+    // Back to the browse list, so the box must not keep the old query. A
+    // dispatched input event always runs (CLU.bindSearch), and
+    // searchMetronArcs('') loads the browse list.
+    const searchInput = document.getElementById('metronArcSearchInput');
+    if (searchInput && searchInput.value) {
+        searchInput.value = '';
+        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+    }
     _metronArcsSearchQuery = '';
     _metronArcsPage = 0;
     _metronArcsDisplayed = 0;
@@ -2599,8 +2614,8 @@ function loadCVArcs() {
     }
     const searchInput = document.getElementById('cvArcSearchInput');
     if (searchInput && searchInput.value) {
-        // Cleared through its input event, so CLU.bindSearch sees the empty
-        // box and searchCVArcs('') reloads the browse list.
+        // Cleared through its input event: a dispatched one always runs
+        // (CLU.bindSearch), so searchCVArcs('') reloads the browse list.
         searchInput.value = '';
         searchInput.dispatchEvent(new Event('input', { bubbles: true }));
         return;

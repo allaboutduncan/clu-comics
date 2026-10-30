@@ -258,10 +258,14 @@ def test_count_is_never_repeated_or_shown_beside_an_empty_state():
 
 
 def test_narrowed_counts_name_the_whole_list():
-    # A server-paged list only reports the matching total, so the page keeps
-    # the total from before the search to say "Showing 3 of 76".
-    assert "unnarrowedTotals[key] = total" in _read("static/js/metadata_browser.js")
-    assert "allBooksUnnarrowed[currentPath] = allBooksTotal" in _read("static/js/collection.js")
+    # A server-paged list sends the total from before the search (all_total)
+    # with every page to say "Showing 3 of 76". The page must not remember it
+    # itself: a stored total goes stale once files are indexed.
+    mb = _read("static/js/metadata_browser.js")
+    assert "data.all_total" in mb and "unnarrowedTotals" not in mb
+    col = _read("static/js/collection.js")
+    assert "allBooksUnnarrowed = typeof data.all_total === 'number'" in col
+    assert "allBooksUnnarrowed[" not in col
     rl = _read("static/js/reading_list.js")
     assert "if (total === 0 || (narrowed && (data.total_pages || 1) <= 1)) {" in rl
 

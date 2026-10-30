@@ -36,9 +36,9 @@ def snap_per_page(value, default=DEFAULT_PER_PAGE):
 def per_page_from(*candidates, default=DEFAULT_PER_PAGE):
     """The first usable candidate (URL value, then cookie...), snapped.
 
-    A junk or non-positive candidate falls through to the next one, as
-    per_page_arg does, so ``?per_page=abc`` still shows the size the user
-    last picked rather than the default.
+    A junk or non-positive candidate falls through to the next one, so
+    ``?per_page=abc`` still shows the size the user last picked rather than
+    the default.
     """
     for value in candidates:
         snapped = snap_per_page(value, None)
@@ -46,25 +46,3 @@ def per_page_from(*candidates, default=DEFAULT_PER_PAGE):
             return snapped
     return default
 
-
-# Exact-match variant from #681, kept for callers that offer their own size
-# set and want an unoffered size ignored rather than snapped.
-def _offered_size(value, sizes):
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        return None
-    return n if n in sizes else None
-
-
-def per_page_arg(args, cookies, cookie_name, sizes, default):
-    """The page size to render: ``?per_page=`` if the page offers it, else the
-    size remembered in ``cookie_name``, else ``default``.
-
-    A junk or unoffered ``?per_page`` falls through to the cookie rather than
-    straight to the default, so ``?per_page=abc`` still shows the size the
-    user last picked.
-    """
-    return (_offered_size(args.get("per_page"), sizes)
-            or _offered_size(cookies.get(cookie_name), sizes)
-            or default)

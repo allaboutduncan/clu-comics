@@ -202,11 +202,11 @@
         var values = Array.isArray(active) ? active.map(String) : [String(active == null ? '' : active)];
         values = values.filter(function (v) { return v !== ''; });
         if (!values.length) values = [''];
-        var small = !group.classList.contains('btn-group-sm');
+        var needBtnSm = !group.classList.contains('btn-group-sm');
         redraw(group, function () {
             (options || []).forEach(function (opt) {
                 var v = String(opt.value == null ? '' : opt.value);
-                group.appendChild(makeButton(opt, values.indexOf(v) !== -1, small));
+                group.appendChild(makeButton(opt, values.indexOf(v) !== -1, needBtnSm));
             });
         });
     };
@@ -266,11 +266,16 @@
         // A page's Clear button sets input.value directly, which fires no
         // event, so `last` would keep the old query and typing it again would
         // be skipped. With nothing pending, the box should hold what last ran:
-        // anything else was set by code, so take it as the new baseline.
+        // anything else was set by code, and what the page now shows is
+        // unknown, so the next query runs whatever it is.
         input.addEventListener('beforeinput', function () {
-            if (timer === null) last = input.value.trim();
+            if (timer === null && input.value.trim() !== last) last = null;
         });
-        input.addEventListener('input', function () {
+        input.addEventListener('input', function (e) {
+            // An input event dispatched by code is a request to search now,
+            // even for the query that last ran: the page may have reset its
+            // own state (a modal reopened on its browse list) under it.
+            if (e && e.isTrusted === false) { last = null; run(); return; }
             if (delay <= 0) { run(); return; }
             clearTimeout(timer);
             timer = setTimeout(run, delay);

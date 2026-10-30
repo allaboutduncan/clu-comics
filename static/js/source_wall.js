@@ -344,9 +344,17 @@ function applyDirectoryFilters() {
 
 // Folders and files in the view; the folder search and letter narrow the folders.
 function updateWallCount(visibleDirs) {
-    const total = swDirectories.length + swFiles.length;
     const end = document.getElementById('swCountEnd');
     if (end) end.classList.remove('d-none');
+    if (swView === 'provider') {
+        // Paged by Load more: count against the provider's total, not the
+        // rows loaded so far, so it agrees with the Load more button.
+        CLU.setCount(document.getElementById('swCount'), {
+            total: swProviderView.total, noun: 'files', one: 'file', shown: swFiles.length,
+        });
+        return;
+    }
+    const total = swDirectories.length + swFiles.length;
     CLU.setCount(document.getElementById('swCount'), {
         total, noun: 'items', one: 'item', shown: visibleDirs + swFiles.length,
     });

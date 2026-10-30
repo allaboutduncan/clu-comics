@@ -36,9 +36,11 @@
   select_field(id, label, classes=None)            (a call block: the <option>s)
       A labelled select for a toolbar row: "Publisher  All", "Sort  A-Z".
 
-  per_page_select(id, current, sizes=None)
+  per_page_select(id, current, sizes=None, default=None)
       select_field "Per page", offering clu_page_sizes() (helpers/paging.py)
-      unless a page passes its own.
+      unless a page passes its own. The list's starting size (default, else
+      clu_default_per_page()) goes on the select as data-default-per-page,
+      read by CLU.defaultPerPage.
 
   toolbar(aria_label, id=None, classes=None)         (a call block: the rows)
       The panel every list's controls sit in. Rows are .clu-toolbar-row:
@@ -128,20 +130,21 @@ Showing {{ fmt.format(shown) }} of {{ fmt.format(total) }} {{ name }}
 <span class="clu-toolbar-count" id="{{ id }}" aria-live="polite">{{ count_text(total, noun, one, shown, first, last) }}</span>
 {%- endmacro %}
 
-{% macro select_field(id, label, classes=None) -%}
+{% macro select_field(id, label, classes=None, attrs=None) -%}
 {#- A labelled select for a toolbar row: the label sits inside the control, so
     "Publisher  All" and "Per page  60" read the same on every screen. Call it
     with the <option>s: {% call select_field('pubFilter', 'Publisher') %}...{% endcall %} -#}
 <div class="input-group input-group-sm flex-nowrap clu-select{% if classes %} {{ classes }}{% endif %}">
   <label class="input-group-text" for="{{ id }}">{{ label }}</label>
-  <select class="form-select" id="{{ id }}">
+  <select class="form-select" id="{{ id }}"{% for k, v in (attrs or {}).items() %} {{ k }}="{{ v }}"{% endfor %}>
     {{- caller() -}}
   </select>
 </div>
 {%- endmacro %}
 
-{% macro per_page_select(id, current, sizes=None) -%}
-{% call select_field(id, 'Per page', classes='clu-per-page') -%}
+{% macro per_page_select(id, current, sizes=None, default=None) -%}
+{% call select_field(id, 'Per page', classes='clu-per-page',
+                     attrs={'data-default-per-page': default or clu_default_per_page()}) -%}
     {%- for n in (sizes or clu_page_sizes()) %}
     <option value="{{ n }}"{% if n == current %} selected{% endif %}>{{ n }}</option>
     {%- endfor %}

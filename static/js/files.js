@@ -1364,12 +1364,9 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
 
 // First letters present in a folder listing: 'A'..'Z', or '#' for the rest.
 function directoryLetters(directories) {
-  const letters = new Set();
-  (Array.isArray(directories) ? directories : []).forEach(dir => {
-    const firstChar = dir.charAt(0).toUpperCase();
-    letters.add(firstChar >= 'A' && firstChar <= 'Z' ? firstChar : '#');
-  });
-  return letters;
+  // CLU.sortLetters buckets each first character ('#' for a non-letter).
+  const dirs = Array.isArray(directories) ? directories : [];
+  return new Set(CLU.sortLetters(dirs.map(dir => dir.charAt(0))));
 }
 
 // Draw a panel's A-Z bar. A second click on the selected letter goes back

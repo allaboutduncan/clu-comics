@@ -76,7 +76,7 @@
                 {%- else %}
                 {{ result_count('resultCount', pager.total, 'series', one='series', first=_start + 1, last=_start + series_list|length) }}
                 {%- endif %}
-                {{ per_page_select('plPerPage', pager.per_page, sizes=page_sizes) }}
+                {{ per_page_select('plPerPage', pager.per_page, sizes=page_sizes, default=default_per_page) }}
             </div>
         </div>
         {% set _st = filters.status if filters.status in ['complete', 'missing', 'upcoming', 'unmonitored'] else '' %}

@@ -32,7 +32,7 @@
         <button id="auditRefresh" type="button" class="btn btn-outline-secondary btn-sm">
           <i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh
         </button>
-        {{ per_page_select('auditPerPage', 60) }}
+        {{ per_page_select('auditPerPage', clu_default_per_page()) }}
       </div>
     </div>
   {% endcall %}
@@ -110,7 +110,7 @@
   const bulkBar = document.getElementById('auditBulkBar');
   const bulkCount = document.getElementById('auditBulkCount');
   const masterCheckbox = document.getElementById('auditSelectAll');
-  const DEFAULT_PER_PAGE = 60;
+  const DEFAULT_PER_PAGE = CLU.defaultPerPage(perPageSel);
   const PER_PAGE_COOKIE = 'clu_per_page_metadata_history';
   let total = 0;
   let loadSeq = 0;

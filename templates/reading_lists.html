@@ -89,7 +89,7 @@ owner, so everything shows exactly as before. #}
                                 shown=grid.total if (grid.total == 0 or (_narrowed and grid.total_pages == 1)) else None,
                                 first=(grid.page - 1) * grid.per_page + 1 if grid.total_pages > 1 else None,
                                 last=(grid.page - 1) * grid.per_page + lists|length if grid.total_pages > 1 else None) }}
-                {{ per_page_select('rlPerPage', grid.per_page, sizes=page_sizes) }}
+                {{ per_page_select('rlPerPage', grid.per_page, sizes=page_sizes, default=default_per_page) }}
             </div>
         </div>
         <div class="clu-toolbar-row">

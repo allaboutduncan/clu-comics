@@ -122,18 +122,15 @@ function updateModalFilterBar(directories) {
     const bar = document.querySelector("#source-directory-filter .clu-letter-bar");
     if (!bar) return;
 
-    const letters = new Set();
-    directories.forEach(dir => {
-        const firstChar = dir.charAt(0).toUpperCase();
-        letters.add(firstChar >= 'A' && firstChar <= 'Z' ? firstChar : '#');
-    });
+    // CLU.sortLetters buckets each first character ('#' for a non-letter).
+    const letters = CLU.sortLetters(directories.map(dir => dir.charAt(0)));
     // Keep the selection only while this folder still has that letter.
-    if (currentModalFilter !== 'all' && !letters.has(currentModalFilter)) {
+    if (currentModalFilter !== 'all' && letters.indexOf(currentModalFilter) === -1) {
         currentModalFilter = 'all';
     }
 
     CLU.letterBar(bar, {
-        letters: Array.from(letters),
+        letters,
         active: currentModalFilter === 'all' ? '' : currentModalFilter,
         onChange: value => {
             currentModalFilter = value || 'all';

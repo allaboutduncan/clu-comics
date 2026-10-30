@@ -4627,6 +4627,31 @@ def get_files_missing_comicinfo(path=None):
         return []
 
 
+def count_files_recursive(path_prefix, allowed_prefixes=None):
+    """How many files lie under path_prefix, with no search or letter: the
+    "of N" in All Books' "Showing 3 of 1,204 files". Asked of the server each
+    time rather than remembered by the page, so indexing since the page loaded
+    is reflected. Same path and folder-scope rules as
+    get_files_recursive_paged."""
+    like_path = path_prefix.rstrip("/\\") + os.sep + "%"
+    clauses = ["type = 'file'", "path LIKE ?"]
+    params = [like_path]
+    prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+    if prefix_clause is not None:
+        clauses.append(prefix_clause)
+        params.extend(prefix_params)
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM file_index WHERE " + " AND ".join(clauses), params)
+            return c.fetchone()[0]
+    except Exception as e:
+        app_logger.error(f"Error counting files under {path_prefix}: {e}")
+        return None
+
+
 def get_files_recursive_paged(
     path_prefix,
     offset=0,
@@ -7887,8 +7912,19 @@ def _mb_letter_clause(column, letter):
     return "", []
 
 
-def _mb_letters(c, column, where_sql, params):
-    """Every first letter present across all pages, '#' first (as every letter bar orders them)."""
+def _mb_letters(c, column, where_sql, params, filters, allowed_prefixes):
+    """Every first letter present across all pages, '#' first (as every letter bar orders them).
+
+    Cached apart from the page: the letters do not depend on offset, limit,
+    sort or the letter itself, and the browse cache key holds all four, so
+    every page turn would otherwise rescan the filtered file_index for the
+    same list. where_sql/params are built from (filters, allowed_prefixes),
+    so those two and the column are the whole key.
+    """
+    cache_key = _mb_cache_key("letters", column, filters, allowed_prefixes)
+    cached = _mb_cache_get(cache_key)
+    if cached is not None:
+        return list(cached)
     first = _MB_FIRST_CHAR.format(col=column)
     c.execute(
         "SELECT DISTINCT CASE WHEN " + first + " BETWEEN 'A' AND 'Z'"
@@ -7898,7 +7934,9 @@ def _mb_letters(c, column, where_sql, params):
         params,
     )
     # '#' sorts before 'A', so a plain sort puts it first.
-    return sorted(r["l"] for r in c.fetchall())
+    letters = sorted(r["l"] for r in c.fetchall())
+    _mb_cache_put(cache_key, tuple(letters))
+    return letters
 
 
 def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
@@ -7924,8 +7962,24 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
     every first letter present across all pages (ignoring the letter itself),
     so the A-Z bar does not depend on which page is loaded; the year levels
     have no letters.
-    Returns {items, total, level, letters}
+    `all_total` is the total with neither the search nor the letter applied,
+    so the page can say "Showing 3 of 76 publishers". It comes from the server
+    on every load rather than being remembered by the page, so files indexed
+    since the page opened are counted; it is cached like any browse result.
+    Returns {items, total, all_total, level, letters}
     """
+    out = _metadata_browse_page(axis, filters, sort, offset, limit, allowed_prefixes)
+    filters = filters or {}
+    if not (filters.get("search") or filters.get("letter")):
+        return dict(out, all_total=out.get("total", 0))
+    base = {k: v for k, v in filters.items() if k not in ("search", "letter")}
+    # One row is enough for a total; the sort does not change it.
+    whole = _metadata_browse_page(axis, base, "alpha", 0, 1, allowed_prefixes)
+    return dict(out, all_total=whole.get("total", 0))
+
+
+def _metadata_browse_page(axis, filters, sort, offset, limit, allowed_prefixes):
+    """One page of metadata_browse, without `all_total` (see there)."""
     filters = dict(filters or {})
     letter = filters.pop("letter", None) or ""
     cache_key = _mb_cache_key(
@@ -7946,7 +8000,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
 
         if axis == "issue":
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
-            letters = _mb_letters(c, "name", where_sql, params)
+            letters = _mb_letters(c, "name", where_sql, params,
+                                  filters, allowed_prefixes)
             l_sql, l_params = _mb_letter_clause("name", letter)
             where_sql, params = where_sql + l_sql, params + l_params
             c.execute(
@@ -7988,7 +8043,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
         if axis == "publisher":
             column = "ci_publisher"
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
-            letters = _mb_letters(c, column, where_sql, params)
+            letters = _mb_letters(c, column, where_sql, params,
+                                  filters, allowed_prefixes)
             l_sql, l_params = _mb_letter_clause(column, letter)
             where_sql, params = where_sql + l_sql, params + l_params
             c.execute(
@@ -8026,7 +8082,8 @@ def metadata_browse(axis, filters, sort="alpha", offset=0, limit=50,
 
         if axis == "series":
             where_sql, params = _build_metadata_where(filters, allowed_prefixes)
-            letters = _mb_letters(c, "ci_series", where_sql, params)
+            letters = _mb_letters(c, "ci_series", where_sql, params,
+                                  filters, allowed_prefixes)
             l_sql, l_params = _mb_letter_clause("ci_series", letter)
             where_sql, params = where_sql + l_sql, params + l_params
             c.execute(

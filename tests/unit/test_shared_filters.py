@@ -79,7 +79,7 @@ def test_per_page_from_takes_the_first_value_that_is_set():
     assert per_page_from(None, "250") == 240            # no URL value: the cookie
     assert per_page_from("24", "250") == 24             # the URL wins
     assert per_page_from("", None) == DEFAULT_PER_PAGE
-    # Junk falls through to the next candidate, as per_page_arg does (#681).
+    # Junk falls through to the next candidate (#681).
     assert per_page_from("junk", "120") == 120
     assert per_page_from("junk", "junk") == DEFAULT_PER_PAGE
     assert per_page_from("0", "-5") == DEFAULT_PER_PAGE
@@ -113,6 +113,8 @@ def macros():
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(os.path.join(ROOT, "templates")),
                              autoescape=True)
     env.globals["clu_page_sizes"] = lambda: PAGE_SIZES
+    env.globals["clu_default_per_page"] = (
+        lambda kind=None: COLLECTION_DEFAULT_PER_PAGE if kind == "collection" else DEFAULT_PER_PAGE)
     return env.get_template("partials/filters.html").module
 
 
@@ -175,6 +177,27 @@ def test_select_field_puts_the_label_inside_the_control(macros):
     assert '<label class="input-group-text" for="pub">Publisher</label>' in html
     assert '<select class="form-select" id="pub">' in html and '<option value="">All</option>' in html
     assert "clu-select" in html and "input-group-sm" in html
+
+
+def test_per_page_select_carries_the_server_default(macros):
+    # CLU.defaultPerPage reads this, so no page script hard-codes the number.
+    assert f'data-default-per-page="{DEFAULT_PER_PAGE}"' in str(macros.per_page_select("pp", 24))
+    assert 'data-default-per-page="24"' in str(macros.per_page_select("pp", 60, default=24))
+
+
+def test_no_page_script_hard_codes_the_default_page_size():
+    # helpers/paging.py is the one copy; the scripts read the select's
+    # data-default-per-page. A literal here drifts the day the default moves.
+    pat = re.compile(r"DEFAULT_PER_PAGE\s*=\s*\d|\|\|\s*(?:24|60)\b|itemsPerPage\s*=\s*\d")
+    hits = []
+    for rel in ("static/js/metadata_browser.js", "static/js/reading_list.js",
+                "static/js/collection.js", "templates/metadata_history.html"):
+        src = _read(rel)
+        hits += [f"{rel}:{src[:m.start()].count(chr(10)) + 1}" for m in pat.finditer(src)]
+    assert not hits, "hard-coded default page size:\n  " + "\n  ".join(hits)
+    for rel in ("templates/collection.html", "templates/metadata_browser.html",
+                "templates/metadata_history.html"):
+        assert re.search(r"per_page_select\('\w+', \d", _read(rel)) is None, rel
 
 
 def test_per_page_select_is_a_select_field(macros):
@@ -323,3 +346,12 @@ def test_no_select_uses_its_first_option_as_a_label():
             for rel, src in _sources()
             for m in re.finditer(r"<option value=\"\">All (Publishers|Years|Months|Providers)<", src)]
     assert not hits, "use select_field and an 'All' option:\n  " + "\n  ".join(hits)
+
+
+def test_letter_buckets_come_from_sort_letters():
+    # "First character, or '#'" is CLU.sortLetters' rule. index.js, series.js
+    # and files.js each had their own copy of it.
+    copy = re.compile(r"letters\.add\([^)]*\?\s*\w+\s*:\s*'#'\)")
+    hits = [f"{rel}:{src[:m.start()].count(chr(10)) + 1}"
+            for rel, src in _sources() for m in copy.finditer(src)]
+    assert not hits, "use CLU.sortLetters:\n  " + "\n  ".join(hits)

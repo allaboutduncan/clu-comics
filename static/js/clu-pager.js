@@ -163,6 +163,14 @@
     });
   };
 
+  // The size a list starts on, as the server rendered it onto the select
+  // (per_page_select's data-default-per-page, helpers/paging.py). Read here so
+  // no page script keeps its own copy of the number.
+  CLU.defaultPerPage = function (select) {
+    const n = parseInt(select && select.getAttribute('data-default-per-page'), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
   const PER_PAGE_COOKIE_AGE = 365 * 24 * 60 * 60;
 
   CLU.rememberPerPage = function (name, n) {

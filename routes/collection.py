@@ -40,6 +40,7 @@ from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
     search_file_index, get_user_preference, get_files_recursive_paged,
+    count_files_recursive,
     get_user_setting, get_folder_pin, set_folder_pin, delete_folder_pin
 )
 
@@ -864,10 +865,16 @@ def api_browse_recursive():
 
     search = request.args.get('search') or None
 
+    prefixes = accessible_folder_prefixes(current_user())
     rows, total, letters = get_files_recursive_paged(
         path, offset=offset, limit=limit, letter=letter, search=search,
-        allowed_prefixes=accessible_folder_prefixes(current_user())
+        allowed_prefixes=prefixes
     )
+    # The total before the search and letter narrowed it, for "Showing 3 of
+    # 1,204 files". Only worth a second count when something narrowed.
+    all_total = total
+    if search or letter:
+        all_total = count_files_recursive(path, allowed_prefixes=prefixes)
 
     excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".html", ".css",
                            ".ds_store", ".json", ".db", ".xml"}
@@ -921,6 +928,7 @@ def api_browse_recursive():
         "current_path": path,
         "files": files,
         "total": total,
+        "all_total": all_total,
         "offset": offset,
         "limit": limit,
         "letters": letters,

@@ -86,7 +86,9 @@ let allItems = []; // Stores all files and folders for the current directory
 let pinnedCover = null;
 let readIssuesSet = new Set(); // Cached set of read issue paths for O(1) lookups
 let currentPage = 1;
-let itemsPerPage = 24; // Default to match the select dropdown
+// The server's default (helpers/paging.py), read off #itemsPerPage's
+// data-default-per-page; restoreItemsPerPage() may replace it.
+let itemsPerPage = CLU.defaultPerPage(document.getElementById('itemsPerPage'));
 
 // Multi-file selection state
 const selectedFiles = new Set();
@@ -99,10 +101,11 @@ let allBooksData = null;
 let folderViewPath = '';
 let backgroundLoadingActive = false; // Track if background loading is happening
 let allBooksTotal = 0;          // Total filtered count returned by the server
-// All Books' total before the search box or a letter narrowed it, per folder:
-// the server reports only the matching total, and the count reads
-// "Showing 3 of 1,204 files" rather than "3 files".
-const allBooksUnnarrowed = {};
+// All Books' total before the search box or a letter narrowed it, as the
+// server sent it with this page (all_total): the count reads "Showing 3 of
+// 1,204 files" rather than "3 files". Not remembered across loads, so files
+// indexed since the page opened are counted.
+let allBooksUnnarrowed = null;
 let allBooksLetters = [];       // Available letter buckets returned by the server
 let allBooksAbort = null;       // AbortController for the current paged fetch
 
@@ -1084,9 +1087,7 @@ async function fetchAllBooksPage(opts) {
         allBooksData = data;
         allBooksTotal = data.total || 0;
         allBooksLetters = Array.isArray(data.letters) ? data.letters : [];
-        if (!gridSearchTerm && (!currentFilter || currentFilter === 'all')) {
-            allBooksUnnarrowed[currentPath] = allBooksTotal;
-        }
+        allBooksUnnarrowed = typeof data.all_total === 'number' ? data.all_total : null;
 
         const lastPage = Math.max(1, Math.ceil(allBooksTotal / itemsPerPage));
         if (allBooksTotal === 0) {
@@ -1594,7 +1595,7 @@ function renderPage() {
         // Server has already filtered, sorted, and sliced — render directly.
         renderGrid(allItems);
         renderPagination(allBooksTotal);
-        const everything = allBooksUnnarrowed[currentPath];
+        const everything = allBooksUnnarrowed;
         updateCollectionCount(everything == null ? allBooksTotal : everything, allBooksTotal);
         updateFilterBar();
         return;

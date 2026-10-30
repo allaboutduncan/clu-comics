@@ -158,6 +158,9 @@ def grid_page():
         'success': True,
         'html': html,
         'total': result['total'],
+        # Every list, unnarrowed: the count's "of N" and Delete All. Sent with
+        # each page so a create or delete since the page loaded is reflected.
+        'all_total': count_reading_lists(),
         'page': result['page'],
         'per_page': result['per_page'],
         'total_pages': result['total_pages'],

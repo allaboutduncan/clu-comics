@@ -161,6 +161,42 @@ def test_letters_cover_every_page_and_ignore_the_letter(library):
     assert narrowed["letters"] == expected
 
 
+def test_letters_are_not_rescanned_per_page_sort_or_letter(library):
+    """The browse cache key holds offset/limit/sort/letter; the letters do not
+    depend on any of them, so a page turn must reuse the letters it has."""
+    from core.database import metadata_browse, invalidate_metadata_browser_cache
+    _seed_letters(library)
+    expected = ["#", "A", "B", "D", "I", "M", "O"]
+    assert metadata_browse("publisher", {}, limit=1, offset=0)["letters"] == expected
+    # A new row behind the cache's back: only a rescan would see the Z.
+    library.execute(
+        "INSERT INTO file_index (name, path, type, size, parent, ci_publisher)"
+        " VALUES ('z.cbz', '/data/L/z.cbz', 'file', 1, '/data/L', 'Zenescope')")
+    library.commit()
+    for kw in ({"offset": 1}, {"sort": "count"}, {"filters": {"letter": "B"}}):
+        filters = kw.pop("filters", {})
+        assert metadata_browse("publisher", filters, limit=1, **kw)["letters"] == expected
+    # Invalidation (any file_index change) still reaches the letters.
+    invalidate_metadata_browser_cache()
+    assert metadata_browse("publisher", {}, limit=1)["letters"] == expected + ["Z"]
+
+
+def test_all_total_ignores_search_and_letter(library):
+    """"Showing 3 of 76 publishers": the server sends the 76 with every load."""
+    from core.database import metadata_browse
+    _seed_letters(library)
+    whole = metadata_browse("publisher", {})
+    assert whole["all_total"] == whole["total"] == 10
+    lettered = metadata_browse("publisher", {"letter": "D"}, limit=2)
+    assert (lettered["total"], lettered["all_total"]) == (3, 10)
+    # The search matches file and series names: series S2 is Dark Horse's.
+    searched = metadata_browse("publisher", {"search": "s2"})
+    assert (searched["total"], searched["all_total"]) == (1, 10)
+    # Other filters still narrow the whole: the "of N" is this view's total.
+    issues = metadata_browse("issue", {"publisher": ["DC"], "search": "002"})
+    assert (issues["total"], issues["all_total"]) == (1, 2)
+
+
 def test_letter_applies_to_series_and_issue_levels(library):
     from core.database import metadata_browse
     series = metadata_browse("series", {"letter": "S"})

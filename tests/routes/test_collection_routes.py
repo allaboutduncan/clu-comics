@@ -882,6 +882,26 @@ class TestBrowseRecursivePagination:
         # Blank reads as absent so the client falls back to the filename.
         assert by_name["Captain America 009 (2005).cbz"]["ci_number"] is None
 
+    def test_all_total_is_the_count_before_search_and_letter(self, client, app, db_connection):
+        """The "of N" in "Showing 1 of 3 files" comes from the server on every
+        load; the page used to remember it, so it went stale after indexing."""
+        data_dir = app.config["DATA_DIR"]
+        _seed_file_index(data_dir, [
+            ("Avengers 001.cbz", "Avengers", "2018", "1"),
+            ("Batman 001.cbz", "Batman", "2016", "1"),
+            ("Zatanna 001.cbz", "Zatanna", "2010", "1"),
+        ])
+        plain = client.get(f"/api/browse-recursive?path={data_dir}").get_json()
+        assert (plain["total"], plain["all_total"]) == (3, 3)
+        searched = client.get(f"/api/browse-recursive?path={data_dir}&search=bat").get_json()
+        assert (searched["total"], searched["all_total"]) == (1, 3)
+        lettered = client.get(f"/api/browse-recursive?path={data_dir}&letter=Z").get_json()
+        assert (lettered["total"], lettered["all_total"]) == (1, 3)
+        # A file indexed since: the next narrowed load counts it.
+        _seed_file_index(data_dir, [("Daredevil 001.cbz", "Daredevil", "2019", "1")])
+        again = client.get(f"/api/browse-recursive?path={data_dir}&search=bat").get_json()
+        assert again["all_total"] == 4
+
     def test_offset_and_limit(self, client, app, db_connection):
         data_dir = app.config["DATA_DIR"]
         rows = [(f"Series{i:02d} 001 (2020).cbz", f"Series {i:02d}", "2020", "1")

@@ -35,10 +35,12 @@ function box() {
     value: '',
     addEventListener(t, f) { (on[t] = on[t] || []).push(f); },
     type(v) {
-      (on.beforeinput || []).forEach(f => f({}));
+      (on.beforeinput || []).forEach(f => f({ isTrusted: true }));
       this.value = v;
-      (on.input || []).forEach(f => f({}));
+      (on.input || []).forEach(f => f({ isTrusted: true }));
     },
+    // What a page does to reset the box: value set, then a dispatched event.
+    dispatch() { (on.input || []).forEach(f => f({ isTrusted: false })); },
     enter() { (on.keydown || []).forEach(f => f({ key: 'Enter', preventDefault() {} })); },
   };
 }
@@ -62,6 +64,27 @@ function box() {
     b.type('bat'); await wait(60);
     b.type('bat '); await wait(60);                // trailing space
     b.enter();                                     // Enter on the same query
+  } else if (scenario === 'reopen') {
+    // A modal reopened inside the debounce: the box is cleared and an input
+    // event dispatched while the last query that ran is still ''.
+    CLU.bindSearch(b, v => ran.push(v), { delay: 20 });
+    b.type('bat');
+    b.value = ''; b.dispatch(); await wait(60);
+  } else if (scenario === 'page-reset') {
+    // The page reset its own query state under a box that still reads the
+    // old query, then cleared the box and dispatched input. Retyping the
+    // same query must search again.
+    CLU.bindSearch(b, v => ran.push(v), { delay: 20 });
+    b.type('bat'); await wait(60);
+    b.value = ''; b.dispatch();
+    b.type('ba'); b.type('bat'); await wait(60);
+  } else if (scenario === 'set-by-code') {
+    // Code wrote a different query into the box without searching: the
+    // next edit's query runs even if it matches what last ran.
+    CLU.bindSearch(b, v => ran.push(v), { delay: 20 });
+    b.type('bat'); await wait(60);
+    b.value = 'batman';
+    b.type('bat'); await wait(60);
   }
   console.log(JSON.stringify(ran));
 })();
@@ -88,3 +111,17 @@ def test_pasting_a_query_after_a_clear_runs_it_again(tmp_path):
 
 def test_an_unchanged_query_is_still_skipped(tmp_path):
     assert _run(tmp_path, "unchanged") == ["bat"]
+
+
+def test_a_dispatched_input_event_runs_inside_the_debounce(tmp_path):
+    # The pending 'bat' is superseded; the dispatched '' runs even though ''
+    # is also the value bindSearch started from.
+    assert _run(tmp_path, "reopen") == [""]
+
+
+def test_a_query_retyped_after_a_page_reset_runs_again(tmp_path):
+    assert _run(tmp_path, "page-reset") == ["bat", "", "bat"]
+
+
+def test_a_box_changed_by_code_runs_the_next_query(tmp_path):
+    assert _run(tmp_path, "set-by-code") == ["bat", "bat"]

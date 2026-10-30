@@ -136,6 +136,13 @@ class TestReadingListGridPaging:
         assert (data["page"], data["total"], data["total_pages"]) == (2, 65, 2)
         assert data["html"].count('class="reading-list-card') == 5
 
+    def test_page_endpoint_sends_the_unnarrowed_total(self, client):
+        # The count's "of N" reads this, so a list created or deleted since
+        # the page rendered is reflected on the next search or tag change.
+        self._seed()
+        data = client.get("/api/reading-lists/page?q=zzzqx").get_json()
+        assert (data["total"], data["all_total"]) == (0, 65)
+
     def test_page_endpoint_no_match(self, client):
         self._seed(2)
         data = client.get("/api/reading-lists/page?tag=even&tag=odd").get_json()

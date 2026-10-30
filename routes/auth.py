@@ -31,7 +31,7 @@ from core.auth import (
     is_login_required,
     load_current_user,
 )
-from helpers.paging import PAGE_SIZES
+from helpers.paging import PAGE_SIZES, DEFAULT_PER_PAGE, COLLECTION_DEFAULT_PER_PAGE
 from core.database import (
     create_api_token,
     delete_api_token,
@@ -158,6 +158,14 @@ def _inject_theme_assets():
 @auth_bp.app_template_global("clu_page_sizes")
 def _clu_page_sizes():
     return PAGE_SIZES
+
+
+# The size a list starts on (helpers/paging.py). per_page_select writes it onto
+# the select as data-default-per-page, which is where the page scripts read it
+# (CLU.defaultPerPage), so the browser never keeps a second copy of it.
+@auth_bp.app_template_global("clu_default_per_page")
+def _clu_default_per_page(kind=None):
+    return COLLECTION_DEFAULT_PER_PAGE if kind == "collection" else DEFAULT_PER_PAGE
 
 
 # Download endpoints (api.py) are auth-free by design so the browser extension
