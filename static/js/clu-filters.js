@@ -29,7 +29,8 @@
  *       Calls fn(value) as the user types: after `delay` ms of quiet
  *       (default 250, for a search the server answers) or at once with
  *       delay 0 (a filter over rows already on the page). Enter runs it
- *       immediately.
+ *       immediately. A value it already ran is skipped; a page may empty
+ *       the box with input.value = '' and refresh itself.
  *
  *   CLU.formatCount(n)
  *       4132 -> "4,132", matching the server's '{:,}'.format().
@@ -262,6 +263,13 @@
             fn(v);
         }
         last = input.value.trim();
+        // A page's Clear button sets input.value directly, which fires no
+        // event, so `last` would keep the old query and typing it again would
+        // be skipped. With nothing pending, the box should hold what last ran:
+        // anything else was set by code, so take it as the new baseline.
+        input.addEventListener('beforeinput', function () {
+            if (timer === null) last = input.value.trim();
+        });
         input.addEventListener('input', function () {
             if (delay <= 0) { run(); return; }
             clearTimeout(timer);

@@ -41,7 +41,7 @@ def _read(rel):
 def _sources(patterns=("templates/**/*.html", "static/js/*.js")):
     for pat in patterns:
         for path in glob.glob(os.path.join(ROOT, pat), recursive=True):
-            rel = os.path.relpath(path, ROOT)
+            rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
             if "/.omc/" in rel:
                 continue
             yield rel, _read(rel)

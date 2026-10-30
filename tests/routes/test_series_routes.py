@@ -1726,7 +1726,7 @@ class TestReleasesPublisherFilter:
                     "release-cover", "no-cover-placeholder"):
             assert old not in html
         from pathlib import Path
-        source = (Path(__file__).resolve().parents[2] / "templates/releases.html").read_text()
+        source = (Path(__file__).resolve().parents[2] / "templates/releases.html").read_text(encoding="utf-8")
         assert "@keyframes" not in source
 
     def test_cards_and_rows_carry_their_subscription_state(self, client, app):
