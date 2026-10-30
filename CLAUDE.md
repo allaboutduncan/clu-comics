@@ -106,7 +106,7 @@ literal byte. A raw one is invisible in an editor, review and diff, makes `grep`
 report the whole file as "Binary file … matches" so it stops being searchable,
 and survives every syntax check. One stray raw NUL — in a string used as a DOM
 attribute value, where the HTML parser rewrites it to U+FFFD — made every button
-on the Problem Files page do nothing, with no error anywhere.
+on the Library Health page do nothing, with no error anywhere.
 `tests/unit/test_static_assets_are_text.py` pins this across
 `static/js`, `static/css` and `templates/`.
 
@@ -266,7 +266,7 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 - `.claude/rules/scheduled-times.md` - Scheduled job times (UTC everywhere)
 - `.claude/rules/issue-badge.md` - Collection grid issue badge and read-status wiring
 - `.claude/rules/database-health.md` - Database health, maintenance and repair
-- `.claude/rules/problem-files.md` - Problem Files, damaged-file replacement and the library health scan
+- `.claude/rules/problem-files.md` - Library Health, damaged-file replacement and the library health scan
 - `.claude/rules/thumbnails.md` - Per-comic thumbnail cache and folder thumbnails
 - `.claude/rules/comicvine-db-update.md` - Local ComicVine DB auto-update
 - `.claude/rules/metadata.md` - Metadata: Metron auth, collected editions, provenance, series.json, ComicInfo writes

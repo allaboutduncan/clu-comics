@@ -1,6 +1,6 @@
 """Filing a downloaded replacement onto the damaged file it replaces.
 
-This is the one part of the Problem Files feature that destroys data, so the
+This is the one part of the Library Health feature that destroys data, so the
 safety properties are pinned hardest: a replacement that is itself damaged must
 never be swapped in, and the file it replaces must always be recoverable.
 """
@@ -452,7 +452,7 @@ class TestSwapOrdering:
         self, store, library, no_aliases, monkeypatch
     ):
         """A failed swap has to be a no-op. A damaged comic is still the comic
-        the user had, and it is what the Problem Files entry describes."""
+        the user had, and it is what the Library Health entry describes."""
         damaged = library["damaged"]
         original = damaged.read_bytes()
         claim_replacement(str(damaged), series="Tales of the Unexpected", issue="8")

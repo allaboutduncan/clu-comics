@@ -1,4 +1,4 @@
-"""Find series.json files with blank values and hand them to Problem Files.
+"""Find series.json files with blank values and hand them to Library Health.
 
 Komga reads a series.json into a class in which most fields are required, and a
 blank ``name`` / ``description_text`` / ``comic_image`` leaves a series with no
@@ -9,7 +9,7 @@ Things that look arbitrary and are not:
 
 - **This is the one scan-driven problem source.** Every other writer records a
   failure that happened while an operation ran; nothing "failed" here, so the
-  Problem Files page offers a Scan button that calls :func:`scan_library`. It is
+  Library Health page offers a Scan button that calls :func:`scan_library`. It is
   deliberately not scheduled — the page promises it never scans on its own.
 - **"Blank" is wider than null.** A missing key, ``null``, whitespace and a
   non-string all count: each renders the same in Komga.

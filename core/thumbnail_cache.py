@@ -338,14 +338,14 @@ def regenerate_thumbnail(file_path, cache_path=None, record_job=True):
         #
         # For the same reason this records no *problem* either: a .pdf having no
         # reader is a fact about the format, not a damaged file, and listing
-        # every PDF in the library on the Problem Files page would bury the
+        # every PDF in the library on the Library Health page would bury the
         # comics that really are broken.
         app_logger.info(f"No thumbnail reader for {file_path}")
         if record_job:
             set_job_status(file_path, "skipped")
         return False
 
-    # The problem-files hand-offs below are deliberately NOT gated on
+    # The Library Health hand-offs below are deliberately NOT gated on
     # `record_job`. That flag exists so folder-art generation does not write
     # `thumbnail_jobs` rows, because those drive re-queue storms; it says
     # nothing about diagnostics. A comic that cannot be rendered for folder art

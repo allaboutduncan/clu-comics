@@ -77,7 +77,7 @@ class TestWizardPage:
                     '"/api/problem-files/health/settings"', '"/api/problem-files/health/scan"',
                     '"/api/problem-files/health/summary"'):
             assert url in html
-        for page in ('href="/problem-files"', 'href="/problem-files/duplicates"',
+        for page in ('href="/library-health"', 'href="/library-health/duplicates"',
                      'href="/source-wall"'):
             assert page in html
 
@@ -503,7 +503,7 @@ class TestStatusApi:
         data = client.get(STATUS_URL).get_json()
         assert _section(data, "mylar_import")["link"] == "/import/mylar"
         assert _section(data, "pull_list_scan")["link"] == "/pull-list"
-        assert _section(data, "repair")["link"] == "/problem-files"
+        assert _section(data, "repair")["link"] == "/library-health"
         assert _section(data, "metadata")["link"] is None
 
     @staticmethod

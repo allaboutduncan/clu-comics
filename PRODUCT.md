@@ -8,7 +8,7 @@ web
 
 ## Users
 
-**Primary: the library maintainer.** A self-hoster (often Unraid or a homelab Docker host) responsible for a large digital comic library, from thousands up to 70,000+ issues. They come to CLU to do jobs they would otherwise script: convert, rename and repair files, write ComicInfo.xml metadata, triage problem files, track releases, and automate downloads into the library. When a design decision trades the maintainer against another audience, the maintainer wins.
+**Primary: the library maintainer.** A self-hoster (often Unraid or a homelab Docker host) responsible for a large digital comic library, from thousands up to 70,000+ issues. They come to CLU to do jobs they would otherwise script: convert, rename and repair files, write ComicInfo.xml metadata, triage and fix library health issues, track releases, and automate downloads into the library. When a design decision trades the maintainer against another audience, the maintainer wins.
 
 **Secondary: readers.** Household or friends with Reader accounts (multi-user mode) who browse the collection, read in the built-in reader, and keep reading lists, Want to Read and On the Stack. Many installs are single-user, where maintainer and reader are the same person.
 
@@ -36,7 +36,7 @@ CLU is the maintenance and metadata layer underneath a comic server, not a repla
 - **Themes are a hard constraint.** Every screen must work on all 26 Bootswatch themes and the local themes (Gruvbox Dark, Catppuccin Latte/Frappé/Macchiato/Mocha), light and dark, by reading Bootstrap/theme variables rather than hardcoded colours. Theme is per-user.
 - Never use native `alert()` / `confirm()` / `prompt()`; use Bootstrap modals and `CLU.showToast` toasts.
 - Static URLs go through `url_for` (subpath deploys).
-- Terminology to keep: Pull List, Wanted, Want to Read, On the Stack, Source Wall, Problem Files, CLU Wrapped, Reader / Clerk / Store Owner.
+- Terminology to keep: Pull List, Wanted, Want to Read, On the Stack, Source Wall, Library Health, CLU Wrapped, Reader / Clerk / Store Owner.
 
 ## Brand Commitments
 

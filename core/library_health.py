@@ -1,6 +1,6 @@
 """The rolling library health scan: integrity, duplicates and strays.
 
-Problem Files used to be report-only -- a file appeared because an operation
+Library Health used to be report-only -- a file appeared because an operation
 tried to read it and failed -- so an empty page meant "nothing has failed", not
 "your library is clean". This module is the opt-in answer: it goes looking.
 

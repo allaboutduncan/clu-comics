@@ -241,7 +241,7 @@ def get_edit_modal(file_path):
     }
 
 def _recheck_listed_problems(path):
-    """After a save, re-check a comic that is on the Problem Files page.
+    """After a save, re-check a comic that is on the Library Health page.
 
     Removing a damaged page in Edit is a repair, so the row should clear -- but
     only on evidence. The repacked archive has fresh checksums whatever is in

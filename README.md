@@ -166,7 +166,7 @@ with a log-only mode so you can see what it would do before it does anything.
 
 ### How do I find damaged comics?
 
-The [Problem Files](docs/problem-files.md) page collects every file an operation could not read —
+The [Library Health](docs/library-health.md) page collects every file an operation could not read —
 a truncated download, a bad checksum, a RAR wearing a `.cbz` name — with the cause in plain
 English and the action most likely to help. It does not scan your library; a file appears because
 something tried to open it and failed. You can search your download sources for a replacement from

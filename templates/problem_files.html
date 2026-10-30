@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
 
-{% block title %}CLU: Problem Files{% endblock %}
+{% block title %}CLU: Library Health{% endblock %}
 
 {% block content %}
 
@@ -68,7 +68,7 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
   {# "Report only" is a promise worth making in so many words, so it stays
   in the subtitle: otherwise an empty page reads as "your library is clean"
   rather than "nothing has failed yet". #}
-  {% call(slot) page_header('Problem Files', 'bi-exclamation-triangle',
+  {% call(slot) page_header('Library Health', 'bi-exclamation-triangle',
                             subtitle='Files that failed an operation CLU attempted. An empty list means nothing has failed, not that the library is clean.') %}
     {% if slot == 'actions' %}
       <button class="btn btn-sm btn-outline-secondary" id="pf-scan-seriesjson"
@@ -92,7 +92,7 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
       <p>
         Unless you turn on the library health scan below, CLU does not look for
         damage on its own: a file appears here when something tried to read it
-        and could not. With the scan on, the Library health card shows how much
+        and could not. With the scan on, the Health scan card shows how much
         of the library has been checked. <strong>Scan series.json</strong> finds
         series.json files with a blank name, description or cover;
         <strong>Scan empty folders</strong> finds library folders left with no
@@ -109,20 +109,20 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
     {% endif %}
   {% endcall %}
 
-  {# Library health. The scan is opt-in and rolling, so the card states coverage
+  {# Health scan. The scan is opt-in and rolling, so the card states coverage
   rather than "clean": 40% checked means 60% unknown. #}
   <div class="card mb-3" id="pf-health">
     <div class="card-body py-3">
       <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
         <div>
           <h5 class="card-title mb-1">
-            <i class="bi bi-heart-pulse me-2"></i>Library health
+            <i class="bi bi-heart-pulse me-2"></i>Health scan
             <span class="badge ms-2 d-none" id="pf-health-score"></span>
           </h5>
           <div class="small text-muted" id="pf-health-line">Loading&hellip;</div>
         </div>
         <div class="d-flex gap-2 flex-wrap">
-          <a class="btn btn-outline-primary btn-sm" href="/problem-files/duplicates">
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('library_health.duplicates_page') }}">
             <i class="bi bi-files me-1"></i>Review duplicates
             <span class="badge bg-secondary ms-1 d-none" id="pf-health-dups"></span>
           </a>

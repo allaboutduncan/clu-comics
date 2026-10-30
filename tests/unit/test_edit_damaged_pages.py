@@ -1,5 +1,5 @@
 """The Edit modal on a CRC-damaged comic: flag the page, restore on failure,
-and only clear the Problem Files row on evidence.
+and only clear the Library Health row on evidence.
 
 Real fixture archives, as in test_cbz_salvage.py -- what matters is what
 zipfile and Pillow really do with a damaged entry.
