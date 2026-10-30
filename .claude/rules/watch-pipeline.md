@@ -272,7 +272,7 @@ accumulated in one TARGET folder unnoticed.
 **Do not reintroduce a filesystem test as the success signal**; pinned by
 `tests/unit/test_monitor.py` and `tests/mocked/test_convert_to_cbz_contract.py`.
 
-A failure is handed to the Problem Files worklist under `SOURCE_CONVERT`
+A failure is handed to the Library Health page under `SOURCE_CONVERT`
 (`convert_single_rar_file(..., problem_source=)`), and a success clears the row.
 The rebuild fallback passes no source on purpose: it records its own row against
 the `.cbz` it started from, and two rows for one failure is how they drift apart.

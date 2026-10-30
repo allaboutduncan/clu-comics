@@ -1,4 +1,4 @@
-"""The Problem Files page and its API.
+"""The Library Health page and its API.
 
 A blueprint rather than routes in ``app.py`` so the logic is directly testable:
 ``app.py`` cannot be imported in tests, and anything left there is only
@@ -14,17 +14,23 @@ so the module stays cheap to import and the symbols stay patchable in tests.
 import os
 import threading
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
 from core.app_logging import app_logger
 
 problem_files_bp = Blueprint("problem_files", __name__)
 
 
-@problem_files_bp.route("/problem-files")
+@problem_files_bp.route("/library-health")
 def page():
-    """The Problem Files page."""
-    return render_template("problem_files.html", current_page="/problem-files")
+    """The Library Health page."""
+    return render_template("problem_files.html", current_page="/library-health")
+
+
+@problem_files_bp.route("/problem-files")
+def legacy_page():
+    """The page's old name; kept so bookmarks keep working."""
+    return redirect(url_for("problem_files.page"), code=301)
 
 
 @problem_files_bp.route("/api/problem-files", methods=["GET"])
@@ -57,7 +63,7 @@ def api_list():
         # could not read.
         return jsonify({
             "success": False,
-            "error": "Could not read the problem-files list",
+            "error": "Could not read the Library Health list",
         }), 500
 
     from core.problem_replacements import list_replacements
@@ -301,7 +307,7 @@ def api_delete():
         return jsonify({"success": True, "trashed": False, "missing": True})
 
     if is_critical_path(path):
-        app_logger.error(f"Refused to delete critical path from Problem Files: {path}")
+        app_logger.error(f"Refused to delete critical path from Library Health: {path}")
         return jsonify({"success": False, "error": "That path is protected"}), 403
 
     # The only directory this page lists is an empty folder, and the scan that

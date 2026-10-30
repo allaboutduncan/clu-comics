@@ -1745,7 +1745,7 @@
     $('repair-progress-wrap').classList.toggle('d-none', !running);
   }
 
-  /** Follow a scan this step did not start (the schedule, Problem Files). */
+  /** Follow a scan this step did not start (the schedule, Library Health). */
   function followHealthSummary() {
     scanRunning(true);
     $('repair-detail').textContent = 'A scan is running...';

@@ -1,5 +1,5 @@
 /**
- * Problem Files page.
+ * Library Health page.
  *
  * DOM contract (templates/problem_files.html):
  *   #pf-tbody, #pf-summary, #pf-refresh, #pf-search, #pf-show-dismissed,
@@ -362,7 +362,7 @@
                 else { stopReplacementPoll(); }
             })
             .catch(function (e) {
-                CLU.showError('Could not load problem files: ' + e.message);
+                CLU.showError('Could not load Library Health: ' + e.message);
             });
     }
 
@@ -1097,7 +1097,7 @@
     }
 
     // ---------------------------------------------------------------------
-    // Library health card
+    // Health scan card
     // ---------------------------------------------------------------------
     var healthPoll = null;
 

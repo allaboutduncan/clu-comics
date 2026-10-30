@@ -190,7 +190,7 @@ def _clear_convert_problem(rar_path):
 
 
 def _record_rebuild_problem(cbz_path, exc=None, error_class=None, error_message=None):
-    """Best-effort hand-off to the problem-files worklist. Never raises.
+    """Best-effort hand-off to the Library Health worklist. Never raises.
 
     Imported lazily: this module is also run as a subprocess by /stream, and a
     diagnostic must never be the thing that breaks the operation it describes.
@@ -229,7 +229,7 @@ def _restore_after_failed_rebuild(cbz_path, zip_path, folder_name):
 
     A rebuild renames the comic to ``.zip`` *before* extracting, then to
     ``.zip.bak`` before recompressing. A per-entry CRC error -- by far the most
-    common failure on a damaged archive, and exactly what the Problem Files page
+    common failure on a damaged archive, and exactly what the Library Health page
     points this operation at -- aborts mid-way, and the original code left the
     comic stranded under a name nothing in the library recognises, with a scratch
     folder of loose pages beside it.
@@ -493,7 +493,7 @@ def convert_to_cbz(file_path):
         parent_dir = os.path.dirname(file_path)
 
         # Imported lazily and defensively for the same reason every other
-        # problem-files hand-off is: this module is run as a subprocess by
+        # Library Health hand-off is: this module is run as a subprocess by
         # /stream, and a diagnostic must never break the operation it describes.
         try:
             from core.problem_files import SOURCE_CONVERT

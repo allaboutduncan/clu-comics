@@ -1,6 +1,6 @@
 """Filing a downloaded replacement straight onto the damaged file it replaces.
 
-When a user searches from the Problem Files page, they have already told us
+When a user searches from the Library Health page, they have already told us
 where the download belongs: the damaged file's own path. Without that, a
 replacement just sits in TARGET forever -- the wanted sweep only files issues
 that are *missing*, and a corrupt file is still a file, so nothing claims it.
@@ -425,7 +425,7 @@ def _restore_trashed(trashed_to, target_path):
     """Put the damaged file back rather than leave the library slot empty.
 
     A failed swap must be a no-op from the user's point of view. A damaged
-    comic is still the comic they had, and it is what the Problem Files entry
+    comic is still the comic they had, and it is what the Library Health entry
     describes.
     """
     if not trashed_to:

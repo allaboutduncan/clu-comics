@@ -1,4 +1,4 @@
-"""The problem-files worklist: which comics a subsystem could not process, why,
+"""The Library Health worklist: which comics a subsystem could not process, why,
 and what the user can do about it.
 
 Before this module, a damaged comic produced an ERROR log line and nothing else.

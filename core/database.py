@@ -237,7 +237,7 @@ def _init_db_locked():
             )
         """)
 
-        # Create problem_files table (per-file failures surfaced on /problem-files).
+        # Create problem_files table (per-file failures surfaced on /library-health).
         #
         # A ledger, not a history: a row is deleted once the file processes
         # cleanly. Keyed on (path, source) rather than path alone because one
@@ -311,7 +311,7 @@ def _init_db_locked():
 
         # Create problem_file_replacements table.
         #
-        # A user who searches from the Problem Files page and downloads a
+        # A user who searches from the Library Health page and downloads a
         # replacement already told us where it belongs -- the damaged file's own
         # path. This records that intent so the finished download can be filed
         # straight onto it, instead of sitting in TARGET forever: the issue is

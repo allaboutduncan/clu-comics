@@ -1,6 +1,7 @@
 """Library health: the scan, its summary card/badge, and the duplicate review page.
 
-Every URL here sits under ``/problem-files`` or ``/api/problem-files``, both in
+Every URL here sits under ``/library-health``, ``/problem-files`` (the old page
+URL, which redirects) or ``/api/problem-files``, all in
 ``core.auth._OWNER_PREFIXES``, so the surface is owner-only without decorators --
 which is also why the settings endpoint lives here rather than behind the generic
 ``/api/preferences/<key>`` route: that one is not owner-gated, and this setting
@@ -11,7 +12,7 @@ Heavy imports are done inside the views so the symbols stay patchable in tests.
 
 import threading
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, redirect, render_template, request, url_for
 
 from core.app_logging import app_logger
 from helpers.responses import error_response
@@ -116,6 +117,12 @@ def api_settings():
 # ---------------------------------------------------------------------------
 
 @library_health_bp.route("/problem-files/duplicates")
+def legacy_duplicates_page():
+    """The page's old URL; kept so bookmarks keep working."""
+    return redirect(url_for("library_health.duplicates_page"), code=301)
+
+
+@library_health_bp.route("/library-health/duplicates")
 def duplicates_page():
     from flask import current_app
 
@@ -127,7 +134,7 @@ def duplicates_page():
         trash_max_mb = 0
     return render_template(
         "library_duplicates.html",
-        current_page="/problem-files",
+        current_page="/library-health",
         trash_enabled=bool(current_app.config.get("TRASH_ENABLED", True)),
         trash_max_bytes=max(0, trash_max_mb) * 1024 * 1024,
     )

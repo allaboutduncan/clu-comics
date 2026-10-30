@@ -3,7 +3,7 @@
 A downloaded replacement is NOT a wanted issue: the damaged file still exists,
 so the issue is not missing and the wanted pass below will never claim the
 download. The replacement pass is what files it, and it has to run even when
-the user has closed the Problem Files page — which is why it hangs off the
+the user has closed the Library Health page — which is why it hangs off the
 sweep the download pipeline already calls (api.py, once WATCH drains).
 
 Asserted against the parsed AST because app.py cannot be imported in tests: it

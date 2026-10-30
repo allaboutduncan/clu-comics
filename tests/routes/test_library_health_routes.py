@@ -41,6 +41,7 @@ def _group(gid="abc123", kind="exact"):
 
 class TestOwnerOnly:
     @pytest.mark.parametrize("url", [
+        "/library-health/duplicates",
         "/problem-files/duplicates",
         "/api/problem-files/health/summary",
         "/api/problem-files/health/badge",
@@ -127,20 +128,25 @@ class TestSettings:
 
 class TestDuplicates:
     def test_page_renders(self, client):
-        resp = client.get("/problem-files/duplicates")
+        resp = client.get("/library-health/duplicates")
         assert resp.status_code == 200
         assert b"Duplicate Files" in resp.data
+
+    def test_old_url_redirects(self, client):
+        resp = client.get("/problem-files/duplicates")
+        assert resp.status_code == 301
+        assert resp.headers["Location"].endswith("/library-health/duplicates")
 
     def test_page_carries_the_trash_settings(self, client, app):
         app.config["TRASH_ENABLED"] = True
         app.config["TRASH_MAX_SIZE_MB"] = 50
-        body = client.get("/problem-files/duplicates").data
+        body = client.get("/library-health/duplicates").data
         assert b'data-trash-enabled="1"' in body
         assert b'data-trash-max-bytes="52428800"' in body
 
     def test_page_reports_the_trash_disabled(self, client, app):
         app.config["TRASH_ENABLED"] = False
-        body = client.get("/problem-files/duplicates").data
+        body = client.get("/library-health/duplicates").data
         assert b'data-trash-enabled="0"' in body
 
     def test_confirmation_is_skipped_only_when_the_trash_can_hold_the_copies(self):
@@ -152,10 +158,10 @@ class TestDuplicates:
         assert "total <= max" in src
         assert "showModal('dup-confirm-modal')" in src
 
-    def test_problem_files_page_has_the_health_card(self, client):
+    def test_library_health_page_has_the_health_card(self, client):
         with patch("core.problem_files.count_problems", return_value={}), \
              patch("core.problem_files.list_problems", return_value=[]):
-            body = client.get("/problem-files").data
+            body = client.get("/library-health").data
         assert b"pf-health" in body
         assert b'data-value="integrity"' in body
         assert b'data-value="orphan"' in body
@@ -275,7 +281,7 @@ class TestInfoModalIsAvailable:
 
     def test_duplicates_page_ships_the_compare_viewer(self, client):
         """The duplicates page compares copies read-only; it no longer ships the editor."""
-        body = client.get("/problem-files/duplicates").data
+        body = client.get("/library-health/duplicates").data
         assert b'id="cbzDupeModal"' in body
         assert b"clu-cbz-dupe.js" in body
         assert b'id="cbzInfoModal"' not in body
@@ -284,7 +290,7 @@ class TestInfoModalIsAvailable:
     def test_problem_files_page_ships_the_viewer(self, client):
         with patch("core.problem_files.count_problems", return_value={}), \
              patch("core.problem_files.list_problems", return_value=[]):
-            body = client.get("/problem-files").data
+            body = client.get("/library-health").data
         assert b'id="cbzInfoModal"' in body
         assert b"clu-cbz-info.js" in body
 

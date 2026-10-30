@@ -1125,7 +1125,7 @@ def test_failed_conversion_that_wrote_a_cbz_is_not_reported_as_converted(
         "a failed conversion must leave the source where it is"
     assert "Converted to:" not in caplog.text, \
         "a failed conversion must never be logged as a success"
-    assert "Problem Files" in caplog.text, \
+    assert "Library Health" in caplog.text, \
         "the leftover pair must be reported somewhere the user can see it"
 
 
@@ -1211,7 +1211,7 @@ def test_corrupt_archive_is_not_reprocessed_every_sweep(handler, monkeypatch):
     assert len(extractions) == 1, \
         f"a damaged archive must be opened once, not once per sweep: {extractions}"
     assert recorded == [(zip_path, monitor.SOURCE_UNPACK)], \
-        "the failure must reach the Problem Files worklist"
+        "the failure must reach the Library Health worklist"
     assert os.path.exists(zip_path), \
         "the archive itself is kept -- deleting a download we cannot read is not ours to do"
 
