@@ -197,7 +197,7 @@ Pages sit under a full-width navbar, with a sticky footer (`body.d-flex.flex-col
 
 **The Shell Rule.** `base.html` owns the page width and top rhythm: it wraps every page's content in `.clu-shell.container-lg` (1.5rem above, 2.5rem below). A page never adds its own outer container, vertical padding or `max-width`. Cover grids (Home/Collection, Library, Source Wall, Releases, To Read) override `{% block page_shell %}` to `container-fluid clu-shell-wide`, whose side gutter grows with the screen. Nothing else is full width. `tests/unit/test_page_header.py` holds both lists.
 
-The cover grid is the core layout: CSS grid, `repeat(auto-fill, minmax(150px, 1fr))`, gaps of 1.5rem and 1rem vertical padding. A "large cards" mode uses `minmax(173px, 190px)` centred, which grows cards by about 15% without dropping a column. Phones keep two columns. Dashboard rows are horizontal Swiper carousels with 165px slides. Filter bars scroll sideways rather than wrapping.
+The cover grid is the core layout: CSS grid, `repeat(auto-fill, minmax(150px, 1fr))`, gaps of 1.5rem and 1rem vertical padding. A "large cards" mode uses `minmax(173px, 190px)` centred, which grows cards by about 15% without dropping a column. Phones keep two columns. Dashboard rows are horizontal Swiper carousels with 165px slides. Filter bars scroll sideways on a phone rather than wrapping; wider screens wrap them.
 
 Breakpoints are Bootstrap's (576 / 768 / 992 / 1200 / 1400px). The navbar collapses below `lg`. Extra rules sit at 768px and 480px for the grid toolbar, and `pointer: coarse` raises pager targets to 2.75rem. Desktop, tablet and phone are all supported surfaces; tables that won't fit go in `.table-responsive`, never off-screen.
 
