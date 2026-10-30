@@ -52,6 +52,17 @@ def test_the_scroller_is_phone_only_and_beats_flex_wrap():
     assert "overflow-x: auto" in body
 
 
+def test_letter_bars_wrap_above_the_phone_breakpoint():
+    # A global nowrap + overflow-x on .clu-letter-bar made File Manager's
+    # half-width panels scroll on a desktop instead of taking a second row.
+    css = _read("static/css/clu-page.css")
+    m = re.search(r"^\.clu-letter-bar \{(.*?)\}", css, re.S | re.M)
+    assert m, ".clu-letter-bar rule not found"
+    body = m.group(1)
+    assert "nowrap" not in body
+    assert "overflow-x" not in body
+
+
 def test_the_helper_ships_on_every_page():
     assert ".clu-filter-scroll" in _read("static/js/clu-page.js")
     assert "js/clu-page.js" in _read("templates/base.html")

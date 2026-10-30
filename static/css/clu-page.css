@@ -489,15 +489,12 @@ a.clu-stat:focus-visible .clu-stat-value {
     font-variant-numeric: tabular-nums;
 }
 
-/* Letter bars are one joined group; they never wrap (they scroll instead). */
+/* Letter bars are one joined group. They wrap onto another row on wider
+   screens; on a phone .clu-filter-scroll keeps them to one line and scrolls.
+   The row gap keeps a wrapped row's borders off the row above it. */
 .clu-letter-bar {
-    flex-wrap: nowrap;
-    max-width: 100%;
-    overflow-x: auto;
-    scrollbar-width: thin;
-    /* Room for the focus ring, which the overflow would clip. */
-    padding-block: 0.25rem;
-    margin-block: -0.25rem;
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
 }
 
 .clu-letter-bar > .btn {
