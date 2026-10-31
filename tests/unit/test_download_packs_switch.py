@@ -236,7 +236,7 @@ def test_switch_is_rendered(config_html):
 
 
 def test_switch_lives_in_the_search_variant_settings(config_html):
-    section = config_html.split("<h4>Search Variant Settings</h4>")[1].split("<h4>")[0]
+    section = config_html.split("<h2 class=\"h4\">Search Variant Settings</h2>")[1].split("<h2 class=\"h4\">")[0]
     assert 'id="downloadPacks"' in section
 
 

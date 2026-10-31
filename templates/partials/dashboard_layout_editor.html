@@ -17,15 +17,20 @@
     {% for section_id in order %}
     {% if section_id in section_meta %}
     {% set meta = section_meta[section_id] %}
-    <li class="list-group-item d-flex justify-content-between align-items-center" data-section-id="{{ section_id }}">
-        <div class="d-flex align-items-center">
-            <input type="checkbox" class="form-check-input dashboard-visible-check me-3" {{ '' if section_id in hidden
-                else 'checked' }}>
-            <i class="bi {{ meta.icon }} me-2"></i>
-            <strong>{{ meta.name }}</strong>
-            {% if meta.note %}
-            <small class="text-muted ms-2">({{ meta.note }})</small>
-            {% endif %}
+    {# The name and note wrap (min-width: 0 lets the row shrink below its
+       text) so the move buttons clu-personalization.js appends stay on a phone's
+       screen instead of pushing the page sideways. #}
+    <li class="list-group-item d-flex justify-content-between align-items-center gap-2" data-section-id="{{ section_id }}">
+        <div class="d-flex align-items-center" style="min-width: 0;">
+            <input type="checkbox" class="form-check-input dashboard-visible-check flex-shrink-0 me-3"
+                aria-label="Show {{ meta.name }}" {{ '' if section_id in hidden else 'checked' }}>
+            <i class="bi {{ meta.icon }} flex-shrink-0 me-2" aria-hidden="true"></i>
+            <span class="text-break">
+                <strong>{{ meta.name }}</strong>
+                {% if meta.note %}
+                <small class="text-muted">({{ meta.note }})</small>
+                {% endif %}
+            </span>
         </div>
     </li>
     {% endif %}

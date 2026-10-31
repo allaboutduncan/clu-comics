@@ -236,7 +236,8 @@ Every page opens with `page_header(title, icon, subtitle, stats)` from `template
 ### Buttons
 - **Shape:** the theme's control radius (stock: 0.375rem).
 - **Primary:** `btn-primary`, one per view, for the action the page exists for (Save, Run, Apply).
-- **Working default:** `btn-outline-secondary btn-sm` for toolbars, filters, pagers and row actions. It is used about twice as often as primary. In the page header and empty states it is drawn from the text and border tokens, not `--bs-secondary`, because several themes make secondary a brand colour (Minty's is pink at about 2:1 on white): grey means grey on every theme.
+- **Working default:** `btn-outline-secondary btn-sm` for toolbars, filters, pagers and row actions. It is used about twice as often as primary. In the page header, empty states and any `.clu-neutral-buttons` region (App Settings) it is drawn from the text and border tokens, not `--bs-secondary`, because several themes make secondary a brand colour (Minty's is pink at about 2:1 on white) or a grey that vanishes into the page (Darkly's is about 1.6:1): grey means grey on every theme.
+- **Choices:** an option drawn as a button (a `.btn-check` radio, or a `.clu-choice` card such as the page-width and thumbnail-style pickers) is neutral until chosen, then takes the selection colour (the primary pushed 30% toward `--bs-emphasis-color`) as a 2px edge and a light wash. Never `btn-outline-primary`: a muted primary disappears.
 - **Destructive:** `btn-danger`, only inside the shared delete-confirmation modal (`CLU.showDeleteConfirmation`).
 - **Icons:** Bootstrap Icons (`bi-*`) with `me-2` before a label. Icon-only buttons carry a `title` and an `aria-label`.
 

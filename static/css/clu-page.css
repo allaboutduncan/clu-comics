@@ -134,11 +134,15 @@
 }
 
 /* "Small grey outline buttons" means grey on every theme. Several themes
-   make secondary a brand colour (Minty: pink at about 2:1 on white), so the
-   shared header and empty states take their neutral from the text and border
+   make secondary a brand colour (Minty: pink at about 2:1 on white) or a
+   grey that vanishes into the page (Darkly: about 1.6:1), so the shared
+   header, empty states, any .clu-neutral-buttons region (App Settings) and
+   .clu-choice option cards take their neutral from the text and border
    tokens instead of --bs-secondary. */
 .clu-page-actions .btn-outline-secondary,
-.clu-empty-actions .btn-outline-secondary {
+.clu-empty-actions .btn-outline-secondary,
+.clu-neutral-buttons .btn-outline-secondary,
+.btn-outline-secondary.clu-choice {
     --bs-btn-color: var(--bs-body-color);
     --bs-btn-border-color: color-mix(in srgb, var(--bs-body-color) 35%, transparent);
     --bs-btn-hover-color: var(--bs-emphasis-color);
@@ -156,23 +160,54 @@
 }
 
 .clu-page-actions .btn-outline-secondary:hover,
-.clu-empty-actions .btn-outline-secondary:hover {
+.clu-empty-actions .btn-outline-secondary:hover,
+.clu-neutral-buttons .btn-outline-secondary:hover,
+.btn-outline-secondary.clu-choice:hover {
     color: var(--bs-btn-hover-color);
     background-color: var(--bs-btn-hover-bg);
     border-color: var(--bs-btn-hover-border-color);
 }
 
 .clu-page-actions .btn-outline-secondary:is(:active, .active, .show),
-.clu-empty-actions .btn-outline-secondary:is(:active, .active, .show) {
+.clu-empty-actions .btn-outline-secondary:is(:active, .active, .show),
+.clu-neutral-buttons .btn-outline-secondary:is(:active, .active, .show),
+.btn-outline-secondary.clu-choice:is(:active, .active, .show) {
     color: var(--bs-btn-active-color);
     background-color: var(--bs-btn-active-bg);
     border-color: var(--bs-btn-active-border-color);
 }
 
 .clu-page-actions .btn-outline-secondary:disabled,
-.clu-empty-actions .btn-outline-secondary:disabled {
+.clu-empty-actions .btn-outline-secondary:disabled,
+.clu-neutral-buttons .btn-outline-secondary:disabled,
+.btn-outline-secondary.clu-choice:disabled {
     color: var(--bs-btn-disabled-color);
     border-color: var(--bs-btn-disabled-border-color);
+}
+
+/* A chosen option (a radio drawn as a button, or a .clu-choice card) is
+   marked like a selected cover: the primary pushed 30% toward the emphasis
+   colour (collection.css --clu-select), so a muted primary such as Darkly's
+   still shows. A 2px edge and a light wash of the same colour. */
+.clu-neutral-buttons .btn-check:checked + .btn-outline-secondary,
+.btn-check:checked + .btn-outline-secondary.clu-choice {
+    --clu-choice-select: color-mix(in srgb, var(--bs-primary) 70%, var(--bs-emphasis-color));
+    color: var(--bs-emphasis-color);
+    background-color: color-mix(in srgb, var(--clu-choice-select) 18%, transparent);
+    border-color: var(--clu-choice-select);
+    box-shadow: inset 0 0 0 1px var(--clu-choice-select);
+}
+
+/* Keep the keyboard focus ring on a chosen option. */
+.clu-neutral-buttons .btn-check:checked:focus-visible + .btn-outline-secondary,
+.btn-check:checked:focus-visible + .btn-outline-secondary.clu-choice {
+    box-shadow: inset 0 0 0 1px var(--clu-choice-select), var(--bs-btn-focus-box-shadow);
+}
+
+/* Code inside an alert takes the alert's text colour: the theme's code pink
+   is not made for an info or warning fill. The mono face still sets it apart. */
+.alert code {
+    color: inherit;
 }
 
 /* The More menu is always rendered so phones have somewhere to fold the

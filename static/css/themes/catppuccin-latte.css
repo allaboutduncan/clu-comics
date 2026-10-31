@@ -44,6 +44,7 @@
     --ctp-danger-emphasis: #ba0d33;
     --ctp-link: #0a55ea; --ctp-link-rgb: 10, 85, 234;  /* blue, deepened to read on every surface */
     --ctp-link-hover: #036992; --ctp-link-hover-rgb: 3, 105, 146;  /* sky, deepened to read on every surface */
+    --ctp-code: #b51c8c; --ctp-code-rgb: 181, 28, 140;  /* pink, deepened to read on every surface */
     --ctp-muted: var(--ctp-subtext1);
     --ctp-secondary: #ccd0da; --ctp-secondary-rgb: 204, 208, 218;
 
