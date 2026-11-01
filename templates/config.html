@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
+{% from 'partials/settings_save_bar.html' import settings_save_bar %}
 
 {% block title %}CLU: Settings Page{% endblock %}
 
@@ -20,26 +21,78 @@
             transform: rotate(360deg);
         }
     }
+
+    /* A settings section. No width of its own, so it follows the page shell
+       (Constrained or Wide), and flat: it does not open anything, so it
+       neither casts a shadow nor takes the .card hover from base.html. */
+    .clu-settings-panel {
+        padding: 1.5rem;
+        background-color: var(--bs-body-bg);
+        border: var(--bs-border-width) solid var(--bs-border-color);
+        border-radius: var(--bs-border-radius-lg);
+    }
+
+    /* On a Wide page a section's intro paragraph would otherwise run the
+       whole window. */
+    .clu-settings-panel > p {
+        max-width: 80ch;
+    }
+
+    @media (max-width: 575.98px) {
+        .clu-settings-panel {
+            padding: 1rem;
+        }
+    }
+
+    /* A tab's one Save, last in the tab and kept in view at the bottom of
+       the window while the tab scrolls. Opaque, so fields pass under it. */
+    .clu-settings-save {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.75rem 0 calc(0.75rem + env(safe-area-inset-bottom));
+        background-color: var(--bs-body-bg);
+        border-top: var(--bs-border-width) solid var(--bs-border-color);
+    }
+
+    /* The tabs stay on one line and scroll sideways when they do not fit,
+       instead of wrapping into a block that fills a phone's first screen.
+       clu-filter-scroll-always (clu-page.css) does that at every width,
+       since the tabs overflow a tablet too, and clu-page.js fades the edge
+       with more to see and keeps the active tab in view. The row is padded
+       for the focus ring at every width, but its bottom stays flush or the
+       active tab no longer sits on the tab rule. */
+    .clu-settings-tabs.clu-filter-scroll {
+        padding: 0.25rem 0.25rem 0;
+        margin: -0.25rem -0.25rem 1.5rem;
+    }
 </style>
 
 
 <div>
     {% call(slot) page_header('App Settings', 'bi-gear') %}
-        {% if slot == 'actions' %}
-            <a href="{{ url_for('setup.setup_page') }}" class="btn btn-sm btn-outline-secondary"
+        {% if slot == 'more' %}
+            <li><a href="{{ url_for('setup.setup_page') }}" class="dropdown-item"
                 title="Walk through the setup, or check what is configured and what needs attention">
-                <i class="bi bi-signpost-split me-1" aria-hidden="true"></i>Run Guided Setup
-            </a>
-            <a href="{{ url_for('mylar_import.mylar_import_page') }}" class="btn btn-sm btn-outline-secondary"
+                <i class="bi bi-signpost-split me-2" aria-hidden="true"></i>Run Guided Setup
+            </a></li>
+            <li><a href="{{ url_for('mylar_import.mylar_import_page') }}" class="dropdown-item"
                 title="Import the watchlist, download client, indexers and ComicVine key from Mylar3">
-                <i class="bi bi-box-arrow-in-down me-1" aria-hidden="true"></i>Import from Mylar3
-            </a>
+                <i class="bi bi-box-arrow-in-down me-2" aria-hidden="true"></i>Import from Mylar3
+            </a></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><button type="button" class="dropdown-item" onclick="restartApp()">
+                <i class="bi bi-arrow-clockwise me-2" aria-hidden="true"></i>Restart App
+            </button></li>
         {% endif %}
     {% endcall %}
-    <div class="mt-4">
+    <div>
 
         <!-- Navigation Tabs -->
-        <ul class="nav nav-tabs mb-4" id="configTabs" role="tablist">
+        <ul class="nav nav-tabs clu-settings-tabs clu-filter-scroll clu-filter-scroll-always" id="configTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="libraries-tab" data-bs-toggle="tab" data-bs-target="#libraries"
                     type="button" role="tab" aria-controls="libraries" aria-selected="true">Libraries</button>
@@ -86,14 +139,14 @@
             </li>
         </ul>
 
-        <div class="tab-content" id="configTabsContent">
+        <div class="tab-content clu-neutral-buttons" id="configTabsContent">
 
             <!-- ========================================== -->
             <!-- TAB 0: Libraries -->
             <!-- ========================================== -->
             <div class="tab-pane fade show active" id="libraries" role="tabpanel" aria-labelledby="libraries-tab">
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Comic Libraries</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Comic Libraries</h2>
                     <p class="text-muted">Configure your comic library locations. Each library can have a custom name
                         and path.</p>
 
@@ -127,8 +180,8 @@
             <div class="tab-pane fade" id="file-processing" role="tabpanel" aria-labelledby="file-processing-tab">
 
                 <!-- Folder Monitoring Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Folder Monitoring</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Folder Monitoring</h2>
                     <p class="text-muted">Configure the <code>Watched</code> and <code>Target</code> folders. Other
                         monitoring features can be adjusted here as well.</p>
 
@@ -140,7 +193,7 @@
                                 <label class="form-check-label" for="monitorEnabled">
                                     Enable Folder Monitoring
                                 </label>
-                                <span id="monitorStatusBadge" class="badge bg-secondary ms-2">Checking...</span>
+                                <span id="monitorStatusBadge" class="badge text-bg-secondary ms-2">Checking...</span>
                                 <small class="form-text text-muted">
                                     <br />Watches your <code>WATCH</code> folder and renames, converts and moves
                                     anything that lands there into <code>TARGET</code>. Needed for Usenet, DC++
@@ -153,7 +206,7 @@
 
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="watch" class="form-label">WATCH:</label>
+                            <label for="watch" class="form-label">Watch Folder</label>
                             <input type="text" name="watch" id="watch" value="{{ watch }}" class="form-control">
                             <small class="form-text text-muted">
                                 Enter the path to the directory to monitor for downloaded files.
@@ -161,7 +214,7 @@
                         </div>
 
                         <div class="col-md-6">
-                            <label for="target" class="form-label">TARGET:</label>
+                            <label for="target" class="form-label">Target Folder</label>
                             <input type="text" name="target" id="target" value="{{ target }}" class="form-control">
                             <small class="form-text text-muted">
                                 Enter the path where renamed files will be moved.
@@ -205,7 +258,7 @@
                                 <label class="form-check-label" for="moveDirectory">Auto-Move Sub-Directories</label>
                                 <small class="form-text text-muted">
                                     <br />If enabled, when processing files in your <code>{{ watch }}</code> folder, the
-                                    sub-dirctories will be moved as well.
+                                    sub-directories will be moved as well.
                                 </small>
                             </div>
                         </div>
@@ -250,7 +303,7 @@
 
                     <div class="row">
                         <div class="col-md-12">
-                            <label for="ignored_extensions" class="form-label">IGNORED EXTENSIONS:</label>
+                            <label for="ignored_extensions" class="form-label">Ignored Extensions</label>
                             <input type="text" name="ignored_extensions" id="ignored_extensions"
                                 value="{{ ignored_extensions }}" class="form-control">
                             <small class="form-text text-muted">
@@ -278,7 +331,7 @@
                         </div>
 
                         <div class="col-md-6">
-                            <label for="cleanupIntervalHours" class="form-label">CLEANUP INTERVAL (HOURS):</label>
+                            <label for="cleanupIntervalHours" class="form-label">Cleanup Interval (hours)</label>
                             <input type="number" name="cleanupIntervalHours" id="cleanupIntervalHours"
                                 value="{{ cleanupIntervalHours }}" class="form-control" min="1" max="24">
                             <small class="form-text text-muted">
@@ -289,7 +342,7 @@
 
                     <!-- Trash Can Configuration -->
                     <hr>
-                    <h5 class="mb-3"><i class="bi bi-trash3 me-2"></i>Trash Can</h5>
+                    <h3 class="h5 mb-3"><i class="bi bi-trash3 me-2"></i>Trash Can</h3>
                     <div class="row mb-3">
                         <div class="col-12">
                             <div class="form-check form-switch">
@@ -304,7 +357,7 @@
                     </div>
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="trashDir" class="form-label">TRASH FOLDER PATH:</label>
+                            <label for="trashDir" class="form-label">Trash Folder Path</label>
                             <input type="text" name="trashDir" id="trashDir"
                                 value="{{ trashDir }}" class="form-control" placeholder="/cache/trash">
                             <small class="form-text text-muted">
@@ -312,7 +365,7 @@
                             </small>
                         </div>
                         <div class="col-md-6">
-                            <label for="trashMaxSizeMb" class="form-label">MAX TRASH SIZE (MB):</label>
+                            <label for="trashMaxSizeMb" class="form-label">Max Trash Size (MB)</label>
                             <input type="number" name="trashMaxSizeMb" id="trashMaxSizeMb"
                                 value="{{ trashMaxSizeMb }}" class="form-control" min="100" max="100000"
                                 oninput="updateTrashSizeHint()">
@@ -326,8 +379,8 @@
                 </div>
 
                 <!-- Directory Processing Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Directory & File Processing Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Directory & File Processing Settings</h2>
                     <p class="text-muted">Settings related to Directory processing features.</p>
 
                     <!-- Checkboxes for Traverse Subdirectories -->
@@ -345,7 +398,7 @@
                             </div>
                         </div>
                         <div class="col-md-6">
-                            <label for="pdfImageFormat" class="form-label">PDF → CBZ Image Format:</label>
+                            <label for="pdfImageFormat" class="form-label">PDF → CBZ Image Format</label>
                             <select class="form-select" name="pdfImageFormat" id="pdfImageFormat">
                                 <option value="jpeg" {% if pdfImageFormat == 'jpeg' %}selected{% endif %}>JPEG (default)</option>
                                 <option value="webp" {% if pdfImageFormat == 'webp' %}selected{% endif %}>WebP (smaller files)</option>
@@ -357,10 +410,9 @@
                             </small>
                         </div>
                     </div>
-                    <p class="text-muted">Settings related to Directory & File processing features.</p>
-                    <div class="row">
+                    <div class="row mt-3">
                         <div class="col-md-6">
-                            <label for="skippedFiles" class="form-label">SKIPPED FILE TYPES:</label>
+                            <label for="skippedFiles" class="form-label">Skipped File Types</label>
                             <input type="text" name="skippedFiles" id="skippedFiles" value="{{ skippedFiles }}"
                                 class="form-control">
                             <small class="form-text text-muted">
@@ -370,7 +422,7 @@
                         </div>
 
                         <div class="col-md-6">
-                            <label for="deletedFiles" class="form-label">DELETED FILE TYPES:</label>
+                            <label for="deletedFiles" class="form-label">Deleted File Types</label>
                             <input type="text" name="deletedFiles" id="deletedFiles" value="{{ deletedFiles }}"
                                 class="form-control">
                             <small class="form-text text-muted">
@@ -382,7 +434,7 @@
 
                     <div class="row mt-3">
                         <div class="col-md-6">
-                            <label for="hiddenDirectories" class="form-label">HIDDEN DIRECTORIES:</label>
+                            <label for="hiddenDirectories" class="form-label">Hidden Directories</label>
                             <input type="text" name="hiddenDirectories" id="hiddenDirectories"
                                 value="{{ hiddenDirectories | join(', ') }}" class="form-control">
                             <small class="form-text text-muted">
@@ -412,8 +464,8 @@
                 </div>
 
                 <!-- Custom Rename Pattern Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Custom Naming Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Custom Naming Settings</h2>
                     <p class="text-muted">Your own naming convention for comic files, built from variables. Without
                         one, CLU uses its built-in clean-up name (<code>Series 001 (2024)</code>).</p>
 
@@ -450,7 +502,7 @@
 
                     <div class="row">
                         <div class="col-md-8">
-                            <label for="customRenamePattern" class="form-label">Custom Rename Pattern:</label>
+                            <label for="customRenamePattern" class="form-label">Custom Rename Pattern</label>
                             <input type="text" name="customRenamePattern" id="customRenamePattern"
                                 value="{{ customRenamePattern }}" class="form-control"
                                 placeholder="e.g., {series_name} {issue_number} ({volume_year})">
@@ -466,8 +518,8 @@
                             </small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Example Preview:</label>
-                            <div class="border rounded p-2 bg-light">
+                            <label class="form-label">Example Preview</label>
+                            <div class="border rounded p-2 bg-body-tertiary font-monospace">
                                 <small id="renamePreview">Enter a pattern to see preview...</small>
                             </div>
                         </div>
@@ -496,7 +548,7 @@
                     <!-- Issue Number Leading Zeros -->
                     <div class="row mt-3">
                         <div class="col-md-8">
-                            <label for="issuePadWidth" class="form-label">Issue Number Leading Zeros:</label>
+                            <label for="issuePadWidth" class="form-label">Issue Number Leading Zeros</label>
                             <select class="form-select" name="issuePadWidth" id="issuePadWidth">
                                 <option value="none" {% if issuePadWidth == 'none' %}selected{% endif %}>None — 44</option>
                                 <option value="3" {% if issuePadWidth == '3' %}selected{% endif %}>3 digits — 044 (default)</option>
@@ -510,8 +562,8 @@
                             </small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Example Preview:</label>
-                            <div class="border rounded p-2 bg-light">
+                            <label class="form-label">Example Preview</label>
+                            <div class="border rounded p-2 bg-body-tertiary font-monospace">
                                 <small id="issuePadPreview">Avengers 044 (1996).cbz</small>
                             </div>
                         </div>
@@ -520,7 +572,7 @@
                     <!-- Custom Move Pattern -->
                     <div class="row mt-3">
                         <div class="col-md-8">
-                            <label for="customMovePattern" class="form-label">Custom Folder Pattern:</label>
+                            <label for="customMovePattern" class="form-label">Custom Folder Pattern</label>
                             <input type="text" name="customMovePattern" id="customMovePattern"
                                 value="{{ customMovePattern }}" class="form-control"
                                 placeholder="e.g., {publisher}/{series_name}/v{start_year}">
@@ -532,8 +584,8 @@
                             </small>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label">Example Preview:</label>
-                            <div class="border rounded p-2 bg-light">
+                            <label class="form-label">Example Preview</label>
+                            <div class="border rounded p-2 bg-body-tertiary font-monospace">
                                 <small id="movePreview">Enter a pattern to see preview...</small>
                             </div>
                         </div>
@@ -554,7 +606,7 @@
 
                     <!-- Smart Rename -->
                     <hr class="my-4">
-                    <h5>Smart Rename</h5>
+                    <h3 class="h5">Smart Rename</h3>
                     <p class="text-muted">
                         Renames files using values from <code>series.json</code> and the issue
                         number parsed from each filename, instead of regex-matching the whole
@@ -592,8 +644,8 @@
                     </div>
                     <div class="row mt-2">
                         <div class="col-md-12">
-                            <label for="smartRenameExcludeTerms" class="form-label">Skip files containing
-                                (comma-separated):</label>
+                            <label for="smartRenameExcludeTerms" class="form-label">Skip Files Containing
+                                (comma-separated)</label>
                             <input type="text" id="smartRenameExcludeTerms" name="smartRenameExcludeTerms"
                                 class="form-control" value="{{ smartRenameExcludeTerms }}"
                                 placeholder="Annual,Special">
@@ -608,7 +660,7 @@
 
                     <!-- Filename Character Cleanup -->
                     <hr class="my-4">
-                    <h5>Filename Character Cleanup</h5>
+                    <h3 class="h5">Filename Character Cleanup</h3>
                     <p class="text-muted">
                         Apply after pattern substitution to every rename (custom and default logic).
                         The file extension is always preserved.
@@ -638,7 +690,7 @@
                                     <label class="form-check-label" for="renameCleanSpacesModeReplace">Replace</label>
                                 </div>
                             </div>
-                            <label for="renameCleanSpacesReplacement" class="form-label">Replace with:</label>
+                            <label for="renameCleanSpacesReplacement" class="form-label">Replace With</label>
                             <input type="text" id="renameCleanSpacesReplacement"
                                 name="renameCleanSpacesReplacement" maxlength="8" class="form-control"
                                 value="{{ renameCleanSpacesReplacement }}" placeholder="_">
@@ -713,8 +765,8 @@
                 </div>
 
                 <!-- Automatic Metadata Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Automatic Metadata</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Automatic Metadata</h2>
                     <p class="text-muted">When a comic is moved into a folder that has a
                         <code>cvinfo</code> file, CLU looks the issue up and writes
                         <code>ComicInfo.xml</code> for it. Files that already carry metadata are
@@ -737,7 +789,7 @@
                         </div>
                     </div>
 
-                    <h4>Metadata Match Validation</h4>
+                    <h3 class="h5">Metadata Match Validation</h3>
                     <p class="text-muted">Cross-check the date of a matched issue against the year in the
                         filename, so a wrong series match is caught instead of being written into the file.
                         Applies to automatic lookups only &mdash; a series you pick yourself is never
@@ -771,12 +823,7 @@
                     </div>
                 </div>
 
-                <!-- Save Button for Tab 1 -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" onclick="saveFileProcessingSettings()">
-                        <i class="bi bi-floppy"></i> Save File Processing Settings
-                    </button>
-                </div>
+                {{ settings_save_bar('saveFileProcessingBtn', 'saveFileProcessingSettings') }}
 
             </div>
 
@@ -786,8 +833,8 @@
             <div class="tab-pane fade" id="download-api" role="tabpanel" aria-labelledby="download-api-tab">
 
                 <!-- Download API Settings -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>API Download Configuration</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">API Download Configuration</h2>
                     <p class="text-muted">These options, along with the Chrome extension, will let you `right-click`
                         links and send them to CLU to be downloaded to your <code>/watch</code> folder.</p>
 
@@ -808,10 +855,10 @@
 
                 <!-- Download Provider Priority -->
 
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="row">
                         <div class="col-md-6">
-                            <h4>Download Provider Priority</h4>
+                            <h2 class="h4">Download Provider Priority</h2>
                             <p class="text-muted">Set the order CLU tries download providers from GetComics.
                                 If a provider fails or its link isn't available, CLU tries the next one.</p>
 
@@ -834,8 +881,8 @@
                                 to private files and higher download limits.
                             </small>
                             <div class="alert alert-info">
-                                <strong>PixelDrain</strong> is a recommended service. $10 of <a
-                                    href="https://pixeldrain.com/home#" target="_blank">Pre-Paid service should
+                                <strong>PixelDrain</strong> is a recommended service. $10 of <a class="alert-link"
+                                    href="https://pixeldrain.com/home#" target="_blank" rel="noopener">Pre-Paid service should
                                     easily last you all year</a> and you'll see download speed improvements with 5GB
                                 downloads in a matter of minutes.
                             </div>
@@ -845,8 +892,8 @@
                 </div>
 
                 <!-- Search Variants Settings -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Search Variant Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Search Variant Settings</h2>
                     <p class="text-muted">Configure how GetComics handles different publication types and format variants during search matching.</p>
 
                     <div class="row mt-3">
@@ -901,8 +948,8 @@
                 </div>
 
                 <!-- GetComics Wanted Issues Simulation -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>GetComics Wanted Issues Simulation</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">GetComics Wanted Issues Simulation</h2>
                     <p class="text-muted">Simulate the full wanted-issues search across all tracked series. Shows exactly what would be searched, found, scored, and downloaded — without making any actual downloads.</p>
 
                     <div class="row mt-3">
@@ -912,7 +959,7 @@
                             <small class="form-text text-muted">Run simulation for a specific series only</small>
                         </div>
                         <div class="col-md-3 d-flex align-items-end">
-                            <button type="button" class="btn btn-info w-100" id="gcSimRunBtn" onclick="runGcWantedSimulation()">
+                            <button type="button" class="btn btn-outline-secondary w-100" id="gcSimRunBtn" onclick="runGcWantedSimulation()">
                                 <i class="bi bi-play-circle me-1"></i> Run Simulation
                             </button>
                         </div>
@@ -933,39 +980,39 @@
                             <div class="col-md-2">
                                 <div class="card text-center">
                                     <div class="card-body p-2">
-                                        <h4 class="mb-0" id="gcWantedSimTotal">0</h4>
+                                        <div class="h4 mb-0" id="gcWantedSimTotal">0</div>
                                         <small class="text-muted">Searched</small>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-2">
-                                <div class="card text-center bg-success text-white">
+                                <div class="card text-center text-bg-success">
                                     <div class="card-body p-2">
-                                        <h4 class="mb-0" id="gcWantedSimAccept">0</h4>
+                                        <div class="h4 mb-0" id="gcWantedSimAccept">0</div>
                                         <small>Accept</small>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-2">
-                                <div class="card text-center bg-warning text-dark">
+                                <div class="card text-center text-bg-warning">
                                     <div class="card-body p-2">
-                                        <h4 class="mb-0" id="gcWantedSimFallback">0</h4>
+                                        <div class="h4 mb-0" id="gcWantedSimFallback">0</div>
                                         <small>Fallback</small>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-2">
-                                <div class="card text-center bg-secondary text-white">
+                                <div class="card text-center text-bg-secondary">
                                     <div class="card-body p-2">
-                                        <h4 class="mb-0" id="gcWantedSimNoMatch">0</h4>
+                                        <div class="h4 mb-0" id="gcWantedSimNoMatch">0</div>
                                         <small>No Match</small>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-2">
-                                <div class="card text-center bg-danger text-white">
+                                <div class="card text-center text-bg-danger">
                                     <div class="card-body p-2">
-                                        <h4 class="mb-0" id="gcWantedSimNoResults">0</h4>
+                                        <div class="h4 mb-0" id="gcWantedSimNoResults">0</div>
                                         <small>No Results</small>
                                     </div>
                                 </div>
@@ -975,7 +1022,7 @@
                         <!-- Results table -->
                         <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                             <table class="table table-sm table-hover">
-                                <thead class="sticky-top bg-light">
+                                <thead class="sticky-top">
                                     <tr>
                                         <th>Series</th>
                                         <th>Issue</th>
@@ -994,15 +1041,15 @@
                 </div>
 
                 <!-- Metadata API Settings -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
-                            <h4><i class="bi bi-key me-2"></i>Client API Access</h4>
+                            <h2 class="h4"><i class="bi bi-key me-2"></i>Client API Access</h2>
                             <p class="text-muted mb-0">Generate a long-lived bearer token for the offline mobile/desktop
                                 reader app. The client sends it as <code>Authorization: Bearer &lt;token&gt;</code> on
                                 every request to <code>/api/v1/*</code>.</p>
                         </div>
-                        <span id="apiTokenStatusBadge" class="badge bg-secondary">
+                        <span id="apiTokenStatusBadge" class="badge text-bg-secondary">
                             <i class="bi bi-x-circle me-1"></i>Not Configured
                         </span>
                     </div>
@@ -1028,7 +1075,7 @@
                             </small>
                         </div>
                         <div class="col-md-3 mt-3 mt-md-0">
-                            <button class="btn btn-primary w-100" type="button" id="apiTokenRotateBtn">
+                            <button class="btn btn-outline-secondary w-100" type="button" id="apiTokenRotateBtn">
                                 <i class="bi bi-arrow-repeat me-1"></i><span id="apiTokenRotateLabel">Generate
                                     Token</span>
                             </button>
@@ -1046,12 +1093,12 @@
                         <div class="btn-group" role="group" aria-label="Default API browse mode">
                             <input type="radio" class="btn-check" name="apiBrowseMode" id="apiBrowseModeMetadata"
                                 value="metadata" autocomplete="off">
-                            <label class="btn btn-outline-primary" for="apiBrowseModeMetadata">
+                            <label class="btn btn-outline-secondary" for="apiBrowseModeMetadata">
                                 <i class="bi bi-tags me-1"></i>Metadata view
                             </label>
                             <input type="radio" class="btn-check" name="apiBrowseMode" id="apiBrowseModeFilesystem"
                                 value="filesystem" autocomplete="off">
-                            <label class="btn btn-outline-primary" for="apiBrowseModeFilesystem">
+                            <label class="btn btn-outline-secondary" for="apiBrowseModeFilesystem">
                                 <i class="bi bi-folder me-1"></i>Filesystem view
                             </label>
                         </div>
@@ -1065,14 +1112,14 @@
                 </div>
 
                 <!-- Komga Reading Sync -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <div>
-                            <h4><i class="bi bi-book me-2"></i>Komga Reading Sync</h4>
+                            <h2 class="h4"><i class="bi bi-book me-2"></i>Komga Reading Sync</h2>
                             <p class="text-muted mb-0">Sync reading history and progress from your Komga server to CLU.
                             </p>
                         </div>
-                        <span id="komgaStatusBadge" class="badge bg-secondary">
+                        <span id="komgaStatusBadge" class="badge text-bg-secondary">
                             <i class="bi bi-x-circle me-1"></i>Not Configured
                         </span>
                     </div>
@@ -1105,7 +1152,7 @@
                     </div>
 
                     <hr class="my-3">
-                    <h6>Library Path Mapping</h6>
+                    <h3 class="h6">Library Path Mapping</h3>
                     <p class="text-muted small">Map each CLU library to its corresponding Komga path prefix.
                         Leave the Komga path empty to skip a library during sync.</p>
                     <div id="komgaLibraryMappings">
@@ -1113,7 +1160,7 @@
                     </div>
 
                     <hr class="my-3">
-                    <h6>Sync Schedule</h6>
+                    <h3 class="h6">Sync Schedule</h3>
                     <div class="row">
                         <div class="col-md-3">
                             <label for="komgaSyncFrequency" class="form-label">Frequency</label>
@@ -1164,26 +1211,18 @@
 
                     <!-- Action Buttons -->
                     <div class="mt-3 d-flex gap-2">
-                        <button type="button" class="btn btn-primary btn-sm" onclick="saveKomgaConfig()">
-                            <i class="bi bi-floppy me-1"></i>Save
-                        </button>
-                        <button type="button" class="btn btn-outline-info btn-sm" id="komgaTestBtn"
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="komgaTestBtn"
                             onclick="testKomgaConnection()">
                             <i class="bi bi-lightning me-1"></i>Test Connection
                         </button>
-                        <button type="button" class="btn btn-outline-success btn-sm" id="komgaSyncBtn"
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="komgaSyncBtn"
                             onclick="syncKomgaNow()">
                             <i class="bi bi-arrow-repeat me-1"></i>Sync Now
                         </button>
                     </div>
                 </div>
 
-                <!-- Save Button for Tab 2 -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" onclick="saveDownloadApiSettings()">
-                        <i class="bi bi-floppy"></i> Save Download & API Settings
-                    </button>
-                </div>
+                {{ settings_save_bar('saveDownloadApiBtn', 'saveDownloadApiSettings') }}
 
             </div>
 
@@ -1193,8 +1232,8 @@
             <div class="tab-pane fade" id="metadata-providers" role="tabpanel" aria-labelledby="metadata-providers-tab">
 
                 <!-- Provider Credentials -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Provider Credentials</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Provider Credentials</h2>
                     <p class="text-muted">Configure API credentials for metadata providers. Credentials are stored
                         encrypted.</p>
 
@@ -1209,8 +1248,8 @@
                 </div>
 
                 <!-- Library Provider Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Library Provider Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Library Provider Settings</h2>
                     <p class="text-muted">Configure which metadata providers to use for each library and their priority
                         order.</p>
 
@@ -1225,19 +1264,19 @@
                 </div>
 
                 <!-- series.json provider -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>series.json Provider</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">series.json Provider</h2>
                     <p class="text-muted">Which provider fills <code>series.json</code> (the title, status and summary
                         Komga reads). <strong>Auto</strong> follows each library's provider order above. If the chosen
                         provider has no description, the next one supplies it.</p>
-                    <div class="input-group input-group-sm" style="max-width: 360px;">
-                        <select id="seriesJsonProviderPref" class="form-select form-select-sm">
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <select id="seriesJsonProviderPref" class="form-select" style="max-width: 360px;" aria-label="series.json provider">
                             <option value="auto">Auto (library provider order)</option>
                             <option value="metron">Metron first</option>
                             <option value="comicvine">ComicVine first</option>
                         </select>
-                        <button type="button" class="btn btn-primary btn-sm" onclick="saveSeriesJsonProvider()">
-                            <i class="bi bi-floppy me-1"></i>Save
+                        <button type="button" class="btn btn-primary btn-sm" id="saveSeriesJsonProviderBtn" onclick="saveSeriesJsonProvider()">
+                            <i class="bi bi-floppy me-1" aria-hidden="true"></i>Save
                         </button>
                     </div>
                 </div>
@@ -1250,8 +1289,8 @@
             <div class="tab-pane fade" id="download-clients" role="tabpanel" aria-labelledby="download-clients-tab">
 
                 <!-- Download Clients -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Download Clients</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Download Clients</h2>
                     <p class="text-muted">Configure a Usenet download client (SABnzbd or NZBGet). Credentials are
                         stored encrypted. Mark one client as active — completed downloads are handed to your library.</p>
 
@@ -1266,9 +1305,9 @@
                 </div>
 
                 <!-- Indexers -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h4 class="mb-0">Indexers</h4>
+                        <h2 class="h4 mb-0">Indexers</h2>
                         <button type="button" class="btn btn-primary btn-sm" onclick="openIndexerModal()">
                             <i class="bi bi-plus-lg me-1"></i>Add Indexer
                         </button>
@@ -1287,8 +1326,8 @@
                 </div>
 
                 <!-- Source Priority -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Source Priority</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Source Priority</h2>
                     <p class="text-muted">Which download sources the auto-download engine uses, and the
                         order it tries them in. A source that is off is never tried automatically, but can
                         still be searched by hand.</p>
@@ -1356,14 +1395,14 @@
             <div class="tab-pane fade" id="system-perf" role="tabpanel" aria-labelledby="system-perf-tab">
 
                 <!-- Performance & Timeout Settings -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Performance & Timeout Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Performance & Timeout Settings</h2>
                     <p class="text-muted">Configure timeout settings for large file operations and performance
                         optimizations.</p>
 
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="operationTimeout" class="form-label">Operation Timeout (seconds):</label>
+                            <label for="operationTimeout" class="form-label">Operation Timeout (seconds)</label>
                             <input type="number" name="operationTimeout" id="operationTimeout"
                                 value="{{ operationTimeout }}" class="form-control" min="300" max="7200">
                             <small class="form-text text-muted">
@@ -1373,7 +1412,7 @@
                         </div>
 
                         <div class="col-md-6">
-                            <label for="largeFileThreshold" class="form-label">Large File Threshold (MB):</label>
+                            <label for="largeFileThreshold" class="form-label">Large File Threshold (MB)</label>
                             <input type="number" name="largeFileThreshold" id="largeFileThreshold"
                                 value="{{ largeFileThreshold }}" class="form-control" min="100" max="2000">
                             <small class="form-text text-muted">
@@ -1385,12 +1424,12 @@
                 </div>
 
                 <!-- Timezone Settings -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Timezone Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Timezone Settings</h2>
                     <p class="text-muted">Set your local timezone for accurate reading history tracking.</p>
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="timezone" class="form-label">Timezone:</label>
+                            <label for="timezone" class="form-label">Timezone</label>
                             <select name="timezone" id="timezone" class="form-select">
                                 <option value="UTC" {% if timezone=='UTC' %}selected{% endif %}>UTC</option>
                                 <option value="-12" {% if timezone=='-12' %}selected{% endif %}>UTC-12 (Baker Island)
@@ -1422,12 +1461,12 @@
                 </div>
 
                 <!-- Cache Management -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Cache Management</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Cache Management</h2>
                     <p class="text-muted">Clear cached data to refresh statistics and file listings.</p>
                     <div class="row">
                         <div class="col-md-6">
-                            <button type="button" id="clearCacheBtn" class="btn btn-warning">
+                            <button type="button" id="clearCacheBtn" class="btn btn-outline-secondary">
                                 <i class="bi bi-trash"></i> Clear All Caches
                             </button>
                             <small class="form-text text-muted d-block mt-2">
@@ -1439,15 +1478,15 @@
                 </div>
 
                 <!-- Missing Issue Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Missing Issue Configuration</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Missing Issue Configuration</h2>
                     <p class="text-muted">Update these settings to ignore terms or files when the app is performing a
                         <strong>Missing Issue</strong> scan.
                     </p>
 
                     <div class="row">
                         <div class="col-md-6">
-                            <label for="ignored_terms" class="form-label">IGNORED TERMS:</label>
+                            <label for="ignored_terms" class="form-label">Ignored Terms</label>
                             <input type="text" name="ignored_terms" id="ignored_terms" value="{{ ignored_terms }}"
                                 class="form-control">
                             <small class="form-text text-muted">
@@ -1457,7 +1496,7 @@
                         </div>
 
                         <div class="col-md-6">
-                            <label for="ignored_files" class="form-label">IGNORED FILES:</label>
+                            <label for="ignored_files" class="form-label">Ignored Files</label>
                             <input type="text" name="ignored_files" id="ignored_files" value="{{ ignored_files }}"
                                 class="form-control">
                             <small class="form-text text-muted">
@@ -1469,8 +1508,8 @@
                 </div>
 
                 <!-- Logging & Debugging Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Logging & Debugging</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Logging & Debugging</h2>
                     <p class="text-muted">Configure application logging settings. Debug logging provides detailed
                         diagnostic information useful for troubleshooting.</p>
 
@@ -1492,8 +1531,8 @@
                 </div>
 
                 <!-- ComicInfo XML editing Configuration -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>ComicInfo.XML Update Settings</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">ComicInfo.XML Update Settings</h2>
                     <p class="text-muted">Enable/Disable features for updating or cleaning <code>ComicInfo.xml</code>
                         files. This proecess runs on a single directory, extracts the <code>ComicInfo.xml</code> file,
                         reads and makes updates and then recompresses the file.</p>
@@ -1542,12 +1581,7 @@
                     </div>
                 </div>
 
-                <!-- Save Button for Tab 4 - System & Performance -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" onclick="saveSystemPerfSettings()">
-                        <i class="bi bi-floppy"></i> Save System & Performance Settings
-                    </button>
-                </div>
+                {{ settings_save_bar('saveSystemPerfBtn', 'saveSystemPerfSettings') }}
 
             </div>
 
@@ -1557,9 +1591,9 @@
             <div class="tab-pane fade" id="database" role="tabpanel" aria-labelledby="database-tab">
 
                 <!-- Database Stats -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="d-flex align-items-center gap-2 mb-2">
-                        <h4 class="mb-0">Current Database</h4>
+                        <h2 class="h4 mb-0">Current Database</h2>
                         <span id="dbIntegrityBadge" class="badge d-none"></span>
                     </div>
                     <p class="text-muted">SQLite file size and row counts per table.</p>
@@ -1595,8 +1629,8 @@
                 </div>
 
                 <!-- Health & Maintenance -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4 class="mb-0">Health &amp; Maintenance</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4 mb-0">Health &amp; Maintenance</h2>
                     <p class="text-muted">
                         Check the database for damage, reclaim unused space and flush the
                         write-ahead log. Safe to run while the app is in use.
@@ -1605,7 +1639,7 @@
                         <button id="dbIntegrityQuickBtn" type="button" class="btn btn-primary btn-sm">
                             <i class="bi bi-heart-pulse me-1"></i> Run integrity check
                         </button>
-                        <button id="dbIntegrityFullBtn" type="button" class="btn btn-outline-primary btn-sm">
+                        <button id="dbIntegrityFullBtn" type="button" class="btn btn-outline-secondary btn-sm">
                             <i class="bi bi-search me-1"></i> Full check
                         </button>
                         <button id="dbCheckpointBtn" type="button" class="btn btn-outline-secondary btn-sm">
@@ -1614,13 +1648,13 @@
                         <button id="dbOptimizeBtn" type="button" class="btn btn-outline-secondary btn-sm">
                             <i class="bi bi-speedometer2 me-1"></i> Optimize
                         </button>
-                        <button id="dbCompactBtn" type="button" class="btn btn-outline-warning btn-sm">
+                        <button id="dbCompactBtn" type="button" class="btn btn-outline-secondary btn-sm">
                             <i class="bi bi-arrows-collapse me-1"></i> Compact
                         </button>
                     </div>
                     <div id="dbMaintenanceResult" class="alert small d-none mb-3" role="status"></div>
 
-                    <h6 class="mt-4">Recent database errors</h6>
+                    <h3 class="h6 mt-4">Recent database errors</h3>
                     <p class="text-muted small">
                         SQLite failures the app would otherwise have swallowed. An empty
                         list here is good news.
@@ -1638,8 +1672,8 @@
                 </div>
 
                 <!-- Recovery -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4 class="mb-0">Recovery</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4 mb-0">Recovery</h2>
                     <p class="text-muted">
                         If the database is damaged, salvage reads out everything still
                         readable and builds a clean copy. It never modifies the current
@@ -1654,7 +1688,7 @@
 
                     <div id="dbSalvageResult" class="d-none">
                         <hr>
-                        <h6>Salvaged copy ready</h6>
+                        <h3 class="h6">Salvaged copy ready</h3>
                         <div class="row g-3 small mb-3">
                             <div class="col-6 col-md-3"><strong>Method:</strong> <span id="dbSalvageMethod">–</span></div>
                             <div class="col-6 col-md-3"><strong>Integrity:</strong> <span id="dbSalvageIntegrity">–</span></div>
@@ -1685,7 +1719,7 @@
                     </div>
 
                     <div id="dbQuarantineWrap" class="d-none mt-4">
-                        <h6>Quarantined copies</h6>
+                        <h3 class="h6">Quarantined copies</h3>
                         <p class="text-muted small mb-2">
                             Snapshots of the database taken when corruption was detected.
                             They are never offered for restore — they contain the damaged
@@ -1708,13 +1742,13 @@
                 </div>
 
                 <!-- Backups -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
+                <div class="clu-settings-panel mb-4">
                     <div class="d-flex align-items-start justify-content-between mb-2">
                         <div>
-                            <h4 class="mb-0">Backups</h4>
+                            <h2 class="h4 mb-0">Backups</h2>
                             <p class="text-muted mb-0">Auto-created on container start (when the DB has changed). Up to 3 retained, plus any manual or pre-restore snapshots.</p>
                         </div>
-                        <button id="dbBackupNowBtn" type="button" class="btn btn-primary btn-sm">
+                        <button id="dbBackupNowBtn" type="button" class="btn btn-outline-secondary btn-sm">
                             <i class="bi bi-floppy me-1"></i> Back up now
                         </button>
                     </div>
@@ -1753,8 +1787,8 @@
             <!-- ========================================== -->
             <div class="tab-pane fade" id="notifications" role="tabpanel" aria-labelledby="notifications-tab">
 
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-bell me-2"></i>Push Notifications</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4"><i class="bi bi-bell me-2"></i>Push Notifications</h2>
                     <p class="text-muted">
                         Send a push when downloads finish and when missing issues land in your
                         library. Powered by
@@ -1788,7 +1822,7 @@
                         plain text and are only visible on this owner-only page.
                     </div>
 
-                    <h5 class="mt-4">Notify me when&hellip;</h5>
+                    <h3 class="h5 mt-4">Notify me when&hellip;</h3>
                     <div id="notifyEventList">
                         {% for event_id, defn in notify_event_defs.items() %}
                         <div class="form-check mb-2">
@@ -1804,16 +1838,12 @@
                     </div>
                 </div>
 
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-outline-secondary me-2" id="testNotificationBtn"
+                {% call settings_save_bar('saveNotificationsBtn', 'saveNotificationSettings') %}
+                    <button type="button" class="btn btn-outline-secondary" id="testNotificationBtn"
                         onclick="sendTestNotification()">
-                        <i class="bi bi-send"></i> Send Test Notification
+                        <i class="bi bi-send me-2" aria-hidden="true"></i>Send Test Notification
                     </button>
-                    <button type="button" class="btn btn-primary" id="saveNotificationsBtn"
-                        onclick="saveNotificationSettings()">
-                        <i class="bi bi-floppy"></i> Save Notification Settings
-                    </button>
-                </div>
+                {% endcall %}
             </div>
 
             <!-- ========================================== -->
@@ -1822,8 +1852,8 @@
             <div class="tab-pane fade" id="personalization" role="tabpanel" aria-labelledby="personalization-tab">
 
                 <!-- Theme Selection (site default) -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4>Default Theme</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4">Default Theme</h2>
                     <p class="text-muted">
                         The theme for users who haven't picked their own. Themes provided by
                         <a href="https://bootswatch.com/" target="_blank">Bootswatch</a>, plus
@@ -1840,18 +1870,10 @@
                     {% endwith %}
                 </div>
 
-                <!-- Save Button - Styling -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" onclick="saveStylingSettings()">
-                        <i class="bi bi-floppy"></i> Save Default Theme
-                    </button>
-                </div>
-
-                <hr>
 
                 <!-- Page Width (site default) -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-arrows-angle-expand me-2"></i>Default Page Width</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4"><i class="bi bi-arrows-angle-expand me-2"></i>Default Page Width</h2>
                     <p class="text-muted">
                         How wide pages and the navigation bar are, for users who haven't picked their own.
                         To change only your own, go to
@@ -1863,19 +1885,10 @@
                     {% endwith %}
                 </div>
 
-                <!-- Save Button - Page Width -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" id="savePageWidthBtn"
-                        onclick="savePageWidthSettings()">
-                        <i class="bi bi-floppy"></i> Save Page Width
-                    </button>
-                </div>
-
-                <hr>
 
                 <!-- Dashboard Layout (site default) -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-layout-text-window-reverse me-2"></i>Default Dashboard Layout</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4"><i class="bi bi-layout-text-window-reverse me-2"></i>Default Dashboard Layout</h2>
                     <p class="text-muted">
                         Which sections appear on the collection dashboard, and in what order, for users who
                         haven't set their own. To change only your own layout, go to
@@ -1895,19 +1908,10 @@
                     </div>
                 </div>
 
-                <!-- Save Button - Dashboard -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" id="saveDashboardBtn"
-                        onclick="saveDashboardSettings()">
-                        <i class="bi bi-floppy"></i> Save Dashboard Settings
-                    </button>
-                </div>
-
-                <hr>
 
                 <!-- Folder Thumbnail Style (site-wide) -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-images me-2"></i>Folder Thumbnail Style</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4"><i class="bi bi-images me-2"></i>Folder Thumbnail Style</h2>
                     <p class="text-muted">
                         How cover art is composed for folders in
                         <a href="{{ url_for('collection.collection') }}">Browse Library</a>.
@@ -1926,7 +1930,7 @@
                             <input type="radio" class="btn-check" name="folderThumbnailStyle"
                                 id="thumbStyle-{{ style.id }}" value="{{ style.id }}"
                                 {% if folderThumbnailStyle == style.id %}checked{% endif %}>
-                            <label class="btn btn-outline-primary w-100 h-100 d-flex flex-column align-items-center p-3"
+                            <label class="btn btn-outline-secondary clu-choice w-100 h-100 d-flex flex-column align-items-center p-3"
                                 for="thumbStyle-{{ style.id }}">
                                 <img src="{{ url_for('static', filename='images/thumb-style-' + style.id + '.png') }}"
                                     alt="{{ style.label }} preview" class="mb-2"
@@ -1961,22 +1965,15 @@
                     </div>
                 </div>
 
-                <!-- Save Button - Thumbnails -->
-                <div class="mb-3 text-center d-flex justify-content-center gap-2">
-                    <button type="button" class="btn btn-primary" id="saveThumbnailStyleBtn"
-                        onclick="saveThumbnailStyleSettings()">
-                        <i class="bi bi-floppy"></i> Save Thumbnail Style
-                    </button>
+                <div class="mb-3">
                     <button type="button" class="btn btn-outline-danger" id="regenerateAllThumbnailsBtn">
-                        <i class="bi bi-arrow-repeat"></i> Regenerate All Thumbnails
+                        <i class="bi bi-arrow-repeat me-2" aria-hidden="true"></i>Regenerate All Thumbnails
                     </button>
                 </div>
 
-                <hr>
-
                 <!-- Recommendation Service -->
-                <div class="container p-4 border rounded shadow-sm mb-4">
-                    <h4><i class="bi bi-stars text-warning"></i> Recommendation Service</h4>
+                <div class="clu-settings-panel mb-4">
+                    <h2 class="h4"><i class="bi bi-stars text-warning"></i> Recommendation Service</h2>
                     <p class="text-muted">Configure AI-powered recommendations for your reading list. Use an API
                         key from a hosted provider, or a local model served by Ollama, LM Studio or any other
                         OpenAI-compatible server.</p>
@@ -1989,7 +1986,7 @@
 
                     <div class="row">
                         <div class="col-md-4">
-                            <label for="recProvider" class="form-label">AI Provider:</label>
+                            <label for="recProvider" class="form-label">AI Provider</label>
                             <select class="form-select" id="recProvider" name="recProvider"
                                 onchange="updateModelOptions()">
                                 <option value="gemini" {% if rec_provider=='gemini' %}selected{% endif %}>Google Gemini
@@ -2008,7 +2005,7 @@
 
                         <div class="col-md-8">
                             <label for="recApiKey" class="form-label">API Key<span id="recApiKeyOptional"
-                                    class="text-muted d-none"> (optional)</span>:</label>
+                                    class="text-muted d-none"> (optional)</span></label>
                             <div class="input-group">
                                 <input type="password" name="recApiKey" id="recApiKey" value="{{ rec_api_key }}"
                                     class="form-control password-field" autocomplete="off">
@@ -2025,7 +2022,7 @@
 
                     <div class="row mt-3 d-none" id="recBaseUrlRow">
                         <div class="col-md-8">
-                            <label for="recBaseUrl" class="form-label">Base URL:</label>
+                            <label for="recBaseUrl" class="form-label">Base URL</label>
                             <input type="url" class="form-control" id="recBaseUrl" name="recBaseUrl"
                                 value="{{ rec_base_url }}" placeholder="http://host.docker.internal:11434/v1"
                                 autocomplete="off">
@@ -2042,7 +2039,7 @@
 
                     <div class="row mt-3">
                         <div class="col-md-6">
-                            <label for="recModel" class="form-label">Model:</label>
+                            <label for="recModel" class="form-label">Model</label>
                             <!-- Free text with suggestions, so a newer hosted model or any
                                  locally pulled model can be entered. Suggestions set via JS. -->
                             <input type="text" class="form-control" id="recModel" name="recModel"
@@ -2055,23 +2052,13 @@
                     </div>
                 </div>
 
-                <!-- Save Button - Recommendations -->
-                <div class="mb-3 text-center">
-                    <button type="button" class="btn btn-primary" onclick="saveRecommendationSettings()">
-                        <i class="bi bi-floppy"></i> Save Recommendation Settings
-                    </button>
-                </div>
+                {{ settings_save_bar('savePersonalizationBtn', 'savePersonalizationSettings') }}
 
             </div>
         </div>
 
     </div>
 
-    <!-- Restart Button -->
-    <div class="container p-4 border rounded shadow-sm text-center">
-        <h6>Restart Flask App</h6>
-        <button onclick="restartApp()" class="btn btn-secondary">Restart App</button>
-    </div>
 </div>
 
 <!-- Convert Library Confirmation Modal -->
@@ -2112,7 +2099,7 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-        <button type="button" class="btn btn-warning" id="confirmConvertLibraryBtn" disabled>
+        <button type="button" class="btn btn-primary" id="confirmConvertLibraryBtn" disabled>
           <i class="bi bi-file-earmark-zip me-1"></i>Convert All
         </button>
       </div>
@@ -2236,7 +2223,110 @@
         fetch('/restart', { method: 'POST' })
             .then(response => response.json())
             .then(data => CLU.toast(data.message, 'success'))
-            .catch(error => console.error('Error:', error));
+            .catch(error => CLU.toast('Could not restart: ' + error.message, 'error'));
+    }
+
+    // =========================================
+    // Saving: one Save per tab
+    // =========================================
+
+    // Posts one form. Resolves to null when saved, or to the error message.
+    // An expired session answers a JSON 401, and a proxy in front of CLU can
+    // answer with an HTML error page, so neither reaches response.json().
+    async function postSettings(url, data) {
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            if (response.status === 401) return 'your session has expired, sign in again';
+            const type = response.headers.get('Content-Type') || '';
+            if (!type.includes('application/json')) {
+                return 'the server answered ' + response.status + ' ' + (response.statusText || '');
+            }
+            const result = await response.json();
+            if (result.success) return null;
+            return result.error || (response.ok ? 'Failed to save' : 'the server answered ' + response.status);
+        } catch (e) {
+            return e.message;
+        }
+    }
+
+    // Runs a tab's save steps ([label, step] pairs, each resolving like
+    // postSettings) behind the tab's Save button. Every step runs even when
+    // one fails, then one toast reports the outcome. Resolves to true when
+    // everything saved.
+    async function runTabSave(buttonId, steps, savedMessage) {
+        const btn = document.getElementById(buttonId);
+        const originalHtml = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Saving…';
+
+        const failed = [];
+        try {
+            for (const [label, step] of steps) {
+                const error = await step();
+                if (error) failed.push(label + ': ' + error);
+            }
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        }
+
+        if (failed.length) CLU.toast('Could not save ' + failed.join('; '), 'error');
+        else CLU.toast(savedMessage, 'success');
+        return failed.length === 0;
+    }
+
+    // Personalization's sections, each with its own endpoint. Save sends only
+    // the sections whose form changed since the page loaded or last saved:
+    // saving the default theme, page width or dashboard layout also clears
+    // the owner's own choice of it (so the new default shows), and posting
+    // those unchanged threw away an owner's personal theme whenever they
+    // saved the recommendation model. `saved` is each section's last payload,
+    // taken once the dashboard editor has rendered (snapshotPersonalization).
+    const personalizationSections = {
+        theme: { label: 'Default Theme', url: '/api/config/styling', read: readStylingSettings },
+        pageWidth: { label: 'Default Page Width', url: '/api/config/page-width', read: readPageWidthSettings },
+        dashboard: { label: 'Default Dashboard Layout', url: '/api/config/dashboard', read: readDashboardSettings },
+        thumbnails: { label: 'Folder Thumbnail Style', url: '/api/config/thumbnails', read: readThumbnailStyleSettings },
+        recommendations: { label: 'Recommendation Service', url: '/api/config/recommendations', read: readRecommendationSettings }
+    };
+
+    function snapshotPersonalization() {
+        Object.values(personalizationSections).forEach(s => { s.saved = JSON.stringify(s.read()); });
+    }
+
+    async function savePersonalizationSettings() {
+        const changed = Object.values(personalizationSections)
+            .map(section => ({ section, json: JSON.stringify(section.read()) }))
+            .filter(c => c.json !== c.section.saved);
+        if (!changed.length) {
+            CLU.toast('No changes to save', 'info');
+            return;
+        }
+        const has = section => changed.some(c => c.section === section);
+        const { pageWidth, thumbnails } = personalizationSections;
+
+        let message = 'Personalization settings saved';
+        if (has(thumbnails)) message += '. Existing folder thumbnails keep their look until regenerated';
+        if (has(pageWidth)) message += '. Reloading for the new page width…';
+
+        // Each section is marked saved as it succeeds, so after a partial
+        // failure the next Save re-sends only what failed.
+        const saved = await runTabSave('savePersonalizationBtn', changed.map(c => [c.section.label, async () => {
+            const error = await postSettings(c.section.url, JSON.parse(c.json));
+            if (!error) c.section.saved = c.json;
+            return error;
+        }]), message);
+
+        // Page width is rendered server-side. A reload after a partial
+        // failure would wipe the error and the edits that did not save, so
+        // then the new width waits for the next page load.
+        const widthSaved = has(pageWidth) && changed.find(c => c.section === pageWidth).json === pageWidth.saved;
+        if (widthSaved && saved) setTimeout(() => window.location.reload(), 600);
+        else if (widthSaved) CLU.toast('The new page width shows from the next page load', 'info');
     }
 
     // =========================================
@@ -2244,11 +2334,6 @@
     // =========================================
 
     async function saveFileProcessingSettings() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
         const data = {
             watch: document.getElementById('watch')?.value || '',
             target: document.getElementById('target')?.value || '',
@@ -2288,26 +2373,10 @@
             dateCheckToleranceYears: document.getElementById('dateCheckToleranceYears')?.value || '2'
         };
 
-        try {
-            const response = await fetch('/api/config/file-processing', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('File processing settings saved', 'success');
-                refreshMonitorStatusSoon();
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        const saved = await runTabSave('saveFileProcessingBtn', [
+            ['File Processing', () => postSettings('/api/config/file-processing', data)]
+        ], 'File processing settings saved');
+        if (saved) refreshMonitorStatusSoon();
     }
 
     // =========================================
@@ -2318,16 +2387,16 @@
         const badge = document.getElementById('monitorStatusBadge');
         if (!badge) return;
         if (!status) {
-            badge.className = 'badge bg-secondary ms-2';
+            badge.className = 'badge text-bg-secondary ms-2';
             badge.textContent = 'Unknown';
         } else if (status.running) {
-            badge.className = 'badge bg-success ms-2';
+            badge.className = 'badge text-bg-success ms-2';
             badge.textContent = 'Running';
         } else if (status.enabled) {
-            badge.className = 'badge bg-warning text-dark ms-2';
+            badge.className = 'badge text-bg-warning ms-2';
             badge.textContent = 'Starting...';
         } else {
-            badge.className = 'badge bg-secondary ms-2';
+            badge.className = 'badge text-bg-secondary ms-2';
             badge.textContent = 'Stopped';
         }
     }
@@ -2400,7 +2469,7 @@
             li.draggable = true;
 
             const label = document.createElement('span');
-            label.innerHTML = '<span class="badge bg-secondary me-2">' + (idx + 1) + '</span>' + providerLabels[val];
+            label.innerHTML = '<span class="badge text-bg-secondary me-2">' + (idx + 1) + '</span>' + providerLabels[val];
             li.appendChild(label);
 
             const btnGroup = document.createElement('div');
@@ -2473,11 +2542,6 @@
     })();
 
     async function saveDownloadApiSettings() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
         const data = {
             customHeaders: document.getElementById('customHeaders')?.value || '',
             pixeldrainApiKey: document.getElementById('pixeldrainApiKey')?.value || '',
@@ -2491,33 +2555,13 @@
             downloadPacks: document.getElementById('downloadPacks')?.checked ?? false
         };
 
-        try {
-            const response = await fetch('/api/config/download-api', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Download & API settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        await runTabSave('saveDownloadApiBtn', [
+            ['Download and API', () => postSettings('/api/config/download-api', data)],
+            ['Komga', saveKomgaConfig]
+        ], 'Download and API settings saved');
     }
 
     async function saveSystemPerfSettings() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
         const data = {
             operationTimeout: document.getElementById('operationTimeout')?.value || '3600',
             largeFileThreshold: document.getElementById('largeFileThreshold')?.value || '500',
@@ -2530,121 +2574,30 @@
             xmlList: document.getElementById('xmlList')?.checked || false
         };
 
-        try {
-            const response = await fetch('/api/config/system-perf', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('System & Performance settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        await runTabSave('saveSystemPerfBtn', [
+            ['System and Performance', () => postSettings('/api/config/system-perf', data)]
+        ], 'System and performance settings saved');
     }
 
-    async function saveStylingSettings() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
+    // Readers for the Personalization sections (personalizationSections).
 
-        const data = {
-            bootstrapTheme: document.getElementById('bootstrapTheme')?.value || 'darkly'
-        };
-
-        try {
-            const response = await fetch('/api/config/styling', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Styling settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+    function readStylingSettings() {
+        return { bootstrapTheme: document.getElementById('bootstrapTheme')?.value || 'darkly' };
     }
 
-    async function savePageWidthSettings() {
-        const btn = document.getElementById('savePageWidthBtn');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
+    // The width is applied server-side, so a change shows after a reload.
+    function readPageWidthSettings() {
         const selected = document.querySelector('input[name="sitePageWidth"]:checked');
-
-        try {
-            const response = await fetch('/api/config/page-width', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pageWidth: selected ? selected.value : 'auto' })
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Page width saved. Reloading...', 'success');
-                // The width is applied server-side, so it shows on the next render.
-                setTimeout(() => window.location.reload(), 600);
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        return { pageWidth: selected ? selected.value : 'auto' };
     }
 
-    async function saveThumbnailStyleSettings() {
-        const btn = document.getElementById('saveThumbnailStyleBtn');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
+    function readThumbnailStyleSettings() {
         const selected = document.querySelector('input[name="folderThumbnailStyle"]:checked');
-        const data = {
+        return {
             folderThumbnailStyle: selected ? selected.value : 'fanned',
             folderThumbnailNestedOverlay:
                 document.getElementById('folderThumbnailNestedOverlay')?.checked ?? true
         };
-
-        try {
-            const response = await fetch('/api/config/thumbnails', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Thumbnail style saved. Existing thumbnails keep their current look until regenerated.', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
     }
 
     // Regenerate All rebuilds every folder image in every library, so it is
@@ -2683,45 +2636,21 @@
         }
     });
 
-    async function saveRecommendationSettings() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
-        const data = {
+    function readRecommendationSettings() {
+        return {
             recEnabled: document.getElementById('recEnabled')?.checked || false,
             recProvider: document.getElementById('recProvider')?.value || 'openai',
             recApiKey: document.getElementById('recApiKey')?.value || '',
             recModel: (document.getElementById('recModel')?.value || '').trim(),
             recBaseUrl: (document.getElementById('recBaseUrl')?.value || '').trim()
         };
-
-        try {
-            const response = await fetch('/api/config/recommendations', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Recommendation settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
     }
 
     // Dashboard reorder/drag-drop lives in static/js/clu-personalization.js so
     // /account can reuse it. Rendered immediately (not on DOMContentLoaded) to
     // match where this script runs in the page.
     CLU.initDashboardEditor('dashboardSectionsList');
+    snapshotPersonalization();
 
     // ---------------------------------------------------------------
     // Notifications (Apprise)
@@ -2741,30 +2670,9 @@
     }
 
     async function saveNotificationSettings() {
-        const btn = document.getElementById('saveNotificationsBtn');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
-        try {
-            const response = await fetch('/api/config/notifications', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(readNotificationForm())
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast(result.message || 'Notification settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        await runTabSave('saveNotificationsBtn', [
+            ['Notifications', () => postSettings('/api/config/notifications', readNotificationForm())]
+        ], 'Notification settings saved');
     }
 
     // Tests the URLs currently in the textarea, not the saved ones, so a target
@@ -2796,37 +2704,9 @@
         }
     }
 
-    async function saveDashboardSettings() {
-        const btn = document.getElementById('saveDashboardBtn');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
+    function readDashboardSettings() {
         const sel = CLU.readDashboardSelection('dashboardSectionsList');
-        const data = {
-            dashboardOrder: sel.order,
-            dashboardHidden: sel.hidden
-        };
-
-        try {
-            const response = await fetch('/api/config/dashboard', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
-
-            if (result.success) {
-                CLU.toast('Dashboard settings saved', 'success');
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving settings: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
-        }
+        return { dashboardOrder: sel.order, dashboardHidden: sel.hidden };
     }
 
     document.addEventListener("DOMContentLoaded", function () {
@@ -2868,12 +2748,9 @@
                 .then(data => {
                     if (data.success) {
                         button.innerHTML = '<i class="bi bi-check"></i> Cleared!';
-                        button.classList.remove('btn-warning');
-                        button.classList.add('btn-success');
+                        CLU.toast('Cache cleared', 'success');
                         setTimeout(() => {
                             button.innerHTML = originalText;
-                            button.classList.remove('btn-success');
-                            button.classList.add('btn-warning');
                             button.disabled = false;
                         }, 2000);
                     } else {
@@ -2882,12 +2759,9 @@
                 })
                 .catch(error => {
                     button.innerHTML = '<i class="bi bi-x"></i> Error';
-                    button.classList.remove('btn-warning');
-                    button.classList.add('btn-danger');
+                    CLU.toast('Could not clear the cache: ' + error.message, 'error');
                     setTimeout(() => {
                         button.innerHTML = originalText;
-                        button.classList.remove('btn-danger');
-                        button.classList.add('btn-warning');
                         button.disabled = false;
                     }, 2000);
                 });
@@ -2921,7 +2795,7 @@
         if (token) {
             field.value = token;
             field.placeholder = '';
-            badge.className = 'badge bg-success';
+            badge.className = 'badge text-bg-success';
             badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Configured';
             copyBtn.disabled = false;
             rotateLabel.textContent = 'Rotate Token';
@@ -2929,7 +2803,7 @@
             field.value = '';
             field.placeholder = 'No token generated yet';
             field.type = 'password';
-            badge.className = 'badge bg-secondary';
+            badge.className = 'badge text-bg-secondary';
             badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>Not Configured';
             copyBtn.disabled = true;
             rotateLabel.textContent = 'Generate Token';
@@ -3082,6 +2956,11 @@
     // Komga Reading Sync Functions
     // =========================================
 
+    // The server Komga had when the page loaded, and the form as last loaded
+    // or saved; see saveKomgaConfig.
+    let komgaLoadedUrl = '';
+    let komgaLoadedForm = null;
+
     function loadKomgaConfig() {
         fetch('/api/komga/config', {
             headers: { 'Cache-Control': 'no-cache' }
@@ -3090,6 +2969,7 @@
             .then(data => {
                 if (data.success && data.config) {
                     const cfg = data.config;
+                    komgaLoadedUrl = cfg.server_url || '';
                     document.getElementById('komgaServerUrl').value = cfg.server_url || '';
                     document.getElementById('komgaUsername').value = cfg.username || '';
                     // Don't populate password field if masked
@@ -3108,6 +2988,7 @@
                     // Show weekday selector if weekly
                     document.getElementById('komgaWeekdayGroup').style.display =
                         cfg.frequency === 'weekly' ? 'block' : 'none';
+                    komgaLoadedForm = JSON.stringify(readKomgaForm());
 
                     // Update status badge
                     updateKomgaStatusBadge(cfg);
@@ -3135,6 +3016,7 @@
             html += '<td><code>' + escapeHtml(m.library_path) + '</code></td>';
             html += '<td><input type="text" class="form-control form-control-sm komga-prefix-input" '
                 + 'data-library-id="' + m.library_id + '" '
+                + 'aria-label="Komga path prefix for ' + escapeHtml(m.library_name) + '" '
                 + 'value="' + escapeHtml(m.komga_path_prefix || '') + '" '
                 + 'placeholder="/comics"></td>';
             html += '</tr>';
@@ -3158,16 +3040,16 @@
     function updateKomgaStatusBadge(cfg) {
         const badge = document.getElementById('komgaStatusBadge');
         if (!cfg || !cfg.server_url) {
-            badge.className = 'badge bg-secondary';
+            badge.className = 'badge text-bg-secondary';
             badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>Not Configured';
         } else if (cfg.connection_valid) {
-            badge.className = 'badge bg-success';
+            badge.className = 'badge text-bg-success';
             badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected';
         } else if (cfg.password === '***' || cfg.password) {
-            badge.className = 'badge bg-warning';
+            badge.className = 'badge text-bg-warning';
             badge.innerHTML = '<i class="bi bi-exclamation-triangle me-1"></i>Not Verified';
         } else {
-            badge.className = 'badge bg-secondary';
+            badge.className = 'badge text-bg-secondary';
             badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>No Credentials';
         }
     }
@@ -3196,44 +3078,38 @@
             });
     }
 
-    async function saveKomgaConfig() {
-        const btn = event.target.closest('button');
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Saving...';
-
-        const data = {
+    function readKomgaForm() {
+        return {
             server_url: document.getElementById('komgaServerUrl').value.trim(),
             username: document.getElementById('komgaUsername').value.trim(),
             password: document.getElementById('komgaPassword').value || '***',
             library_mappings: collectKomgaLibraryMappings(),
-            enabled: true,
             frequency: document.getElementById('komgaSyncFrequency').value,
             time: CLU.localToUtc(document.getElementById('komgaSyncTime').value,
                 CLU.tzOffsetHours()),
             weekday: parseInt(document.getElementById('komgaSyncWeekday').value)
         };
+    }
 
-        try {
-            const response = await fetch('/api/komga/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            const result = await response.json();
+    function komgaFormChanged() {
+        return JSON.stringify(readKomgaForm()) !== komgaLoadedForm;
+    }
 
-            if (result.success) {
-                CLU.toast('Komga configuration saved', 'success');
-                loadKomgaConfig();
-            } else {
-                CLU.toast('Error: ' + (result.error || 'Failed to save'), 'error');
-            }
-        } catch (e) {
-            CLU.toast('Error saving Komga config: ' + e.message, 'error');
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
+    // A step of the Download tab's Save, and run by Test Connection. Komga's
+    // save always switches sync on and reschedules it, so it is sent only
+    // when its own fields changed, and a form that has never had a server is
+    // left unwritten.
+    async function saveKomgaConfig() {
+        if (!document.getElementById('komgaServerUrl').value.trim() && !komgaLoadedUrl) return null;
+        if (!komgaFormChanged()) return null;
+
+        const data = Object.assign(readKomgaForm(), { enabled: true });
+        const error = await postSettings('/api/komga/config', data);
+        if (!error) {
+            komgaLoadedForm = JSON.stringify(readKomgaForm());
+            loadKomgaConfig();
         }
+        return error;
     }
 
     async function testKomgaConnection() {
@@ -3243,27 +3119,32 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
 
         try {
+            // The test reads the stored config, so what is in the form is
+            // saved first -- Komga alone, not the rest of the tab.
+            if (komgaFormChanged()) {
+                const saveError = await saveKomgaConfig();
+                if (saveError) {
+                    CLU.toast('Could not save Komga: ' + saveError, 'error');
+                    btn.innerHTML = originalHtml;
+                    btn.disabled = false;
+                    return;
+                }
+            }
             const response = await fetch('/api/komga/test', { method: 'POST' });
             const data = await response.json();
 
             if (data.success && data.valid) {
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Connected!';
-                btn.classList.remove('btn-outline-info');
-                btn.classList.add('btn-success');
                 CLU.toast('Komga connection successful!', 'success');
 
                 // Reload config to refresh badge from persisted state
                 setTimeout(() => {
                     loadKomgaConfig();
                     btn.innerHTML = originalHtml;
-                    btn.classList.remove('btn-success');
-                    btn.classList.add('btn-outline-info');
                     btn.disabled = false;
                 }, 1500);
             } else {
                 btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Failed';
-                btn.classList.remove('btn-outline-info');
-                btn.classList.add('btn-danger');
 
                 // Reload config to refresh badge from persisted state
                 loadKomgaConfig();
@@ -3271,8 +3152,6 @@
 
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
-                    btn.classList.remove('btn-danger');
-                    btn.classList.add('btn-outline-info');
                     btn.disabled = false;
                 }, 2000);
             }
@@ -3650,8 +3529,8 @@
             let html = '<div class="list-group">';
             for (const lib of data.libraries) {
                 const enabledBadge = lib.enabled
-                    ? '<span class="badge bg-success">Enabled</span>'
-                    : '<span class="badge bg-secondary">Disabled</span>';
+                    ? '<span class="badge text-bg-success">Enabled</span>'
+                    : '<span class="badge text-bg-secondary">Disabled</span>';
                 html += `
                     <div class="list-group-item d-flex justify-content-between align-items-center">
                         <div>
@@ -3660,13 +3539,13 @@
                             ${enabledBadge}
                         </div>
                         <div class="btn-group btn-group-sm">
-                            <button aria-label="Edit library" title="Edit library" type="button" class="btn btn-outline-primary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
+                            <button aria-label="Edit library" title="Edit library" type="button" class="btn btn-outline-secondary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
                                 <i class="bi bi-pencil"></i>
                             </button>
-                            <button aria-label="Convert all RAR/CBR files in this library to CBZ" type="button" class="btn btn-outline-warning" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
+                            <button aria-label="Convert all RAR/CBR files in this library to CBZ" type="button" class="btn btn-outline-secondary" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
                                 <i class="bi bi-file-earmark-zip"></i>
                             </button>
-                            <button aria-label="${lib.enabled ? 'Disable' : 'Enable'} library" title="${lib.enabled ? 'Disable' : 'Enable'} library" type="button" class="btn btn-outline-${lib.enabled ? 'warning' : 'success'}" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
+                            <button aria-label="${lib.enabled ? 'Disable' : 'Enable'} library" title="${lib.enabled ? 'Disable' : 'Enable'} library" type="button" class="btn btn-outline-secondary" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
                                 <i class="bi bi-${lib.enabled ? 'pause' : 'play'}"></i>
                             </button>
                             <button aria-label="Delete library" title="Delete library" type="button" class="btn btn-outline-danger" onclick="deleteLibrary(${lib.id}, '${escapeHtml(lib.name)}')">
@@ -3898,17 +3777,17 @@
                 // Status badge logic - different for auth-free providers
                 let statusBadge;
                 if (provider.auth_blocked) {
-                    statusBadge = '<span class="badge bg-danger"><i class="bi bi-shield-exclamation me-1"></i>Auth Failed</span>';
+                    statusBadge = '<span class="badge text-bg-danger"><i class="bi bi-shield-exclamation me-1"></i>Auth Failed</span>';
                 } else if (provider.is_valid) {
-                    statusBadge = '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>';
+                    statusBadge = '<span class="badge text-bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>';
                 } else if (!provider.requires_auth) {
                     statusBadge = provider.has_credentials
-                        ? '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Test Failed</span>'
-                        : '<span class="badge bg-info"><i class="bi bi-globe me-1"></i>Public API</span>';
+                        ? '<span class="badge text-bg-warning"><i class="bi bi-exclamation-triangle me-1"></i>Test Failed</span>'
+                        : '<span class="badge text-bg-info"><i class="bi bi-globe me-1"></i>Public API</span>';
                 } else {
                     statusBadge = provider.has_credentials
-                        ? '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Not Verified</span>'
-                        : '<span class="badge bg-secondary"><i class="bi bi-x-circle me-1"></i>Not Configured</span>';
+                        ? '<span class="badge text-bg-warning"><i class="bi bi-exclamation-triangle me-1"></i>Not Verified</span>'
+                        : '<span class="badge text-bg-secondary"><i class="bi bi-x-circle me-1"></i>Not Configured</span>';
                 }
 
                 const lastTested = provider.last_tested
@@ -3924,7 +3803,7 @@
                             <i class="bi bi-info-circle me-1"></i>No authentication required - public API
                         </p>
                         <div class="d-flex gap-2">
-                            <button type="button" class="btn ${provider.is_valid ? 'btn-outline-info' : 'btn-primary'} btn-sm" onclick="testProviderConnection('${provider.type}')">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testProviderConnection('${provider.type}')">
                                 <i class="bi bi-lightning me-1"></i>${provider.is_valid ? 'Test' : 'Enable Provider'}
                             </button>
                             ${provider.has_credentials ? `
@@ -3951,7 +3830,7 @@
                                 <button type="submit" class="btn btn-primary btn-sm">
                                     <i class="bi bi-floppy me-1"></i>Save
                                 </button>
-                                <button type="button" class="btn btn-outline-info btn-sm" onclick="testProviderConnection('${provider.type}')">
+                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testProviderConnection('${provider.type}')">
                                     <i class="bi bi-lightning me-1"></i>Test
                                 </button>
                                 ${provider.has_credentials ? `
@@ -4045,7 +3924,7 @@
                             several&nbsp;GB, so make sure that volume has room.
                         </small>
                         <div class="mt-2 d-flex gap-2 align-items-center">
-                            <button type="button" class="btn btn-outline-primary btn-sm"
+                            <button type="button" class="btn btn-outline-secondary btn-sm"
                                     id="cvSqliteUpdateBtn" onclick="updateComicVineDb()">
                                 <i class="bi bi-cloud-arrow-down me-1"></i>Download now
                             </button>
@@ -4060,7 +3939,7 @@
                         <div class="card h-100" style="opacity: 0.7;">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <strong>${escapeHtml(provider.name)}</strong>
-                                <span class="badge bg-secondary"><i class="bi bi-clock me-1"></i>Coming Soon</span>
+                                <span class="badge text-bg-secondary"><i class="bi bi-clock me-1"></i>Coming Soon</span>
                             </div>
                             <div class="card-body">
                                 <p class="text-muted mb-0">
@@ -4128,19 +4007,10 @@
 
     async function saveSeriesJsonProvider() {
         const select = document.getElementById('seriesJsonProviderPref');
-        if (!select) return;
-        try {
-            const resp = await fetch('/api/preferences/series_json_provider', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ value: select.value, category: 'metadata' })
-            });
-            const data = await resp.json();
-            if (data.success) CLU.showSuccess('series.json provider saved');
-            else CLU.showError(data.error || 'Could not save');
-        } catch (e) {
-            CLU.showError('Error saving: ' + e.message);
-        }
+        await runTabSave('saveSeriesJsonProviderBtn', [
+            ['series.json provider', () => postSettings('/api/preferences/series_json_provider',
+                { value: select.value, category: 'metadata' })]
+        ], 'series.json provider saved');
     }
 
     document.addEventListener('DOMContentLoaded', loadSeriesJsonProvider);
@@ -4527,7 +4397,7 @@
                                name="${authModeFieldName(provider.type)}" id="${radioId}" value="${escapeHtml(mode.id)}"
                                ${mode.id === active.id ? 'checked' : ''}
                                onchange="setProviderAuthMode('${provider.type}', '${mode.id}')">
-                        <label class="btn btn-outline-primary" for="${radioId}">${escapeHtml(mode.label)}</label>`;
+                        <label class="btn btn-outline-secondary" for="${radioId}">${escapeHtml(mode.label)}</label>`;
         }
         html += `
                     </div>
@@ -4671,21 +4541,15 @@
 
             if (data.success && data.valid) {
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Success!';
-                btn.classList.remove('btn-outline-info');
-                btn.classList.add('btn-success');
                 CLU.toast(`Connection to ${providerType} successful!`, 'success');
                 setTimeout(() => {
                     loadProviders();
                 }, 1500);
             } else {
                 btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>Failed';
-                btn.classList.remove('btn-outline-info');
-                btn.classList.add('btn-danger');
                 CLU.toast('Connection test failed: ' + (data.error || 'Unknown error'), 'error');
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
-                    btn.classList.remove('btn-danger');
-                    btn.classList.add('btn-outline-info');
                     btn.disabled = false;
                 }, 2000);
             }
@@ -4822,19 +4686,19 @@
             for (const group of groups) {
                 const note = CLIENT_GROUP_NOTES[group.key]
                     ? `<div class="text-muted small mb-2">${escapeHtml(CLIENT_GROUP_NOTES[group.key])}</div>` : '';
-                html += `<h6 class="text-uppercase text-muted small fw-bold mt-2 mb-2">
-                    ${escapeHtml(CLIENT_GROUP_LABELS[group.key] || group.key)}</h6>${note}
+                html += `<h3 class="h6 text-uppercase text-muted small fw-bold mt-2 mb-2">
+                    ${escapeHtml(CLIENT_GROUP_LABELS[group.key] || group.key)}</h3>${note}
                     <div class="row">`;
             for (const client of group.clients) {
                 let statusBadge;
                 if (client.is_active) {
-                    statusBadge = '<span class="badge bg-success"><i class="bi bi-broadcast me-1"></i>Active</span>';
+                    statusBadge = '<span class="badge text-bg-success"><i class="bi bi-broadcast me-1"></i>Active</span>';
                 } else if (client.is_valid) {
-                    statusBadge = '<span class="badge bg-info"><i class="bi bi-check-circle me-1"></i>Connected</span>';
+                    statusBadge = '<span class="badge text-bg-info"><i class="bi bi-check-circle me-1"></i>Connected</span>';
                 } else if (client.has_config) {
-                    statusBadge = '<span class="badge bg-warning text-dark"><i class="bi bi-exclamation-triangle me-1"></i>Not Verified</span>';
+                    statusBadge = '<span class="badge text-bg-warning"><i class="bi bi-exclamation-triangle me-1"></i>Not Verified</span>';
                 } else {
-                    statusBadge = '<span class="badge bg-secondary"><i class="bi bi-x-circle me-1"></i>Not Configured</span>';
+                    statusBadge = '<span class="badge text-bg-secondary"><i class="bi bi-x-circle me-1"></i>Not Configured</span>';
                 }
                 const lastTested = client.last_tested
                     ? `<small class="text-muted">Last tested: ${new Date(client.last_tested).toLocaleString()}</small>` : '';
@@ -4853,11 +4717,11 @@
                                     <button type="submit" class="btn btn-primary btn-sm">
                                         <i class="bi bi-floppy me-1"></i>Save
                                     </button>
-                                    <button type="button" class="btn btn-outline-info btn-sm" onclick="testDownloadClientConnection('${client.type}')">
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="testDownloadClientConnection('${client.type}')">
                                         <i class="bi bi-lightning me-1"></i>Test
                                     </button>
                                     ${client.has_config && !client.is_active ? `
-                                    <button type="button" class="btn btn-outline-success btn-sm" onclick="activateDownloadClient('${client.type}')">
+                                    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="activateDownloadClient('${client.type}')">
                                         <i class="bi bi-broadcast me-1"></i>Set Active
                                     </button>` : ''}
                                     ${client.has_config ? `
@@ -5031,11 +4895,11 @@
             data.indexers.forEach((idx, i) => {
                 window._indexerCache[idx.id] = idx;
                 const statusBadge = idx.is_valid
-                    ? '<span class="badge bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>'
-                    : '<span class="badge bg-secondary">Not Verified</span>';
+                    ? '<span class="badge text-bg-success"><i class="bi bi-check-circle me-1"></i>Connected</span>'
+                    : '<span class="badge text-bg-secondary">Not Verified</span>';
                 const enabledBadge = idx.enabled
-                    ? '<span class="badge bg-info ms-1">Enabled</span>'
-                    : '<span class="badge bg-secondary ms-1">Disabled</span>';
+                    ? '<span class="badge text-bg-info ms-1">Enabled</span>'
+                    : '<span class="badge text-bg-secondary ms-1">Disabled</span>';
                 html += `
                     <div class="list-group-item">
                         <div class="d-flex justify-content-between align-items-center">
@@ -5052,10 +4916,10 @@
                                     onclick="moveIndexer(${idx.id}, 1)" ${i === data.indexers.length - 1 ? 'disabled' : ''}>
                                     <i class="bi bi-arrow-down"></i>
                                 </button>
-                                <button aria-label="Test indexer" title="Test indexer" type="button" class="btn btn-outline-info" onclick="testIndexer(${idx.id})">
+                                <button aria-label="Test indexer" title="Test indexer" type="button" class="btn btn-outline-secondary" onclick="testIndexer(${idx.id})">
                                     <i class="bi bi-lightning"></i>
                                 </button>
-                                <button aria-label="Edit indexer" title="Edit indexer" type="button" class="btn btn-outline-primary" onclick="openIndexerModal(window._indexerCache[${idx.id}])">
+                                <button aria-label="Edit indexer" title="Edit indexer" type="button" class="btn btn-outline-secondary" onclick="openIndexerModal(window._indexerCache[${idx.id}])">
                                     <i class="bi bi-pencil"></i>
                                 </button>
                                 <button aria-label="Delete indexer" title="Delete indexer" type="button" class="btn btn-outline-danger" onclick="deleteIndexer(${idx.id})">
@@ -5312,13 +5176,13 @@
 
                 html += `
                     <div class="accordion-item">
-                        <h2 class="accordion-header" id="heading-lib-${lib.id}">
+                        <h3 class="accordion-header" id="heading-lib-${lib.id}">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
                                     data-bs-target="#collapse-lib-${lib.id}" aria-expanded="false" aria-controls="collapse-lib-${lib.id}">
                                 <strong>${escapeHtml(lib.name)}</strong>
-                                <span class="badge bg-info ms-2">${libraryProviders.length} provider(s)</span>
+                                <span class="badge text-bg-info ms-2">${libraryProviders.length} provider(s)</span>
                             </button>
-                        </h2>
+                        </h3>
                         <div id="collapse-lib-${lib.id}" class="accordion-collapse collapse" aria-labelledby="heading-lib-${lib.id}"
                              data-bs-parent="#libraryProvidersAccordion">
                             <div class="accordion-body">
@@ -5450,12 +5314,8 @@
             if (data.success) {
                 CLU.toast('Library provider settings saved', 'success');
                 btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Saved!';
-                btn.classList.remove('btn-primary');
-                btn.classList.add('btn-success');
                 setTimeout(() => {
                     btn.innerHTML = originalHtml;
-                    btn.classList.remove('btn-success');
-                    btn.classList.add('btn-primary');
                     btn.disabled = false;
                 }, 1500);
             } else {
@@ -5521,7 +5381,7 @@
                 const skippedLabel = sim.status === 'pack_skipped' ? 'PACK SKIPPED' : 'NO PART';
                 const decision = accept ? 'ACCEPT' : (fallback ? 'FALLBACK' : (skipped ? skippedLabel : (sim.status === 'no_results' ? 'NO RESULTS' : 'NO MATCH')));
                 const score = accept ? accept.score : (fallback ? fallback.score : (skipped ? skipped.score : (sim.all_results.length > 0 ? sim.all_results[0].score : '-')));
-                const decisionClass = accept ? 'bg-success text-white' : (fallback ? 'bg-warning text-dark' : (skipped ? 'bg-info text-dark' : 'bg-secondary text-white'));
+                const decisionClass = accept ? 'text-bg-success' : (fallback ? 'text-bg-warning' : (skipped ? 'text-bg-info' : 'text-bg-secondary'));
                 const bestTitle = accept ? accept.result.title : (fallback ? fallback.result.title : (skipped ? skipped.title : '-'));
                 const bestTitleTrunc = bestTitle.length > 50 ? bestTitle.substring(0, 50) + '...' : bestTitle;
                 const allCount = sim.all_results.length;
@@ -5551,13 +5411,56 @@
         }
     }
 
-    // Open the tab named in the URL hash (/config#metadata-providers), so the
-    // Guided Setup can link straight to the full settings for a section.
-    document.addEventListener('DOMContentLoaded', function () {
-        const id = (window.location.hash || '').slice(1);
-        if (!/^[a-z-]+$/.test(id)) return;
-        const tab = document.getElementById(id + '-tab');
-        if (tab && tab.dataset.bsToggle === 'tab') bootstrap.Tab.getOrCreateInstance(tab).show();
-    });
+    // The open tab lives in the URL hash (/config#metadata-providers): the
+    // Guided Setup links straight to a section, and a reload or a shared link
+    // comes back to the tab that was open instead of Libraries.
+    (function () {
+        function showTabFromHash() {
+            const id = (window.location.hash || '').slice(1);
+            if (!/^[a-z-]+$/.test(id)) return;
+            const tab = document.getElementById(id + '-tab');
+            if (tab && tab.dataset.bsToggle === 'tab') bootstrap.Tab.getOrCreateInstance(tab).show();
+        }
+
+        // The hash is also a pane's id, so on a fresh visit the browser
+        // scrolls to the pane and hides the page header and tabs. Keep the
+        // top of the page. A reload is left alone: it restores where the
+        // reader was. The browser keeps re-applying the anchor until the
+        // page has loaded, so the reset runs again at 'load' -- unless the
+        // reader has started scrolling by then, which a slow load allows.
+        let readerScrolled = false;
+        ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (type) {
+            window.addEventListener(type, function () { readerScrolled = true; },
+                { once: true, passive: true });
+        });
+
+        function keepTopOfPage() {
+            if (readerScrolled) return;
+            const nav = performance.getEntriesByType('navigation')[0];
+            if (nav && nav.type === 'reload') return;
+            const id = (window.location.hash || '').slice(1);
+            if (!/^[a-z-]+$/.test(id) || !document.getElementById(id + '-tab')) return;
+            setTimeout(function () { if (!readerScrolled) window.scrollTo(0, 0); }, 0);
+        }
+        window.addEventListener('load', keepTopOfPage);
+
+        document.addEventListener('DOMContentLoaded', function () {
+            showTabFromHash();
+            keepTopOfPage();
+            document.querySelectorAll('#configTabs [data-bs-toggle="tab"]').forEach(function (tab) {
+                tab.addEventListener('shown.bs.tab', function () {
+                    // replaceState: switching tabs should not fill the Back
+                    // button's history, and unlike assigning location.hash
+                    // it does not scroll the page to the pane.
+                    const hash = '#' + tab.id.replace(/-tab$/, '');
+                    if (window.location.hash !== hash) history.replaceState(history.state, '', hash);
+                });
+            });
+        });
+
+        // A link to another tab on this page (/config#database) changes only
+        // the hash, which does not reload the page.
+        window.addEventListener('hashchange', showTabFromHash);
+    })();
 </script>
 {% endblock %}

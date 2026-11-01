@@ -16,8 +16,9 @@ copied below so this script needs no network. Role choices follow the
 Catppuccin style guide: links blue, success green, warnings yellow, errors
 red, information teal, text on an accent fill is base. Bootstrap's
 "primary" has no guide entry; it is mauve, the usual Catppuccin accent.
+Inline code is pink, as in Catppuccin's editor themes.
 
-One deviation, Latte only: green, teal, yellow and blue are too light to read
+One deviation, Latte only: green, teal, yellow, blue and pink are too light to read
 on Latte's near-white base (as low as 2.3:1). Each role colour is darkened
 (HLS lightness, hue kept) until it reaches 4.5:1 on base, mantle and crust --
 the page, cards and headers. Against base, "accent text on the page" and
@@ -81,6 +82,7 @@ ROLES = {
     "danger": "red",
     "link": "blue",
     "link-hover": "sky",
+    "code": "pink",
 }
 # Roles that have an .alert-x / subtle background in Bootstrap.
 ALERT_ROLES = ("primary", "success", "info", "warning", "danger")

@@ -44,6 +44,7 @@
     --ctp-danger-emphasis: #ec9a9b;
     --ctp-link: #8caaee; --ctp-link-rgb: 140, 170, 238;
     --ctp-link-hover: #99d1db; --ctp-link-hover-rgb: 153, 209, 219;
+    --ctp-code: #f4b8e4; --ctp-code-rgb: 244, 184, 228;
     --ctp-muted: var(--ctp-subtext0);
     --ctp-secondary: #51576d; --ctp-secondary-rgb: 81, 87, 109;
 

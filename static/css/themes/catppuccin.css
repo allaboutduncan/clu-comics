@@ -79,7 +79,7 @@
     --bs-heading-color: var(--ctp-text);
     --bs-link-color: var(--ctp-link);          --bs-link-color-rgb: var(--ctp-link-rgb);
     --bs-link-hover-color: var(--ctp-link-hover); --bs-link-hover-color-rgb: var(--ctp-link-hover-rgb);
-    --bs-code-color: var(--ctp-pink);
+    --bs-code-color: var(--ctp-code);
     --bs-highlight-color: var(--ctp-base);
     --bs-highlight-bg: var(--ctp-warning);
 

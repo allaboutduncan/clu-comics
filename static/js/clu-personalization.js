@@ -69,7 +69,7 @@
       let badge = item.querySelector('.dashboard-order-badge');
       if (!badge) {
         badge = document.createElement('span');
-        badge.className = 'badge bg-secondary me-2 dashboard-order-badge';
+        badge.className = 'badge bg-secondary flex-shrink-0 me-2 dashboard-order-badge';
         item
           .querySelector('div')
           .insertBefore(badge, item.querySelector('.form-check-input'));
@@ -77,7 +77,7 @@
       badge.textContent = idx + 1;
 
       const btnGroup = document.createElement('div');
-      btnGroup.className = 'dashboard-btn-group';
+      btnGroup.className = 'dashboard-btn-group d-flex flex-shrink-0';
       if (idx > 0) {
         const upBtn = document.createElement('button');
         upBtn.type = 'button';

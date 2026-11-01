@@ -23,7 +23,7 @@
 {% set _previews = theme_previews|default({}) %}
 <div class="row">
     <div class="col-md-6">
-        <label for="{{ _select_id }}" class="form-label">Bootstrap Theme:</label>
+        <label for="{{ _select_id }}" class="form-label">Bootstrap Theme</label>
         <select class="form-select" id="{{ _select_id }}" name="{{ _select_id }}" data-previews='{{ _previews|tojson }}'>
             {% for theme_id, theme_label in bootswatch_themes %}
             <option value="{{ theme_id }}" {% if _selected == theme_id %}selected{% endif %}>{{ theme_label }}</option>
@@ -34,7 +34,7 @@
         </small>
     </div>
     <div class="col-md-6">
-        <label class="form-label">Theme Preview:</label>
+        <label class="form-label">Theme Preview</label>
         <div class="border rounded p-2 text-center">
             <img id="{{ _img_id }}" src="{{ _previews.get(_selected, '') }}" alt="Theme preview"
                 class="img-fluid rounded" style="max-height: 200px;" onerror="this.src='/static/images/default.png'">
