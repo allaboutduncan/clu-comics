@@ -1,9 +1,10 @@
 /**
  * CLU CBZ Dupe Viewer  –  clu-cbz-dupe.js
  *
- * Read-only, side-by-side comparison of duplicate copies, for deciding which
- * one to keep. A trimmed sibling of clu-cbz-info.js: no editing, no clearing,
- * and only the fields that tell two copies apart.
+ * Side-by-side comparison of duplicate copies, for deciding which one to keep.
+ * A trimmed sibling of clu-cbz-info.js: no editing, no clearing, and only the
+ * fields that tell two copies apart. The one change it can start is a rename,
+ * and even that is the page's request (options.onRename), not this viewer's.
  * Provides: CLU.showCBZDupe
  *
  * Depends on: clu-utils.js (CLU.escapeHtml, CLU.formatFileSize)
@@ -12,7 +13,9 @@
  *   files    – 1 or 2 objects {path, name, folder, size, modified_at, status,
  *              provider}; two are shown side by side with differences tinted
  *   options  – { keepIndex: column currently chosen as the keeper (or -1),
- *                onKeep(index): called by "Keep this one"; no buttons without it }
+ *                onKeep(index): called by "Keep this one"; no buttons without it,
+ *                onRename(index, newName): renames that copy and returns a
+ *                  Promise of {ok, error, path, name}; no rename button without it }
  *
  * DOM contract:
  *   #cbzDupeModal, #cbzDupeModalLabel, #cbzDupeContent  (modal_cbz_dupe.html)
@@ -30,6 +33,9 @@
   var _token = 0;          // bumped per open; stale responses are dropped
   var _cols = [];          // per column: { path, count, page }
   var _onKeep = null;
+  var _onRename = null;
+  var _files = [];         // what is shown, kept so a rename can re-render it
+  var _results = [];
 
   // Same keys and labels as the matching groups in clu-cbz-info.js.
   var _metaSections = [
@@ -140,11 +146,21 @@
     return '';
   }
 
+  function _nameHtml(f, i) {
+    var html = '<div class="d-flex align-items-start gap-1">' +
+      '<div class="fw-bold text-break flex-grow-1">' + _esc(f.name) + '</div>';
+    if (_onRename) {
+      html += '<button type="button" class="btn btn-sm btn-link p-0 ms-1" data-dupe-act="rename" data-col="' + i + '" ' +
+        'title="Rename this file" aria-label="Rename this file"><i class="bi bi-pencil"></i></button>';
+    }
+    return html + '</div>';
+  }
+
   function _renderColumn(f, r, i, total, keepIndex) {
     var colClass = total > 1 ? 'col-md-6' : 'col-md-8 col-lg-6 mx-auto';
     var html = '<div class="' + colClass + ' mb-3"><div class="card h-100"><div class="card-body d-flex flex-column">';
     if (total > 1) html += '<div class="small text-muted text-uppercase">' + _letter(i) + '</div>';
-    html += '<div class="fw-bold text-break">' + _esc(f.name) + '</div>' +
+    html += '<div id="cbzDupeName' + i + '">' + _nameHtml(f, i) + '</div>' +
       '<div class="small text-muted text-break mb-1">' + _esc(f.folder) + '</div>' +
       '<div class="mb-2">' + _badges(f, i, keepIndex) + '</div>' +
       _columnNote(r);
@@ -337,6 +353,106 @@
       head + '<tbody>' + body + '</tbody></table></div>';
   }
 
+  // ── Rename (one column at a time) ─────────────────────────────────────────
+
+  function _splitExt(name) {
+    var dot = name.lastIndexOf('.');
+    return dot > 0 ? [name.substring(0, dot), name.substring(dot)] : [name, ''];
+  }
+
+  // Built with DOM calls, not markup: the value is a filename the user typed.
+  function _openRename(ci) {
+    var holder = document.getElementById('cbzDupeName' + ci);
+    var f = _files[ci];
+    if (!holder || !f || holder.querySelector('input')) return;
+    var parts = _splitExt(f.name || '');
+
+    var group = document.createElement('div');
+    group.className = 'input-group input-group-sm has-validation';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control';
+    input.value = parts[0];
+    input.setAttribute('aria-label', 'New file name');
+    group.appendChild(input);
+    if (parts[1]) {
+      var ext = document.createElement('span');
+      ext.className = 'input-group-text';
+      ext.textContent = parts[1];
+      group.appendChild(ext);
+    }
+    [['rename-save', 'btn btn-primary', 'Save'],
+     ['rename-cancel', 'btn btn-outline-secondary', 'Cancel']].forEach(function (b) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = b[1];
+      btn.setAttribute('data-dupe-act', b[0]);
+      btn.setAttribute('data-col', String(ci));
+      btn.textContent = b[2];
+      group.appendChild(btn);
+    });
+    var feedback = document.createElement('div');
+    feedback.className = 'invalid-feedback';
+    group.appendChild(feedback);
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        _saveRename(ci);
+      } else if (e.key === 'Escape') {
+        // Keep Bootstrap from closing the whole modal on the same key.
+        e.preventDefault();
+        e.stopPropagation();
+        _closeRename(ci);
+      }
+    });
+
+    holder.innerHTML = '';
+    holder.appendChild(group);
+    input.focus();
+    input.select();
+  }
+
+  function _closeRename(ci) {
+    var holder = document.getElementById('cbzDupeName' + ci);
+    if (holder && _files[ci]) holder.innerHTML = _nameHtml(_files[ci], ci);
+  }
+
+  function _saveRename(ci) {
+    var holder = document.getElementById('cbzDupeName' + ci);
+    var input = holder && holder.querySelector('input');
+    if (!input || typeof _onRename !== 'function') return;
+    var name = input.value.trim() + _splitExt(_files[ci].name || '')[1];
+    if (name === _files[ci].name) { _closeRename(ci); return; }
+    var controls = holder.querySelectorAll('input, button');
+    var feedback = holder.querySelector('.invalid-feedback');
+    function busy(on) { controls.forEach(function (c) { c.disabled = on; }); }
+    function fail(msg) {
+      busy(false);
+      input.classList.add('is-invalid');
+      if (feedback) feedback.textContent = msg;
+      input.focus();
+    }
+    busy(true);
+    input.classList.remove('is-invalid');
+    var token = _token;
+    Promise.resolve(_onRename(ci, name)).then(function (res) {
+      if (token !== _token) return;   // the viewer closed or moved on
+      res = res || {};
+      if (!res.ok) { fail(res.error || 'Could not rename the file.'); return; }
+      _files[ci].name = res.name || name;
+      if (res.path) {
+        _files[ci].path = res.path;
+        if (_cols[ci]) _cols[ci].path = res.path;
+      }
+      _closeRename(ci);
+      var table = document.getElementById('cbzDupeTable');
+      if (table) table.innerHTML = _renderTable(_files, _results);
+    }).catch(function () {
+      if (token === _token) fail('Could not reach the server.');
+    });
+  }
+
   // ── Page viewer (one per column) ──────────────────────────────────────────
 
   function _loadPage(ci, page) {
@@ -396,6 +512,9 @@
     if (act === 'prev') _step(ci, -1);
     else if (act === 'next') _step(ci, 1);
     else if (act === 'keep' && typeof _onKeep === 'function') _onKeep(ci);
+    else if (act === 'rename') _openRename(ci);
+    else if (act === 'rename-save') _saveRename(ci);
+    else if (act === 'rename-cancel') _closeRename(ci);
   }
 
   // ── showCBZDupe ───────────────────────────────────────────────────────────
@@ -410,6 +529,11 @@
     var token = ++_token;
     _cols = [];
     _onKeep = typeof options.onKeep === 'function' ? options.onKeep : null;
+    _onRename = typeof options.onRename === 'function' ? options.onRename : null;
+    // Copies, so a rename shown here never edits the caller's objects behind its back.
+    files = files.map(function (f) { return Object.assign({}, f); });
+    _files = files;
+    _results = [];
     var keepIndex = typeof options.keepIndex === 'number' ? options.keepIndex : -1;
 
     var title = document.getElementById('cbzDupeModalLabel');
@@ -426,6 +550,7 @@
 
     Promise.all(files.map(_loadFile)).then(function (results) {
       if (token !== _token) return;   // reopened on another group meanwhile
+      _results = results;
       _cols = files.map(function (f, i) {
         var count = results[i].info ? (results[i].info.page_count || 0) : 0;
         return { path: f.path, count: count, page: 0 };
@@ -435,7 +560,7 @@
         '<div class="row">' + files.map(function (f, i) {
           return _renderColumn(f, results[i], i, files.length, keepIndex);
         }).join('') + '</div>' +
-        _renderTable(files, results);
+        '<div id="cbzDupeTable">' + _renderTable(files, results) + '</div>';
 
       _cols.forEach(function (c, i) { if (c.count > 0) _loadPage(i, 0); });
     }).catch(function (err) {
@@ -458,6 +583,9 @@
         _token++;      // drop any page or metadata still loading
         _cols = [];
         _onKeep = null;
+        _onRename = null;
+        _files = [];
+        _results = [];
       });
     }
     var content = document.getElementById('cbzDupeContent');

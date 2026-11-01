@@ -339,6 +339,20 @@ Things that look arbitrary and are not:
   recounts, so a group that still exists comes back after the next scan. The
   cut-off is the scan's **start**: a dismissal made while a scan is running
   waits for the next one.
+- **Rename from the compare view is for likely groups only** (#691,
+  `POST /api/problem-files/duplicates/rename`). Two different comics whose names
+  collide — an annual filed as `Wonder Woman 005 (1996)` — are resolved by the
+  right name, because groups are re-derived from `name_key`/`issue_stem` on every
+  load; an exact group is identical bytes and no rename changes that.
+  `validate_member_rename` requires the path to be a member *now*, keeps the
+  folder and the extension, and **refuses** a bad name (hostile chars, leading
+  `.`/`_`, which `is_hidden` would drop) rather than cleaning it — it is what the
+  user typed. The rename itself is `routes.files.rename_path`, the `/rename` body,
+  so the two cannot drift. `follow_member_rename` carries the `file_health` row:
+  `os.rename` keeps `(size, mtime)` so the row is still trusted, and without it a
+  renamed member of an exact group would drop out until the next scan and look
+  resolved. The viewer (`clu-cbz-dupe.js`) only draws the editor; the request is
+  the page's `onRename`, and `TestCompareViewer.test_is_read_only` keeps it so.
 - **`resolve_group` re-derives the group and validates every path** against it,
   refuses the keeper in the trash list and protected paths, and goes through
   `move_to_trash` + `forget_deleted_paths` (never a raw index delete).
