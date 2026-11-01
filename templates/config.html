@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% from 'partials/page_header.html' import page_header %}
+{% from 'partials/settings_save_bar.html' import settings_save_bar %}
 
 {% block title %}CLU: Settings Page{% endblock %}
 
@@ -59,51 +60,14 @@
 
     /* The tabs stay on one line and scroll sideways when they do not fit,
        instead of wrapping into a block that fills a phone's first screen.
-       clu-filter-scroll (clu-page.js) fades the edge with more to see and
-       keeps the active tab in view; the masks are repeated here because the
-       shared ones apply only below 768px and the tabs overflow a tablet too. */
-    .clu-settings-tabs {
-        --clu-filter-fade: 2rem;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        overflow-y: hidden;
-        overscroll-behavior-x: contain;
-        scrollbar-width: none;
-        scroll-padding-inline: var(--clu-filter-fade);
-    }
-
-    .clu-settings-tabs::-webkit-scrollbar {
-        display: none;
-    }
-
-    .clu-settings-tabs .nav-item {
-        flex-shrink: 0;
-    }
-
-    .clu-settings-tabs .nav-link {
-        white-space: nowrap;
-    }
-
-    /* The shared phone rule pads the row for the focus ring; the bottom must
-       stay flush or the active tab no longer sits on the tab rule. */
+       clu-filter-scroll-always (clu-page.css) does that at every width,
+       since the tabs overflow a tablet too, and clu-page.js fades the edge
+       with more to see and keeps the active tab in view. The row is padded
+       for the focus ring at every width, but its bottom stays flush or the
+       active tab no longer sits on the tab rule. */
     .clu-settings-tabs.clu-filter-scroll {
         padding: 0.25rem 0.25rem 0;
         margin: -0.25rem -0.25rem 1.5rem;
-    }
-
-    .clu-settings-tabs[data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
-        mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
-    }
-
-    .clu-settings-tabs[data-more-start] {
-        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
-        mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
-    }
-
-    .clu-settings-tabs[data-more-start][data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
-        mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
     }
 </style>
 
@@ -128,7 +92,7 @@
     <div>
 
         <!-- Navigation Tabs -->
-        <ul class="nav nav-tabs clu-settings-tabs clu-filter-scroll" id="configTabs" role="tablist">
+        <ul class="nav nav-tabs clu-settings-tabs clu-filter-scroll clu-filter-scroll-always" id="configTabs" role="tablist">
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="libraries-tab" data-bs-toggle="tab" data-bs-target="#libraries"
                     type="button" role="tab" aria-controls="libraries" aria-selected="true">Libraries</button>
@@ -825,7 +789,7 @@
                         </div>
                     </div>
 
-                    <h2 class="h4">Metadata Match Validation</h2>
+                    <h3 class="h5">Metadata Match Validation</h3>
                     <p class="text-muted">Cross-check the date of a matched issue against the year in the
                         filename, so a wrong series match is caught instead of being written into the file.
                         Applies to automatic lookups only &mdash; a series you pick yourself is never
@@ -859,11 +823,7 @@
                     </div>
                 </div>
 
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="saveFileProcessingBtn" onclick="saveFileProcessingSettings()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
-                </div>
+                {{ settings_save_bar('saveFileProcessingBtn', 'saveFileProcessingSettings') }}
 
             </div>
 
@@ -1262,11 +1222,7 @@
                     </div>
                 </div>
 
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="saveDownloadApiBtn" onclick="saveDownloadApiSettings()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
-                </div>
+                {{ settings_save_bar('saveDownloadApiBtn', 'saveDownloadApiSettings') }}
 
             </div>
 
@@ -1313,17 +1269,16 @@
                     <p class="text-muted">Which provider fills <code>series.json</code> (the title, status and summary
                         Komga reads). <strong>Auto</strong> follows each library's provider order above. If the chosen
                         provider has no description, the next one supplies it.</p>
-                    <select id="seriesJsonProviderPref" class="form-select" style="max-width: 360px;" aria-label="series.json provider">
-                        <option value="auto">Auto (library provider order)</option>
-                        <option value="metron">Metron first</option>
-                        <option value="comicvine">ComicVine first</option>
-                    </select>
-                </div>
-
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="saveMetadataProvidersBtn" onclick="saveSeriesJsonProvider()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <select id="seriesJsonProviderPref" class="form-select" style="max-width: 360px;" aria-label="series.json provider">
+                            <option value="auto">Auto (library provider order)</option>
+                            <option value="metron">Metron first</option>
+                            <option value="comicvine">ComicVine first</option>
+                        </select>
+                        <button type="button" class="btn btn-primary btn-sm" id="saveSeriesJsonProviderBtn" onclick="saveSeriesJsonProvider()">
+                            <i class="bi bi-floppy me-1" aria-hidden="true"></i>Save
+                        </button>
+                    </div>
                 </div>
 
             </div>
@@ -1626,11 +1581,7 @@
                     </div>
                 </div>
 
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="saveSystemPerfBtn" onclick="saveSystemPerfSettings()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
-                </div>
+                {{ settings_save_bar('saveSystemPerfBtn', 'saveSystemPerfSettings') }}
 
             </div>
 
@@ -1887,15 +1838,12 @@
                     </div>
                 </div>
 
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="saveNotificationsBtn" onclick="saveNotificationSettings()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
+                {% call settings_save_bar('saveNotificationsBtn', 'saveNotificationSettings') %}
                     <button type="button" class="btn btn-outline-secondary" id="testNotificationBtn"
                         onclick="sendTestNotification()">
                         <i class="bi bi-send me-2" aria-hidden="true"></i>Send Test Notification
                     </button>
-                </div>
+                {% endcall %}
             </div>
 
             <!-- ========================================== -->
@@ -2104,11 +2052,7 @@
                     </div>
                 </div>
 
-                <div class="clu-settings-save">
-                    <button type="button" class="btn btn-primary" id="savePersonalizationBtn" onclick="savePersonalizationSettings()">
-                        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
-                    </button>
-                </div>
+                {{ settings_save_bar('savePersonalizationBtn', 'savePersonalizationSettings') }}
 
             </div>
         </div>
@@ -2287,6 +2231,8 @@
     // =========================================
 
     // Posts one form. Resolves to null when saved, or to the error message.
+    // An expired session answers a JSON 401, and a proxy in front of CLU can
+    // answer with an HTML error page, so neither reaches response.json().
     async function postSettings(url, data) {
         try {
             const response = await fetch(url, {
@@ -2294,8 +2240,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
+            if (response.status === 401) return 'your session has expired, sign in again';
+            const type = response.headers.get('Content-Type') || '';
+            if (!type.includes('application/json')) {
+                return 'the server answered ' + response.status + ' ' + (response.statusText || '');
+            }
             const result = await response.json();
-            return result.success ? null : (result.error || 'Failed to save');
+            if (result.success) return null;
+            return result.error || (response.ok ? 'Failed to save' : 'the server answered ' + response.status);
         } catch (e) {
             return e.message;
         }
@@ -2327,35 +2279,54 @@
         return failed.length === 0;
     }
 
-    // What Personalization had on load, to tell which saves need a follow-up.
-    const personalizationLoaded = {
-        pageWidth: document.querySelector('input[name="sitePageWidth"]:checked')?.value,
-        thumbnailStyle: document.querySelector('input[name="folderThumbnailStyle"]:checked')?.value
+    // Personalization's sections, each with its own endpoint. Save sends only
+    // the sections whose form changed since the page loaded or last saved:
+    // saving the default theme, page width or dashboard layout also clears
+    // the owner's own choice of it (so the new default shows), and posting
+    // those unchanged threw away an owner's personal theme whenever they
+    // saved the recommendation model. `saved` is each section's last payload,
+    // taken once the dashboard editor has rendered (snapshotPersonalization).
+    const personalizationSections = {
+        theme: { label: 'Default Theme', url: '/api/config/styling', read: readStylingSettings },
+        pageWidth: { label: 'Default Page Width', url: '/api/config/page-width', read: readPageWidthSettings },
+        dashboard: { label: 'Default Dashboard Layout', url: '/api/config/dashboard', read: readDashboardSettings },
+        thumbnails: { label: 'Folder Thumbnail Style', url: '/api/config/thumbnails', read: readThumbnailStyleSettings },
+        recommendations: { label: 'Recommendation Service', url: '/api/config/recommendations', read: readRecommendationSettings }
     };
 
+    function snapshotPersonalization() {
+        Object.values(personalizationSections).forEach(s => { s.saved = JSON.stringify(s.read()); });
+    }
+
     async function savePersonalizationSettings() {
-        const pageWidth = document.querySelector('input[name="sitePageWidth"]:checked')?.value;
-        const thumbnailStyle = document.querySelector('input[name="folderThumbnailStyle"]:checked')?.value;
-        const widthChanged = pageWidth !== personalizationLoaded.pageWidth;
+        const changed = Object.values(personalizationSections)
+            .map(section => ({ section, json: JSON.stringify(section.read()) }))
+            .filter(c => c.json !== c.section.saved);
+        if (!changed.length) {
+            CLU.toast('No changes to save', 'info');
+            return;
+        }
+        const has = section => changed.some(c => c.section === section);
+        const { pageWidth, thumbnails } = personalizationSections;
 
         let message = 'Personalization settings saved';
-        if (thumbnailStyle !== personalizationLoaded.thumbnailStyle) {
-            message += '. Existing folder thumbnails keep their look until regenerated';
-        }
-        if (widthChanged) message += '. Reloading for the new page width…';
+        if (has(thumbnails)) message += '. Existing folder thumbnails keep their look until regenerated';
+        if (has(pageWidth)) message += '. Reloading for the new page width…';
 
-        const saved = await runTabSave('savePersonalizationBtn', [
-            ['Default Theme', saveStylingSettings],
-            ['Default Page Width', savePageWidthSettings],
-            ['Default Dashboard Layout', saveDashboardSettings],
-            ['Folder Thumbnail Style', saveThumbnailStyleSettings],
-            ['Recommendation Service', saveRecommendationSettings]
-        ], message);
+        // Each section is marked saved as it succeeds, so after a partial
+        // failure the next Save re-sends only what failed.
+        const saved = await runTabSave('savePersonalizationBtn', changed.map(c => [c.section.label, async () => {
+            const error = await postSettings(c.section.url, JSON.parse(c.json));
+            if (!error) c.section.saved = c.json;
+            return error;
+        }]), message);
 
-        if (saved) {
-            personalizationLoaded.thumbnailStyle = thumbnailStyle;
-            if (widthChanged) setTimeout(() => window.location.reload(), 600);
-        }
+        // Page width is rendered server-side. A reload after a partial
+        // failure would wipe the error and the edits that did not save, so
+        // then the new width waits for the next page load.
+        const widthSaved = has(pageWidth) && changed.find(c => c.section === pageWidth).json === pageWidth.saved;
+        if (widthSaved && saved) setTimeout(() => window.location.reload(), 600);
+        else if (widthSaved) CLU.toast('The new page width shows from the next page load', 'info');
     }
 
     // =========================================
@@ -2608,27 +2579,25 @@
         ], 'System and performance settings saved');
     }
 
-    function saveStylingSettings() {
-        const data = {
-            bootstrapTheme: document.getElementById('bootstrapTheme')?.value || 'darkly'
-        };
-        return postSettings('/api/config/styling', data);
+    // Readers for the Personalization sections (personalizationSections).
+
+    function readStylingSettings() {
+        return { bootstrapTheme: document.getElementById('bootstrapTheme')?.value || 'darkly' };
     }
 
     // The width is applied server-side, so a change shows after a reload.
-    function savePageWidthSettings() {
+    function readPageWidthSettings() {
         const selected = document.querySelector('input[name="sitePageWidth"]:checked');
-        return postSettings('/api/config/page-width', { pageWidth: selected ? selected.value : 'auto' });
+        return { pageWidth: selected ? selected.value : 'auto' };
     }
 
-    function saveThumbnailStyleSettings() {
+    function readThumbnailStyleSettings() {
         const selected = document.querySelector('input[name="folderThumbnailStyle"]:checked');
-        const data = {
+        return {
             folderThumbnailStyle: selected ? selected.value : 'fanned',
             folderThumbnailNestedOverlay:
                 document.getElementById('folderThumbnailNestedOverlay')?.checked ?? true
         };
-        return postSettings('/api/config/thumbnails', data);
     }
 
     // Regenerate All rebuilds every folder image in every library, so it is
@@ -2667,21 +2636,21 @@
         }
     });
 
-    function saveRecommendationSettings() {
-        const data = {
+    function readRecommendationSettings() {
+        return {
             recEnabled: document.getElementById('recEnabled')?.checked || false,
             recProvider: document.getElementById('recProvider')?.value || 'openai',
             recApiKey: document.getElementById('recApiKey')?.value || '',
             recModel: (document.getElementById('recModel')?.value || '').trim(),
             recBaseUrl: (document.getElementById('recBaseUrl')?.value || '').trim()
         };
-        return postSettings('/api/config/recommendations', data);
     }
 
     // Dashboard reorder/drag-drop lives in static/js/clu-personalization.js so
     // /account can reuse it. Rendered immediately (not on DOMContentLoaded) to
     // match where this script runs in the page.
     CLU.initDashboardEditor('dashboardSectionsList');
+    snapshotPersonalization();
 
     // ---------------------------------------------------------------
     // Notifications (Apprise)
@@ -2735,13 +2704,9 @@
         }
     }
 
-    function saveDashboardSettings() {
+    function readDashboardSettings() {
         const sel = CLU.readDashboardSelection('dashboardSectionsList');
-        const data = {
-            dashboardOrder: sel.order,
-            dashboardHidden: sel.hidden
-        };
-        return postSettings('/api/config/dashboard', data);
+        return { dashboardOrder: sel.order, dashboardHidden: sel.hidden };
     }
 
     document.addEventListener("DOMContentLoaded", function () {
@@ -2991,8 +2956,10 @@
     // Komga Reading Sync Functions
     // =========================================
 
-    // The server Komga had when the page loaded; see saveKomgaConfig.
+    // The server Komga had when the page loaded, and the form as last loaded
+    // or saved; see saveKomgaConfig.
     let komgaLoadedUrl = '';
+    let komgaLoadedForm = null;
 
     function loadKomgaConfig() {
         fetch('/api/komga/config', {
@@ -3021,6 +2988,7 @@
                     // Show weekday selector if weekly
                     document.getElementById('komgaWeekdayGroup').style.display =
                         cfg.frequency === 'weekly' ? 'block' : 'none';
+                    komgaLoadedForm = JSON.stringify(readKomgaForm());
 
                     // Update status badge
                     updateKomgaStatusBadge(cfg);
@@ -3110,25 +3078,37 @@
             });
     }
 
-    // A step of the Download tab's Save. Komga's save always switches sync on,
-    // so a form that has never had a server is left unwritten.
-    async function saveKomgaConfig() {
-        if (!document.getElementById('komgaServerUrl').value.trim() && !komgaLoadedUrl) return null;
-
-        const data = {
+    function readKomgaForm() {
+        return {
             server_url: document.getElementById('komgaServerUrl').value.trim(),
             username: document.getElementById('komgaUsername').value.trim(),
             password: document.getElementById('komgaPassword').value || '***',
             library_mappings: collectKomgaLibraryMappings(),
-            enabled: true,
             frequency: document.getElementById('komgaSyncFrequency').value,
             time: CLU.localToUtc(document.getElementById('komgaSyncTime').value,
                 CLU.tzOffsetHours()),
             weekday: parseInt(document.getElementById('komgaSyncWeekday').value)
         };
+    }
 
+    function komgaFormChanged() {
+        return JSON.stringify(readKomgaForm()) !== komgaLoadedForm;
+    }
+
+    // A step of the Download tab's Save, and run by Test Connection. Komga's
+    // save always switches sync on and reschedules it, so it is sent only
+    // when its own fields changed, and a form that has never had a server is
+    // left unwritten.
+    async function saveKomgaConfig() {
+        if (!document.getElementById('komgaServerUrl').value.trim() && !komgaLoadedUrl) return null;
+        if (!komgaFormChanged()) return null;
+
+        const data = Object.assign(readKomgaForm(), { enabled: true });
         const error = await postSettings('/api/komga/config', data);
-        if (!error) loadKomgaConfig();
+        if (!error) {
+            komgaLoadedForm = JSON.stringify(readKomgaForm());
+            loadKomgaConfig();
+        }
         return error;
     }
 
@@ -3139,6 +3119,17 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Testing...';
 
         try {
+            // The test reads the stored config, so what is in the form is
+            // saved first -- Komga alone, not the rest of the tab.
+            if (komgaFormChanged()) {
+                const saveError = await saveKomgaConfig();
+                if (saveError) {
+                    CLU.toast('Could not save Komga: ' + saveError, 'error');
+                    btn.innerHTML = originalHtml;
+                    btn.disabled = false;
+                    return;
+                }
+            }
             const response = await fetch('/api/komga/test', { method: 'POST' });
             const data = await response.json();
 
@@ -4016,10 +4007,10 @@
 
     async function saveSeriesJsonProvider() {
         const select = document.getElementById('seriesJsonProviderPref');
-        await runTabSave('saveMetadataProvidersBtn', [
+        await runTabSave('saveSeriesJsonProviderBtn', [
             ['series.json provider', () => postSettings('/api/preferences/series_json_provider',
                 { value: select.value, category: 'metadata' })]
-        ], 'Metadata provider settings saved');
+        ], 'series.json provider saved');
     }
 
     document.addEventListener('DOMContentLoaded', loadSeriesJsonProvider);
@@ -5434,17 +5425,28 @@
         // The hash is also a pane's id, so on a fresh visit the browser
         // scrolls to the pane and hides the page header and tabs. Keep the
         // top of the page. A reload is left alone: it restores where the
-        // reader was.
-        window.addEventListener('load', function () {
+        // reader was. The browser keeps re-applying the anchor until the
+        // page has loaded, so the reset runs again at 'load' -- unless the
+        // reader has started scrolling by then, which a slow load allows.
+        let readerScrolled = false;
+        ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (type) {
+            window.addEventListener(type, function () { readerScrolled = true; },
+                { once: true, passive: true });
+        });
+
+        function keepTopOfPage() {
+            if (readerScrolled) return;
             const nav = performance.getEntriesByType('navigation')[0];
             if (nav && nav.type === 'reload') return;
             const id = (window.location.hash || '').slice(1);
             if (!/^[a-z-]+$/.test(id) || !document.getElementById(id + '-tab')) return;
-            setTimeout(function () { window.scrollTo(0, 0); }, 0);
-        });
+            setTimeout(function () { if (!readerScrolled) window.scrollTo(0, 0); }, 0);
+        }
+        window.addEventListener('load', keepTopOfPage);
 
         document.addEventListener('DOMContentLoaded', function () {
             showTabFromHash();
+            keepTopOfPage();
             document.querySelectorAll('#configTabs [data-bs-toggle="tab"]').forEach(function (tab) {
                 tab.addEventListener('shown.bs.tab', function () {
                     // replaceState: switching tabs should not fill the Back

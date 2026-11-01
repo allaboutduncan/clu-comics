@@ -1,0 +1,14 @@
+{#
+  A settings tab's one Save: last in the tab, sticky at the bottom of the
+  window (.clu-settings-save in config.html). `handler` is the name of the
+  tab's save function, which passes `button_id` to runTabSave for its spinner.
+  Called with {% call %}, the caller's buttons follow Save in the bar.
+#}
+{% macro settings_save_bar(button_id, handler) %}
+<div class="clu-settings-save">
+    <button type="button" class="btn btn-primary" id="{{ button_id }}" onclick="{{ handler }}()">
+        <i class="bi bi-floppy me-2" aria-hidden="true"></i>Save
+    </button>
+    {%- if caller is defined %}{{ caller() }}{% endif %}
+</div>
+{% endmacro %}

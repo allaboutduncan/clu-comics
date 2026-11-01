@@ -13,8 +13,17 @@ against its source rather than by rendering every tab.
 - The open tab is written to the URL hash, so a reload comes back to it.
 - Every tab that holds settings ends with one sticky Save bar
   (``clu-settings-save``) and has no other Save. Personalization used to have
-  five, Komga and series.json one each inline, and the rest a centred
-  "Save X Settings" button wherever the tab ended.
+  five, Komga one inline, and the rest a centred "Save X Settings" button
+  wherever the tab ended. Metadata Providers is the exception: its credentials
+  and library provider orders are records, each saved in place, so a tab Save
+  there would read as saving them too. Its series.json choice keeps an inline
+  Save beside the select.
+- The bar is one macro (``partials/settings_save_bar.html``), not five copies.
+- A tab Save sends only what it must. Personalization is five sections with
+  five endpoints, sent only when their form changed: saving a site default
+  for the theme, page width or dashboard also clears the owner's own choice.
+  Komga's save switches sync on and reschedules it, so it too goes only when
+  changed.
 - Buttons are primary, danger or outline-secondary: DESIGN.md gives colour on
   a button exactly two meanings.
 - The grey is the header's theme-safe neutral (``.clu-neutral-buttons``), not
@@ -57,6 +66,15 @@ def test_tabs_scroll_instead_of_wrapping(config_html):
     tabs = re.search(r'<ul[^>]*id="configTabs"[^>]*>', config_html).group(0)
     assert "clu-settings-tabs" in tabs
     assert "clu-filter-scroll" in tabs  # edge fade + active tab kept in view
+    assert "clu-filter-scroll-always" in tabs  # the tabs overflow a tablet too
+
+
+def test_tabs_reuse_the_shared_scroller_rules(config_html):
+    # The page used to carry its own copy of clu-page.css's scroll rules and
+    # edge masks, to apply them above 768px; the copies would drift.
+    style = config_html.split("<style>")[1].split("</style>")[0]
+    assert "mask-image" not in style
+    assert "overflow-x" not in style
 
 
 def test_no_heading_skips_from_the_page_title(config_html):
@@ -94,12 +112,11 @@ def test_dashboard_rows_wrap_and_checkboxes_are_labelled(dashboard_editor):
 SETTINGS_TABS = {
     "file-processing": "saveFileProcessingSettings",
     "download-api": "saveDownloadApiSettings",
-    "metadata-providers": "saveSeriesJsonProvider",
     "system-perf": "saveSystemPerfSettings",
     "notifications": "saveNotificationSettings",
     "personalization": "savePersonalizationSettings",
 }
-RECORD_TABS = ("libraries", "download-clients", "database")
+RECORD_TABS = ("libraries", "download-clients", "database", "metadata-providers")
 
 
 def _tab(config_html, tab_id):
@@ -110,19 +127,36 @@ def _tab(config_html, tab_id):
 @pytest.mark.parametrize("tab_id,handler", sorted(SETTINGS_TABS.items()))
 def test_each_settings_tab_has_one_save_bar(config_html, tab_id, handler):
     tab = _tab(config_html, tab_id)
-    assert tab.count('class="clu-settings-save"') == 1
-    bar = tab.split('class="clu-settings-save"')[1]
-    assert f'onclick="{handler}()"' in bar.split("</div>")[0]
+    # The bar is the settings_save_bar macro, used plain or with {% call %}.
+    bars = re.findall(r"settings_save_bar\('(\w+)', '(\w+)'\)", tab)
+    assert len(bars) == 1
+    button_id, bar_handler = bars[0]
+    assert bar_handler == handler
+    # The handler drives that button's spinner.
+    fn = config_html.split(f"async function {handler}()")[1].split("\n    }\n")[0]
+    assert f"runTabSave('{button_id}'" in fn
     # Nothing follows the bar inside the tab, so it is the tab's last word.
-    tail = bar.split("</div>", 1)[1]
+    tail = tab.split("settings_save_bar(")[1]
     assert "clu-settings-panel" not in tail
     # No other Save button anywhere in the tab's markup.
-    assert tab.count("bi-floppy") == 1
+    assert "bi-floppy" not in tab
+    assert "clu-settings-save" not in tab  # only the macro builds the bar
+
+
+def test_save_bar_macro(config_html):
+    macro = (ROOT / "templates" / "partials" / "settings_save_bar.html").read_text(encoding="utf-8")
+    assert '<div class="clu-settings-save">' in macro
+    assert 'id="{{ button_id }}" onclick="{{ handler }}()"' in macro
+    assert macro.count("bi-floppy") == 1
+    assert "if caller is defined %}{{ caller() }}{% endif %}" in macro
+    assert "import settings_save_bar" in config_html
 
 
 @pytest.mark.parametrize("tab_id", RECORD_TABS)
 def test_tabs_of_records_have_no_save_bar(config_html, tab_id):
-    assert "clu-settings-save" not in _tab(config_html, tab_id)
+    tab = _tab(config_html, tab_id)
+    assert "clu-settings-save" not in tab
+    assert "settings_save_bar" not in tab
 
 
 def test_save_bar_sticks_and_is_flat(config_html):
@@ -133,22 +167,107 @@ def test_save_bar_sticks_and_is_flat(config_html):
     assert "shadow" not in rule
 
 
-def test_personalization_saves_every_section_in_one_go(config_html):
-    fn = config_html.split("async function savePersonalizationSettings()")[1].split("\n    }\n")[0]
-    for step in ("saveStylingSettings", "savePageWidthSettings", "saveDashboardSettings",
-                 "saveThumbnailStyleSettings", "saveRecommendationSettings"):
-        assert step in fn
-    # Page width is rendered server-side: reload only when it changed.
-    assert "if (widthChanged) setTimeout(() => window.location.reload()" in fn
+def test_metadata_providers_series_json_saves_in_place(config_html):
+    tab = _tab(config_html, "metadata-providers")
+    panel = tab.split('id="seriesJsonProviderPref"')[1].split("</div>\n                </div>")[0]
+    assert 'onclick="saveSeriesJsonProvider()"' in panel
+    fn = config_html.split("async function saveSeriesJsonProvider()")[1].split("\n    }\n")[0]
+    assert "'series.json provider saved'" in fn  # not "Metadata provider settings"
+
+
+def _personalization_save(config_html):
+    return config_html.split("async function savePersonalizationSettings()")[1].split("\n    }\n")[0]
+
+
+def _personalization_sections(config_html):
+    return config_html.split("const personalizationSections = {")[1].split("\n    };\n")[0]
+
+
+def test_personalization_saves_every_section_from_one_table(config_html):
+    table = _personalization_sections(config_html)
+    for url, reader in (
+        ("/api/config/styling", "readStylingSettings"),
+        ("/api/config/page-width", "readPageWidthSettings"),
+        ("/api/config/dashboard", "readDashboardSettings"),
+        ("/api/config/thumbnails", "readThumbnailStyleSettings"),
+        ("/api/config/recommendations", "readRecommendationSettings"),
+    ):
+        assert f"url: '{url}', read: {reader} }}" in table
+    # The readers only read: posting is the table's job.
+    for reader in ("readStylingSettings", "readPageWidthSettings", "readDashboardSettings",
+                   "readThumbnailStyleSettings", "readRecommendationSettings"):
+        body = config_html.split(f"function {reader}()")[1].split("\n    }\n")[0]
+        assert "postSettings" not in body
+
+
+def test_personalization_sends_only_changed_sections(config_html):
+    """/api/config/styling, page-width and dashboard each delete the owner's own
+    override. Posting them on every Save wiped an owner's personal theme, width
+    and layout when they only changed the recommendation model."""
+    fn = _personalization_save(config_html)
+    assert ".filter(c => c.json !== c.section.saved)" in fn
+    assert "runTabSave('savePersonalizationBtn', changed.map(" in fn
+    # The snapshot is taken once the dashboard editor has rendered.
+    assert ("CLU.initDashboardEditor('dashboardSectionsList');\n"
+            "    snapshotPersonalization();") in config_html
+
+
+def test_personalization_records_each_saved_section(config_html):
+    fn = _personalization_save(config_html)
+    # A partial failure must not leave a saved width looking unsaved, or the
+    # next Save reloads unexpectedly.
+    assert "if (!error) c.section.saved = c.json;" in fn
+    assert "if (widthSaved && saved) setTimeout(() => window.location.reload()" in fn
+    assert "else if (widthSaved) CLU.toast(" in fn
+
+
+def _komga_save(config_html):
+    return config_html.split("async function saveKomgaConfig()")[1].split("\n    }\n")[0]
 
 
 def test_download_save_leaves_an_unconfigured_komga_alone(config_html):
-    fn = config_html.split("async function saveKomgaConfig()")[1].split("\n    }\n")[0]
+    fn = _komga_save(config_html)
     # Its payload says enabled: true, so a blank form must not be posted.
     assert "&& !komgaLoadedUrl) return null" in fn.split("postSettings(")[0]
     assert "komgaLoadedUrl = cfg.server_url" in config_html
     download = config_html.split("async function saveDownloadApiSettings()")[1].split("\n    }\n")[0]
     assert "saveKomgaConfig" in download
+
+
+def test_download_save_leaves_an_unchanged_komga_alone(config_html):
+    """Saving a PixelDrain key must not re-post Komga, reschedule its sync,
+    or fail the tab on a Komga error."""
+    fn = _komga_save(config_html)
+    assert "if (!komgaFormChanged()) return null" in fn.split("postSettings(")[0]
+    assert "komgaLoadedForm = JSON.stringify(readKomgaForm())" in config_html
+
+
+def test_komga_test_saves_komga_first(config_html):
+    """/api/komga/test reads the stored config, and Komga has no Save of its own."""
+    fn = config_html.split("async function testKomgaConnection()")[1]
+    before_test = fn.split("fetch('/api/komga/test'")[0]
+    assert "if (komgaFormChanged())" in before_test
+    assert "await saveKomgaConfig()" in before_test
+
+
+def test_save_errors_do_not_parse_html_as_json(config_html):
+    fn = config_html.split("async function postSettings(url, data)")[1].split("\n    }\n")[0]
+    before_parse = fn.split("response.json()")[0]
+    assert "response.status === 401" in before_parse
+    assert "includes('application/json')" in before_parse
+
+
+def test_tab_hash_scroll_reset_yields_to_the_reader(config_html):
+    fn = config_html.split("function keepTopOfPage()")[1].split("\n        }\n")[0]
+    assert fn.lstrip(" {\n").startswith("if (readerScrolled) return;")
+    assert "window.addEventListener('load', keepTopOfPage)" in config_html
+
+
+def test_sub_sections_inside_a_panel_are_h3(config_html):
+    # Each panel opens with its one h2; anything after it is a sub-section.
+    panels = config_html.split('class="clu-settings-panel')[1:]
+    for panel in panels:
+        assert panel.count("<h2") <= 1, panel[:200]
 
 
 def test_buttons_are_primary_danger_or_neutral(config_html):

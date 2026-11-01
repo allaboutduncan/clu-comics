@@ -244,7 +244,8 @@ def test_switch_is_on_the_tab_whose_save_posts_it(config_html):
     tab = config_html.split('id="download-api" role="tabpanel"')[1]
     tab = tab.split('role="tabpanel"')[0]
     assert 'id="downloadPacks"' in tab
-    assert "saveDownloadApiSettings()" in tab
+    # The tab's Save bar (partials/settings_save_bar.html) names its handler.
+    assert "settings_save_bar('saveDownloadApiBtn', 'saveDownloadApiSettings')" in tab
 
 
 def test_switch_is_collected_into_the_save_payload(config_html):

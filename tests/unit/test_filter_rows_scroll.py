@@ -52,6 +52,20 @@ def test_the_scroller_is_phone_only_and_beats_flex_wrap():
     assert "overflow-x: auto" in body
 
 
+def test_one_copy_of_the_edge_fade_serves_every_width():
+    # App Settings' tabs scroll at every width (.clu-filter-scroll-always) and
+    # once carried their own copy of these masks; the copies would drift.
+    css = _read("static/css/clu-page.css")
+    fade = re.findall(r"^\s*mask-image: linear-gradient\(to right, transparent, #000 var\(--clu-filter-fade\)\);",
+                      css, re.M)
+    assert len(fade) == 1
+    phone = re.search(r"@media \(max-width: 767\.98px\) \{(.*?)\n\}", css[css.index(".clu-filter-scroll") - 600:], re.S)
+    assert "mask-image" not in phone.group(1)  # the fade needs no breakpoint
+    always = re.search(r"^\.clu-filter-scroll-always \{(.*?)\}", css, re.S | re.M)
+    assert always and "flex-wrap: nowrap !important" in always.group(1)
+    assert "overflow-x: auto" in always.group(1)
+
+
 def test_letter_bars_wrap_above_the_phone_breakpoint():
     # A global nowrap + overflow-x on .clu-letter-bar made File Manager's
     # half-width panels scroll on a desktop instead of taking a second row.

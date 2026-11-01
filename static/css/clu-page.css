@@ -443,46 +443,64 @@ a.clu-stat:focus-visible .clu-stat-value {
    keep to one line and scroll sideways, as /collection's letter bar does,
    instead of wrapping into a block that pushes the results down a screen.
    clu-page.js fades whichever edge has more to scroll to and keeps the active
-   choice in view. Wider screens wrap as before. */
+   choice in view. Wider screens wrap as before, unless the row also carries
+   .clu-filter-scroll-always (App Settings' tabs, which overflow a tablet). */
 @media (max-width: 767.98px) {
     .clu-filter-scroll {
-        --clu-filter-fade: 2rem;
         flex-wrap: nowrap !important;
         overflow-x: auto;
         overflow-y: hidden;
-        overscroll-behavior-x: contain;
         -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        /* Focus scrolling and the active-choice reveal stop clear of the fade. */
-        scroll-padding-inline: var(--clu-filter-fade);
         /* Room for the focus ring, which the overflow would clip. */
         padding: 0.25rem;
         margin: -0.25rem;
-    }
-
-    .clu-filter-scroll::-webkit-scrollbar {
-        display: none;
     }
 
     .clu-filter-scroll > * {
         flex-shrink: 0;
         white-space: nowrap;
     }
+}
 
-    .clu-filter-scroll[data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
-        mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
-    }
+.clu-filter-scroll-always {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
 
-    .clu-filter-scroll[data-more-start] {
-        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
-        mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
-    }
+.clu-filter-scroll-always > * {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
 
-    .clu-filter-scroll[data-more-start][data-more-end] {
-        -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
-        mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
-    }
+/* The rest needs no breakpoint: a row that wraps is not a scroll container
+   and clu-page.js marks an edge only when the row really overflows, so these
+   do nothing until one of the rules above makes the row scroll. */
+.clu-filter-scroll {
+    --clu-filter-fade: 2rem;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    /* Focus scrolling and the active-choice reveal stop clear of the fade. */
+    scroll-padding-inline: var(--clu-filter-fade);
+}
+
+.clu-filter-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.clu-filter-scroll[data-more-end] {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - var(--clu-filter-fade)), transparent);
+}
+
+.clu-filter-scroll[data-more-start] {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
+    mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade));
+}
+
+.clu-filter-scroll[data-more-start][data-more-end] {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--clu-filter-fade), #000 calc(100% - var(--clu-filter-fade)), transparent);
 }
 
 /* ---- Filters, search and pagers (partials/filters.html, clu-filters.js) ----
