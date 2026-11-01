@@ -890,35 +890,47 @@ def check_missing_files():
 
 @files_bp.route('/rename', methods=['POST'])
 def rename():
-    from app import update_index_on_move
-
     data = request.get_json()
     old_path = data.get('old')
     new_path = data.get('new')
-
-    app_logger.info(f"Renaming: {old_path} to {new_path}")
 
     # Validate input
     if not old_path or not new_path:
         return jsonify({"error": "Missing old or new path"}), 400
 
+    payload, status = rename_path(old_path, new_path)
+    return jsonify(payload), status
+
+
+def rename_path(old_path, new_path):
+    """Rename one file or folder and follow it in the index.
+
+    The body of ``/rename``, shared with the duplicate review page's rename
+    (``routes/library_health.py``) so the two cannot drift. Returns
+    ``(payload, status)``; a refused rename because the destination exists is
+    the only 400.
+    """
+    from app import update_index_on_move
+
+    app_logger.info(f"Renaming: {old_path} to {new_path}")
+
     refusal = file_op_refusal(old_path, new_path)
     if refusal:
-        return jsonify({"error": refusal[0]}), refusal[1]
+        return {"error": refusal[0]}, refusal[1]
 
     # Check if the old path exists
     if not os.path.exists(old_path):
-        return jsonify({"error": "Source file or directory does not exist"}), 404
+        return {"error": "Source file or directory does not exist"}, 404
 
     # Check if trying to rename critical folders
     if is_critical_path(old_path):
         app_logger.error(f"Attempted to rename critical folder: {old_path}")
-        return jsonify({"error": get_critical_path_error_message(old_path, "rename")}), 403
+        return {"error": get_critical_path_error_message(old_path, "rename")}, 403
 
     # Check if new path would be a critical folder
     if is_critical_path(new_path):
         app_logger.error(f"Attempted to rename to critical folder location: {new_path}")
-        return jsonify({"error": get_critical_path_error_message(new_path, "rename to")}), 403
+        return {"error": get_critical_path_error_message(new_path, "rename to")}, 403
 
     # Check if the new path already exists to avoid overwriting
     # Allow case-only changes (e.g., "file.txt" -> "File.txt") on case-insensitive filesystems
@@ -926,11 +938,11 @@ def rename():
         # Check if this is a case-only rename by checking if they're the same file
         try:
             if not os.path.samefile(old_path, new_path):
-                return jsonify({"error": "Destination already exists"}), 400
+                return {"error": "Destination already exists"}, 400
         except (OSError, ValueError):
             # If samefile fails, fall back to normcase comparison
             if os.path.normcase(os.path.abspath(old_path)) != os.path.normcase(os.path.abspath(new_path)):
-                return jsonify({"error": "Destination already exists"}), 400
+                return {"error": "Destination already exists"}, 400
 
     try:
         os.rename(old_path, new_path)
@@ -938,9 +950,9 @@ def rename():
         # Update file index incrementally (no cache invalidation needed with DB-first approach)
         update_index_on_move(old_path, new_path)
 
-        return jsonify({"success": True})
+        return {"success": True}, 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return {"error": str(e)}, 500
 
 
 @files_bp.route('/rename-directory', methods=['POST'])

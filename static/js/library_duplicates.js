@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    var state = { groups: [], includeDismissed: false, pending: null };
+    var state = { groups: [], includeDismissed: false, pending: null, reloadOnClose: false };
 
     function escapeHtml(str) {
         return String(str === null || str === undefined ? '' : str)
@@ -318,9 +318,11 @@
             });
     }
 
-    // The compare view is read-only, so nothing it does can change a group and
-    // there is nothing to reload when it closes. A pair is shown side by side
-    // (columns in member order); a larger group shows only the clicked file.
+    // A pair is shown side by side (columns in member order); a larger group
+    // shows only the clicked file. The only change the viewer can make is a
+    // rename, and only for a likely group: those are different comics whose
+    // names collide, and the right name is what stops them being found. An
+    // exact group is identical bytes, which no rename can change.
     function openInfo(gi, mi) {
         var g = state.groups[gi];
         var m = g && g.members[mi];
@@ -331,10 +333,49 @@
         }
         var memberIdx = g.members.length === 2 ? [0, 1] : [mi];
         var keep = selectedKeep(gi);
-        CLU.showCBZDupe(memberIdx.map(function (i) { return g.members[i]; }), {
+        var opts = {
             keepIndex: memberIdx.indexOf(keep),
             onKeep: function (col) { keepFromModal(gi, memberIdx[col]); }
-        });
+        };
+        if (g.kind === 'likely') {
+            opts.onRename = function (col, name) { return renameMember(gi, memberIdx[col], name); };
+        }
+        CLU.showCBZDupe(memberIdx.map(function (i) { return g.members[i]; }), opts);
+    }
+
+    // The path comes from state, never the DOM. A rename that clears the group
+    // closes the viewer and drops the card; one that does not leaves the viewer
+    // open and re-reads the list once it closes, since the group may have changed.
+    function renameMember(gi, mi, name) {
+        var g = state.groups[gi];
+        var m = g && g.members[mi];
+        if (!m) return Promise.resolve({ ok: false, error: 'This group is no longer on the page.' });
+        return postJson('/api/problem-files/duplicates/rename', { id: g.id, path: m.path, name: name })
+            .then(function (res) {
+                var d = res.data || {};
+                if (!res.ok || !d.success) return { ok: false, error: d.error || 'Could not rename the file.' };
+                m.path = d.new_path;
+                m.name = d.new_name;
+                var modal = document.getElementById('cbzDupeModal');
+                if (d.group_gone) {
+                    CLU.showSuccess('Renamed to ' + d.new_name + ' — no longer flagged as duplicates.');
+                    hideModal('cbzDupeModal');
+                    removeCard(gi);
+                } else {
+                    CLU.showToast('Renamed',
+                        'Renamed to ' + d.new_name + ', but these are still flagged as likely duplicates.',
+                        'warning');
+                    if (modal && !state.reloadOnClose) {
+                        state.reloadOnClose = true;
+                        modal.addEventListener('hidden.bs.modal', function () {
+                            state.reloadOnClose = false;
+                            load();
+                        }, { once: true });
+                    }
+                }
+                return { ok: true, path: d.new_path, name: d.new_name };
+            })
+            .catch(function () { return { ok: false, error: 'Could not reach the server.' }; });
     }
 
     // Select the copy, close the viewer, then ask for the usual confirmation

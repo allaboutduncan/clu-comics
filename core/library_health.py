@@ -1198,6 +1198,83 @@ def resolve_group(group_id, keep_path, trash_paths):
     return {"success": all(r["success"] for r in results), "results": results}
 
 
+def validate_member_rename(group_id, path, new_name):
+    """Check a rename asked for from the compare view. Returns ``{new_path}`` or ``{error}``.
+
+    Only a *likely* group offers it: those are different comics whose names or
+    tags collide, and a rename changes the name key and the filename stem
+    (``issue_stem``) the group was found by. An exact group is identical bytes,
+    which no rename can change. The path must be a member of the group as it is
+    now, so a stale page or a crafted request cannot rename anything else, and
+    the new name stays in the same folder with the same extension -- a rename
+    that turned a ``.cbr`` into a ``.cbz`` would only be lying about the format.
+
+    The name is refused rather than cleaned: it is what the user typed, and
+    quietly writing something else to disk is worse than saying why not.
+    """
+    from core.filename_chars import FILENAME_ILLEGAL_CHARS
+
+    group = _find_group(group_id, strict=True)
+    if group is None:
+        return {"error": "That group no longer exists"}
+    if group["kind"] != "likely":
+        return {"error": "Only likely duplicates can be resolved by renaming"}
+    if path not in {m["path"] for m in group["members"]}:
+        return {"error": "That file is not in this group"}
+
+    name = (new_name or "").strip()
+    old_name = os.path.basename(path)
+    if not name or name in (".", ".."):
+        return {"error": "Enter a file name"}
+    bad = sorted({c for c in name if c in FILENAME_ILLEGAL_CHARS or ord(c) < 32})
+    if bad:
+        shown = " ".join(c if ord(c) >= 32 else f"U+{ord(c):04X}" for c in bad)
+        return {"error": f"A file name cannot contain: {shown}"}
+    if name[0] in "._":
+        # helpers.is_hidden treats these as junk: the file would drop out of the library.
+        return {"error": "A file name cannot start with . or _"}
+    old_ext = os.path.splitext(old_name)[1]
+    stem, ext = os.path.splitext(name)
+    if not stem.strip() or ext.lower() != old_ext.lower():
+        return {"error": f"Keep the {old_ext or 'original'} extension"}
+    if name == old_name:
+        return {"error": "The name is unchanged"}
+    return {"new_path": os.path.join(os.path.dirname(path), name)}
+
+
+def follow_member_rename(old_path, new_path):
+    """Carry a renamed file's ``file_health`` row over to its new path.
+
+    ``os.rename`` keeps size and mtime, so the row is still trusted (it is matched
+    on ``(size, mtime)`` against the index). Without this a renamed file loses its
+    hash until the next scan re-reads it -- and if it was also in an exact group,
+    that group would vanish from the page as though it had been resolved. This is
+    deliberately not in ``move_path_references``: a file moved anywhere else is
+    simply re-hashed.
+    """
+    from core.database import db_conn
+
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.execute("DELETE FROM file_health WHERE path = ?", (new_path,))
+            conn.execute("UPDATE file_health SET path = ? WHERE path = ?", (new_path, old_path))
+            conn.commit()
+            return True
+    except Exception as e:
+        app_logger.error(f"Library health: could not follow a rename to {new_path}: {e}")
+        return False
+
+
+def group_exists(group_id):
+    """True/False, or None when the duplicates could not be read."""
+    try:
+        return _find_group(group_id, strict=True) is not None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # State, summary and score
 # ---------------------------------------------------------------------------

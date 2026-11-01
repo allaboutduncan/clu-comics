@@ -10,6 +10,7 @@ decides whether CLU reads every comic in the library.
 Heavy imports are done inside the views so the symbols stay patchable in tests.
 """
 
+import os
 import threading
 
 from flask import Blueprint, jsonify, redirect, render_template, request, url_for
@@ -175,6 +176,48 @@ def api_resolve():
     if result.get("error"):
         return jsonify(result), 400
     return jsonify(result), (200 if result["success"] else 207)
+
+
+@library_health_bp.route("/api/problem-files/duplicates/rename", methods=["POST"])
+def api_rename_member():
+    """Rename one copy in a likely group, from the compare view (#691).
+
+    Two different comics whose names collide -- ``Wonder Woman 005 (1996)`` that
+    is really the annual -- are resolved by giving one its right name; the group
+    is re-derived from names on every load, so it simply stops being found.
+    The rename itself is ``/rename``'s body (``routes.files.rename_path``).
+    """
+    from core.library_health import follow_member_rename, group_exists, validate_member_rename
+    from routes.files import rename_path
+
+    data = request.get_json(silent=True) or {}
+    group_id, path, name = data.get("id"), data.get("path"), data.get("name")
+    if not all(isinstance(v, str) and v for v in (group_id, path, name)):
+        return jsonify({"success": False, "error": "Missing id, path or name"}), 400
+    try:
+        checked = validate_member_rename(group_id, path, name)
+    except Exception as e:
+        return error_response("Could not read the duplicate groups", e)
+    if checked.get("error"):
+        return jsonify({"success": False, "error": checked["error"]}), 400
+
+    new_path = checked["new_path"]
+    payload, status = rename_path(path, new_path)
+    if status != 200:
+        if status == 400:  # the one 400 rename_path returns: the name is taken
+            status = 409
+        if status >= 500:
+            return error_response("Could not rename the file", RuntimeError(payload.get("error")))
+        return jsonify({"success": False, "error": payload.get("error") or "Could not rename"}), status
+
+    follow_member_rename(path, new_path)
+    gone = group_exists(group_id) is False
+    return jsonify({
+        "success": True,
+        "new_path": new_path,
+        "new_name": os.path.basename(new_path),
+        "group_gone": gone,
+    })
 
 
 @library_health_bp.route("/api/problem-files/duplicates/dismiss", methods=["POST"])

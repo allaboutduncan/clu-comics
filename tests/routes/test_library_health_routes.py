@@ -276,6 +276,99 @@ class TestDuplicates:
         assert resp.status_code == 400
 
 
+class TestRenameMember:
+    """POST /api/problem-files/duplicates/rename (#691)."""
+
+    URL = "/api/problem-files/duplicates/rename"
+    BODY = {"id": "g", "path": "/data/A/a (1).cbz", "name": "a annual.cbz"}
+    NEW = "/data/A/a annual.cbz"
+
+    def _post(self, client, body=None, *, valid=None, renamed=({"success": True}, 200),
+              exists=False):
+        valid = valid if valid is not None else {"new_path": self.NEW}
+        with patch("core.library_health.validate_member_rename", return_value=valid) as v, \
+             patch("routes.files.rename_path", return_value=renamed) as r, \
+             patch("core.library_health.follow_member_rename") as f, \
+             patch("core.library_health.group_exists", return_value=exists):
+            resp = client.post(self.URL, json=self.BODY if body is None else body)
+        return resp, v, r, f
+
+    def test_is_owner_only(self):
+        from core.auth import _OWNER_PREFIXES
+
+        assert self.URL.startswith(_OWNER_PREFIXES)
+
+    @pytest.mark.parametrize("body", [
+        {}, {"id": "g", "path": "/a"}, {"id": "g", "name": "x.cbz"},
+        {"id": "g", "path": "/a", "name": ""}, {"id": "g", "path": ["/a"], "name": "x.cbz"},
+    ])
+    def test_needs_id_path_and_name(self, client, body):
+        resp, v, r, _ = self._post(client, body)
+        assert resp.status_code == 400
+        v.assert_not_called()
+        r.assert_not_called()
+
+    def test_success_renames_follows_and_reports_the_group_gone(self, client):
+        resp, v, r, f = self._post(client)
+        assert resp.status_code == 200
+        assert resp.get_json() == {"success": True, "new_path": self.NEW,
+                                   "new_name": "a annual.cbz", "group_gone": True}
+        v.assert_called_once_with("g", self.BODY["path"], "a annual.cbz")
+        r.assert_called_once_with(self.BODY["path"], self.NEW)
+        f.assert_called_once_with(self.BODY["path"], self.NEW)
+
+    def test_a_group_that_is_still_there_is_reported(self, client):
+        resp, *_ = self._post(client, exists=True)
+        assert resp.get_json()["group_gone"] is False
+
+    def test_an_unreadable_group_is_not_reported_gone(self, client):
+        resp, *_ = self._post(client, exists=None)
+        assert resp.get_json()["group_gone"] is False
+
+    def test_a_refused_name_never_reaches_the_disk(self, client):
+        resp, v, r, f = self._post(client, valid={"error": "A file name cannot contain: /"})
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "A file name cannot contain: /"
+        r.assert_not_called()
+        f.assert_not_called()
+
+    def test_a_taken_name_is_a_409(self, client):
+        resp, _, _, f = self._post(client, renamed=({"error": "Destination already exists"}, 400))
+        assert resp.status_code == 409
+        assert resp.get_json()["error"] == "Destination already exists"
+        f.assert_not_called()
+
+    @pytest.mark.parametrize("status", [403, 404])
+    def test_refusals_pass_through(self, client, status):
+        resp, *_ = self._post(client, renamed=({"error": "nope"}, status))
+        assert resp.status_code == status
+
+    def test_a_crash_does_not_leak_its_text(self, client):
+        resp, *_ = self._post(client, renamed=({"error": "EIO at /config/comic_utils.db"}, 500))
+        assert resp.status_code == 500
+        assert "comic_utils.db" not in resp.get_data(as_text=True)
+
+    def test_really_renames_through_the_shared_body(self, client, tmp_path):
+        """No patch on rename_path: the /rename body moves the file and the index."""
+        from unittest.mock import MagicMock
+
+        old = tmp_path / "Wonder Woman 005 (1996).cbz"
+        old.write_bytes(b"data")
+        new = tmp_path / "Wonder Woman Annual 005 (1996).cbz"
+        fake_app = MagicMock()
+        with patch.dict("sys.modules", {"app": fake_app}), \
+             patch("routes.files.is_critical_path", return_value=False), \
+             patch("core.library_health.validate_member_rename",
+                   return_value={"new_path": str(new)}), \
+             patch("core.library_health.follow_member_rename") as follow, \
+             patch("core.library_health.group_exists", return_value=False):
+            resp = client.post(self.URL, json={"id": "g", "path": str(old), "name": new.name})
+        assert resp.status_code == 200
+        assert new.exists() and not old.exists()
+        fake_app.update_index_on_move.assert_called_once_with(str(old), str(new))
+        follow.assert_called_once_with(str(old), str(new))
+
+
 class TestInfoModalIsAvailable:
     """Both pages let the user open the ComicInfo viewer on a file to verify it."""
 
@@ -339,6 +432,17 @@ class TestInfoModalIsAvailable:
         assert "onKeep" in src and "confirmResolve(gi)" in src
         assert "hidden.bs.modal" in src
 
+    def test_duplicates_renames_only_likely_groups(self):
+        """An exact group is identical bytes, so a rename cannot resolve it."""
+        src = self._js("library_duplicates.js")
+        open_info = src.split("function openInfo(gi, mi)", 1)[1].split("function renameMember", 1)[0]
+        assert "if (g.kind === 'likely')" in open_info
+        assert "opts.onRename" in open_info
+        rename = src.split("function renameMember(gi, mi, name)", 1)[1].split("function keepFromModal", 1)[0]
+        assert "postJson('/api/problem-files/duplicates/rename'" in rename
+        assert "path: m.path" in rename  # from state, never the DOM
+        assert "d.group_gone" in rename and "removeCard(gi)" in rename
+
 
 class TestCompareViewer:
     """static/js/clu-cbz-dupe.js, asserted structurally (no JS test runner here)."""
@@ -368,6 +472,19 @@ class TestCompareViewer:
         assert "CLU.escapeHtml" in src
         assert "data-path" not in src
         assert 'data-col="' in src
+
+    def test_rename_is_offered_only_through_the_page_callback(self):
+        """The viewer draws the editor; the request is the page's (onRename),
+        which is why test_is_read_only still holds."""
+        src = self._src()
+        assert "data-dupe-act=\"rename\"" in src
+        assert "if (_onRename)" in src
+        assert "_onRename(ci, name)" in src
+        # Escape in the name box cancels the edit, not the whole modal.
+        editor = src.split("function _openRename(ci)", 1)[1].split("function _closeRename", 1)[0]
+        assert "e.key === 'Escape'" in editor and "e.stopPropagation()" in editor
+        # The typed name is set as a value, never spliced into markup.
+        assert "input.value = parts[0]" in editor
 
     def test_keyboard_listener_is_removed_on_close(self):
         src = self._src()
