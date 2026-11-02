@@ -882,6 +882,71 @@ class TestTrackWanted:
         html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
 
         assert 'id="trackWantedBtn"' in html
+
+
+class TestExcludeAutoSync:
+    """POST /api/reading-lists/<id>/auto-sync.
+
+    Lets a user keep hand edits to a list: an excluded list is skipped by the
+    scheduled sync. Default OFF so every existing list keeps syncing.
+    """
+
+    SOURCE = "https://github.com/example/lists/blob/main/Crisis.cbl"
+
+    def _list(self, source=SOURCE):
+        from core.database import create_reading_list
+
+        return create_reading_list("Crisis", source=source)
+
+    def _excluded(self, list_id):
+        from core.database import get_reading_list
+
+        return get_reading_list(list_id)["exclude_auto_sync"]
+
+    def test_unknown_list_is_404(self, client):
+        resp = client.post("/api/reading-lists/99999/auto-sync",
+                           json={"excluded": True})
+        assert resp.status_code == 404
+        assert resp.get_json()["success"] is False
+
+    def test_defaults_to_included(self, client):
+        assert not self._excluded(self._list())
+
+    def test_excluding_persists(self, client):
+        list_id = self._list()
+        resp = client.post(f"/api/reading-lists/{list_id}/auto-sync",
+                           json={"excluded": True})
+        data = resp.get_json()
+
+        assert resp.status_code == 200
+        assert data["success"] is True
+        assert data["excluded"] is True
+        assert self._excluded(list_id) == 1
+
+    def test_including_again_persists(self, client):
+        list_id = self._list()
+        client.post(f"/api/reading-lists/{list_id}/auto-sync", json={"excluded": True})
+
+        data = client.post(f"/api/reading-lists/{list_id}/auto-sync",
+                           json={"excluded": False}).get_json()
+
+        assert data["excluded"] is False
+        assert self._excluded(list_id) == 0
+
+    def test_the_toggle_renders_for_a_syncable_list(self, client):
+        list_id = self._list()
+        client.post(f"/api/reading-lists/{list_id}/auto-sync", json={"excluded": True})
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        assert 'id="excludeAutoSyncBtn"' in html
+        assert 'data-excluded="1"' in html
+
+    def test_no_toggle_for_a_list_with_no_source(self, client):
+        """An uploaded list is never auto-synced, so there is nothing to exclude."""
+        list_id = self._list(source=None)
+        html = client.get(f"/reading-lists/{list_id}").get_data(as_text=True)
+
+        assert 'id="excludeAutoSyncBtn"' not in html
         assert 'data-tracking="0"' in html
 
         client.post(f"/api/reading-lists/{list_id}/track-wanted",

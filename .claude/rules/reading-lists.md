@@ -83,6 +83,14 @@ precisely why it never covered anything else. `tests/unit/test_reading_list_sche
 asserts that structurally, because app.py cannot be imported in tests. It reuses
 the existing `reading_list_sync` schedule, job id and settings UI.
 
+**`reading_lists.exclude_auto_sync` opts one list out of the scheduled sync**
+(default OFF). Users edit CBL lists by hand and the nightly sweep overwrote
+them. `sync_all` drops excluded rows *before* the Metron prefilter; `sync_one`
+does not look at the flag, so the manual Sync button (an explicit request)
+still works. Toggled from the list page's menu via
+`POST /api/reading-lists/<id>/auto-sync` `{excluded: bool}`, shown only when the
+list is syncable.
+
 `_sanitize_html`, `_is_github_url`, `_convert_github_blob_to_raw`,
 `_metron_year_hints` and the per-provider entry builders live in
 `core/reading_list_sync.py` and are imported into `routes/reading_lists.py`

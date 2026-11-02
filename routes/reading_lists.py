@@ -36,6 +36,7 @@ from core.database import (
     get_reading_lists_with_source,
     set_reading_list_entry_auto_match,
     set_reading_list_track_wanted,
+    set_reading_list_exclude_auto_sync,
 )
 from models.cbl import CBLLoader
 from core.metadata_dates import year_of
@@ -421,6 +422,32 @@ def set_track_wanted(list_id):
         'enabled': enabled,
         'message': ('Unmatched issues will be added to your Wanted list'
                     if enabled else 'Removed from your Wanted list'),
+    })
+
+@reading_lists_bp.route('/api/reading-lists/<int:list_id>/auto-sync', methods=['POST'])
+def set_exclude_auto_sync(list_id):
+    """Exclude a reading list from (or return it to) the scheduled sync.
+
+    Users who edit a list by hand had every edit overwritten by the next
+    scheduled sync. An excluded list is skipped by ``sync_all``; the manual
+    Sync button still works on it. Clerk/owner only, like the other list
+    mutations here.
+    """
+    reading_list = get_reading_list(list_id)
+    if not reading_list:
+        return jsonify({'success': False, 'message': 'Reading list not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    excluded = bool(data.get('excluded'))
+
+    if not set_reading_list_exclude_auto_sync(list_id, excluded):
+        return jsonify({'success': False, 'message': 'Failed to update list'}), 500
+
+    return jsonify({
+        'success': True,
+        'excluded': excluded,
+        'message': ('Excluded from scheduled sync -- your edits will be kept'
+                    if excluded else 'Included in scheduled sync'),
     })
 
 @reading_lists_bp.route('/api/reading-lists/<int:list_id>', methods=['DELETE'])

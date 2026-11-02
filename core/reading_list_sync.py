@@ -696,14 +696,22 @@ def sync_all(rename_pattern=None, app=None, progress_cb=None):
     """Re-check every syncable list. The nightly job and nothing else.
 
     Metron reading lists are pre-filtered with a single ``modified_gt`` call;
-    every other source falls through to its own cheap probe.
+    every other source falls through to its own cheap probe. A list the user
+    has excluded from auto-sync (``exclude_auto_sync``) is left alone, so hand
+    edits survive; the manual Sync button goes through ``sync_one`` and still
+    works on it.
     """
     from core.database import get_syncable_reading_lists
 
     rows = [r for r in (get_syncable_reading_lists() or [])
             if is_syncable(r.get("source"))]
+    excluded = sum(1 for r in rows if r.get("exclude_auto_sync"))
+    rows = [r for r in rows if not r.get("exclude_auto_sync")]
+    if excluded:
+        app_logger.info(f"Skipping {excluded} reading list(s) excluded from auto-sync")
     if not rows:
-        return {"checked": 0, "synced": 0, "unchanged": 0, "failed": 0}
+        return {"checked": 0, "synced": 0, "unchanged": 0, "failed": 0,
+                "excluded": excluded}
 
     metron_rows = [r for r in rows if parse_source(r.get("source"))[0] == METRON_LIST]
     skip = set()
@@ -750,4 +758,5 @@ def sync_all(rename_pattern=None, app=None, progress_cb=None):
         f"Reading list sync complete: {synced} updated, {unchanged} unchanged, "
         f"{failed} failed"
     )
-    return {"checked": checked, "synced": synced, "unchanged": unchanged, "failed": failed}
+    return {"checked": checked, "synced": synced, "unchanged": unchanged, "failed": failed,
+            "excluded": excluded}
