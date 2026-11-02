@@ -136,13 +136,11 @@ if [ ! -e /downloads ]; then
   mkdir -p /downloads
 fi
 
-# Create required subdirectories in downloads if they don't exist
-# Don't change ownership - these inherit from the mounted volume
-for subdir in temp processed; do
-  if [ ! -e "/downloads/${subdir}" ]; then
-    mkdir -p "/downloads/${subdir}"
-  fi
-done
+# WATCH and TARGET are NOT created here. They are settings (user_preferences),
+# not fixed paths, and this script cannot read them; creating the defaults
+# (/downloads/temp, /downloads/processed) put stray folders on the user's share
+# even when both were configured elsewhere (#699). The app creates the
+# configured folders on first use (monitor.py, api._download_dir).
 
 # Ensure new sub-folders inherit the share's group (NAS-friendly, avoids needing 777).
 # setgid is inherited by child dirs, so this propagates to future folders automatically.
@@ -160,10 +158,6 @@ ls -la /data 2>/dev/null || echo "  /data directory not accessible or empty"
 
 echo "Downloads directory status:"
 ls -la /downloads 2>/dev/null || echo "  /downloads directory not accessible or empty"
-
-echo "Downloads subdirectories status:"
-ls -la /downloads/temp 2>/dev/null || echo "  /downloads/temp directory not accessible or empty"
-ls -la /downloads/processed 2>/dev/null || echo "  /downloads/processed directory not accessible or empty"
 
 # Show actual ownership of mounted volumes (important for debugging)
 echo "Mounted volume ownership (for PUID/PGID configuration):"
@@ -186,21 +180,19 @@ if [ -e /downloads ]; then
   fi
 fi
 
-# Test write permissions
+# Test write permissions. The default WATCH/TARGET folders are only probed when
+# they exist -- they are not created here (#699), and a configured WATCH/TARGET
+# elsewhere is the normal case.
 echo "Testing write permissions:"
-if touch /downloads/temp/test_write 2>/dev/null; then
-  echo "  ✓ Can write to /downloads/temp"
-  rm -f /downloads/temp/test_write
-else
-  echo "  ✗ Cannot write to /downloads/temp"
-fi
-
-if touch /downloads/processed/test_write 2>/dev/null; then
-  echo "  ✓ Can write to /downloads/processed"
-  rm -f /downloads/processed/test_write
-else
-  echo "  ✗ Cannot write to /downloads/processed"
-fi
+for p in /downloads /downloads/temp /downloads/processed; do
+  [ -d "$p" ] || continue
+  if touch "$p/test_write" 2>/dev/null; then
+    echo "  ✓ Can write to $p"
+    rm -f "$p/test_write"
+  else
+    echo "  ✗ Cannot write to $p"
+  fi
+done
 
 # Additional Windows/WSL debugging
 echo "Windows/WSL specific debugging:"
@@ -210,13 +202,11 @@ echo "  Current UID: $(id -u)"
 echo "  Current GID: $(id -g)"
 echo "  Downloads directory permissions:"
 ls -la /downloads/ 2>/dev/null || echo "    Cannot list /downloads"
-echo "  Downloads temp directory permissions:"
-ls -la /downloads/temp/ 2>/dev/null || echo "    Cannot list /downloads/temp"
 
 # Test creating a file with the exact pattern the app uses
 echo "Testing app-specific file creation pattern:"
 test_filename="test_file.cbr.0.crdownload"
-test_path="/downloads/temp/${test_filename}"
+test_path="/downloads/${test_filename}"
 if touch "${test_path}" 2>/dev/null; then
   echo "  ✓ Can create app-style temp file: ${test_filename}"
   rm -f "${test_path}"
