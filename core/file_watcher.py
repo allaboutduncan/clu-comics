@@ -3,13 +3,29 @@ import time
 import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from core.database import add_file_index_entry, forget_deleted_path, invalidate_collection_status_for_path
+from core.database import (
+    add_file_index_entry,
+    forget_deleted_path,
+    invalidate_collection_status_for_path,
+    move_indexed_path,
+)
 from core.app_logging import app_logger
 from core.metadata_scanner import queue_file_for_scan, PRIORITY_NEW_FILE
 from helpers.collection import _series_id_for_path, reconcile_wanted_for_series
+from helpers.library import is_valid_library_path
 
 
 COMIC_EXTENSIONS = ('.cbz', '.cbr')
+
+
+def _in_trash(path):
+    """``helpers.trash.is_trash_path`` reads ``current_app``, which a watcher
+    thread does not have; "could not tell" reads as "not the trash"."""
+    try:
+        from helpers.trash import is_trash_path
+        return is_trash_path(path)
+    except Exception:
+        return False
 
 
 class DebouncedFileHandler(FileSystemEventHandler):
@@ -165,12 +181,33 @@ class DebouncedFileHandler(FileSystemEventHandler):
         self._add_event(file_path)
 
     def on_moved(self, event):
-        """Handle file move events (treat destination as a new file)."""
-        if event.is_directory or not self._is_comic_name(event.dest_path):
+        """Follow a move: the index rows and path references go with the file.
+
+        This used to only queue the destination, so the source row stayed and
+        every comic moved outside CLU was indexed twice, at its old and its new
+        path (#693). A directory event is the one that carries the subtree;
+        watchdog's per-child events that follow find their rows already moved
+        and only refresh the destination.
+        """
+        src, dest = event.src_path, event.dest_path
+        if not event.is_directory and not (
+            self._is_comic_name(src) or self._is_comic_name(dest)
+        ):
             return
 
-        file_path = event.dest_path
-        self._add_event(file_path)
+        try:
+            src_in = is_valid_library_path(src)
+            dest_in = is_valid_library_path(dest) and not _in_trash(dest)
+            if src_in and dest_in:
+                move_indexed_path(src, dest, is_dir=event.is_directory)
+            elif src_in:
+                # Moved out of the libraries (the trash included): a deletion.
+                forget_deleted_path(src)
+        except Exception as e:
+            app_logger.error(f"Error following move {src} -> {dest}: {e}")
+
+        if not event.is_directory and self._is_comic_name(dest):
+            self._add_event(dest)
 
     def on_deleted(self, event):
         """Handle file deletion events."""

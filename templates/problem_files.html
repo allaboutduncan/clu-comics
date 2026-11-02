@@ -122,6 +122,13 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
             title="Check the next batch of files now, plus series.json, stray files, empty folders and ComicInfo counts">
             <i class="bi bi-play-fill me-1"></i>Run scan now
           </button>
+          {# The full walk + sync: what drops comics deleted or moved outside
+             CLU from a folder that still exists. A scan already prunes whole
+             folders that are gone. #}
+          <button class="btn btn-outline-secondary btn-sm" id="pf-index-rebuild"
+            title="Re-read every library folder and drop index entries for files that are no longer on disk">
+            <i class="bi bi-arrow-repeat me-1"></i>Rebuild file index
+          </button>
         </div>
       </div>
       <div class="progress mt-2" style="height: 6px;" title="Share of the library with a current result">

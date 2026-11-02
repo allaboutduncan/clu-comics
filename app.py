@@ -137,6 +137,8 @@ from core.database import (
     delete_file_index_entry,
     forget_deleted_path,
     sync_file_index_incremental,
+    prune_vanished_index_dirs,
+    move_indexed_path,
     get_rebuild_schedule,
     save_rebuild_schedule as db_save_rebuild_schedule,
     update_last_rebuild,
@@ -406,7 +408,11 @@ def scheduled_file_index_rebuild():
 
         # Scan filesystem to get current state
         app_logger.info("Scanning filesystem...")
-        filesystem_entries = scan_filesystem_for_sync()
+        # Vanished folders first: this also clears their reading-list
+        # matches, which the sync's own removal does not (#693).
+        prune_vanished_index_dirs()
+        walked_roots = []
+        filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
         scan_time = time.time() - start_time
         app_logger.info(
             f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
@@ -414,7 +420,9 @@ def scheduled_file_index_rebuild():
 
         # Incremental sync (preserves metadata for existing files)
         app_logger.info("Performing incremental sync...")
-        sync_result = sync_file_index_incremental(filesystem_entries)
+        sync_result = sync_file_index_incremental(
+            filesystem_entries, walked_roots=walked_roots
+        )
         app_logger.info(
             f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
         )
@@ -3246,6 +3254,7 @@ from helpers.library import (
     is_valid_library_path,
     get_library_for_path,
     watch_target_verdict,
+    is_root_mounted,
 )
 
 #########################
@@ -3812,7 +3821,11 @@ def api_rebuild_file_index():
 
         # Scan filesystem to get current state
         app_logger.info("Scanning filesystem...")
-        filesystem_entries = scan_filesystem_for_sync()
+        # Vanished folders first: this also clears their reading-list
+        # matches, which the sync's own removal does not (#693).
+        prune_vanished_index_dirs()
+        walked_roots = []
+        filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
         scan_time = time.time() - start_time
         app_logger.info(
             f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
@@ -3820,7 +3833,9 @@ def api_rebuild_file_index():
 
         # Incremental sync (preserves metadata for existing files)
         app_logger.info("Performing incremental sync...")
-        sync_result = sync_file_index_incremental(filesystem_entries)
+        sync_result = sync_file_index_incremental(
+            filesystem_entries, walked_roots=walked_roots
+        )
         app_logger.info(
             f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
         )
@@ -4369,13 +4384,19 @@ def _build_file_index_locked():
     # Legacy: update_recent_files_from_scan(comic_files) - Removed as we now use file_index directly
 
 
-def scan_filesystem_for_sync():
+def scan_filesystem_for_sync(walked_roots=None):
     """
     Scan the filesystem and return a list of entries without modifying the database.
 
     Used by incremental sync to compare filesystem state with database state.
     Excludes TARGET folder (from app.config) as those files should not be indexed.
     Scans all enabled libraries.
+
+    Args:
+        walked_roots: Optional list; each root actually walked is appended,
+            for ``sync_file_index_incremental(walked_roots=)``. A missing or
+            empty root (an unmounted share looks like either) is skipped and
+            not appended, so its rows are not read as deleted.
 
     Returns:
         List of dicts with {name, path, type, size, parent, has_thumbnail, modified_at}
@@ -4418,6 +4439,13 @@ def scan_filesystem_for_sync():
         if not os.path.exists(library_root):
             app_logger.warning(f"Library path does not exist, skipping: {library_root}")
             continue
+        if not is_root_mounted(library_root):
+            app_logger.warning(
+                f"Library path is empty (unmounted?), skipping: {library_root}"
+            )
+            continue
+        if walked_roots is not None:
+            walked_roots.append(library_root)
 
         try:
             for root, dirs, files in os.walk(library_root):
@@ -4612,60 +4640,17 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                 ):
                     return
 
-                parent = os.path.dirname(new_path)
-                update_file_index_entry(
-                    old_path, name=file_name, new_path=new_path, parent=parent
-                )
+                move_indexed_path(old_path, new_path, is_dir=False)
                 app_logger.debug(
                     f"Updated file index for moved file: {old_path} -> {new_path}"
                 )
 
             else:
-                # Update directory and all children
-                # First update the directory itself
-                dir_name = os.path.basename(new_path)
-                parent = os.path.dirname(new_path)
-                update_file_index_entry(
-                    old_path, name=dir_name, new_path=new_path, parent=parent
-                )
-
-                # Update all children paths
-                # We need to update paths that start with old_path to start with new_path
-                conn = get_db_connection()
-                if conn:
-                    c = conn.cursor()
-                    # Update all entries whose path starts with old_path
-                    c.execute(
-                        """
-                        UPDATE file_index
-                        SET path = ? || SUBSTR(path, ?),
-                            parent = ? || SUBSTR(parent, ?)
-                        WHERE path LIKE ?
-                    """,
-                        (
-                            new_path,
-                            len(old_path) + 1,
-                            new_path,
-                            len(old_path) + 1,
-                            f"{old_path}/%",
-                        ),
-                    )
-
-                    conn.commit()
-                    rows_affected = c.rowcount
-                    conn.close()
-                    app_logger.debug(
-                        f"Updated {rows_affected} child entries for moved directory: {old_path} -> {new_path}"
-                    )
-
-                # The child prefix UPDATE above bypasses update_file_index_entry,
-                # so everything else keyed on the raw path under this folder has
-                # to be followed explicitly -- otherwise a folder rename orphans
-                # every bookmark in the series, every metadata tag, and every
-                # reading-list mapping that pointed into it.
-                from core.database import move_path_references
-
-                move_path_references(old_path, new_path, is_dir=True)
+                # The directory, every row under it and every path reference
+                # (bookmarks, tags, reading-list mappings), in one transaction.
+                # Shared with the file watcher, so a move made outside CLU is
+                # followed the same way.
+                move_indexed_path(old_path, new_path, is_dir=True)
 
             # A file moved between series folders: reconcile both the source
             # (an issue may now be missing) and the destination (an issue may

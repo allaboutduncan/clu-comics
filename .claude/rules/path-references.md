@@ -68,6 +68,21 @@ Things that look arbitrary and are not:
   index. Do **not** "fix" that with `COLLATE NOCASE`: these paths are stored
   byte-exact so they join against `file_index.path`.
 
+- **A move within the libraries is `move_indexed_path(old, new, is_dir)`**:
+  the index rows and the path references in one transaction. It is shared by
+  `app.update_index_on_move` and the file watcher's `on_moved`, which used to
+  only add the destination, so every comic moved outside CLU was indexed twice
+  (#693). It drops a destination row that a source row is about to land on,
+  because the `UNIQUE(path)` conflict would otherwise abort the rewrite.
+- **`sync_file_index_incremental(walked_roots=)` only removes rows under the
+  roots the scan walked.** `scan_filesystem_for_sync` skips a missing or empty
+  root, and without the scoping every row of a sleeping NAS read as deleted,
+  metadata included.
+- **Prefix sweeps in new code escape `LIKE`** (`_like_prefix` + `ESCAPE '\'`).
+  Unescaped, `_` is a wildcard, so the subtree of `/data/X_Men` also takes in
+  `/data/X-Men`. `clear_path_references` and the new bodies are escaped.
+  `move_path_references` and `delete_file_index_entry` predate this and are not.
+
 #### Deletion hooks — the three callers that are not deletions
 
 `forget_deleted_path` / `forget_deleted_paths` pair the index delete with the

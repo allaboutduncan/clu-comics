@@ -233,6 +233,56 @@ def get_library_for_path(path):
     return None
 
 
+def is_root_mounted(root):
+    """True when the library root is a directory with at least one entry.
+
+    An unmounted bind mount is still a directory, just an empty one, so
+    ``isdir`` alone cannot tell "the NAS is asleep" from "the folder is there".
+    """
+    try:
+        with os.scandir(root) as it:
+            return next(it, None) is not None
+    except OSError:
+        return False
+
+
+def _containing_root(path, roots):
+    normalized = os.path.normpath(path)
+    for root in roots:
+        root_normalized = os.path.normpath(root)
+        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
+            return root_normalized
+    return None
+
+
+def is_path_provably_gone(path, roots=None, mounted=None):
+    """True only when *path*'s absence is proven, not merely observed.
+
+    Inside a library, the proof is that the library root is mounted (non-empty)
+    and the path does not exist: a whole deleted folder counts, which the old
+    "parent directory exists" rule could never see (#693). Outside any library
+    (a WATCH download, say) that older rule still applies.
+
+    ``roots`` and ``mounted`` (a dict caching :func:`is_root_mounted` per root)
+    let a caller checking thousands of paths pay for each root once.
+    """
+    if not path or os.path.exists(path):
+        return False
+    if roots is None:
+        roots = get_library_roots()
+    root = _containing_root(path, roots)
+    if root is None:
+        parent = os.path.dirname(path)
+        return bool(parent) and os.path.isdir(parent)
+    if os.path.normpath(path) == root:
+        return False  # a missing library root is an unmounted one
+    if mounted is None:
+        return is_root_mounted(root)
+    if root not in mounted:
+        mounted[root] = is_root_mounted(root)
+    return mounted[root]
+
+
 def resolve_provider_library_id(library_id, path):
     """
     The library whose metadata-provider settings apply to ``path``.

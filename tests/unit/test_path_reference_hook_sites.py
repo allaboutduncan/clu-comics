@@ -63,9 +63,25 @@ class TestAppWrappers:
 
     def test_directory_rename_follows_every_path_reference(self, app_tree):
         called = _called_names(_func(app_tree, "update_index_on_move"))
-        assert "move_path_references" in called, (
-            "the directory branch rewrites file_index in raw SQL, so everything "
-            "else keyed on the path has to be followed explicitly"
+        assert "move_indexed_path" in called, (
+            "the within-library branch delegates to core.database.move_indexed_path, "
+            "the body the file watcher shares (#693)"
+        )
+        core_called = _called_names(
+            _func(_tree("core", "database.py"), "move_indexed_path")
+        )
+        assert "move_path_references" in core_called, (
+            "the index rows are rewritten in raw SQL, so everything else keyed "
+            "on the path has to be followed explicitly"
+        )
+
+    def test_the_file_watcher_follows_moves(self):
+        called = _called_names(
+            _func(_tree("core", "file_watcher.py"), "on_moved")
+        )
+        assert "move_indexed_path" in called, (
+            "a move outside CLU used to only add the destination, leaving every "
+            "moved comic indexed twice (#693)"
         )
 
     def test_the_post_download_tidy_up_is_a_rename_not_a_deletion(self, app_tree):
