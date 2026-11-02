@@ -2188,12 +2188,17 @@ def api_add_library():
                         f"Rebuilding file index after adding library: {name}"
                     )
                     app_state.update_operation(op_id, detail="Scanning folders...")
-                    filesystem_entries = scan_filesystem_for_sync()
+                    walked_roots = []
+                    filesystem_entries = scan_filesystem_for_sync(
+                        walked_roots=walked_roots
+                    )
                     app_state.update_operation(
                         op_id,
                         detail=f"Updating the index ({len(filesystem_entries)} entries)...",
                     )
-                    sync_file_index_incremental(filesystem_entries)
+                    sync_file_index_incremental(
+                        filesystem_entries, walked_roots=walked_roots
+                    )
                     app_logger.info(
                         f"File index rebuilt successfully for new library: {name}"
                     )

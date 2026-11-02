@@ -342,15 +342,20 @@ def has_problem(path):
         return False
 
 
-def _is_definitely_gone(path):
+def _is_definitely_gone(path, roots=None, mounted=None):
     """True only when the file's absence is *proven*.
 
-    A missing parent directory is not evidence of a deleted comic — it is what
-    an unmounted library looks like. Pruning on it would empty this table the
-    first time a NAS went to sleep, so "I cannot tell" has to mean "keep it".
+    A bare ``os.path.exists`` is not evidence of a deleted comic — it is also
+    what an unmounted library looks like, and pruning on it would empty this
+    table the first time a NAS went to sleep, so "I cannot tell" has to mean
+    "keep it". ``helpers.library.is_path_provably_gone`` is the rule: inside a
+    library, the root must be mounted (non-empty); outside one, the parent
+    directory must exist. The library half is what lets a row under a deleted
+    *folder* go, not just one under a folder that is still there (#693).
     """
-    parent = os.path.dirname(path)
-    return bool(parent) and os.path.isdir(parent) and not os.path.exists(path)
+    from helpers.library import is_path_provably_gone
+
+    return is_path_provably_gone(path, roots=roots, mounted=mounted)
 
 
 def _prune(conn, rows):
@@ -415,8 +420,15 @@ def list_problems(
             rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
             live, gone = [], []
+            roots, mounted = None, {}
+            if prune_missing and rows:
+                from helpers.library import get_library_roots
+
+                roots = get_library_roots()
             for row in rows:
-                if prune_missing and _is_definitely_gone(row["path"]):
+                if prune_missing and _is_definitely_gone(
+                    row["path"], roots=roots, mounted=mounted
+                ):
                     gone.append(row)
                 else:
                     live.append(row)

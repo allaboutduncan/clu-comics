@@ -226,6 +226,61 @@ class TestRollingBatch:
         assert _health(store, p)["status"] == "missing"
         assert lh.run_batch(50, 90)["missing"] == 0
 
+    def test_a_deleted_folder_is_forgotten_not_counted_as_a_mount(self, store, library):
+        """#693: a top-level folder deleted outside CLU. Every file in it raised
+        FileNotFoundError with no parent, which read as a mount going away: the
+        batch aborted on every run and nothing was ever stamped."""
+        _good_cbz(library / "Keep 001.cbz")  # the library is mounted
+        gone = library / "Fantographics" / "Series"
+        paths = [str(gone / f"Ghost {i:03d}.cbz") for i in range(12)]
+        for p in paths:
+            store.execute(
+                "INSERT INTO file_index (name, path, type, size, parent, modified_at) "
+                "VALUES (?, ?, 'file', 1, ?, 1.0)", (os.path.basename(p), p, str(gone)),
+            )
+        store.commit()
+        stats = lh.run_batch(50, 90)
+        assert stats["aborted"] is False
+        assert stats["missing"] == 12
+        assert list_problems() == []
+        left = store.execute(
+            "SELECT COUNT(*) FROM file_index WHERE path LIKE ?", (str(gone) + "%",)
+        ).fetchone()[0]
+        assert left == 0
+
+    def test_scan_drops_a_moved_folders_ghost_duplicates(self, store, library):
+        """The old copy of a series moved outside CLU paired with the new one
+        as a likely duplicate, in thousands of groups."""
+        new_dir = library / "Combined" / "Love and Rockets"
+        new_dir.mkdir(parents=True)
+        p_new = _good_cbz(new_dir / "Love and Rockets 001 (1982).cbz")
+        tags = {"ci_series": "Love and Rockets", "ci_number": "1",
+                "ci_year": 1982, "ci_publisher": "Fantagraphics"}
+        _index(store, p_new, **tags)
+        # Stored the way the indexer stores them: forward slashes.
+        old_dir = (library / "Fantographics" / "Love and Rockets").as_posix()
+        p_old = old_dir + "/Love and Rockets 001 (1982).cbz"
+        for d in ((library / "Fantographics").as_posix(), old_dir):
+            store.execute(
+                "INSERT INTO file_index (name, path, type, parent) VALUES (?, ?, 'directory', ?)",
+                (os.path.basename(d), d, os.path.dirname(d)),
+            )
+        store.execute(
+            "INSERT INTO file_index (name, path, type, size, parent, modified_at, "
+            "ci_series, ci_number, ci_year, ci_publisher) "
+            "VALUES (?, ?, 'file', 1, ?, 1.0, ?, ?, ?, ?)",
+            (os.path.basename(p_old), p_old, old_dir, *tags.values()),
+        )
+        store.commit()
+        assert lh.count_duplicates()[1] == 1
+
+        lh.run_scan(run_cheap=False)
+
+        assert lh.count_duplicates() == (0, 0)
+        assert store.execute(
+            "SELECT path FROM file_index WHERE path = ?", (p_new,)
+        ).fetchone() is not None
+
     def test_prune_keeps_everything_while_the_index_is_empty(self, store, library):
         p = _good_cbz(library / "Keep 001.cbz")
         _index(store, p)

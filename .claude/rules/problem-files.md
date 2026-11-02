@@ -86,11 +86,15 @@ Things that look arbitrary and are not:
   archive raises `zlib.error` or `BadZipFile` depending on which page is read
   first, so matching the message would un-dismiss rows at random. A dismissal
   lifts only when the file is rewritten and still fails.
-- **Pruning needs positive evidence.** `_is_definitely_gone()` requires the
-  *parent directory* to exist. An unmounted library makes every path look
-  deleted, and a bare `os.path.exists` would empty the table the first time a
-  NAS went to sleep. Unreachable rows come back with `reachable: False` and the
-  page offers only "Remove". This is also why there is no delete hook: there is
+- **Pruning needs positive evidence.** `_is_definitely_gone()` delegates to
+  `helpers.library.is_path_provably_gone`: inside a library, the root must be
+  *mounted*, meaning a directory with at least one entry (an unmounted bind
+  mount is an empty directory). Outside one, the *parent directory* must exist.
+  A bare `os.path.exists` would empty the table the first time a NAS went to
+  sleep. The old parent-only rule could never prune a row under a deleted
+  *folder*, so a reorganisation done outside CLU left thousands of
+  permanently unreachable rows (#693). Unreachable rows come back with
+  `reachable: False` and the page offers only "Remove". This is also why there is no delete hook: there is
   no choke point for a file leaving the library, and the file watcher is known
   to miss events on the Docker volume.
 - **`list_problems` returns `None` on a read failure, never `[]`.** An empty
@@ -310,7 +314,19 @@ Things that look arbitrary and are not:
   excluded from the query up front; ten consecutive `OSError`s abort the batch
   and the held-back results are dropped, not recorded. A file missing from a
   folder that exists is stamped `missing` with **no** ledger row, because
-  `list_problems` would prune it on sight (`_is_definitely_gone`).
+  `list_problems` would prune it on sight (`_is_definitely_gone`). A file whose
+  whole folder is gone from a mounted library is *provably gone*. It is
+  forgotten (`forget_deleted_paths`) and does not count toward the streak:
+  counting it aborted every batch, because such files are never stamped and
+  so stay at the head of the queue.
+- **`run_scan` starts with `prune_vanished_index_dirs`** (`core/database.py`),
+  before the batch and the duplicate count, which both read `file_index`. The
+  watcher misses deletes on Docker/Unraid volumes and the full index rebuild is
+  an opt-in schedule, so nothing else removed a folder deleted outside CLU.
+  Its comics stayed on Missing XML and paired as "likely duplicates" with the
+  copies they were moved to (#693). It costs one `stat` per indexed folder.
+  The page's **Rebuild file index** button is the full walk, which also catches
+  single files deleted from a folder that is still there.
 - **Stamp after recording.** A file is stamped in `file_health` only after its
   outcome is written, the same rule as `core.reading_list_sync.apply`.
 - **Heavy walks are daily, the batch is not.** `run_scheduled_scan` is a 30-minute

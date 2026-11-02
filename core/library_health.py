@@ -25,8 +25,10 @@ Things that look arbitrary and are not:
   library root is excluded from the query up front, and ten consecutive OSErrors
   abort the batch *without* stamping or recording those ten (the streak is held
   back and dropped), because "every file failed at once" is a mount, not ten
-  damaged comics. ``_is_definitely_gone`` is the same evidence rule: a missing
-  parent directory proves nothing.
+  damaged comics. ``helpers.library.is_path_provably_gone`` is the evidence
+  rule: a missing file proves something only while its library root is
+  mounted (non-empty), and a file proven gone is forgotten rather than counted
+  toward the streak (#693).
 - **Heavy checks are paced separately from the cheap ones.** The series.json,
   staging-folder and empty-folder walks run at most once a day on a schedule
   (``CHEAP_CHECK_INTERVAL``), though the batch runs every time. A manual run does
@@ -289,7 +291,11 @@ def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
         "aborted": False, "cleared": 0,
     }
     started = time.monotonic()
+    vanished = []
     try:
+        from helpers.library import get_library_roots, is_path_provably_gone
+
+        roots, mounted = get_library_roots(), {}
         todo = files_needing_check(limit, recheck_days, _unreachable_roots())
         pending = []  # outcomes held back until the streak is known to be clean
         streak = 0
@@ -334,6 +340,17 @@ def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
                         stats["missing"] += 1
                         streak = 0
                         continue
+                    if is_path_provably_gone(path, roots=roots, mounted=mounted):
+                        # Its whole folder went, in a library that is mounted:
+                        # deleted or moved outside CLU. Not a mount problem, so
+                        # no streak and no integrity row; the index forgets it
+                        # (#693). Counting these as I/O errors aborted every
+                        # batch, because they are never stamped and so head
+                        # the queue for good.
+                        vanished.append(path)
+                        stats["missing"] += 1
+                        streak = 0
+                        continue
                     streak += 1
                     pending.append((path, item["size"], item["mtime"], None, None, None, None,
                                     FileNotFoundError(path)))
@@ -359,6 +376,12 @@ def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
     except Exception as e:
         app_logger.error(f"Library health batch failed: {e}")
         stats["aborted"] = True
+    if vanished:
+        # After the batch's own connection is closed: forget_deleted_paths
+        # opens its own, and a second writer would wait out busy_timeout.
+        from core.database import forget_deleted_paths
+
+        forget_deleted_paths(vanished)
     return stats
 
 
@@ -1394,6 +1417,12 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
         limit = batch if batch is not None else max(1, get_int("LIBRARY_HEALTH_BATCH"))
         recheck_days = max(1, get_int("LIBRARY_HEALTH_RECHECK_DAYS"))
 
+        # Before the batch and the duplicate count, both of which read the
+        # index: a folder deleted outside CLU otherwise stays in it, and its
+        # comics pair up as "duplicates" of the copies they were moved to.
+        from core.database import prune_vanished_index_dirs
+
+        result["pruned_dirs"] = prune_vanished_index_dirs()
         stats = run_batch(limit, recheck_days, time_budget=time_budget, op_id=op_id)
         stats["pruned"] = prune_health_rows()
         state["last_batch"] = stats

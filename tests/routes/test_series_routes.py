@@ -544,7 +544,7 @@ class TestLibrariesApi:
 
         assert op["op_type"] == "index"
         assert op["status"] == "completed"
-        sync.assert_called_once_with([{"path": "x"}])
+        sync.assert_called_once_with([{"path": "x"}], walked_roots=[])
 
     @patch("core.database.add_library", return_value=1)
     def test_failed_index_rebuild_marks_the_operation(self, mock_add, client, tmp_path):

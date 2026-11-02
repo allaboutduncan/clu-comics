@@ -1230,9 +1230,31 @@
         });
     }
 
+    function rebuildFileIndex() {
+        var btn = document.getElementById('pf-index-rebuild');
+        if (btn) btn.disabled = true;
+        CLU.showToast('File index', 'Re-reading your library folders…', 'info');
+        postJson('/api/rebuild-file-index').then(function (res) {
+            if (btn) btn.disabled = false;
+            if (!res.ok || !res.data.success) {
+                CLU.showError((res.data && (res.data.error || res.data.message)) ||
+                    'Could not rebuild the file index');
+                return;
+            }
+            CLU.showSuccess('File index rebuilt: ' + res.data.added + ' added, ' +
+                res.data.removed + ' removed');
+            return Promise.all([loadHealth(), refresh()]);
+        }).catch(function () {
+            if (btn) btn.disabled = false;
+            CLU.showError('Could not rebuild the file index');
+        });
+    }
+
     function bindHealth() {
         var scanBtn = document.getElementById('pf-health-scan');
         if (scanBtn) scanBtn.addEventListener('click', runHealthScan);
+        var rebuildBtn = document.getElementById('pf-index-rebuild');
+        if (rebuildBtn) rebuildBtn.addEventListener('click', rebuildFileIndex);
         var enabled = document.getElementById('pf-health-enabled');
         if (enabled) {
             enabled.addEventListener('change', function () {

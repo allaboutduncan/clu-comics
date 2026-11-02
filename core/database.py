@@ -3985,6 +3985,172 @@ def delete_file_index_entry(path):
         return False
 
 
+def move_indexed_path(old_path, new_path, is_dir):
+    """Follow a move within the libraries: the index rows and every path reference.
+
+    The one body behind ``app.update_index_on_move``'s within-library branch and
+    the file watcher's ``on_moved``. The watcher used to only add the
+    destination, so a series moved outside CLU was indexed at both paths, and
+    every issue showed up as a Library Health duplicate of itself (#693).
+
+    The source rows are the ones kept, because they carry the scanned
+    metadata. Any row already at the destination is dropped first: the
+    ``UNIQUE(path)`` conflict would otherwise abort the whole rewrite and leave
+    the source behind.
+
+    Returns:
+        Number of index rows moved. Never raises.
+    """
+    if not old_path or not new_path or old_path == new_path:
+        return 0
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return 0
+            c = conn.cursor()
+            old_like, new_like = _like_prefix(old_path), _like_prefix(new_path)
+            name = os.path.basename(new_path)
+            parent = os.path.dirname(new_path)
+
+            if is_dir:
+                # Destination rows that a source row is about to land on.
+                c.execute(
+                    "DELETE FROM file_index WHERE (path = ? OR path LIKE ? ESCAPE '\\') "
+                    "AND (? || SUBSTR(path, ?)) IN (SELECT path FROM file_index "
+                    "WHERE path = ? OR path LIKE ? ESCAPE '\\')",
+                    (new_path, new_like, old_path, len(new_path) + 1, old_path, old_like),
+                )
+            else:
+                c.execute(
+                    "DELETE FROM file_index WHERE path = ? AND EXISTS "
+                    "(SELECT 1 FROM file_index WHERE path = ?)",
+                    (new_path, old_path),
+                )
+
+            c.execute(
+                "UPDATE file_index SET path = ?, name = ?, parent = ?, "
+                "last_updated = CURRENT_TIMESTAMP WHERE path = ?",
+                (new_path, name, parent, old_path),
+            )
+            moved = c.rowcount
+            if is_dir:
+                c.execute(
+                    "UPDATE file_index SET path = ? || SUBSTR(path, ?), "
+                    "parent = ? || SUBSTR(parent, ?) "
+                    "WHERE path LIKE ? ESCAPE '\\'",
+                    (new_path, len(old_path) + 1, new_path, len(old_path) + 1, old_like),
+                )
+                moved += c.rowcount
+            # Own connection passed in: a second one would wait on this
+            # transaction's writer lock for the whole busy_timeout.
+            move_path_references(old_path, new_path, is_dir=is_dir, conn=conn)
+            conn.commit()
+        invalidate_metadata_browser_cache()
+        return moved
+    except Exception as e:
+        app_logger.error(f"Failed to move index entries {old_path} -> {new_path}: {e}")
+        return 0
+
+
+def _like_prefix(path):
+    """``LIKE`` pattern for everything under *path*, for use with ``ESCAPE '\\'``.
+
+    Unescaped, ``_`` and ``%`` in a folder name are wildcards, so the subtree of
+    ``/data/X_Men`` would also take in ``/data/X-Men``.
+    """
+    escaped = path.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}/%"
+
+
+def prune_vanished_index_dirs():
+    """Drop indexed folders that are provably gone, with everything under them.
+
+    The file watcher misses events on Docker/Unraid volumes, and the full
+    index rebuild is an opt-in schedule, so a folder deleted outside CLU
+    used to stay in ``file_index`` for good. Its comics kept showing up on
+    Missing XML and as Library Health duplicates of the copies they were
+    moved to (#693).
+
+    This costs one ``stat`` per indexed folder, not one per comic. A folder
+    only counts as gone when its library root is mounted (non-empty), per
+    ``helpers.library.is_path_provably_gone``, so a NAS that is asleep looks
+    like "could not tell", not "everything was deleted". Removal is a
+    detected deletion, the same as the watcher's, so reading-list matches
+    under the folder become gaps again.
+
+    Returns:
+        ``{"dirs": N, "rows": N}``. Never raises.
+    """
+    from helpers.library import get_library_roots, is_root_mounted
+
+    out = {"dirs": 0, "rows": 0}
+    try:
+        roots = [
+            os.path.normpath(r) for r in get_library_roots() if is_root_mounted(r)
+        ]
+        if not roots:
+            return out
+
+        with db_conn() as conn:
+            if not conn:
+                return out
+            candidates = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT path FROM file_index WHERE type = 'directory' "
+                    "UNION SELECT DISTINCT parent FROM file_index "
+                    "WHERE type = 'file' AND parent IS NOT NULL"
+                ).fetchall()
+                if row[0]
+            ]
+
+            def under_mounted_root(p):
+                n = os.path.normpath(p)
+                return any(n != r and n.startswith(r + os.sep) for r in roots)
+
+            # Shortest first, so a vanished folder's subfolders are skipped
+            # rather than stat'ed and deleted one by one.
+            vanished = []
+            for d in sorted(set(candidates), key=len):
+                if any(d.startswith(v + "/") for v in vanished):
+                    continue
+                if not under_mounted_root(d) or os.path.exists(d):
+                    continue
+                vanished.append(d)
+
+            if not vanished:
+                return out
+
+            c = conn.cursor()
+            for d in vanished:
+                prefix = _like_prefix(d)
+                c.execute(
+                    "DELETE FROM file_index WHERE path = ? "
+                    "OR path LIKE ? ESCAPE '\\'",
+                    (d, prefix),
+                )
+                out["rows"] += c.rowcount
+                c.execute(
+                    "DELETE FROM file_metadata_tags WHERE file_path = ? "
+                    "OR file_path LIKE ? ESCAPE '\\'",
+                    (d, prefix),
+                )
+                clear_path_references(d, conn=conn)
+            conn.commit()
+            out["dirs"] = len(vanished)
+
+        invalidate_metadata_browser_cache()
+        app_logger.info(
+            f"Pruned {out['dirs']} vanished folder(s) from the file index "
+            f"({out['rows']} rows)"
+        )
+        for d in vanished:
+            app_logger.debug(f"Pruned vanished folder from index: {d}")
+    except Exception as e:
+        app_logger.error(f"Failed to prune vanished folders from the file index: {e}")
+    return out
+
+
 def delete_file_index_entries(paths, dir_paths=None):
     """
     Batch-delete multiple entries from the file index in a single transaction.
@@ -4071,7 +4237,7 @@ def clear_file_index_from_db():
         return False
 
 
-def sync_file_index_incremental(filesystem_entries):
+def sync_file_index_incremental(filesystem_entries, walked_roots=None):
     """
     Incrementally sync file_index with filesystem.
 
@@ -4081,6 +4247,10 @@ def sync_file_index_incremental(filesystem_entries):
 
     Args:
         filesystem_entries: List of dicts with {path, name, type, size, parent, has_thumbnail, modified_at}
+        walked_roots: The library roots the scan actually walked. When given,
+            only rows under them can be removed. A root the scan skipped
+            (unmounted, asleep) contributed no entries, and without this every
+            one of its rows read as deleted, metadata included.
 
     Returns:
         Dict with counts: {'added': N, 'removed': N, 'unchanged': N, 'new_paths': [...]}
@@ -4103,6 +4273,11 @@ def sync_file_index_incremental(filesystem_entries):
         new_paths = fs_paths - db_paths  # In filesystem, not in DB -> ADD
         removed_paths = db_paths - fs_paths  # In DB, not in filesystem -> REMOVE
         existing_paths = fs_paths & db_paths  # In both -> KEEP (preserve metadata)
+
+        if walked_roots is not None:
+            # Trailing "/" so /data/Batman never claims /data/Batman Beyond.
+            prefixes = tuple(r.rstrip("/") + "/" for r in walked_roots)
+            removed_paths = {p for p in removed_paths if p.startswith(prefixes)}
 
         # Remove orphaned entries
         if removed_paths:
@@ -10394,7 +10569,8 @@ def clear_path_references(path, conn=None):
                 return False
 
         c = conn.cursor()
-        params = (path, f"{path}/%")
+        # Escaped, or "_" in "/data/X_Men" also clears "/data/X-Men/...".
+        params = (path, _like_prefix(path))
         cleared = 0
         for table, column in (
             ("reading_list_entries", "matched_file_path"),
@@ -10403,7 +10579,7 @@ def clear_path_references(path, conn=None):
         ):
             c.execute(
                 f"UPDATE {table} SET {column} = NULL "
-                f"WHERE {column} = ? OR {column} LIKE ?",
+                f"WHERE {column} = ? OR {column} LIKE ? ESCAPE '\\'",
                 params,
             )
             cleared += c.rowcount
