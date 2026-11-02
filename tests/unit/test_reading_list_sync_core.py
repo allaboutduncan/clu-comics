@@ -454,6 +454,27 @@ class TestSyncAll:
         synced_ids = [c.args[0] for c in mock_sync_one.call_args_list]
         assert synced_ids == [1, 2]
 
+    @patch("core.reading_list_sync.sync_one")
+    @patch("core.reading_list_sync._metron_bulk_prefilter", return_value=set())
+    @patch("core.database.get_syncable_reading_lists")
+    def test_an_excluded_list_is_never_synced(self, mock_rows, mock_prefilter,
+                                              mock_sync_one):
+        """A list excluded from auto-sync keeps its hand edits: the sweep must
+        not probe it, nor hand it to the Metron prefilter."""
+        from core.reading_list_sync import sync_all
+
+        rows = self._rows()
+        rows[0]["exclude_auto_sync"] = 1
+        mock_rows.return_value = rows
+        mock_sync_one.return_value = {"success": True, "changed": False}
+
+        summary = sync_all()
+
+        synced_ids = [c.args[0] for c in mock_sync_one.call_args_list]
+        assert synced_ids == [2]
+        assert [r["id"] for r in mock_prefilter.call_args.args[0]] == [2]
+        assert summary["excluded"] == 1
+
     @patch("core.reading_list_sync.sync_one", side_effect=RuntimeError("boom"))
     @patch("core.reading_list_sync._metron_bulk_prefilter", return_value=set())
     @patch("core.database.get_syncable_reading_lists")

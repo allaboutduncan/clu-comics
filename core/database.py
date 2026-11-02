@@ -868,6 +868,13 @@ def _init_db_locked():
             # must not silently start 300 searches on upgrade.
             app_logger.info("Migrating reading_lists table: adding track_wanted column")
             c.execute("ALTER TABLE reading_lists ADD COLUMN track_wanted INTEGER DEFAULT 0")
+        if "exclude_auto_sync" not in columns:
+            # Opt-out, per list, of the scheduled reading-list sync. A user who
+            # edits a list by hand would otherwise have every edit undone by
+            # the next sweep. The manual Sync button still works -- it is an
+            # explicit request. Default OFF keeps every existing list syncing.
+            app_logger.info("Migrating reading_lists table: adding exclude_auto_sync column")
+            c.execute("ALTER TABLE reading_lists ADD COLUMN exclude_auto_sync INTEGER DEFAULT 0")
 
         # Create reading_list_entries table
         c.execute("""
@@ -12255,6 +12262,30 @@ def set_reading_list_track_wanted(list_id, enabled):
         return True
     except Exception as e:
         app_logger.error(f"Failed to set reading list {list_id} track_wanted: {e}")
+        return False
+
+
+def set_reading_list_exclude_auto_sync(list_id, excluded):
+    """Exclude a reading list from (or return it to) the scheduled sync.
+
+    ``core.reading_list_sync.sync_all`` skips an excluded list, so hand edits
+    survive the nightly sweep. The manual Sync button is unaffected.
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.execute(
+                "UPDATE reading_lists SET exclude_auto_sync = ? WHERE id = ?",
+                (1 if excluded else 0, list_id),
+            )
+            conn.commit()
+            return True
+    except Exception as e:
+        app_logger.error(f"Failed to set reading list {list_id} exclude_auto_sync: {e}")
         return False
 
 

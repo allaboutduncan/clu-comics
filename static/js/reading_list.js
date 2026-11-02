@@ -2907,6 +2907,35 @@ function toggleTrackWanted(listId, btn) {
         });
 }
 
+// Exclude this list from the scheduled reading-list sync, so hand edits are
+// not overwritten. The manual Sync item still works on an excluded list.
+function toggleExcludeAutoSync(listId, btn) {
+    const exclude = btn.dataset.excluded !== '1';
+    const box = btn.querySelector('input[type="checkbox"]');
+    btn.disabled = true;
+
+    fetch(`/api/reading-lists/${listId}/auto-sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ excluded: exclude })
+    })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            if (!data.success) {
+                CLU.toast(data.message || 'Could not update this list', 'error');
+                return;
+            }
+            btn.dataset.excluded = data.excluded ? '1' : '0';
+            if (box) box.checked = !!data.excluded;
+            CLU.toast(data.message, 'success');
+        })
+        .catch(err => {
+            btn.disabled = false;
+            CLU.toast('Error: ' + err.message, 'error');
+        });
+}
+
 function syncReadingList(listId) {
     const btn = event.currentTarget;
     const originalHtml = btn.innerHTML;

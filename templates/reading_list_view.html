@@ -225,6 +225,17 @@
                 {% if reading_list.last_synced %}data-bs-toggle="tooltip" data-bs-placement="bottom" title="Last synced: {{ reading_list.last_synced }}"{% endif %}>
                 <i class="bi bi-arrow-repeat me-2" aria-hidden="true"></i>Sync
             </button></li>
+            {# Keeps hand edits from being overwritten by the scheduled sync
+               (Schedules -> Reading List Sync). Sync above still works. #}
+            <li><button class="dropdown-item d-flex align-items-center" id="excludeAutoSyncBtn"
+                data-excluded="{{ 1 if reading_list.exclude_auto_sync else 0 }}"
+                onclick="toggleExcludeAutoSync({{ reading_list.id }}, this)"
+                title="Skip this list during the scheduled reading list sync so manual edits are kept">
+                <span class="form-check form-switch mb-0 me-2">
+                    <input class="form-check-input" type="checkbox" tabindex="-1" aria-hidden="true"
+                        style="pointer-events: none;" {% if reading_list.exclude_auto_sync %}checked{% endif %}>
+                </span>Exclude from Auto-Sync
+            </button></li>
             {% endif %}
             {# Shown for every list, Sync or not: Sync pulls what the source now
                holds, this re-runs local matching on what is already here. #}
