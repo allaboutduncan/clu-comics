@@ -43,6 +43,175 @@
     justify-content: center;
 }
 
+/* Text layout (#694): the same .grid-item nodes as rows -- icon, name, counts
+   or size, then the badges, row buttons and menu. Only the layout changes, so
+   the read icon (inside .issue-badge), selection and menus keep working.
+   .item-info is display:contents so its icon, details and menu become row
+   items that `order` can interleave with the thumbnail container's badges;
+   it needs !important to beat Bootstrap's .d-flex. The art is hidden, not
+   removed: lazy covers then never load here, and do on switching back. */
+.list-icon {
+    display: none;
+}
+
+.file-grid.view-text {
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 0.25rem 0;
+}
+
+.file-grid.view-text .grid-item {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.45rem 0.75rem;
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.file-grid.view-text .grid-item:hover {
+    transform: none;
+    background-color: var(--bs-tertiary-bg);
+}
+
+.file-grid.view-text .item-info {
+    display: contents !important;
+}
+
+.file-grid.view-text .list-icon {
+    display: inline-block;
+    order: 0;
+    flex: 0 0 auto;
+    font-size: 1.15rem;
+    color: var(--bs-secondary-color);
+}
+
+.file-grid.view-text .list-icon.bi-folder-fill {
+    color: var(--bs-warning);
+}
+
+.file-grid.view-text .item-details {
+    order: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.file-grid.view-text .thumbnail-container {
+    order: 2;
+    position: static;
+    width: auto;
+    aspect-ratio: auto;
+    border-radius: 0;
+    overflow: visible;
+    box-shadow: none;
+    contain: none;
+    gap: 0.4rem;
+    /* A slot as wide as the usual badges plus a row button, so the counts and
+       sizes before it line up as a column whether or not a row has badges. */
+    flex: 0 0 auto;
+    min-width: 7.5rem;
+    justify-content: flex-end;
+}
+
+.file-grid.view-text .item-actions {
+    order: 3;
+    flex: 0 0 auto;
+}
+
+/* Inline styles set by renderGrid (display:block on folder art, flex on the
+   row buttons) are why these need !important. */
+.file-grid.view-text .thumbnail,
+.file-grid.view-text .icon-overlay,
+.file-grid.view-text .info-button {
+    display: none !important;
+}
+
+.file-grid.view-text .issue-badge,
+.file-grid.view-text .xml-badge {
+    position: static;
+    order: -1;
+    white-space: nowrap;
+}
+
+/* Favorite / To Read: inline icon buttons, shown on row hover or focus and
+   always once set, so a marked row says so without hovering. */
+.file-grid.view-text .favorite-button,
+.file-grid.view-text .to-read-button {
+    position: static;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+}
+
+.file-grid.view-text .favorite-button i,
+.file-grid.view-text .to-read-button i {
+    color: var(--bs-secondary-color);
+}
+
+.file-grid.view-text .favorite-button:hover i,
+.file-grid.view-text .to-read-button:hover i {
+    color: var(--bs-emphasis-color);
+}
+
+.file-grid.view-text .grid-item:hover .favorite-button,
+.file-grid.view-text .grid-item:hover .to-read-button,
+.file-grid.view-text .favorite-button:focus-visible,
+.file-grid.view-text .to-read-button:focus-visible,
+.file-grid.view-text .favorite-button.favorited,
+.file-grid.view-text .to-read-button.marked {
+    opacity: 1;
+}
+
+.file-grid.view-text .favorite-button.favorited i,
+.file-grid.view-text .to-read-button.marked i {
+    color: var(--bs-primary);
+}
+
+/* Selection: the row is the target, and the check sits inline at its end. */
+.file-grid.view-text .grid-item.file.bulk-selected {
+    background-color: rgba(var(--bs-primary-rgb), 0.15);
+    box-shadow: inset 3px 0 0 var(--clu-select);
+}
+
+.file-grid.view-text .grid-item.file.bulk-selected .thumbnail-container {
+    outline: none;
+}
+
+.file-grid.view-text .grid-item.file.bulk-selected .thumbnail-container::after {
+    content: none;
+}
+
+.file-grid.view-text .selection-checkbox {
+    position: static;
+    order: 1;
+    flex: 0 0 auto;
+}
+
+/* Wide enough for columns: name, then counts/size in a right-aligned column. */
+@media (min-width: 768px) {
+    .file-grid.view-text .item-details {
+        display: flex;
+        align-items: baseline;
+        gap: 1rem;
+    }
+
+    .file-grid.view-text .item-name {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .file-grid.view-text .item-meta {
+        flex: 0 0 11rem;
+        text-align: right;
+    }
+}
+
+@media (pointer: coarse) {
+    .file-grid.view-text .favorite-button,
+    .file-grid.view-text .to-read-button {
+        opacity: 1;
+    }
+}
+
 .grid-item {
     cursor: pointer;
     transition: transform 0.2s;
