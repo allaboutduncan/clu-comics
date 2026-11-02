@@ -91,7 +91,10 @@
                     onclick="refreshCurrentView(true, true)" aria-label="Refresh" title="Refresh">
                     <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
                 </button>
-                <div class="btn-group btn-group-sm" role="group" aria-label="Card size">
+                {# Text is the same grid items laid out as rows (.view-text in
+                   collection.css), so selection, menus and read state work the
+                   same in every layout. #}
+                <div class="btn-group btn-group-sm" role="group" aria-label="Layout">
                     <button aria-label="Standard card size" type="button" class="btn btn-outline-secondary" id="cardSizeStandardBtn"
                         onclick="changeCardSize('standard')" title="Standard card size" aria-pressed="true">
                         <i class="bi bi-grid-3x3-gap-fill" aria-hidden="true"></i>
@@ -99,6 +102,10 @@
                     <button aria-label="Large card size" type="button" class="btn btn-outline-secondary" id="cardSizeLargeBtn"
                         onclick="changeCardSize('large')" title="Large card size" aria-pressed="false">
                         <i class="bi bi-grid-fill" aria-hidden="true"></i>
+                    </button>
+                    <button aria-label="Text list" type="button" class="btn btn-outline-secondary" id="cardSizeTextBtn"
+                        onclick="changeCardSize('text')" title="Text list" aria-pressed="false">
+                        <i class="bi bi-list-ul" aria-hidden="true"></i>
                     </button>
                 </div>
                 {{ per_page_select('itemsPerPage', clu_default_per_page('collection'), default=clu_default_per_page('collection')) }}
@@ -253,6 +260,8 @@
             </span>
         </div>
         <div class="item-info d-flex justify-content-between align-items-start mt-2">
+            {# Folder/file icon for the Text layout only; renderGrid sets it. #}
+            <i class="bi list-icon" aria-hidden="true"></i>
             <div class="item-details text-truncate flex-grow-1">
                 {# No .text-dark here: it is `color: … !important`, which beats the
                    theme-aware .item-name rules in collection.css and leaves filenames

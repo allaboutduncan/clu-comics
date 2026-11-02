@@ -1,5 +1,6 @@
 """Tests for routes/collection.py -- collection browse and search endpoints."""
 import os
+from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -115,18 +116,37 @@ class TestCollectionPage:
         assert b'"/data/Marvel"' not in resp.data
 
     @patch("routes.collection.get_dashboard_sections", return_value=[])
-    def test_collection_offers_both_card_sizes(
+    def test_collection_offers_every_layout(
             self, mock_sections, client):
-        """The card-size toggle drives collection.js's changeCardSize(), whose
+        """The layout toggle drives collection.js's changeCardSize(), whose
         allowlist is keyed on these exact size names."""
         html = client.get("/collection").get_data(as_text=True)
 
         for button_id, size in (
             ("cardSizeStandardBtn", "standard"),
             ("cardSizeLargeBtn", "large"),
+            ("cardSizeTextBtn", "text"),
         ):
             assert f'id="{button_id}"' in html
             assert f"changeCardSize('{size}')" in html
+
+    @patch("routes.collection.get_dashboard_sections", return_value=[])
+    def test_text_layout_restyles_the_grid_items(
+            self, mock_sections, client):
+        """The Text layout (#694) is a class on #file-grid over the same
+        .grid-item template, not a second renderer: a second one would have
+        to re-do the read icon, selection and menu wiring and would drift."""
+        root = Path(__file__).resolve().parents[2]
+        js = (root / "static/js/collection.js").read_text(encoding="utf-8")
+        css = (root / "static/css/collection.css").read_text(encoding="utf-8")
+        html = client.get("/collection").get_data(as_text=True)
+
+        assert "text: 'view-text'" in js
+        assert "text: document.getElementById('cardSizeTextBtn')" in js
+        assert ".file-grid.view-text" in css
+        # The row's folder/file icon lives in the one template renderGrid clones.
+        template = html.split('id="grid-item-template"', 1)[1].split("</template>", 1)[0]
+        assert 'class="bi list-icon"' in template
 
 
 class TestToReadPage:

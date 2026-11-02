@@ -1738,6 +1738,13 @@ function renderGrid(items) {
         const icon = iconOverlay.querySelector('i');
         const nameEl = clone.querySelector('.item-name');
         const metaEl = clone.querySelector('.item-meta');
+        const listIcon = clone.querySelector('.list-icon');
+        if (listIcon) {
+            // The Text layout's only picture. Comics and other files differ by
+            // hasThumbnail, the same test that picks the card art below.
+            listIcon.classList.add(item.type === 'folder' ? 'bi-folder-fill'
+                : item.hasThumbnail ? 'bi-file-earmark' : 'bi-file-earmark-text');
+        }
 
         const actionsDropdown = clone.querySelector('.item-actions');
 
@@ -3003,9 +3010,12 @@ function restoreItemsPerPage() {
     }
 }
 
-// Grid card sizes. The value is the class appended to #file-grid ('' = the
+// Grid layouts. The value is the class appended to #file-grid ('' = the
 // stylesheet default), and doubles as the allowlist for the saved preference.
-const CARD_SIZES = { standard: '', large: 'cards-lg' };
+// 'text' is not a separate renderer: it restyles the same .grid-item nodes as
+// rows, so everything renderGrid wires up (read state, selection, menus,
+// progressive folder counts) holds in every layout.
+const CARD_SIZES = { standard: '', large: 'cards-lg', text: 'view-text' };
 const CARD_SIZE_STORAGE_KEY = 'collectionCardSize';
 
 /**
@@ -3039,11 +3049,15 @@ function applyCardSize(size) {
             if (cls) grid.classList.remove(cls);
         });
         if (CARD_SIZES[size]) grid.classList.add(CARD_SIZES[size]);
+        // Name widths change with the layout, so which names are truncated
+        // (and so need a tooltip) does too.
+        initNameTooltips(grid);
     }
 
     const buttons = {
         standard: document.getElementById('cardSizeStandardBtn'),
         large: document.getElementById('cardSizeLargeBtn'),
+        text: document.getElementById('cardSizeTextBtn'),
     };
     Object.entries(buttons).forEach(([key, btn]) => {
         if (!btn) return;
