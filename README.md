@@ -115,6 +115,10 @@ Windows and WSL users hitting file permission errors should read **[docs/WINDOWS
 
 Map your main library to `/data`, the default library path on a new install. Any other path works too (for example `/comics`): map it, then add it or point the default library at it under Settings → Libraries. Additional libraries are mapped and added the same way. Full install walkthrough: **[clucomics.org quickstart](https://clucomics.org/getting-started/quickstart/)**.
 
+## One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/Clu%20Comics/)
+
 ## Integrations
 
 | Integration | What it is used for |
