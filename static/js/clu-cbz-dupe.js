@@ -15,7 +15,9 @@
  *   options  – { keepIndex: column currently chosen as the keeper (or -1),
  *                onKeep(index): called by "Keep this one"; no buttons without it,
  *                onRename(index, newName): renames that copy and returns a
- *                  Promise of {ok, error, path, name}; no rename button without it }
+ *                  Promise of {ok, error, path, name}; no rename button without it,
+ *                onMerge(): offered for a pair as "Merge pages…"; the viewer
+ *                  closes first, and the page opens CLU.showCBZMerge }
  *
  * DOM contract:
  *   #cbzDupeModal, #cbzDupeModalLabel, #cbzDupeContent  (modal_cbz_dupe.html)
@@ -34,6 +36,7 @@
   var _cols = [];          // per column: { path, count, page }
   var _onKeep = null;
   var _onRename = null;
+  var _onMerge = null;
   var _files = [];         // what is shown, kept so a rename can re-render it
   var _results = [];
 
@@ -530,6 +533,9 @@
     _cols = [];
     _onKeep = typeof options.onKeep === 'function' ? options.onKeep : null;
     _onRename = typeof options.onRename === 'function' ? options.onRename : null;
+    _onMerge = files.length === 2 && typeof options.onMerge === 'function' ? options.onMerge : null;
+    var mergeBtn = document.getElementById('cbzDupeMergeBtn');
+    if (mergeBtn) mergeBtn.style.display = _onMerge ? '' : 'none';
     // Copies, so a rename shown here never edits the caller's objects behind its back.
     files = files.map(function (f) { return Object.assign({}, f); });
     _files = files;
@@ -584,12 +590,23 @@
         _cols = [];
         _onKeep = null;
         _onRename = null;
+        _onMerge = null;
         _files = [];
         _results = [];
       });
     }
     var content = document.getElementById('cbzDupeContent');
     if (content) content.addEventListener('click', _onContentClick);
+    var mergeBtn = document.getElementById('cbzDupeMergeBtn');
+    if (mergeBtn) {
+      mergeBtn.addEventListener('click', function () {
+        var cb = _onMerge;
+        if (!cb) return;
+        // Two fullscreen modals must not stack; the merge opens once this one is gone.
+        modal.addEventListener('hidden.bs.modal', function () { cb(); }, { once: true });
+        bootstrap.Modal.getOrCreateInstance(modal).hide();
+      });
+    }
   }
 
   if (document.readyState === 'loading') {

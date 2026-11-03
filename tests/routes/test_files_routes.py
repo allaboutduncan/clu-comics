@@ -1334,3 +1334,160 @@ class TestCleanupOrphanFiles:
 
         assert resp.status_code == 400
         assert resp.get_json()["success"] is False
+
+
+def _make_page_cbz(path, names, size=(50, 75)):
+    import io
+    from PIL import Image
+    with zipfile.ZipFile(str(path), "w") as zf:
+        for n in names:
+            buf = io.BytesIO()
+            Image.new("RGB", size, color=(100, 100, 200)).save(buf, format="PNG")
+            zf.writestr(n, buf.getvalue())
+    return str(path)
+
+
+class TestMergePages:
+
+    @pytest.fixture
+    def pair(self, tmp_path):
+        a = tmp_path / "dl"
+        b = tmp_path / "lib"
+        a.mkdir()
+        b.mkdir()
+        base = _make_page_cbz(a / "Batman 041 (1947).cbz", ["p1.png", "p2.png"], size=(100, 150))
+        donor = _make_page_cbz(b / "Batman 041 (1947).cbz",
+                               ["wrap/b 001.png", "wrap/b 002.png", "wrap/b 003.png"])
+        return base, donor
+
+    @pytest.fixture
+    def fake_trash(self, tmp_path):
+        import shutil
+        trash_dir = tmp_path / "trash"
+        trash_dir.mkdir()
+
+        def fake(src):
+            shutil.move(src, str(trash_dir / (os.path.basename(src) + str(len(os.listdir(trash_dir))))))
+            return {"trashed": True, "path": src}
+
+        with patch("cbz_ops.merge_pages.move_to_trash", side_effect=fake), \
+                patch("routes.files.move_to_trash", side_effect=fake) as route_trash:
+            yield route_trash
+
+    def test_inspect_missing_params(self, client):
+        assert client.get("/api/merge-pages/inspect?base=/a.cbz").status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_inspect_access_denied(self, mock_valid, client, pair):
+        resp = client.get("/api/merge-pages/inspect", query_string={"base": pair[0], "donor": pair[1]})
+        assert resp.status_code == 403
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_inspect_same_file(self, mock_valid, client, pair):
+        resp = client.get("/api/merge-pages/inspect", query_string={"base": pair[0], "donor": pair[0]})
+        assert resp.status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_inspect_non_cbz(self, mock_valid, client, pair, tmp_path):
+        other = tmp_path / "x.cbr"
+        other.write_bytes(b"x")
+        resp = client.get("/api/merge-pages/inspect", query_string={"base": pair[0], "donor": str(other)})
+        assert resp.status_code == 400
+
+    @patch("helpers.library.get_library_for_path")
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_inspect_lists_both_and_suggests_library_copy(self, mock_valid, mock_lib, client, pair):
+        base, donor = pair
+        mock_lib.side_effect = lambda p: {"id": 1} if p == base else None
+        resp = client.get("/api/merge-pages/inspect", query_string={"base": base, "donor": donor})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["base"]["page_count"] == 2
+        assert data["donor"]["pages"][0]["entry"] == "wrap/b 001.png"
+        assert data["base"]["median"] == [100, 150]
+        assert data["suggested_target"] == "base"
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_page_serves_jpeg_by_entry(self, mock_valid, client, pair):
+        resp = client.get("/api/merge-pages/page", query_string={"path": pair[1], "entry": "wrap/b 002.png"})
+        assert resp.status_code == 200
+        assert resp.mimetype == "image/jpeg"
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_page_unknown_entry_404(self, mock_valid, client, pair):
+        resp = client.get("/api/merge-pages/page", query_string={"path": pair[1], "entry": "../secret.png"})
+        assert resp.status_code == 404
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_page_access_denied(self, mock_valid, client, pair):
+        resp = client.get("/api/merge-pages/page", query_string={"path": pair[1], "entry": "wrap/b 001.png"})
+        assert resp.status_code == 403
+
+    @patch("core.thumbnail_cache.regenerate_thumbnail")
+    @patch("core.database.update_file_index_entry")
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_replaces_target(self, mock_valid, mock_index, mock_thumb, client, pair, fake_trash):
+        base, donor = pair
+        resp = client.post("/api/merge-pages/commit", json={
+            "base": base, "donor": donor, "target": "donor",
+            "pages": [{"src": "base", "entry": "p1.png"},
+                      {"src": "donor", "entry": "wrap/b 002.png"},
+                      {"src": "base", "entry": "p2.png"}],
+        })
+        assert resp.status_code == 200, resp.get_json()
+        data = resp.get_json()
+        assert data["success"] is True and data["page_count"] == 3
+        with zipfile.ZipFile(donor) as zf:
+            assert zf.namelist() == ["Batman 041 (1947) 001.png", "Batman 041 (1947) 002.png",
+                                     "Batman 041 (1947) 003.png"]
+        mock_index.assert_called_once()
+        assert mock_index.call_args[0][0] == donor
+        mock_thumb.assert_called_once_with(donor)
+        fake_trash.assert_not_called()                  # delete_other was not asked for
+        assert os.path.isfile(base)
+
+    @patch("routes.files.threading.Thread")
+    @patch("core.thumbnail_cache.regenerate_thumbnail")
+    @patch("core.database.update_file_index_entry")
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_delete_other(self, mock_valid, mock_index, mock_thumb, mock_thread, client, pair, fake_trash):
+        base, donor = pair
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_delete = MagicMock()
+        with patch.dict("sys.modules", {"app": fake_app}):
+            resp = client.post("/api/merge-pages/commit", json={
+                "base": base, "donor": donor, "target": "donor", "delete_other": True,
+                "pages": [{"src": "base", "entry": "p1.png"}],
+            })
+        assert resp.status_code == 200
+        assert resp.get_json()["other_removed"] is True
+        fake_trash.assert_called_once_with(base)
+        assert not os.path.exists(base)
+        assert os.path.isfile(donor)
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_rejects_unknown_page(self, mock_valid, client, pair, fake_trash):
+        base, donor = pair
+        before = open(donor, "rb").read()
+        resp = client.post("/api/merge-pages/commit", json={
+            "base": base, "donor": donor, "target": "donor",
+            "pages": [{"src": "donor", "entry": "../../etc/passwd"}],
+        })
+        assert resp.status_code == 400
+        assert open(donor, "rb").read() == before
+
+    @patch("routes.files.is_valid_library_path", return_value=True)
+    def test_commit_bad_target(self, mock_valid, client, pair):
+        resp = client.post("/api/merge-pages/commit", json={
+            "base": pair[0], "donor": pair[1], "target": "elsewhere",
+            "pages": [{"src": "base", "entry": "p1.png"}],
+        })
+        assert resp.status_code == 400
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_commit_access_denied(self, mock_valid, client, pair):
+        resp = client.post("/api/merge-pages/commit", json={
+            "base": pair[0], "donor": pair[1], "target": "donor",
+            "pages": [{"src": "base", "entry": "p1.png"}],
+        })
+        assert resp.status_code == 403
