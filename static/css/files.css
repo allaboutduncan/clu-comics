@@ -392,3 +392,40 @@
 .files-source-views .btn {
     white-space: nowrap;
 }
+
+/* Bulk action bar (fixed bottom; same pattern as .collection-bulk-action-bar).
+   Its colours come from "text-white bg-info" in files.html, so every theme
+   paints it with its own info fill. */
+.files-bulk-action-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 1050;
+    padding: 12px 0;
+    box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+    animation: filesSlideUpBar 0.2s ease-out;
+}
+
+@keyframes filesSlideUpBar {
+    from {
+        transform: translateY(100%);
+        opacity: 0;
+    }
+
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Keep the bottom of both panels reachable while the bar covers it. */
+body.files-bulkbar-open {
+    padding-bottom: 80px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .files-bulk-action-bar {
+        animation: none;
+    }
+}

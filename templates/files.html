@@ -118,6 +118,9 @@
   <a class="dropdown-item" href="#" id="contextCombineFiles">
     <i class="bi bi-collection me-2"></i>Combine Selected Files
   </a>
+  <a class="dropdown-item" href="#" id="contextMergePages" style="display: none;">
+    <i class="bi bi-layers me-2"></i>Merge Files&hellip;
+  </a>
   <a class="dropdown-item text-danger" href="#" id="contextDeleteFiles">
     <i class="bi bi-trash me-2"></i>Delete Selected Files
   </a>
@@ -125,6 +128,36 @@
   <a class="dropdown-item text-danger" href="#" id="contextRemoveXml">
     <i class="bi bi-eraser me-2"></i>Remove XML from Selected
   </a>
+</div>
+
+<!-- Bulk Action Bar (files_context_menu.js updateFilesBulkActionBar) -->
+<div id="filesBulkActionBar" class="files-bulk-action-bar text-white bg-info" style="display: none;">
+  <div class="container-lg d-flex flex-wrap align-items-center justify-content-between gap-2">
+    <div class="d-flex align-items-center gap-3">
+      <span class="text-white fw-bold" id="filesBulkCount">0 items selected</span>
+      <button type="button" class="btn btn-sm btn-light" onclick="clearFileSelection()">
+        <i class="bi bi-x-lg me-1"></i>Clear
+      </button>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      <button type="button" class="btn btn-sm btn-primary" onclick="runBulkAction(createFolderWithSelection)">
+        <i class="bi bi-folder-plus me-1"></i>Create Folder
+      </button>
+      <button type="button" class="btn btn-sm btn-light" id="filesBulkCombine" onclick="runBulkAction(showCombineFilesModal)">
+        <i class="bi bi-collection me-1"></i>Combine Files
+      </button>
+      <button type="button" class="btn btn-sm btn-light" id="filesBulkMerge" onclick="runBulkAction(mergeSelectedPages)"
+        title="Pick pages from two copies of one issue. Ctrl-click one CBZ in each panel.">
+        <i class="bi bi-layers me-1"></i>Merge Files
+      </button>
+      <button type="button" class="btn btn-sm btn-warning" onclick="runBulkAction(showRemoveXmlConfirmation)">
+        <i class="bi bi-eraser me-1"></i>Remove XML
+      </button>
+      <button type="button" class="btn btn-sm btn-danger" onclick="runBulkAction(showDeleteMultipleConfirmation)">
+        <i class="bi bi-trash me-1"></i>Delete
+      </button>
+    </div>
+  </div>
 </div>
 
 {% include 'partials/modal_delete_confirm.html' %}
@@ -529,6 +562,7 @@
 
 {% include 'partials/modal_cbz_edit.html' %}
 {% include 'partials/modal_cbz_split.html' %}
+{% include 'partials/modal_cbz_merge.html' %}
 {% include 'partials/modal_freeform_crop.html' %}
 <!-- Missing File Check Results Modal -->
 <div class="modal fade" id="missingFileCheckModal" tabindex="-1" aria-labelledby="missingFileCheckModalLabel"
@@ -638,6 +672,7 @@
 <script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-split.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-merge.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1000, 9999) | random }}"></script>

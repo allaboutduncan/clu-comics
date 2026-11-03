@@ -1,0 +1,154 @@
+<!-- Merge Pages Modal – shared partial (clu-cbz-merge.js) -->
+<style>
+  #mergeCBZModal .merge-file-card.is-base {
+    border-color: var(--bs-primary);
+    box-shadow: 0 0 0 1px var(--bs-primary);
+  }
+  #mergeCBZModal .merge-file-card .merge-file-path {
+    word-break: break-all;
+  }
+  #mergeCBZModal .merge-page-card {
+    cursor: grab;
+    position: relative;
+  }
+  #mergeCBZModal .merge-page-card.is-excluded .merge-thumb-wrap,
+  #mergeCBZModal .merge-page-card.is-added .merge-thumb-wrap {
+    opacity: 0.3;
+  }
+  #mergeCBZModal .merge-page-card.is-excluded .merge-page-name {
+    text-decoration: line-through;
+  }
+  /* Pages and the file card of the non-base file. The subtle info wash is
+     defined for light and dark by Bootstrap, every Bootswatch theme and the
+     local themes (catppuccin.css), so it reads on all of them. */
+  #mergeCBZModal .merge-page-card.from-donor,
+  #mergeCBZModal .merge-file-card.is-donor {
+    background-color: var(--bs-info-bg-subtle);
+    border-color: var(--bs-info-border-subtle);
+  }
+  #mergeCBZModal .merge-thumb-wrap {
+    height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bs-tertiary-bg);
+    cursor: zoom-in;
+  }
+  #mergeCBZModal .merge-thumb-wrap img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+  }
+  #mergeCBZModal .merge-page-badges {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    right: 4px;
+    display: flex;
+    gap: 4px;
+    pointer-events: none;
+  }
+  #mergeCBZModal .merge-page-meta {
+    font-size: 0.72rem;
+    line-height: 1.25;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  /* The column holding the other file's pages. --bs-secondary-bg is set by
+     Bootstrap (light and dark), every Bootswatch theme and both local theme
+     families, and sits one step off the page body on all of them. */
+  #mergeCBZModal .merge-donor-col {
+    background-color: var(--bs-secondary-bg);
+    border-radius: var(--bs-border-radius);
+    padding-top: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+  #mergeCBZModal .merge-donor-pane {
+    max-height: calc(100vh - 320px);
+    overflow-y: auto;
+  }
+  #mergeCBZModal .merge-ghost {
+    opacity: 0.4;
+  }
+  #mergeCBZModal .merge-chosen {
+    outline: 2px solid var(--bs-primary);
+  }
+  #mergeCBZModal .merge-preview {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    background: rgba(0, 0, 0, 0.85);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  #mergeCBZModal .merge-preview img {
+    max-width: 95%;
+    max-height: 95%;
+    object-fit: contain;
+  }
+</style>
+<div class="modal fade" id="mergeCBZModal" tabindex="-1" aria-labelledby="mergeCBZModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-fullscreen">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title flex-grow-1" id="mergeCBZModalLabel">
+          <i class="bi bi-layers me-2"></i>Merge Pages
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="mergeLoading" class="text-center py-5">
+          <div class="spinner-border" role="status"><span class="visually-hidden">Loading&hellip;</span></div>
+          <p class="mt-2 text-muted">Reading both files&hellip;</p>
+        </div>
+        <div id="mergeContent" style="display: none;">
+          <div class="alert alert-info small py-2">
+            <i class="bi bi-info-circle me-1"></i>
+            Start from the <strong>base</strong> file's pages, then add pages from the other file.
+            Drag to reorder, and click a page's <i class="bi bi-eye-slash"></i> to leave it out.
+            The pages are renumbered in order and written flat (no folders) into the file you choose
+            to replace. That file's original goes to the Trash.
+          </div>
+          <div class="row g-2 mb-3" id="mergeFileCards">
+            <!-- File cards rendered by clu-cbz-merge.js -->
+          </div>
+          <div class="row g-3">
+            <div class="col-lg-8">
+              <h6 class="mb-2">Final file <span class="text-muted small" id="mergeFinalCount"></span></h6>
+              <div id="mergeFinalGrid" class="row row-cols-3 row-cols-md-4 row-cols-xl-6 g-2"></div>
+            </div>
+            <div class="col-lg-4 merge-donor-col">
+              <h6 class="mb-2">Add from <span id="mergeDonorName" class="text-info"></span></h6>
+              <div class="merge-donor-pane">
+                <div id="mergeDonorGrid" class="row row-cols-3 row-cols-lg-2 row-cols-xl-3 g-2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="mergePreview" class="merge-preview" style="display: none;" title="Click to close">
+          <img alt="Page preview">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="me-auto d-flex flex-wrap align-items-center gap-3 small">
+          <span class="fw-semibold">Overwrite:</span>
+          <div id="mergeTargetChoices" class="d-flex gap-3"></div>
+          <div class="form-check mb-0">
+            <input class="form-check-input" type="checkbox" id="mergeDeleteOther">
+            <label class="form-check-label" for="mergeDeleteOther">
+              Also move <span id="mergeOtherName" class="fw-semibold"></span> to the Trash
+            </label>
+          </div>
+          <span id="mergeSummary" class="text-muted"></span>
+        </div>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="mergeCommitBtn">
+          <i class="bi bi-layers me-1"></i>Merge
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>

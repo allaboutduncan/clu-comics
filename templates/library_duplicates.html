@@ -67,11 +67,13 @@
 </div>
 {# Read-only, side-by-side compare of a group's copies (tags, pages, file facts). #}
 {% include 'partials/modal_cbz_dupe.html' %}
+{% include 'partials/modal_cbz_merge.html' %}
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
 <script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/clu-cbz-dupe.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ url_for('static', filename='js/clu-cbz-merge.js') }}?v={{ range(1000, 9999) | random }}"></script>
 <script src="{{ url_for('static', filename='js/library_duplicates.js') }}?v={{ range(1000, 9999) | random }}"></script>
 {% endblock %}

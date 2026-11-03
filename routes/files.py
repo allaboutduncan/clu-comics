@@ -809,6 +809,148 @@ def split_commit():
 
 
 # =============================================================================
+# Merge pages (two copies of one issue -> one CBZ)
+# =============================================================================
+
+def _merge_path_refusal(*paths):
+    """``(message, status)`` when any path may not be merged, else None.
+
+    Access is checked before existence, so a denied path reads like a missing one.
+    """
+    if not all(paths):
+        return "Missing file path", 400
+    for p in paths:
+        normalized = os.path.normpath(p)
+        if not _split_access_allowed(normalized) or file_op_refusal(normalized):
+            return "Access denied", 403
+    for p in paths:
+        if not p.lower().endswith('.cbz'):
+            return "Only .cbz files can be merged", 400
+        if not os.path.isfile(p):
+            return "File not found", 404
+    return None
+
+
+@files_bp.route('/api/merge-pages/inspect', methods=['GET'])
+def merge_pages_inspect():
+    """List the pages of both files, plus which one the merge should replace."""
+    from cbz_ops.merge_pages import list_pages
+    from helpers.library import get_library_for_path
+
+    base = request.args.get('base')
+    donor = request.args.get('donor')
+    refusal = _merge_path_refusal(base, donor)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    if os.path.normcase(os.path.abspath(base)) == os.path.normcase(os.path.abspath(donor)):
+        return jsonify({"error": "Choose two different files"}), 400
+
+    try:
+        files = {'base': list_pages(base), 'donor': list_pages(donor)}
+    except zipfile.BadZipFile:
+        return jsonify({"error": "Not a valid CBZ archive"}), 400
+    except Exception as e:
+        app_logger.error(f"Error inspecting CBZs for merge: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    # Replace the library copy: the other one is usually a fresh download.
+    in_lib = {k: bool(get_library_for_path(files[k]['path'])) for k in files}
+    suggested = 'base' if in_lib['base'] and not in_lib['donor'] else 'donor'
+    for k in files:
+        files[k]['in_library'] = in_lib[k]
+    return jsonify({"success": True, "base": files['base'], "donor": files['donor'],
+                    "suggested_target": suggested})
+
+
+@files_bp.route('/api/merge-pages/page', methods=['GET'])
+def merge_pages_page():
+    """One page of a CBZ, scaled down to a JPEG, looked up by entry name."""
+    from cbz_ops.merge_pages import render_page_thumb
+
+    path = request.args.get('path')
+    entry = request.args.get('entry')
+    refusal = _merge_path_refusal(path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    if not entry:
+        return jsonify({"error": "entry not specified"}), 400
+    try:
+        data = render_page_thumb(path, entry, large=request.args.get('size') == 'large')
+    except KeyError:
+        return jsonify({"error": "Page not found"}), 404
+    except Exception as e:
+        app_logger.warning(f"Could not render page {entry} of {path}: {e}")
+        return jsonify({"error": "Could not read page"}), 500
+    resp = Response(data, mimetype='image/jpeg')
+    resp.headers['Cache-Control'] = 'private, max-age=300'
+    return resp
+
+
+@files_bp.route('/api/merge-pages/commit', methods=['POST'])
+def merge_pages_commit():
+    """Write the chosen pages over the target file; its original goes to the trash."""
+    from cbz_ops.merge_pages import commit_merge
+    from core.database import update_file_index_entry, update_file_index_from_comicinfo
+    from core.thumbnail_cache import regenerate_thumbnail
+
+    data = request.get_json() or {}
+    base = data.get('base')
+    donor = data.get('donor')
+    target_key = data.get('target')
+    pages = data.get('pages') or []
+    delete_other = bool(data.get('delete_other'))
+
+    refusal = _merge_path_refusal(base, donor)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    if target_key not in ('base', 'donor'):
+        return jsonify({"error": "target must be 'base' or 'donor'"}), 400
+    if not isinstance(pages, list) or not pages:
+        return jsonify({"error": "No pages selected"}), 400
+    target = base if target_key == 'base' else donor
+    other = donor if target_key == 'base' else base
+    for p in (target, other) if delete_other else (target,):
+        if is_critical_path(p):
+            return jsonify({"error": get_critical_path_error_message(p, "replace")}), 403
+
+    try:
+        result = commit_merge(base, donor, pages, target)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        app_logger.error(f"Error merging CBZ pages into {target}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    # Same path, new content: the index size, its ComicInfo columns and the
+    # cached cover all describe the file that just went to the trash.
+    try:
+        update_file_index_entry(target, size=result['size'])
+        if result['comicinfo']:
+            from core.comicinfo import read_comicinfo_from_zip
+            ci = read_comicinfo_from_zip(target)
+            if ci:
+                update_file_index_from_comicinfo(target, ci, authoritative=True)
+    except Exception as index_error:
+        app_logger.warning(f"Failed to refresh index for merged {target}: {index_error}")
+    regenerate_thumbnail(target)
+
+    other_trashed = None
+    if delete_other:
+        from app import update_index_on_delete
+        try:
+            other_trashed = move_to_trash(other)["trashed"]
+            threading.Thread(target=update_index_on_delete, args=(other,), daemon=True).start()
+        except Exception as e:
+            app_logger.error(f"Merged {target}, but could not remove {other}: {e}")
+            return jsonify({"success": True, "path": target, "page_count": result['page_count'],
+                            "warning": f"Merged, but the other file could not be removed: {e}"})
+
+    return jsonify({"success": True, "path": target, "size": result['size'],
+                    "page_count": result['page_count'], "trashed": result['trashed'],
+                    "other_removed": delete_other, "other_trashed": other_trashed})
+
+
+# =============================================================================
 # Check Missing Files
 # =============================================================================
 

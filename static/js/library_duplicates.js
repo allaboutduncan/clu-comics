@@ -339,6 +339,16 @@
         };
         if (g.kind === 'likely') {
             opts.onRename = function (col, name) { return renameMember(gi, memberIdx[col], name); };
+            // Two different copies of one issue: build one from the best pages
+            // of both. An exact group is identical bytes, so there is nothing to merge.
+            var cbz = memberIdx.every(function (i) { return /\.cbz$/i.test(g.members[i].path); });
+            if (memberIdx.length === 2 && cbz && typeof CLU.showCBZMerge === 'function') {
+                opts.onMerge = function () {
+                    CLU.showCBZMerge(g.members[0].path, g.members[1].path, {
+                        onComplete: function () { load(); }
+                    });
+                };
+            }
         }
         CLU.showCBZDupe(memberIdx.map(function (i) { return g.members[i]; }), opts);
     }
