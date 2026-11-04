@@ -93,13 +93,13 @@ class TestMangaDexProviderInit:
         assert p.display_name == "MangaDex"
         assert p.requires_auth is False
         assert p.auth_fields == []
-        assert p.rate_limit == 60
+        assert p.rate_limit == 180
 
 
 class TestMangaDexProviderTestConnection:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_successful_connection(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -109,7 +109,7 @@ class TestMangaDexProviderTestConnection:
         assert p.test_connection() is True
 
     @patch("time.sleep")
-    @patch("requests.request", side_effect=Exception("Network error"))
+    @patch("requests.Session.request", side_effect=Exception("Network error"))
     def test_connection_failure(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -120,7 +120,7 @@ class TestMangaDexProviderTestConnection:
 class TestMangaDexProviderSearchSeries:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_returns_results(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -138,7 +138,7 @@ class TestMangaDexProviderSearchSeries:
         assert results[0].cover_url == "https://uploads.mangadex.org/covers/abc-def-123/cover.jpg"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_alternate_title(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -152,7 +152,7 @@ class TestMangaDexProviderSearchSeries:
         assert results[0].alternate_title == "テストマンガ"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_year_filter(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -168,7 +168,7 @@ class TestMangaDexProviderSearchSeries:
         assert len(results) == 1
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_empty_results(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -178,7 +178,7 @@ class TestMangaDexProviderSearchSeries:
         assert p.search_series("Nothing") == []
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_localized_title_fallback(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -213,7 +213,7 @@ class TestMangaDexProviderSearchSeries:
 class TestMangaDexProviderGetSeries:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_get_series_by_id(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -229,7 +229,7 @@ class TestMangaDexProviderGetSeries:
         assert result.alternate_title == "テストマンガ"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_series_not_found(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -242,7 +242,7 @@ class TestMangaDexProviderGetSeries:
 class TestMangaDexProviderGetIssues:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_aggregate_volumes(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -260,7 +260,7 @@ class TestMangaDexProviderGetIssues:
         assert results[1].id == "abc-def-123-v2"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_empty_volumes(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -270,7 +270,7 @@ class TestMangaDexProviderGetIssues:
         assert p.get_issues("abc-def-123") == []
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_only_none_volume(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -304,7 +304,7 @@ class TestMangaDexProviderGetIssue:
 class TestMangaDexProviderGetIssueMetadata:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_full_metadata(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -328,7 +328,7 @@ class TestMangaDexProviderGetIssueMetadata:
         assert "A test manga description" == metadata["Summary"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_preferred_title(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -345,7 +345,7 @@ class TestMangaDexProviderGetIssueMetadata:
         assert "テストマンガ" in metadata["AlternateSeries"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_manga_flag_japanese(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -356,7 +356,7 @@ class TestMangaDexProviderGetIssueMetadata:
         assert metadata["Manga"] == "Yes"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_no_manga_flag_for_non_cjk(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -374,7 +374,7 @@ class TestMangaDexProviderGetIssueMetadata:
         assert "Manga" not in metadata
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_genre_excludes_non_genre_tags(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -389,7 +389,7 @@ class TestMangaDexProviderGetIssueMetadata:
         assert "Comedy" in metadata["Genre"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_alternate_series_deduplication(self, mock_request, mock_sleep):
         from models.providers.mangadex_provider import MangaDexProvider
 
@@ -407,25 +407,3 @@ class TestMangaDexProviderGetIssueMetadata:
         alt_parts = metadata["AlternateSeries"].split("; ")
         assert alt_parts.count("テストマンガ") == 1
 
-
-class TestMangaDexProviderRateLimit:
-
-    @patch("time.monotonic")
-    @patch("time.sleep")
-    @patch("requests.request")
-    def test_rate_limit_sleeps(self, mock_request, mock_sleep, mock_monotonic):
-        from models.providers.mangadex_provider import MangaDexProvider
-
-        # Simulate two rapid requests: first at t=100, second at t=100.1
-        mock_monotonic.side_effect = [100.0, 100.0, 100.1, 100.25]
-        mock_request.return_value = _mock_response({"result": "ok", "data": []})
-
-        # Reset class-level state
-        MangaDexProvider._last_request_time = 99.0
-
-        p = MangaDexProvider()
-        p._make_request("GET", "/manga", {"limit": 1})
-        p._make_request("GET", "/manga", {"limit": 1})
-
-        # Second request should have triggered a sleep
-        assert mock_sleep.called

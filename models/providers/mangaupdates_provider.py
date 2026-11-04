@@ -6,11 +6,11 @@ API Documentation: https://api.mangaupdates.com
 """
 import html
 import re
-import time
-import requests
 from typing import Optional, List, Dict, Any
 
 from core.app_logging import app_logger
+from core.http_client import HttpClient, json_or_none, shared_http_client
+from core.version import CLU_USER_AGENT
 from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult, IssueResult
 from . import register_provider
 
@@ -32,41 +32,21 @@ class MangaUpdatesProvider(BaseProvider):
 
     API_BASE = "https://api.mangaupdates.com/v1"
 
-    # Class-level rate limiting
-    _last_request_time = 0.0
-
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
 
+    @classmethod
+    def _http(cls) -> HttpClient:
+        return shared_http_client("mangaupdates", lambda: HttpClient(
+            "mangaupdates", cls.display_name, cls.API_BASE, cls.rate_limit,
+            headers={"User-Agent": CLU_USER_AGENT},
+        ))
+
     def _make_request(self, method: str, endpoint: str, json_data: Dict = None) -> Optional[Dict]:
-        """Make an HTTP request to the MangaUpdates API with rate limiting."""
-        # Rate limiting: minimum 1.5s between requests
-        now = time.monotonic()
-        elapsed = now - MangaUpdatesProvider._last_request_time
-        if elapsed < 1.5:
-            time.sleep(1.5 - elapsed)
-        MangaUpdatesProvider._last_request_time = time.monotonic()
-
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "ComicUtils/1.0 (comic-utils metadata provider)",
-        }
-
-        url = f"{self.API_BASE}{endpoint}"
-
-        try:
-            response = requests.request(
-                method,
-                url,
-                json=json_data,
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            app_logger.error(f"MangaUpdates request failed: {e}")
-            return None
+        """One paced request to the MangaUpdates API; the parsed body or None."""
+        context = f"for {endpoint}"
+        resp = self._http().request(method, endpoint, json=json_data, context=context)
+        return json_or_none(resp, self.display_name, context)
 
     def test_connection(self) -> bool:
         """Test connection to MangaUpdates API."""

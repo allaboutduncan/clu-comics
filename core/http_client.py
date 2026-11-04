@@ -36,6 +36,7 @@ from typing import Dict, Optional
 
 import requests
 
+from core.app_logging import app_logger
 from core.provider_client import AuthLockout, GuardedClient, QuotaLatch, Verdict
 from helpers.rate_limit import get_limiter
 
@@ -92,12 +93,43 @@ def _pacer_for(name: str, per_minute: int) -> _Pacer:
 
 
 def reset_pacers() -> None:
-    """Forget every provider's spacing and hold (used by tests)."""
+    """Forget every provider's spacing, hold and shared client (used by tests)."""
     with _PACERS_LOCK:
         pacers = list(_PACERS.values())
         _PACERS.clear()
     for pacer in pacers:
         pacer.limiter.reset()
+    with _SHARED_LOCK:
+        _SHARED.clear()
+
+
+_SHARED: Dict[str, "HttpClient"] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_http_client(name: str, build) -> "HttpClient":
+    """The process-wide client called ``name``, built by ``build()`` on first use.
+
+    For providers with no per-user credentials: one session (one connection
+    pool) for every thread, instead of a bare ``requests.request`` per call.
+    """
+    with _SHARED_LOCK:
+        client = _SHARED.get(name)
+        if client is None:
+            client = build()
+            _SHARED[name] = client
+        return client
+
+
+def json_or_none(resp, display_name: str, context: str):
+    """``resp.json()``, or None when there is no response or no valid JSON."""
+    if resp is None:
+        return None
+    try:
+        return resp.json()
+    except ValueError as e:
+        app_logger.error(f"{display_name} returned invalid JSON {context}: {e}")
+        return None
 
 
 def _in_request() -> bool:

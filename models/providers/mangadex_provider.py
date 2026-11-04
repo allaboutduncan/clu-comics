@@ -6,11 +6,11 @@ API Documentation: https://api.mangadex.org/docs/
 """
 import html
 import re
-import time
-import requests
 from typing import Optional, List, Dict, Any
 
 from core.app_logging import app_logger
+from core.http_client import HttpClient, json_or_none, shared_http_client
+from core.version import CLU_USER_AGENT
 from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult, IssueResult
 from . import register_provider
 
@@ -20,51 +20,35 @@ class MangaDexProvider(BaseProvider):
     """MangaDex metadata provider using the public REST API.
 
     MangaDex API is public and does not require authentication for basic searches.
-    Uses direct REST API calls with rate limiting.
+    Every request goes through a shared ``HttpClient``: evenly spaced at
+    ``rate_limit`` and backed off on ``X-RateLimit-Retry-After``.
     """
 
     provider_type = ProviderType.MANGADEX
     display_name = "MangaDex"
     requires_auth = False
     auth_fields = []
-    rate_limit = 60
+    # MangaDex allows ~5 req/s per IP; 180/min (one every 0.33s) stays under it.
+    rate_limit = 180
 
     API_BASE = "https://api.mangadex.org"
-
-    # Class-level rate limiting
-    _last_request_time = 0.0
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
 
+    @classmethod
+    def _http(cls) -> HttpClient:
+        # MangaDex refuses spoofed User-Agents, so CLU names itself.
+        return shared_http_client("mangadex", lambda: HttpClient(
+            "mangadex", cls.display_name, cls.API_BASE, cls.rate_limit,
+            headers={"User-Agent": CLU_USER_AGENT},
+        ))
+
     def _make_request(self, method: str, endpoint: str, params: Dict = None) -> Optional[Dict]:
-        """Make an HTTP request to the MangaDex API with rate limiting."""
-        # Rate limiting: minimum 0.25s between requests (MangaDex allows 5 req/s)
-        now = time.monotonic()
-        elapsed = now - MangaDexProvider._last_request_time
-        if elapsed < 0.25:
-            time.sleep(0.25 - elapsed)
-        MangaDexProvider._last_request_time = time.monotonic()
-
-        headers = {
-            "User-Agent": "ComicUtils/1.0 (comic-utils metadata provider)",
-        }
-
-        url = f"{self.API_BASE}{endpoint}"
-
-        try:
-            response = requests.request(
-                method,
-                url,
-                params=params,
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            app_logger.error(f"MangaDex request failed: {e}")
-            return None
+        """One paced request to the MangaDex API; the parsed body or None."""
+        context = f"for {endpoint}"
+        resp = self._http().request(method, endpoint, params=params, context=context)
+        return json_or_none(resp, self.display_name, context)
 
     def _get_localized_value(self, attr_dict: Dict, preferred_lang: str = 'en') -> Optional[str]:
         """
