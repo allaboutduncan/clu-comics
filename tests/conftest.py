@@ -195,6 +195,31 @@ def _contain_background_analyze():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: Plain-requests provider pacing off by default (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _no_provider_pacing(request):
+    """``core.http_client`` spaces every send to a provider's real rate (2s for
+    the GCD API), which would turn a paginated test into seconds of sleep.
+    Tests that exercise the pacing itself opt back in with
+    ``@pytest.mark.real_pacing``."""
+    try:
+        import core.http_client as http_client
+    except ImportError:
+        yield
+        return
+    http_client.reset_pacers()
+    if request.node.get_closest_marker("real_pacing"):
+        yield
+    else:
+        from unittest.mock import patch
+
+        with patch.object(http_client._Pacer, "wait_turn", lambda self, timeout: None):
+            yield
+    http_client.reset_pacers()
+
+
+# ---------------------------------------------------------------------------
 # Fixture: Logging suppression (autouse)
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)

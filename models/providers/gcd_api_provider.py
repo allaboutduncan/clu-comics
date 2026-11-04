@@ -66,8 +66,18 @@ class GCDApiProvider(BaseProvider):
         super().__init__(credentials)
         self._client_instance = None
 
-    def _get_client(self):
-        """Get or create the GCD API client."""
+    def _get_client(self, ignore_auth_lock: bool = False):
+        """Get the shared GCD API client, or None.
+
+        None while comics.org has rejected the saved credentials: refusing the
+        client, not just each call, is what stops a caller that holds one
+        from looping over it. ``ignore_auth_lock`` is for ``test_connection``
+        only.
+        """
+        from models import gcd_api
+
+        if not ignore_auth_lock and gcd_api.auth_blocked():
+            return None
         if self._client_instance is not None:
             return self._client_instance
 
@@ -92,19 +102,42 @@ class GCDApiProvider(BaseProvider):
         if not username or not password:
             return None
 
-        from models.gcd_api import GCDApiClient
-        self._client_instance = GCDApiClient(username, password)
+        self._client_instance = gcd_api.get_gcd_client(username, password)
         return self._client_instance
 
     def test_connection(self) -> bool:
-        """Test connection to GCD REST API."""
+        """Test connection to GCD REST API.
+
+        The one path allowed past the auth lockout. A pass clears it and a
+        rejection latches it, unless this is an unsaved probe (Guided Setup),
+        which says nothing about the saved credentials.
+        """
+        from models import gcd_api
+
         try:
-            client = self._get_client()
+            client = self._get_client(ignore_auth_lock=True)
             if not client:
+                self.last_error = "No GCD API credentials configured"
                 return False
-            results = client.search_series("Batman", max_pages=1)
-            return len(results) > 0
+            if not client.check_credentials():
+                self.last_error = "The GCD API did not return a result"
+                return False
+            if not getattr(self, "probe_only", False):
+                gcd_api.clear_auth_block()
+            return True
         except Exception as e:
+            from core.http_client import auth_rejection
+
+            rejection = auth_rejection(e)
+            if rejection is not None:
+                status, detail = rejection
+                self.last_error = (
+                    f"comics.org rejected the credentials (HTTP {status}). {detail}"
+                ).strip()
+                if not getattr(self, "probe_only", False):
+                    gcd_api.latch_auth_failure(status, detail, "testing the connection")
+            else:
+                self.last_error = str(e)
             app_logger.error(f"GCD API connection test failed: {e}")
             return False
 

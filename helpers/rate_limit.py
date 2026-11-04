@@ -10,8 +10,9 @@ tripped by the aggregate rather than by any one caller.
 links is many requests, and a slot per call is how Metron's pages went out
 unpaced (#703). Metron is therefore paced inside mokkari, by the limiter its
 Session is built with, and no longer uses this module. ComicVine still takes
-a slot here per call; the plain-``requests`` providers (GCD API, MangaDex,
-Bedetheque) are meant to take one per request they send (#704).
+a slot here per call. The plain-``requests`` providers take one per request
+they send, through ``core.http_client`` (a one-slot window per provider, so
+sends are evenly spaced): GCD API today, the rest as #704 moves them.
 """
 
 import threading

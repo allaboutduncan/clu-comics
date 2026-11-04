@@ -9,6 +9,7 @@ markers = [
     "mocked: tests that mock external APIs",
     "routes: Flask route/endpoint tests",
     "slow: long-running tests (deselect with -m 'not slow')",
+    "real_pacing: run core.http_client's per-send pacing instead of the no-op stub",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",

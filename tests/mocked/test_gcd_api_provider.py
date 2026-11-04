@@ -346,26 +346,86 @@ class TestGCDApiProvider:
     def test_test_connection_uses_single_page(self, mock_client_cls):
         # The connection test must bound pagination so a slow search can't exceed
         # the worker timeout and return an HTML error page to the UI.
+        # check_credentials is one GET of one search page.
         mock_client = MagicMock()
-        mock_client.search_series.return_value = [SAMPLE_SERIES]
+        mock_client.check_credentials.return_value = True
         mock_client_cls.return_value = mock_client
 
         provider = self._make_provider()
         provider._client_instance = mock_client
 
-        assert provider.test_connection() is True
-        mock_client.search_series.assert_called_once_with("Batman", max_pages=1)
+        with patch("models.gcd_api.clear_auth_block") as clear:
+            assert provider.test_connection() is True
+        mock_client.check_credentials.assert_called_once_with()
+        mock_client.search_series.assert_not_called()
+        clear.assert_called_once()
 
     @patch("models.gcd_api.GCDApiClient")
     def test_test_connection_failure(self, mock_client_cls):
         mock_client = MagicMock()
-        mock_client.search_series.side_effect = Exception("Connection refused")
+        mock_client.check_credentials.side_effect = Exception("Connection refused")
         mock_client_cls.return_value = mock_client
 
         provider = self._make_provider()
         provider._client_instance = mock_client
 
-        assert provider.test_connection() is False
+        with patch("models.gcd_api.latch_auth_failure") as latch:
+            assert provider.test_connection() is False
+        latch.assert_not_called()
+
+    def _http_error(self, status, content_type="application/json", body=None):
+        import requests
+        resp = MagicMock()
+        resp.status_code = status
+        resp.headers = {"Content-Type": content_type}
+        resp.json.return_value = body or {}
+        return requests.HTTPError(f"{status}", response=resp)
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_test_connection_rejection_latches_the_lockout(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.check_credentials.side_effect = self._http_error(
+            401, body={"detail": "Invalid username/password."})
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        with patch("models.gcd_api.latch_auth_failure") as latch:
+            assert provider.test_connection() is False
+        assert latch.call_args[0][:2] == (401, "Invalid username/password.")
+        assert "401" in provider.last_error
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_test_connection_cloudflare_403_does_not_latch(self, mock_client_cls):
+        """An HTML 403 is a bot block; no password change can fix it."""
+        mock_client = MagicMock()
+        mock_client.check_credentials.side_effect = self._http_error(
+            403, content_type="text/html; charset=UTF-8")
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+
+        with patch("models.gcd_api.latch_auth_failure") as latch:
+            assert provider.test_connection() is False
+        latch.assert_not_called()
+
+    @patch("models.gcd_api.GCDApiClient")
+    def test_a_probe_neither_latches_nor_clears(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.check_credentials.side_effect = self._http_error(401)
+        provider = self._make_provider()
+        provider._client_instance = mock_client
+        provider.probe_only = True
+
+        with patch("models.gcd_api.latch_auth_failure") as latch:
+            assert provider.test_connection() is False
+        latch.assert_not_called()
+
+    def test_no_client_while_the_lockout_is_latched(self):
+        provider = self._make_provider()
+        provider._client_instance = MagicMock()
+        with patch("models.gcd_api.auth_blocked", return_value=True):
+            assert provider._get_client() is None
+            assert provider.search_series("Batman") == []
+            assert provider._get_client(ignore_auth_lock=True) is not None
 
     def test_test_connection_no_credentials(self):
         from models.providers.gcd_api_provider import GCDApiProvider

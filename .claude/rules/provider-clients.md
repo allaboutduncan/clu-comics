@@ -27,8 +27,7 @@ long Metron series send dozens of unpaced pages and draw a stream of 429s
   hook**. For Metron that is the `rate_limiter` each `MokkariSession` is built
   with (`_CluRateLimiter`, one per session and so one per account).
 - A plain-`requests` provider paces inside the one method that sends each
-  request, once per page (the `HttpClient._send()` #704 adds), using
-  `helpers.rate_limit.get_limiter()`.
+  request, once per page: `HttpClient._send()` (`core/http_client.py`, below).
 - `GuardedClient.call()` **never paces**, and `_gate()` is not the place for a
   paginating library's limiter. A test pins that `call()` does not sleep.
 - The limit you enforce is the limit Settings shows (`BaseProvider.rate_limit`).
@@ -61,6 +60,42 @@ Things that look arbitrary and are not:
 - **`raise_api_errors` keeps a route's "provider unavailable" response.** An
   auth rejection still latches and returns `default`, even with the flag set.
 
+`lockout` may be `None` for a provider with no credentials to reject
+(MangaDex, Bedetheque...). It gets no Re-enable button, and an `AUTH` verdict
+from it is handled as `ERROR`.
+
+### `HttpClient` (`core/http_client.py`)
+
+This is the `GuardedClient` for plain-`requests` providers. GCD API uses it
+(#704 PR 1). MangaDex, MangaUpdates, Bedetheque and AniList move onto it next.
+`get`/`post` return the `Response`, or `default`.
+
+- **Even spacing, not a burst window.** The pacer is `get_limiter("http:<name>", 1,
+  60 / per_minute)`, a one-slot window. A 180/min sliding window would allow
+  180 requests at once and trip MangaDex's 5/s. `per_minute` is the provider
+  class's `rate_limit`. One pacer per provider name is shared by every client
+  instance (`_pacer_for`).
+- **The hold.** A 429/503 sets one provider-wide hold from `Retry-After`
+  (seconds or an HTTP date) or `X-RateLimit-Retry-After` (an epoch). If no
+  wait is given the hold is 5s. Every `_send` waits it out, so the verdict is
+  `RETRY(0)`. A wait above `quota_threshold` (300s) is never held. It latches
+  `QUOTA` instead.
+- **Inside a Flask request** the hold plus the slot wait is capped at
+  `interactive_wait`. Past the cap the client raises `ProviderBusy`, which
+  returns `ERROR`, so the call returns `default`.
+- **A 403 latches only if the body is not HTML** (`auth_rejection`). An HTML
+  403 is Cloudflare's bot block, and comics.org sits behind Cloudflare.
+  Latching on it would pause the provider for something no credential change
+  can fix. A 401 always latches.
+- `tests/conftest.py` stubs `_Pacer.wait_turn` for every test. Tests that need
+  real pacing are marked `@pytest.mark.real_pacing` (`tests/unit/test_http_client.py`).
+
+The GCD API's lockout is `AuthLockout("gcd_api", ...)` in `models/gcd_api.py`.
+`GCDApiProvider._get_client()` returns `None` while it is latched.
+`test_connection` is the one bypass (`check_credentials()`). The credential
+save route clears **any** registered lockout (`routes/metadata._provider_lockout`),
+not only Metron's. It also drops the shared GCD client.
+
 ### `AuthLockout(provider, display_name)`
 
 This is the 401/403 brake moved out of Metron unchanged. It is persisted to
@@ -86,6 +121,8 @@ each direction, never per call.
    That ratchet asserts every client method call sits in a lambda (or a named
    nested `def`) passed to the guard, and that only the owner module builds the
    client. On `main` it caught the eight raw Metron calls that #703 fixed.
+   A plain-`requests` provider goes in `HTTP_PROVIDER_MODULES` instead. Those
+   modules may not import `requests` or build a `Session`.
 
 Tests: `tests/unit/test_provider_client.py` (the policy, against a fake
 client), `tests/unit/test_provider_calls_guarded.py` (the ratchet), and
