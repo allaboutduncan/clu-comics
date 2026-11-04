@@ -226,7 +226,7 @@ class TestRunCreditBackfill:
 
         with patch("models.metron.get_flask_api", return_value=object()), \
              patch("core.credit_backfill.find_credit_less_files", return_value=["a.cbz", "b.cbz"]), \
-             patch.object(metron._metron_pacer, "daily_limit_reached", return_value=True), \
+             patch.object(metron, "daily_limit_reached", return_value=True), \
              patch("core.credit_backfill.backfill_file") as work:
             summary = run_credit_backfill()
 
@@ -238,7 +238,7 @@ class TestRunCreditBackfill:
         blocked by Metron."""
         from models import metron
 
-        with patch("models.metron.get_flask_api", return_value=object()),              patch("core.credit_backfill.find_credit_less_files", return_value=["a.cbz", "b.cbz"]),              patch.object(metron._metron_pacer, "daily_limit_reached", return_value=False),              patch("models.metron.auth_blocked", return_value=True),              patch("core.credit_backfill.backfill_file") as work:
+        with patch("models.metron.get_flask_api", return_value=object()),              patch("core.credit_backfill.find_credit_less_files", return_value=["a.cbz", "b.cbz"]),              patch.object(metron, "daily_limit_reached", return_value=False),              patch("models.metron.auth_blocked", return_value=True),              patch("core.credit_backfill.backfill_file") as work:
             summary = run_credit_backfill()
 
         work.assert_not_called()

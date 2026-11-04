@@ -15,7 +15,8 @@ from core.version import __version__
 
 import requests as requests_lib
 import requests.exceptions as requests_exceptions
-from helpers.rate_limit import SlidingWindowRateLimiter, get_limiter
+from core.provider_client import AuthLockout, GuardedClient, QuotaLatch, Verdict
+from mokkari.rate_limit import HeaderPacedRateLimiter, RateLimitStatus, RateLimitWindow
 from mokkari.session import Session as MokkariSession
 from mokkari.sqlite_cache import SqliteCache
 from mokkari.exceptions import ApiError, AuthenticationError, RateLimitError
@@ -32,14 +33,12 @@ _DAILY_RATE_LIMIT_THRESHOLD = (
 
 # Metron's burst limit is 20 requests/minute. CLU runs multiple background
 # threads (bulk metadata jobs, wanted-cache refresh, reading-list sync) plus
-# live web requests that can all reach Metron concurrently. mokkari.Session
-# tracks rate-limit state from response headers and pre-emptively raises
-# RateLimitError, that check is advisory only -- it isn't
-# synchronized with request dispatch, so concurrent callers can race past it.
-# We therefore (1) share one Session per API token so mokkari's header
-# tracking actually accumulates real state across all callers in this
-# process, and (2) throttle at the process level to a sliding-window request
-# rate safely under the burst limit.
+# live web requests that can all reach Metron concurrently. Pacing happens
+# inside mokkari, on every HTTP send -- each page of a paginated list
+# included -- through the ``rate_limiter`` each Session is built with (#703).
+# One Session per API token, so one limiter per Metron account sees every
+# request this process makes. A slot taken per ``_api_call`` instead let one
+# call fetch dozens of pages unpaced.
 _SESSION_CACHE: Dict[str, MokkariSession] = {}
 _SESSION_CACHE_LOCK = threading.Lock()
 
@@ -95,21 +94,39 @@ def _metron_cache() -> Optional[SqliteCache]:
         return None
 
 
-_BURST_WINDOW_SECONDS = 60.0
-_SAFE_BURST_LIMIT = 15  # stay under Metron's 20/min burst limit for headroom
+# Metron's documented minimum burst limit, and what Settings shows
+# (``MetronProvider.rate_limit``; a test keeps the two equal). Used only until
+# the first response reports the real one.
+_DEFAULT_BURST_LIMIT = 20
 
 
-# Re-exported so existing callers (and tests) keep importing it from here.
-_SlidingWindowRateLimiter = SlidingWindowRateLimiter
+class _CluRateLimiter(HeaderPacedRateLimiter):
+    """mokkari's header-paced limiter, paced from the first request.
 
-_metron_rate_limiter = get_limiter(
-    "metron", _SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS
-)
+    ``HeaderPacedRateLimiter`` learns the burst limit from response headers,
+    so until the first response arrives it has no limit and spaces nothing:
+    every thread that starts at once -- a scheduled sweep, a bulk job and a
+    page load after a restart -- goes out together. Until Metron says
+    otherwise, assume its documented minimum.
+    """
 
-# Longest we'll pause waiting for the per-minute burst window to roll over.
-# The window is 60s, so this is a guard against a bad/skewed reset header
-# parking a thread, not a normal-path value.
-_MAX_BURST_WAIT_SECONDS = 90.0
+    @staticmethod
+    def _seeded(status):
+        if status is None or status.burst.limit is not None:
+            return status
+        burst = status.burst
+        return RateLimitStatus(
+            burst=RateLimitWindow(
+                limit=_DEFAULT_BURST_LIMIT, remaining=burst.remaining, reset=burst.reset
+            ),
+            sustained=status.sustained,
+        )
+
+    def acquire(self, status):
+        super().acquire(self._seeded(status))
+
+    def release(self, status):
+        super().release(self._seeded(status))
 
 
 def _as_aware(dt):
@@ -169,151 +186,9 @@ def _auth_detail(exc: Exception) -> str:
     return body[:200]
 
 
-class _AuthBlock:
-    """Latched "Metron rejected our credentials" state, persisted to the DB.
-
-    Deliberately has no timer. A 401 does not heal on its own, so retrying it
-    later only repeats the request that got the user banned; the block is
-    cleared by saving credentials, by a successful connection test, or by the
-    button on the settings page -- all of them acts of a human who has changed
-    something.
-
-    The database is the source of truth. The in-process copy is only a memo so
-    the hot path is not a query per API call; ``forget()`` drops it so the next
-    read comes from the database again.
-    """
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._loaded = False
-        self._blocked = False
-        self._error = None
-        self._blocked_at = None
-
-    @staticmethod
-    def _read_persisted() -> Optional[Dict[str, Any]]:
-        """The stored state, or None when the store could not be read at all.
-
-        Queried directly rather than through ``get_user_preference``, which
-        swallows its own errors and returns the default: a read made before the
-        database is ready would then be indistinguishable from "not blocked".
-        Caching *that* would leave the lockout switched off for the life of the
-        process -- the exact failure this feature exists to prevent.
-        """
-        from core.database import get_db_connection
-
-        conn = get_db_connection()
-        if conn is None:
-            return None
-        try:
-            rows = conn.execute(
-                "SELECT key, value FROM user_preferences WHERE key IN (?, ?, ?)",
-                (PREF_AUTH_BLOCKED, PREF_AUTH_ERROR, PREF_AUTH_BLOCKED_AT),
-            ).fetchall()
-        finally:
-            conn.close()
-
-        values = {}
-        for key, raw in rows:
-            try:
-                values[key] = json.loads(raw)
-            except (TypeError, ValueError):
-                values[key] = None
-        return values
-
-    def _load_locked(self) -> None:
-        if self._loaded:
-            return
-        try:
-            values = self._read_persisted()
-        except Exception as e:
-            app_logger.debug(f"Metron auth-block state unreadable: {e}")
-            values = None
-
-        if values is None:
-            # Fail open, but do not remember it: leaving the memo unloaded means
-            # the next call tries again, so a lockout is picked up as soon as
-            # the database becomes readable.
-            return
-
-        self._blocked = bool(values.get(PREF_AUTH_BLOCKED))
-        self._error = values.get(PREF_AUTH_ERROR)
-        self._blocked_at = values.get(PREF_AUTH_BLOCKED_AT)
-        self._loaded = True
-
-    @staticmethod
-    def _persist(blocked: bool, error, blocked_at) -> None:
-        try:
-            from core.database import set_user_preference
-
-            set_user_preference(PREF_AUTH_BLOCKED, bool(blocked), category="providers")
-            set_user_preference(PREF_AUTH_ERROR, error, category="providers")
-            set_user_preference(PREF_AUTH_BLOCKED_AT, blocked_at, category="providers")
-        except Exception as e:
-            app_logger.warning(f"Could not persist Metron auth-block state: {e}")
-
-    def blocked(self) -> bool:
-        with self._lock:
-            self._load_locked()
-            return self._blocked
-
-    def state(self) -> Dict[str, Any]:
-        with self._lock:
-            self._load_locked()
-            return {
-                "blocked": self._blocked,
-                "error": self._error,
-                "blocked_at": self._blocked_at,
-            }
-
-    def latch(self, status: Optional[int], detail: str, context: str = "") -> None:
-        """Stop all Metron traffic until a human fixes the credentials."""
-        message = f"Metron rejected the configured credentials (HTTP {status})."
-        if detail:
-            message = f"{message} {detail}"
-        blocked_at = datetime.now(timezone.utc).isoformat()
-
-        with self._lock:
-            self._load_locked()
-            already = self._blocked
-            self._blocked = True
-            self._error = message
-            self._blocked_at = blocked_at
-
-        if already:
-            return
-
-        self._persist(True, message, blocked_at)
-        suffix = f" {context}".rstrip()
-        app_logger.error(
-            f"Metron authentication failed{suffix}: {message} "
-            f"Pausing all Metron requests until the credentials are updated."
-        )
-        try:
-            from core.database import update_provider_validity
-
-            update_provider_validity("metron", False)
-        except Exception:
-            pass
-
-    def clear(self) -> None:
-        with self._lock:
-            self._load_locked()
-            was_blocked = self._blocked
-            self._blocked = False
-            self._error = None
-            self._blocked_at = None
-        self._persist(False, None, None)
-        if was_blocked:
-            app_logger.info("Metron authentication block cleared; resuming Metron requests")
-
-    def forget(self) -> None:
-        """Drop the memo so the next read comes from the database."""
-        with self._lock:
-            self._loaded = False
-
-
-_auth_block = _AuthBlock()
+# The lockout is shared with every provider (``core.provider_client``); the
+# preference keys it derives from "metron" are the PREF_AUTH_* names above.
+_auth_block = AuthLockout("metron", "Metron")
 
 
 def auth_blocked() -> bool:
@@ -336,143 +211,93 @@ def latch_auth_failure(status: Optional[int], detail: str = "", context: str = "
     _auth_block.latch(status, detail, context)
 
 
-class _MetronPacer:
-    """Paces Metron requests from the limits Metron itself reports.
+# Metron reports two windows, and they need opposite responses:
+#
+# * **burst** (per-minute, same for everyone). Short, worth waiting out -- and
+#   the session's limiter does exactly that, per send. Nothing here.
+# * **sustained** (daily, varies by donor tier). Hours away. Waiting is
+#   pointless, so once it is known to be empty we stop calling until it resets.
+_daily = QuotaLatch("Metron", "daily")
 
-    mokkari parses ``X-RateLimit-*`` into ``session.rate_limit_status`` but its
-    own pre-emptive check is advisory -- its docstring says callers must cap
-    their own concurrency. So we read the same headers and do the capping here.
 
-    Two windows matter, and they need opposite responses:
+def daily_limit_reached() -> bool:
+    """True while Metron's daily quota is known to be spent."""
+    return _daily.reached()
 
-    * **burst** (per-minute, same for everyone). Short. Worth waiting out.
-    * **sustained** (daily, varies by donor tier). Hours away. Waiting is
-      pointless -- and worse, mokkari reports ``retry_after`` as
-      ``max(burst_wait, sustained_wait)``, so an exhausted daily quota surfaced
-      as a 59.5s wait that sat just under the "this must be the daily cap"
-      threshold and got retried 3x *per series*, for every series in a sweep.
-      That is the log in the bug report. Once the daily window is known to be
-      empty we stop calling until it resets.
+
+def _observe_sustained(session) -> None:
+    """Latch the daily window when the last response says it is empty.
+
+    Every field is ``None`` until the first response completes, and Metron may
+    not report the window at all, so each step has to tolerate a gap.
     """
-
-    def __init__(self, limiter):
-        self._limiter = limiter
-        self._lock = threading.Lock()
-        self._sustained_until = None
-        self._burst_until = None
-
-    def before(self, ignore_auth_lock: bool = False) -> bool:
-        """Take a slot. False when the daily quota is spent or auth is blocked."""
-        if not ignore_auth_lock and _auth_block.blocked():
-            return False
-        now = datetime.now(timezone.utc)
-        with self._lock:
-            sustained_until = self._sustained_until
-            burst_until = self._burst_until
-            if burst_until is not None and now >= burst_until:
-                self._burst_until = None
-                burst_until = None
-
-        if sustained_until is not None:
-            if now < sustained_until:
-                return False
-            with self._lock:
-                self._sustained_until = None
-            app_logger.info("Metron daily rate limit window has reset; resuming")
-
-        if burst_until is not None:
-            wait = min((burst_until - now).total_seconds(), _MAX_BURST_WAIT_SECONDS)
-            if wait > 0:
-                app_logger.info(
-                    f"Metron burst window exhausted; waiting {wait:.1f}s for reset"
-                )
-                time.sleep(wait)
-            with self._lock:
-                self._burst_until = None
-
-        self._limiter.acquire()
-        return True
-
-    def observe(self, session) -> None:
-        """Update pacing from the rate-limit headers on the last response.
-
-        Every field is ``None`` until the first response completes, and Metron
-        may not report a given window at all, so each branch has to fall back to
-        the configured defaults rather than assume a number is present.
-        """
-        status = getattr(session, "rate_limit_status", None)
-        if status is None:
-            return
-        try:
-            self._observe_burst(getattr(status, "burst", None))
-            self._observe_sustained(getattr(status, "sustained", None))
-        except Exception as e:  # never let telemetry break a worker thread
-            app_logger.debug(f"Metron rate-limit header parse skipped: {e}")
-
-    def _observe_burst(self, burst) -> None:
-        if burst is None:
-            return
-        limit = getattr(burst, "limit", None)
-        if isinstance(limit, int) and limit > 0:
-            # Stop guessing at 15/min once Metron tells us the real number.
-            self._limiter.retune(max(1, int(limit * 0.8)), _BURST_WINDOW_SECONDS)
-
-        remaining = getattr(burst, "remaining", None)
-        reset = _as_aware(getattr(burst, "reset", None))
-        if (
-            isinstance(remaining, int)
-            and remaining <= 1
-            and reset is not None
-            and reset > datetime.now(timezone.utc)
-        ):
-            with self._lock:
-                self._burst_until = reset
-
-    def _observe_sustained(self, sustained) -> None:
-        if sustained is None:
-            return
+    status = getattr(session, "rate_limit_status", None)
+    sustained = getattr(status, "sustained", None)
+    if sustained is None:
+        return
+    try:
         remaining = getattr(sustained, "remaining", None)
         reset = _as_aware(getattr(sustained, "reset", None))
-        if not (isinstance(remaining, int) and remaining <= 0):
-            return
-        if reset is None or reset <= datetime.now(timezone.utc):
-            return
-        with self._lock:
-            already_latched = self._sustained_until is not None
-            self._sustained_until = reset
-        if not already_latched:
-            app_logger.warning(
-                f"Metron daily rate limit exhausted; pausing Metron calls until "
-                f"{reset.isoformat()}"
-            )
-
-    def daily_limit_reached(self) -> bool:
-        """True when the last response said the daily quota is spent."""
-        with self._lock:
-            until = self._sustained_until
-        return until is not None and datetime.now(timezone.utc) < until
-
-    def latch_daily_limit(self, seconds: float, context: str) -> None:
-        """Record a daily-cap rejection reported via ``retry_after``."""
-        reset = datetime.now(timezone.utc) + timedelta(seconds=max(0.0, seconds))
-        with self._lock:
-            already_latched = self._sustained_until is not None
-            self._sustained_until = reset
-        if not already_latched:
-            app_logger.warning(
-                f"Metron daily rate limit exceeded {context}; pausing Metron "
-                f"calls until {reset.isoformat()}"
-            )
-
-    def reset(self) -> None:
-        with self._lock:
-            self._sustained_until = None
-            self._burst_until = None
-        self._limiter.retune(_SAFE_BURST_LIMIT, _BURST_WINDOW_SECONDS)
-        self._limiter.reset()
+        if isinstance(remaining, int) and remaining <= 0 and reset is not None:
+            _daily.latch_until(reset)
+    except Exception as e:  # never let telemetry break a worker thread
+        app_logger.debug(f"Metron rate-limit header parse skipped: {e}")
 
 
-_metron_pacer = _MetronPacer(_metron_rate_limiter)
+def _observe_all_sessions() -> None:
+    for session in _cached_sessions():
+        _observe_sustained(session)
+
+
+class _MetronClient(GuardedClient):
+    """Metron's half of the shared call policy: how to read its errors."""
+
+    def _classify(self, exc):
+        if isinstance(exc, RateLimitError):
+            return self._classify_rate_limit(exc)
+        if isinstance(exc, ApiError):
+            status = auth_failure_status(exc)
+            if status is not None:
+                return Verdict.auth(status, _auth_detail(exc))
+            if is_connection_error(exc):
+                return Verdict.connection()
+            return Verdict.error()
+        return None
+
+    @staticmethod
+    def _classify_rate_limit(exc):
+        retry_after = getattr(exc, "retry_after", 0) or 0
+        if retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
+            return Verdict.quota(retry_after)
+        # mokkari reports retry_after as max(burst_wait, sustained_wait), so a
+        # spent daily quota can arrive as a sub-threshold wait (observed: 59.5s)
+        # and get retried three times per series for a whole sweep. The headers
+        # say which window it really is -- trust them over the magnitude.
+        _observe_all_sessions()
+        if _daily.reached():
+            return Verdict.quota()
+        if type(exc) is RateLimitError:
+            # mokkari raises the base class only for a request it never sent:
+            # the session's limiter refusing because the daily window is spent.
+            # A 429 that Metron returned is a subclass.
+            if retry_after > 0:
+                return Verdict.quota(retry_after)
+            return Verdict.retry(_RATE_LIMIT_DEFAULT_WAIT)
+        # A 429 that Metron returned. The session's limiter has already blocked
+        # every thread for its Retry-After, so the next send waits by itself;
+        # sleeping here too is how the two retry layers used to stack.
+        return Verdict.retry(0)
+
+    def _after_success(self):
+        _observe_all_sessions()
+
+
+_metron_client = _MetronClient("Metron", _auth_block, _daily)
+
+
+def paused_reason() -> Optional[str]:
+    """Why Metron calls are being skipped right now, or None."""
+    return _metron_client.paused_reason()
 
 
 def _cached_sessions() -> List[MokkariSession]:
@@ -497,7 +322,7 @@ def invalidate_session_cache() -> None:
             cache.cleanup()
         except Exception:
             pass
-    _metron_pacer.reset()
+    _daily.reset()
     # Credentials may have changed under us; re-read the lockout from the
     # database rather than trusting a memo taken with the old ones.
     _auth_block.forget()
@@ -692,54 +517,19 @@ def purge_arc_issues_cache(arc_id, api=None) -> int:
     )
 
 
-def _handle_rate_limit(e: "RateLimitError", attempt: int, context: str) -> bool:
-    """Sleep and signal whether to retry after a RateLimitError.
-
-    Returns True if the caller should retry, False if retries are exhausted
-    or the daily API rate limit has been exceeded.
-    """
-    wait = e.retry_after if e.retry_after else _RATE_LIMIT_DEFAULT_WAIT
-    if e.retry_after and e.retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
-        _metron_pacer.latch_daily_limit(e.retry_after, context)
-        return False
-
-    # mokkari reports retry_after as max(burst_wait, sustained_wait), so a spent
-    # daily quota can arrive as a sub-threshold wait (observed: 59.5s) and get
-    # retried three times per series for a whole sweep. The headers say which
-    # window it really is -- trust them over the magnitude.
-    for session in _cached_sessions():
-        _metron_pacer.observe(session)
-    if _metron_pacer.daily_limit_reached():
-        app_logger.info(
-            f"Metron daily rate limit reached {context}: giving up without retrying"
-        )
-        return False
-
-    if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
-        app_logger.info(
-            f"Metron rate limit hit {context}: waiting {wait}s before retry "
-            f"(attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
-        )
-        # Flush log handlers so the warning is visible before the sleep
-        for handler in app_logger.handlers:
-            handler.flush()
-        time.sleep(wait)
-        app_logger.info(f"Metron rate limit wait complete, retrying {context}")
-        return True
-    app_logger.info(
-        f"Metron rate limit exceeded {context}: giving up after {_RATE_LIMIT_MAX_RETRIES} attempts"
-    )
-    return False
-
-
 def _api_call(
     fn,
     context: str,
     default=None,
     ignore_auth_lock: bool = False,
     raise_auth_errors: bool = False,
+    raise_api_errors: bool = False,
 ):
-    """Call fn() paced by the shared limiter, with rate-limit retry.
+    """Call fn() behind Metron's auth lockout and daily-quota latch.
+
+    A shim over ``GuardedClient.call`` (``core.provider_client``), kept so the
+    many existing callers do not change. It does not pace: the session's
+    limiter paces every HTTP send, pages included.
 
     Returns ``default`` immediately while Metron's daily quota is spent or its
     credentials have been rejected, rather than sleeping: a sweep of 800 series
@@ -749,33 +539,17 @@ def _api_call(
     ``ignore_auth_lock`` and ``raise_auth_errors`` exist for the connection
     test, which must be able to run while the lockout is latched and needs the
     rejection itself in order to report it back to the user.
+    ``raise_api_errors`` re-raises any other ``ApiError``, for a route that
+    answers "Metron is unavailable" from ``is_connection_error``.
     """
-    for attempt in range(_RATE_LIMIT_MAX_RETRIES):
-        if not _metron_pacer.before(ignore_auth_lock=ignore_auth_lock):
-            app_logger.debug(
-                f"Metron calls are paused (rate limit or auth); skipping {context}"
-            )
-            return default
-        try:
-            result = fn()
-        except RateLimitError as e:
-            if not _handle_rate_limit(e, attempt, context):
-                return default
-        except ApiError as e:
-            status = auth_failure_status(e)
-            if status is not None:
-                if raise_auth_errors:
-                    # The connection test wants the reason, not a silent default.
-                    raise
-                latch_auth_failure(status, _auth_detail(e), context)
-                return default
-            app_logger.error(f"Metron API error {context}: {e}")
-            return default
-        else:
-            for session in _cached_sessions():
-                _metron_pacer.observe(session)
-            return result
-    return default
+    return _metron_client.call(
+        fn,
+        context,
+        default,
+        ignore_auth_lock=ignore_auth_lock,
+        raise_auth_errors=raise_auth_errors,
+        raise_api_errors=raise_api_errors,
+    )
 
 
 def is_connection_error(exc: Exception) -> bool:
@@ -817,9 +591,10 @@ def get_api(
     Return a shared Metron API client (Mokkari Session) for this API token.
 
     Sessions are cached per token and reused across calls and threads, rather
-    than created fresh each time, so mokkari's own rate-limit header tracking
-    accumulates real state across the whole process instead of being
-    discarded after every call.
+    than created fresh each time. Each Session carries its own
+    ``_CluRateLimiter``, so one cache entry per token is one limiter per
+    Metron account, seeing every request this process sends -- as mokkari
+    asks ("construct one instance per Session").
 
     Returns None while Metron has rejected our credentials. This gate sits
     *before* the session cache on purpose: several callers fetch a client once
@@ -856,7 +631,10 @@ def get_api(
 
     try:
         session = MokkariSession(
-            api_token, user_agent=CLU_USER_AGENT, cache=_metron_cache()
+            api_token,
+            user_agent=CLU_USER_AGENT,
+            cache=_metron_cache(),
+            rate_limiter=_CluRateLimiter(),
         )
     except (ApiError, AuthenticationError) as e:
         app_logger.error(f"Metron API error initializing session: {e}")
@@ -1830,7 +1608,7 @@ def get_series(api, series_id: int):
     """Fetch the full Metron series model, blocking and retrying on rate limits.
 
     Unlike a raw ``api.series(id)`` call (which raises ``RateLimitError`` under
-    bulk load), this waits on the shared rate limiter and retries, so callers
+    bulk load), this retries a 429 once the session's limiter allows, so callers
     that fetch many series in a row (sync, matching, name repair) get the real
     object instead of erroring out. Returns the Mokkari series model, or None.
     """
@@ -2286,49 +2064,75 @@ def fetch_arcs_page(api, params=None, page=1):
     if isinstance(api_token, str) and api_token:
         headers["Authorization"] = f"Bearer {api_token}"
 
+    # A hand-built request never passes through mokkari's send, so it takes the
+    # session's limiter itself -- the same one mokkari takes for every request
+    # it sends -- or it is the one Metron request nothing paces. ``release``
+    # gets the session's last status: this response's headers cannot be fed
+    # back through mokkari's public API, and the next mokkari send refreshes it.
+    limiter = getattr(api, "rate_limiter", None)
+    context = f"fetching arcs page {page}"
+
     for attempt in range(_RATE_LIMIT_MAX_RETRIES):
-        if _auth_block.blocked():
+        if _auth_block.blocked() or _daily.reached():
             break
-        _metron_rate_limiter.acquire()
+        if limiter is not None:
+            try:
+                limiter.acquire(api.rate_limit_status)
+            except RateLimitError as e:
+                # The limiter refuses only when the daily window is spent.
+                _daily.latch_for(getattr(e, "retry_after", 0) or 0, context)
+                break
         try:
             resp = requests_lib.get(
                 url, params=query_params, headers=headers, timeout=30
             )
-            if resp.status_code in _AUTH_FAILURE_STATUSES:
-                # This request is built by hand, so it never passes through
-                # ``_api_call`` -- it has to latch the lockout itself.
-                latch_auth_failure(
-                    resp.status_code,
-                    (resp.text or "").strip()[:200],
-                    f"fetching arcs page {page}",
-                )
-                break
-            if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", _RATE_LIMIT_DEFAULT_WAIT))
-                if retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
-                    app_logger.info(
-                        f"Metron daily rate limit exceeded fetching arcs page {page}"
-                    )
-                    break
-                if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
-                    app_logger.info(
-                        f"Metron rate limit hit fetching arcs page {page}: "
-                        f"waiting {retry_after}s (attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
-                    )
-                    time.sleep(retry_after)
-                    continue
-                break
-            resp.raise_for_status()
-            data = resp.json()
-            return {
-                "results": data.get("results", []),
-                "has_next": data.get("next") is not None,
-                "count": data.get("count", 0),
-                "page": page,
-            }
         except requests_lib.exceptions.RequestException as e:
             app_logger.error(f"Error fetching arcs page {page}: {e}")
             break
+        finally:
+            if limiter is not None:
+                try:
+                    limiter.release(api.rate_limit_status)
+                except Exception as e:
+                    app_logger.debug(f"Metron rate limiter release failed: {e}")
+
+        if resp.status_code in _AUTH_FAILURE_STATUSES:
+            # This request is built by hand, so it never passes through
+            # ``_api_call`` -- it has to latch the lockout itself.
+            latch_auth_failure(
+                resp.status_code, (resp.text or "").strip()[:200], context
+            )
+            break
+        if resp.status_code == 429:
+            retry_after = float(resp.headers.get("Retry-After", 0) or 0)
+            if retry_after > _DAILY_RATE_LIMIT_THRESHOLD:
+                _daily.latch_for(retry_after, context)
+                break
+            if limiter is not None:
+                # Blocks every Metron send, mokkari's included, for Retry-After.
+                limiter.on_rate_limited(retry_after)
+            if attempt < _RATE_LIMIT_MAX_RETRIES - 1:
+                app_logger.info(
+                    f"Metron rate limit hit {context}: retrying after "
+                    f"{retry_after or _RATE_LIMIT_DEFAULT_WAIT}s "
+                    f"(attempt {attempt + 1}/{_RATE_LIMIT_MAX_RETRIES})"
+                )
+                if limiter is None:
+                    time.sleep(retry_after or _RATE_LIMIT_DEFAULT_WAIT)
+                continue
+            break
+        try:
+            resp.raise_for_status()
+        except requests_lib.exceptions.RequestException as e:
+            app_logger.error(f"Error fetching arcs page {page}: {e}")
+            break
+        data = resp.json()
+        return {
+            "results": data.get("results", []),
+            "has_next": data.get("next") is not None,
+            "count": data.get("count", 0),
+            "page": page,
+        }
 
     return {"results": [], "has_next": False, "count": 0, "page": page}
 

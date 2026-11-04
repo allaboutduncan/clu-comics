@@ -1028,48 +1028,6 @@ class TestUpdateCvinfoWithMetronId:
         assert "series_id: 50" not in content
 
 
-class TestSlidingWindowRateLimiter:
-
-    def test_allows_up_to_limit_without_blocking(self):
-        from models.metron import _SlidingWindowRateLimiter
-
-        limiter = _SlidingWindowRateLimiter(max_requests=3, window_seconds=60.0)
-        start = time.monotonic()
-        for _ in range(3):
-            limiter.acquire()
-        assert time.monotonic() - start < 0.5
-
-    def test_blocks_until_window_frees_a_slot(self):
-        from models.metron import _SlidingWindowRateLimiter
-
-        limiter = _SlidingWindowRateLimiter(max_requests=2, window_seconds=0.2)
-        limiter.acquire()
-        limiter.acquire()
-        start = time.monotonic()
-        limiter.acquire()
-        assert time.monotonic() - start >= 0.15
-
-    def test_reset_clears_recorded_requests(self):
-        from models.metron import _SlidingWindowRateLimiter
-
-        limiter = _SlidingWindowRateLimiter(max_requests=1, window_seconds=60.0)
-        limiter.acquire()
-        limiter.reset()
-        start = time.monotonic()
-        limiter.acquire()
-        assert time.monotonic() - start < 0.5
-
-    def test_api_call_acquires_rate_limiter_slot(self):
-        """_api_call must throttle through the shared limiter so concurrent
-        threads calling different Metron functions still share one budget."""
-        from models.metron import _api_call, _metron_rate_limiter
-
-        with patch.object(_metron_rate_limiter, "acquire") as mock_acquire:
-            result = _api_call(lambda: "ok", "test context")
-        assert result == "ok"
-        mock_acquire.assert_called_once()
-
-
 def _window(limit=None, remaining=None, reset=None):
     return SimpleNamespace(limit=limit, remaining=remaining, reset=reset)
 
@@ -1080,46 +1038,225 @@ def _status(burst=None, sustained=None):
     )
 
 
-class TestAdaptivePacing:
-    """mokkari parses the X-RateLimit-* headers but its own pre-emptive check is
-    advisory -- its docstring says callers must cap their own concurrency. These
-    tests pin the capping we do from those headers."""
+_PUBLISHER_URL = "https://metron.cloud/api/publisher/"
 
-    def test_retunes_the_window_from_the_reported_burst_limit(self):
-        from models.metron import _metron_pacer, _metron_rate_limiter
 
-        session = MagicMock()
-        session.rate_limit_status = _status(burst=_window(limit=20, remaining=19))
+def _http_response(status, body=None, headers=None):
+    import requests
 
-        _metron_pacer.observe(session)
+    response = requests.Response()
+    response.status_code = status
+    response._content = json.dumps(body if body is not None else {}).encode()
+    response.headers.update(headers or {})
+    response.url = _PUBLISHER_URL
+    return response
 
-        assert _metron_rate_limiter.max_requests == 16  # 80% of 20
 
-    def test_missing_headers_leave_the_default_budget_alone(self):
+def _publisher_page(n, next_page=None):
+    return {
+        "count": 3,
+        "next": f"{_PUBLISHER_URL}?page={next_page}" if next_page else None,
+        "previous": None,
+        "results": [{"id": n, "name": f"Pub {n}", "modified": "2024-01-01T00:00:00Z"}],
+    }
+
+
+def _counting_limiter(burst_period=0.06):
+    """The real limiter on a tiny window, counting the sends it gates."""
+    from models.metron import _CluRateLimiter
+
+    class Counting(_CluRateLimiter):
+        def __init__(self):
+            super().__init__(burst_period=burst_period)
+            self.acquired = 0
+
+        def acquire(self, status):
+            self.acquired += 1
+            super().acquire(status)
+
+    return Counting()
+
+
+class TestPerSendPacing:
+    """#703: CLU took one slot per ``_api_call`` while mokkari followed every
+    ``next`` link inside it, so one list call sent dozens of unpaced pages.
+    Pacing now lives on the session and runs once per HTTP send."""
+
+    def _real_session(self, limiter):
+        from mokkari.session import Session
+
+        try:
+            return Session("tok", rate_limiter=limiter)
+        except TypeError:
+            pytest.skip("mokkari is shimmed in this environment")
+
+    def test_every_page_of_a_list_takes_a_slot(self):
+        import requests
+        from models.metron import _api_call
+
+        limiter = _counting_limiter()
+        session = self._real_session(limiter)
+        pages = [
+            _http_response(200, _publisher_page(1, 2)),
+            _http_response(200, _publisher_page(2, 3)),
+            _http_response(200, _publisher_page(3)),
+        ]
+
+        with patch.object(requests.Session, "request", side_effect=pages) as send:
+            result = _api_call(lambda: session.publishers_list({}), "all publishers", default=[])
+
+        assert [p.id for p in result] == [1, 2, 3]
+        assert send.call_count == 3
+        assert limiter.acquired == 3  # not 1
+
+    def test_a_429_on_one_page_retries_that_page_not_the_whole_call(self):
+        """The two retry layers used to stack: mokkari retried the page, then
+        ``_handle_rate_limit`` slept and re-ran the list from page 1."""
+        import requests
+        from models.metron import _api_call
+
+        limiter = _counting_limiter()
+        session = self._real_session(limiter)
+        pages = [
+            _http_response(200, _publisher_page(1, 2)),
+            _http_response(429, {"detail": "slow down"}, {"Retry-After": "0"}),
+            _http_response(200, _publisher_page(2)),
+        ]
+        fn = MagicMock(side_effect=lambda: session.publishers_list({}))
+
+        with patch.object(requests.Session, "request", side_effect=pages) as send, \
+                patch("models.metron.time.sleep") as sleep:
+            result = _api_call(fn, "all publishers", default=[])
+
+        assert [p.id for p in result] == [1, 2]
+        assert fn.call_count == 1
+        assert send.call_count == 3
+        sleep.assert_not_called()
+
+    def test_the_seed_spaces_sends_before_metron_reports_a_limit(self):
+        """mokkari's limiter learns the burst limit from the first response and
+        spaces nothing until then, so threads starting together all went out
+        at once."""
+        from mokkari.rate_limit import RateLimitStatus
+        from models.metron import _CluRateLimiter
+
+        limiter = _CluRateLimiter(burst_period=0.4)  # seeded 20 -> 20ms apart
+        status = RateLimitStatus()
+        start = time.monotonic()
+        for _ in range(3):
+            limiter.acquire(status)
+            limiter.release(status)
+        assert time.monotonic() - start >= 0.035
+
+    def test_a_reported_limit_replaces_the_seed(self):
+        from mokkari.rate_limit import RateLimitStatus, RateLimitWindow
+        from models.metron import _CluRateLimiter
+
+        limiter = _CluRateLimiter(burst_period=0.2)
+        status = RateLimitStatus(burst=RateLimitWindow(limit=2, remaining=2))
+        start = time.monotonic()
+        limiter.acquire(status)
+        limiter.release(status)
+        limiter.acquire(status)  # 0.2 / 2 = 100ms after the first
+        limiter.release(status)
+        assert time.monotonic() - start >= 0.09
+
+    def test_the_seed_is_the_limit_settings_shows(self):
+        from models.metron import _DEFAULT_BURST_LIMIT
+        from models.providers.metron_provider import MetronProvider
+
+        assert _DEFAULT_BURST_LIMIT == MetronProvider.rate_limit
+
+    @patch("models.metron.MokkariSession")
+    def test_each_token_gets_its_own_limiter(self, session_class):
+        """mokkari: construct one limiter per Session. One cached Session per
+        token is then one limiter per Metron account."""
+        from models.metron import _CluRateLimiter, get_api
+
+        session_class.side_effect = lambda *a, **kw: MagicMock()
+        get_api(api_token="a")
+        get_api(api_token="a")
+        get_api(api_token="b")
+
+        assert session_class.call_count == 2
+        limiters = [c.kwargs["rate_limiter"] for c in session_class.call_args_list]
+        assert all(isinstance(lim, _CluRateLimiter) for lim in limiters)
+        assert limiters[0] is not limiters[1]
+
+
+class TestRateLimitClassification:
+
+    def test_a_refusal_from_the_limiter_latches_the_daily_window(self):
+        """mokkari raises the base RateLimitError only for a request it never
+        sent: its limiter refusing because the daily window is spent."""
+        from models.metron import _api_call, daily_limit_reached
+
+        fn = MagicMock(side_effect=RateLimitError("daily limit", retry_after=30))
+        with patch("models.metron.time.sleep") as sleep:
+            assert _api_call(fn, "test context", default="fallback") == "fallback"
+        assert fn.call_count == 1
+        sleep.assert_not_called()
+        assert daily_limit_reached() is True
+
+        later = MagicMock(return_value="ok")
+        assert _api_call(later, "later", default="fallback") == "fallback"
+        later.assert_not_called()
+
+    def test_a_429_from_metron_retries_without_sleeping(self):
+        """The session's limiter already blocks every thread for Retry-After;
+        sleeping in CLU too is how the retry layers stacked."""
+        from models.metron import _api_call, daily_limit_reached
+
+        class Server429(RateLimitError):
+            """Stands in for mokkari's private ``_ServerRateLimitError``."""
+
+        fn = MagicMock(side_effect=[Server429("429", retry_after=10), "ok"])
+        with patch("models.metron.time.sleep") as sleep:
+            assert _api_call(fn, "test context") == "ok"
+        assert fn.call_count == 2
+        sleep.assert_not_called()
+        assert daily_limit_reached() is False
+
+    def test_a_429_that_keeps_coming_gives_up_after_three_attempts(self):
+        from models.metron import _api_call
+
+        class Server429(RateLimitError):
+            pass
+
+        fn = MagicMock(side_effect=Server429("429", retry_after=10))
+        with patch("models.metron.time.sleep"):
+            assert _api_call(fn, "test context", default="fallback") == "fallback"
+        assert fn.call_count == 3
+
+
+class TestDailyQuota:
+    """The burst window is the session limiter's job; the daily window is the
+    one CLU still latches, because waiting it out is hours."""
+
+    def test_missing_headers_do_not_latch(self):
         """Every field is None until the first response completes; a TypeError
         here would kill a daemon thread."""
-        from models.metron import _metron_pacer, _metron_rate_limiter
+        from models.metron import _observe_sustained, daily_limit_reached
 
-        before = _metron_rate_limiter.max_requests
         session = MagicMock()
         session.rate_limit_status = _status()
 
-        _metron_pacer.observe(session)  # must not raise
+        _observe_sustained(session)  # must not raise
 
-        assert _metron_rate_limiter.max_requests == before
+        assert daily_limit_reached() is False
 
     def test_session_without_rate_limit_status_is_ignored(self):
-        from models.metron import _metron_pacer
+        from models.metron import _observe_sustained
 
         session = MagicMock()
         session.rate_limit_status = None
 
-        _metron_pacer.observe(session)  # must not raise
+        _observe_sustained(session)  # must not raise
 
     def test_naive_reset_datetime_does_not_explode(self):
         """mokkari returns tz-aware datetimes; comparing one against a naive
         now() raises. Guard both ways."""
-        from models.metron import _metron_pacer
+        from models.metron import _observe_sustained
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1128,13 +1265,13 @@ class TestAdaptivePacing:
             )
         )
 
-        _metron_pacer.observe(session)  # must not raise
+        _observe_sustained(session)  # must not raise
 
     def test_exhausted_daily_quota_skips_the_call_without_sleeping(self):
         """The regression test for the reported log: a spent daily quota was
         surfacing as a 59.5s wait retried 3x per series, for every series in a
         sweep. It must now short-circuit."""
-        from models.metron import _api_call, _metron_pacer
+        from models.metron import _api_call, _observe_sustained
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1144,7 +1281,7 @@ class TestAdaptivePacing:
                 reset=datetime.now(timezone.utc) + timedelta(hours=2),
             )
         )
-        _metron_pacer.observe(session)
+        _observe_sustained(session)
 
         called = {"n": 0}
 
@@ -1160,7 +1297,7 @@ class TestAdaptivePacing:
         mock_sleep.assert_not_called()
 
     def test_calls_resume_once_the_daily_window_has_reset(self):
-        from models.metron import _api_call, _metron_pacer
+        from models.metron import _api_call, _observe_sustained, daily_limit_reached
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1170,19 +1307,19 @@ class TestAdaptivePacing:
                 reset=datetime.now(timezone.utc) + timedelta(milliseconds=50),
             )
         )
-        _metron_pacer.observe(session)
-        assert _metron_pacer.daily_limit_reached() is True
+        _observe_sustained(session)
+        assert daily_limit_reached() is True
 
         time.sleep(0.1)
 
-        assert _metron_pacer.daily_limit_reached() is False
+        assert daily_limit_reached() is False
         assert _api_call(lambda: "ok", "test context") == "ok"
 
     def test_sub_threshold_retry_after_gives_up_on_the_first_attempt(self):
         """mokkari reports retry_after as max(burst_wait, sustained_wait), so a
         spent daily quota can arrive as 59.5s -- just under the old 60s 'this is
         the daily cap' threshold. The headers say which window it really is."""
-        from models.metron import _api_call, invalidate_session_cache
+        from models.metron import _api_call
         import models.metron as metron
 
         session = MagicMock()
@@ -1211,7 +1348,11 @@ class TestAdaptivePacing:
 
     def test_invalidate_clears_the_daily_latch(self):
         """A wrongly-latched window would silently disable Metron for hours."""
-        from models.metron import _metron_pacer, invalidate_session_cache
+        from models.metron import (
+            _observe_sustained,
+            daily_limit_reached,
+            invalidate_session_cache,
+        )
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1221,25 +1362,38 @@ class TestAdaptivePacing:
                 reset=datetime.now(timezone.utc) + timedelta(hours=2),
             )
         )
-        _metron_pacer.observe(session)
-        assert _metron_pacer.daily_limit_reached() is True
+        _observe_sustained(session)
+        assert daily_limit_reached() is True
 
         invalidate_session_cache()
 
-        assert _metron_pacer.daily_limit_reached() is False
+        assert daily_limit_reached() is False
 
     def test_successful_call_observes_the_headers(self):
-        from models.metron import _api_call, _metron_rate_limiter
+        from models.metron import _api_call, daily_limit_reached
         import models.metron as metron
 
         session = MagicMock()
-        session.rate_limit_status = _status(burst=_window(limit=40, remaining=39))
+        session.rate_limit_status = _status(
+            sustained=_window(
+                limit=100,
+                remaining=0,
+                reset=datetime.now(timezone.utc) + timedelta(hours=2),
+            )
+        )
         with metron._SESSION_CACHE_LOCK:
             metron._SESSION_CACHE[("u", "p")] = session
 
         assert _api_call(lambda: "ok", "test context") == "ok"
 
-        assert _metron_rate_limiter.max_requests == 32  # 80% of 40
+        assert daily_limit_reached() is True
+
+    def test_paused_reason_names_the_daily_limit(self):
+        import models.metron as metron
+
+        assert metron.paused_reason() is None
+        metron._daily.latch_for(3600, "test")
+        assert "daily request limit" in metron.paused_reason()
 
 
 class TestGetReleases:
@@ -1660,12 +1814,43 @@ class TestAuthLockout:
 
     def test_the_daily_quota_latch_is_unaffected(self, prefs):
         """Two independent brakes; clearing one must not clear the other."""
-        from models.metron import _metron_pacer, clear_auth_block, latch_auth_failure
+        import models.metron as metron
+        from models.metron import clear_auth_block, daily_limit_reached, latch_auth_failure
 
         latch_auth_failure(401, "Invalid token.")
-        _metron_pacer.latch_daily_limit(3600, "test")
+        metron._daily.latch_for(3600, "test")
         clear_auth_block()
-        assert _metron_pacer.daily_limit_reached() is True
+        assert daily_limit_reached() is True
+
+    def test_paused_reason_names_the_rejected_credentials(self, prefs):
+        from models.metron import latch_auth_failure, paused_reason
+
+        latch_auth_failure(401, "Invalid token.")
+        assert paused_reason() == "Metron rejected the saved credentials"
+
+    def test_raise_api_errors_re_raises_a_connection_error(self, prefs):
+        """Routes keep their own "Metron is unavailable" 503."""
+        import requests
+        from mokkari.exceptions import ApiError
+        from models.metron import _api_call, auth_blocked
+
+        error = ApiError("Connection error")
+        error.__cause__ = requests.exceptions.ConnectionError("boom")
+        with pytest.raises(ApiError):
+            _api_call(MagicMock(side_effect=error), "testing", raise_api_errors=True)
+        assert auth_blocked() is False
+
+    def test_raise_api_errors_still_latches_a_rejected_credential(self, prefs):
+        from models.metron import _api_call, auth_blocked
+
+        result = _api_call(
+            MagicMock(side_effect=_http_api_error(401)),
+            "testing",
+            default="fallback",
+            raise_api_errors=True,
+        )
+        assert result == "fallback"
+        assert auth_blocked() is True
 
 
 class TestTokenOnlyAuth:
@@ -1788,6 +1973,71 @@ class TestFetchArcsPageAuth:
         assert get.call_count == 1
         assert result["results"] == []
         assert auth_blocked() is True
+
+
+class TestFetchArcsPagePacing:
+    """The hand-built arc request never passes through mokkari's send, so it
+    takes the session's limiter itself -- the same one every other Metron
+    request takes."""
+
+    def _api(self):
+        return SimpleNamespace(
+            api_token="tok", header={}, rate_limiter=MagicMock(), rate_limit_status="S"
+        )
+
+    def _ok(self):
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"results": [{"id": 1}], "next": None, "count": 1}
+        return response
+
+    def test_takes_and_releases_the_session_limiter(self):
+        from models.metron import fetch_arcs_page
+
+        api = self._api()
+        with patch("models.metron.requests_lib.get", return_value=self._ok()):
+            result = fetch_arcs_page(api, page=1)
+
+        assert result["results"] == [{"id": 1}]
+        api.rate_limiter.acquire.assert_called_once_with("S")
+        api.rate_limiter.release.assert_called_once()
+
+    def test_a_429_backs_off_every_sender_and_retries_without_sleeping(self):
+        from models.metron import fetch_arcs_page
+
+        api = self._api()
+        rejected = MagicMock(status_code=429, headers={"Retry-After": "5"})
+        with patch("models.metron.requests_lib.get", side_effect=[rejected, self._ok()]) as get, \
+                patch("models.metron.time.sleep") as sleep:
+            result = fetch_arcs_page(api, page=1)
+
+        assert result["results"] == [{"id": 1}]
+        assert get.call_count == 2
+        api.rate_limiter.on_rate_limited.assert_called_once_with(5.0)
+        assert api.rate_limiter.release.call_count == 2
+        sleep.assert_not_called()
+
+    def test_a_refusal_from_the_limiter_latches_the_daily_window(self):
+        from models.metron import daily_limit_reached, fetch_arcs_page
+
+        api = self._api()
+        api.rate_limiter.acquire.side_effect = RateLimitError("daily", retry_after=3600)
+        with patch("models.metron.requests_lib.get") as get:
+            result = fetch_arcs_page(api, page=1)
+
+        get.assert_not_called()
+        assert result["results"] == []
+        assert daily_limit_reached() is True
+
+    def test_a_daily_429_latches_instead_of_retrying(self):
+        from models.metron import daily_limit_reached, fetch_arcs_page
+
+        api = self._api()
+        rejected = MagicMock(status_code=429, headers={"Retry-After": "7200"})
+        with patch("models.metron.requests_lib.get", return_value=rejected) as get:
+            fetch_arcs_page(api, page=1)
+
+        assert get.call_count == 1
+        assert daily_limit_reached() is True
 
 
 class TestListReadingListsModifiedSince:

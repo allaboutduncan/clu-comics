@@ -298,12 +298,12 @@ def metron_env():
             patch("models.metron.get_series_id_by_comicvine_id",
                   side_effect=lambda api, cv: env.lookup.get(cv)), \
             patch("models.metron.auth_blocked", side_effect=lambda: env.blocked), \
-            patch("models.metron._metron_pacer") as pacer, \
+            patch("models.metron.daily_limit_reached",
+                  side_effect=lambda: env.daily_limit), \
             patch("models.comicvine_source.is_available", side_effect=lambda app=None: env.cv_available), \
             patch("models.library_automap.apply_automap", side_effect=fake_apply_automap) as automap, \
             patch("models.library_automap._sync_and_match", side_effect=fake_sync), \
             patch.object(mylar_import, "_refresh_wanted_cache") as refresh:
-        pacer.daily_limit_reached.side_effect = lambda: env.daily_limit
         env.refresh = refresh
         env.apply_automap = automap
         yield env
