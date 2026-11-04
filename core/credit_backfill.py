@@ -382,7 +382,7 @@ def run_credit_backfill(
 
         # A spent daily quota makes every remaining fetch a no-op; stop rather
         # than churn through hundreds of files that cannot succeed.
-        if metron._metron_pacer.daily_limit_reached():
+        if metron.daily_limit_reached():
             summary["stopped_early"] = True
             app_logger.info("Credit backfill stopped early: Metron daily limit reached")
             break

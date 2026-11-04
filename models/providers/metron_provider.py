@@ -270,8 +270,8 @@ class MetronProvider(BaseProvider):
             if not api:
                 return None
 
-            # Paced: this is a raw mokkari call, so without _api_call it would
-            # take no rate-limit slot and ignore the auth lockout.
+            # Guarded: without _api_call this raw mokkari call would ignore the
+            # auth lockout and the daily-quota latch.
             from models import metron as metron_module
 
             issue = metron_module._api_call(

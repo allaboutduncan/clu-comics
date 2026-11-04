@@ -2492,11 +2492,18 @@ class TestProviderAuthBlockRoutes:
     """
 
     def test_reset_auth_clears_the_block(self, client):
-        with patch("models.metron.clear_auth_block") as clear:
+        """Cleared through the shared lockout registry, so the next provider
+        that registers an AuthLockout gets this route for free."""
+        from core.provider_client import lockout_for
+        from models import metron
+
+        assert lockout_for("metron") is metron._auth_block
+        with patch.object(metron._auth_block, "clear") as clear:
             resp = client.post('/api/providers/metron/reset-auth')
 
         assert resp.status_code == 200
         assert resp.get_json()['success'] is True
+        assert resp.get_json()['message'] == "Metron re-enabled"
         clear.assert_called_once()
 
     def test_reset_auth_rejects_an_unknown_provider(self, client):

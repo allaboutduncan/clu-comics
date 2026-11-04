@@ -1018,26 +1018,31 @@ def delete_provider_creds(provider_type):
 def reset_provider_auth_block(provider_type):
     """Lift a provider's latched authentication block.
 
-    Only Metron latches one today. There is deliberately no timed auto-retry:
-    a rejected credential does not heal on its own, and retrying it is what got
-    a user's IP banned by Metron, so clearing it takes a human saying so.
+    Any provider that registers a ``core.provider_client.AuthLockout`` is
+    covered; only Metron registers one today. There is deliberately no timed
+    auto-retry: a rejected credential does not heal on its own, and retrying it
+    is what got a user's IP banned by Metron, so clearing it takes a human
+    saying so.
     """
     try:
         from models.providers import ProviderType
+        from core.provider_client import lockout_for
+        # Registers Metron's lockout; the providers package already imports it.
+        import models.metron  # noqa: F401
 
         try:
             ProviderType(provider_type)
         except ValueError:
             return jsonify({"error": f"Unknown provider type: {provider_type}"}), 400
 
-        if provider_type != 'metron':
+        lockout = lockout_for(provider_type)
+        if lockout is None:
             return jsonify({
                 "error": f"{provider_type} does not use an authentication block"
             }), 400
 
-        from models import metron as metron_module
-        metron_module.clear_auth_block()
-        return jsonify({"success": True, "message": "Metron re-enabled"})
+        lockout.clear()
+        return jsonify({"success": True, "message": f"{lockout.display_name} re-enabled"})
     except Exception as e:
         app_logger.error(f"Error resetting auth block for {provider_type}: {e}")
         return jsonify({"error": str(e)}), 500

@@ -52,8 +52,9 @@ Things that look arbitrary and are not:
   (`models.metron.list_reading_lists_modified_since`) instead of a detail
   request each. Metron's filter is **date-granular and exclusive**, so the
   lower bound steps back a day or a list edited later on the day it synced is
-  invisible. mokkari follows every `next` link inside that one call and does so
-  *below* the pacer, so the window is clamped to `MAX_BULK_LOOKBACK_DAYS`;
+  invisible. mokkari follows every `next` link inside that one call. Each page
+  is paced now (the session's limiter runs per send, #703), but each still
+  costs daily quota, so the window is clamped to `MAX_BULK_LOOKBACK_DAYS`;
   anything older is probed individually.
 - **`list_reading_lists_modified_since` returns `None` on failure and `{}` for
   "nothing changed", and the caller acts on the difference.** Collapsing the

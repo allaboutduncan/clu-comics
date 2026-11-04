@@ -926,7 +926,7 @@ def _metron_unavailable():
 
     if metron.auth_blocked():
         return "Metron rejected the saved credentials"
-    if metron._metron_pacer.daily_limit_reached():
+    if metron.daily_limit_reached():
         return "Metron's daily request limit was reached"
     return None
 

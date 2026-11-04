@@ -270,6 +270,7 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 - `.claude/rules/thumbnails.md` - Per-comic thumbnail cache and folder thumbnails
 - `.claude/rules/comicvine-db-update.md` - Local ComicVine DB auto-update
 - `.claude/rules/metadata.md` - Metadata: Metron auth, collected editions, provenance, series.json, ComicInfo writes
+- `.claude/rules/provider-clients.md` - Provider call layer: pace per HTTP send, `GuardedClient`, auth lockout, quota latch
 
 ## Project Rules
 

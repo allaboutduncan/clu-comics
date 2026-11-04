@@ -68,8 +68,8 @@ def sync_series_from_api(api, series_id: int) -> dict:
                 'error': 'Series not found in database'
             }
 
-        # Fetch series info from API. Use the rate-limit-aware helper so a bulk
-        # sync waits on the shared limiter instead of erroring out under load.
+        # Fetch series info from API. Use the guarded helper so a bulk sync
+        # retries a 429 (the session's limiter waits it out) instead of erroring.
         series_info = metron.get_series(api, series_id)
         if not series_info:
             return {
