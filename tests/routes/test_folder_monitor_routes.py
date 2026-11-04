@@ -79,7 +79,7 @@ class TestMetronSaveSuggestsMonitoring:
              patch("routes.metadata._validate_saved_credentials",
                    return_value=(True, None)), \
              patch("core.config.load_flask_config"), \
-             patch("models.metron.clear_auth_block"):
+             patch("core.provider_client.AuthLockout.clear"):
             return client.post(f"/api/providers/{provider}/credentials",
                                json=payload or {"auth_mode": "token", "api_token": "tok"})
 

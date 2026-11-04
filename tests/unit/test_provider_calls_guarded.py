@@ -12,8 +12,9 @@ Asserted over the AST, because app.py cannot be imported in tests.
 the one module allowed to build the provider's client, ``client_ctor`` the
 names that build it, and every call to one of ``methods`` on a receiver in
 ``receivers`` must sit inside a ``lambda`` -- or a nested ``def`` passed by
-name -- given to one of ``guards``. A plain-``requests`` provider gets the
-same shape once its ``HttpClient`` exists.
+name -- given to one of ``guards``. A plain-``requests`` provider instead
+goes in ``HTTP_PROVIDER_MODULES``: it may not touch ``requests`` at all, only
+``core.http_client.HttpClient``.
 """
 import ast
 import os
@@ -170,6 +171,56 @@ def test_only_the_owner_builds_the_client(provider):
     assert not offenders, (
         f"only {rule['owner']} may build a {provider} client:\n  " + "\n  ".join(offenders)
     )
+
+
+# Plain-requests providers: their requests may only leave through
+# ``core.http_client.HttpClient._send``, which paces each one and puts it
+# behind the lockout and quota latch. Each #704 PR adds its modules here.
+HTTP_PROVIDER_MODULES = frozenset({
+    "models/gcd_api.py",
+    "models/providers/gcd_api_provider.py",
+})
+
+
+def raw_requests_use(tree):
+    """Lines that import ``requests`` (or a submodule) or build a Session."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            a.name == "requests" or a.name.startswith("requests.") for a in node.names
+        ):
+            found.append(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and node.module and (
+            node.module == "requests" or node.module.startswith("requests.")
+        ):
+            found.append(node.lineno)
+        elif isinstance(node, ast.Call) and _called_name(node) == "Session":
+            found.append(node.lineno)
+    return found
+
+
+@pytest.mark.parametrize("module", sorted(HTTP_PROVIDER_MODULES))
+def test_http_providers_send_only_through_http_client(module):
+    offenders = raw_requests_use(_parse(os.path.join(ROOT, module)))
+    assert not offenders, (
+        f"{module} talks to requests directly (lines {offenders}); send through "
+        f"core.http_client.HttpClient so every request is paced and guarded"
+    )
+
+
+class TestTheHttpCheckerItself:
+    def test_flags_requests_imports_and_sessions(self):
+        tree = ast.parse(
+            "import requests\nfrom requests.auth import HTTPBasicAuth\n"
+            "s = requests.Session()\n"
+        )
+        assert raw_requests_use(tree) == [1, 2, 3]
+
+    def test_accepts_the_http_client(self):
+        tree = ast.parse(
+            "from core.http_client import HttpClient\nHttpClient('a', 'A', 'u', 30)\n"
+        )
+        assert raw_requests_use(tree) == []
 
 
 class TestTheCheckerItself:

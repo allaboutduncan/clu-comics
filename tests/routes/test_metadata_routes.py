@@ -2511,9 +2511,36 @@ class TestProviderAuthBlockRoutes:
         assert resp.status_code == 400
         assert 'Unknown provider type' in resp.get_json()['error']
 
+    def test_reset_auth_clears_the_gcd_api_block(self, client):
+        """The GCD API registers its own lockout (#704) and gets the button."""
+        with patch("core.provider_client.AuthLockout.clear") as clear:
+            resp = client.post('/api/providers/gcd_api/reset-auth')
+        assert resp.status_code == 200
+        assert 'Grand Comics Database' in resp.get_json()['message']
+        clear.assert_called_once()
+
+    def test_listing_surfaces_the_block_for_gcd_api(self, client):
+        state = {"blocked": True, "error": "rejected (HTTP 401).", "blocked_at": None}
+        with patch("models.gcd_api._auth_block.state", return_value=state):
+            resp = client.get('/api/providers')
+        providers = {p['type']: p for p in resp.get_json()['providers']}
+        assert providers['gcd_api']['auth_blocked'] is True
+
+    def test_saving_gcd_api_credentials_lifts_its_block(self, client):
+        from models import gcd_api
+        with patch("core.database.save_provider_credentials", return_value=True), \
+             patch("core.config.load_flask_config"), \
+             patch.object(gcd_api._auth_block, "clear") as clear, \
+             patch("models.gcd_api.invalidate_gcd_client_cache") as invalidate:
+            resp = client.post('/api/providers/gcd_api/credentials',
+                               json={"username": "u", "password": "p"})
+        assert resp.status_code == 200
+        clear.assert_called_once()
+        invalidate.assert_called_once()
+
     def test_reset_auth_rejects_a_provider_without_a_block(self, client):
-        """Only Metron latches one; pretending otherwise would imply the other
-        providers have a brake they do not have."""
+        """Only providers with a lockout latch one; pretending otherwise would
+        imply the others have a brake they do not have."""
         resp = client.post('/api/providers/comicvine/reset-auth')
         assert resp.status_code == 400
 
@@ -2521,7 +2548,7 @@ class TestProviderAuthBlockRoutes:
         state = {"blocked": True, "error": "Metron rejected the configured "
                                            "credentials (HTTP 401).",
                  "blocked_at": "2026-08-31T12:00:00+00:00"}
-        with patch("models.metron.auth_block_state", return_value=state):
+        with patch("models.metron._auth_block.state", return_value=state):
             resp = client.get('/api/providers')
 
         assert resp.status_code == 200
@@ -2556,7 +2583,7 @@ class TestSaveProviderCredentialsAuthModes:
              patch("routes.metadata._validate_saved_credentials",
                    return_value=(True, None)), \
              patch("core.config.load_flask_config"), \
-             patch("models.metron.clear_auth_block"):
+             patch("core.provider_client.AuthLockout.clear"):
             resp = client.post('/api/providers/metron/credentials', json=payload)
         return resp, save
 
@@ -2607,7 +2634,7 @@ class TestSaveProviderCredentialsAuthModes:
              patch("routes.metadata._validate_saved_credentials",
                    return_value=(True, None)), \
              patch("core.config.load_flask_config"), \
-             patch("models.metron.clear_auth_block") as clear:
+             patch("core.provider_client.AuthLockout.clear") as clear:
             resp = client.post('/api/providers/metron/credentials',
                                json={"auth_mode": "token", "api_token": "tok"})
 
@@ -2622,7 +2649,7 @@ class TestSaveProviderCredentialsAuthModes:
              patch("routes.metadata._validate_saved_credentials",
                    return_value=(False, "Metron rejected the credentials (HTTP 401).")), \
              patch("core.config.load_flask_config"), \
-             patch("models.metron.clear_auth_block"):
+             patch("core.provider_client.AuthLockout.clear"):
             resp = client.post('/api/providers/metron/credentials',
                                json={"auth_mode": "token", "api_token": "bad"})
 

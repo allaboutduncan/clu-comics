@@ -222,6 +222,17 @@ class TestGuardedCall:
                 raise_auth_errors=True,
             )
 
+    def test_a_provider_without_a_lockout_never_pauses_on_auth(self):
+        """Anonymous providers (MangaDex...) have nothing to reject; an AUTH
+        verdict from one is an ordinary error, not a latch."""
+        anon = _FakeClient(None, QuotaLatch("TestProv", "daily"))
+        fn = MagicMock(side_effect=_Fail(Verdict.auth(401)))
+        assert anon.call(fn, "ctx", default="fallback") == "fallback"
+        assert anon.paused_reason() is None
+        with pytest.raises(_Fail):
+            anon.call(fn, "ctx", raise_api_errors=True)
+        assert anon.call(lambda: "ok", "ctx") == "ok"
+
     def test_ignore_auth_lock_runs_while_blocked(self, client):
         client.lockout.latch(401, "", "")
         assert client.call(lambda: "ok", "ctx", ignore_auth_lock=True) == "ok"

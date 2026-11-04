@@ -336,7 +336,15 @@ class GuardedClient(ABC):
 
     max_retries = 3
 
-    def __init__(self, display_name: str, lockout: AuthLockout, quota: QuotaLatch):
+    def __init__(
+        self,
+        display_name: str,
+        lockout: Optional[AuthLockout],
+        quota: QuotaLatch,
+    ):
+        """``lockout`` is None for a provider with no credentials to reject
+        (MangaDex, Bedetheque...): it must not grow a Re-enable button, and an
+        ``AUTH`` verdict from it is treated as an ordinary error."""
         self.display_name = display_name
         self.lockout = lockout
         self.quota = quota
@@ -355,7 +363,11 @@ class GuardedClient(ABC):
 
     def paused_reason(self, ignore_auth_lock: bool = False) -> Optional[str]:
         """Why calls are being skipped right now, for a user-facing message."""
-        if not ignore_auth_lock and self.lockout.blocked():
+        if (
+            not ignore_auth_lock
+            and self.lockout is not None
+            and self.lockout.blocked()
+        ):
             return f"{self.display_name} rejected the saved credentials"
         if self.quota.reached():
             return (
@@ -396,6 +408,8 @@ class GuardedClient(ABC):
                 verdict = self._classify(e)
                 if verdict is None:
                     raise
+                if verdict.kind == AUTH and self.lockout is None:
+                    verdict = Verdict.error()
                 if verdict.kind == AUTH:
                     if raise_auth_errors:
                         raise
