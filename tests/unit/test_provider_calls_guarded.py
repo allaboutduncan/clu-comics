@@ -179,6 +179,10 @@ def test_only_the_owner_builds_the_client(provider):
 HTTP_PROVIDER_MODULES = frozenset({
     "models/gcd_api.py",
     "models/providers/gcd_api_provider.py",
+    "models/providers/mangadex_provider.py",
+    "models/providers/mangaupdates_provider.py",
+    "models/providers/bedetheque_provider.py",
+    "models/providers/anilist_provider.py",
 })
 
 

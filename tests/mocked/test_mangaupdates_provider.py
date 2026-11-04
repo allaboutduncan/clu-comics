@@ -54,7 +54,7 @@ class TestMangaUpdatesProviderInit:
 class TestMangaUpdatesProviderTestConnection:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_successful_connection(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -64,7 +64,7 @@ class TestMangaUpdatesProviderTestConnection:
         assert p.test_connection() is True
 
     @patch("time.sleep")
-    @patch("requests.request", side_effect=Exception("Network error"))
+    @patch("requests.Session.request", side_effect=Exception("Network error"))
     def test_connection_failure(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -75,7 +75,7 @@ class TestMangaUpdatesProviderTestConnection:
 class TestMangaUpdatesProviderSearchSeries:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_returns_results(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -94,7 +94,7 @@ class TestMangaUpdatesProviderSearchSeries:
         assert results[0].cover_url == "https://example.com/cover.jpg"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_ignores_year_filter(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -110,7 +110,7 @@ class TestMangaUpdatesProviderSearchSeries:
         assert results[0].title == "One Punch Man"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_empty_results(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -120,7 +120,7 @@ class TestMangaUpdatesProviderSearchSeries:
         assert p.search_series("Nothing") == []
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_strips_html(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -139,7 +139,7 @@ class TestMangaUpdatesProviderSearchSeries:
 class TestMangaUpdatesProviderGetSeries:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_get_series_by_id(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -155,7 +155,7 @@ class TestMangaUpdatesProviderGetSeries:
         assert result.issue_count == 30
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_series_not_found(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -168,7 +168,7 @@ class TestMangaUpdatesProviderGetSeries:
 class TestMangaUpdatesProviderGetIssues:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_synthetic_volumes(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -184,7 +184,7 @@ class TestMangaUpdatesProviderGetIssues:
         assert results[29].id == "12345-30"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_zero_volumes(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -198,7 +198,7 @@ class TestMangaUpdatesProviderGetIssues:
 class TestMangaUpdatesProviderGetIssueMetadata:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_full_metadata(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -224,7 +224,7 @@ class TestMangaUpdatesProviderGetIssueMetadata:
         assert "mangaupdates.com/series/12345" in metadata["Web"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_summary_html_stripped(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -238,7 +238,7 @@ class TestMangaUpdatesProviderGetIssueMetadata:
         assert "Bold hero story & comedy" == metadata["Summary"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_manga_type_flag(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -254,7 +254,7 @@ class TestMangaUpdatesProviderGetIssueMetadata:
 class TestMangaUpdatesProviderGetIssue:
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_parse_synthetic_id(self, mock_request, mock_sleep):
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
 
@@ -278,7 +278,7 @@ class TestMangaUpdatesHitTitle:
     """Tests for hit_title preference over native title."""
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_prefers_hit_title(self, mock_request, mock_sleep):
         """When hit_title differs from title, use hit_title as result title."""
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
@@ -298,7 +298,7 @@ class TestMangaUpdatesHitTitle:
         assert results[0].alternate_title == "Ayakashi Koi Emaki"
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_same_title_no_alternate(self, mock_request, mock_sleep):
         """When hit_title equals title, alternate_title should be None."""
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
@@ -318,7 +318,7 @@ class TestMangaUpdatesHitTitle:
         assert results[0].alternate_title is None
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_search_no_hit_title(self, mock_request, mock_sleep):
         """When hit_title is absent, fall back to record.title."""
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
@@ -335,7 +335,7 @@ class TestMangaUpdatesHitTitle:
         assert results[0].alternate_title is None
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_metadata_uses_preferred_title(self, mock_request, mock_sleep):
         """get_issue_metadata should use preferred_title as Series name."""
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
@@ -356,7 +356,7 @@ class TestMangaUpdatesHitTitle:
         assert "Ayakashi Koi Emaki" in metadata["AlternateSeries"]
 
     @patch("time.sleep")
-    @patch("requests.request")
+    @patch("requests.Session.request")
     def test_alternate_deduplication(self, mock_request, mock_sleep):
         """Native title already in associated array should not be duplicated."""
         from models.providers.mangaupdates_provider import MangaUpdatesProvider
@@ -379,25 +379,3 @@ class TestMangaUpdatesHitTitle:
         assert alt_parts.count("Ayakashi Koi Emaki") == 1
         assert "Other Title" in alt_parts
 
-
-class TestMangaUpdatesProviderRateLimit:
-
-    @patch("time.monotonic")
-    @patch("time.sleep")
-    @patch("requests.request")
-    def test_rate_limit_sleeps(self, mock_request, mock_sleep, mock_monotonic):
-        from models.providers.mangaupdates_provider import MangaUpdatesProvider
-
-        # Simulate two rapid requests: first at t=100, second at t=100.5
-        mock_monotonic.side_effect = [100.0, 100.0, 100.5, 101.5]
-        mock_request.return_value = _mock_response({"results": []})
-
-        # Reset class-level state
-        MangaUpdatesProvider._last_request_time = 99.0
-
-        p = MangaUpdatesProvider()
-        p._make_request("POST", "/series/search", {"search": "test"})
-        p._make_request("POST", "/series/search", {"search": "test2"})
-
-        # Second request should have triggered a sleep
-        assert mock_sleep.called

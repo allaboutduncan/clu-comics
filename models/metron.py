@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
-from core.version import __version__
+from core.version import CLU_USER_AGENT
 
 import requests as requests_lib
 import requests.exceptions as requests_exceptions
@@ -21,9 +21,6 @@ from mokkari.session import Session as MokkariSession
 from mokkari.sqlite_cache import SqliteCache
 from mokkari.exceptions import ApiError, AuthenticationError, RateLimitError
 from mokkari.schemas.collection import ScrobbleRequest
-
-# User agent for Metron API requests
-CLU_USER_AGENT = f"CLU/{__version__}"
 
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_DEFAULT_WAIT = 60  # seconds, used when retry_after is 0 or unset

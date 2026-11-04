@@ -5,12 +5,12 @@ Web scraping provider for French/Belgian comics database.
 Website: https://www.bedetheque.com/
 """
 import re
-import time
-import requests
 from typing import Optional, List, Dict, Any
 from urllib.parse import quote, urljoin
 
 from core.app_logging import app_logger
+from core.http_client import HttpClient, shared_http_client
+from core.version import CLU_USER_AGENT
 from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult, IssueResult
 from . import register_provider
 
@@ -31,54 +31,36 @@ class BedethequeProvider(BaseProvider):
     display_name = "Bedetheque"
     requires_auth = False  # Web scraping, no auth needed
     auth_fields = []  # No authentication required
-    rate_limit = 10  # Very conservative - respect the website
+    # One page every 2s: the gap that has always been used, now enforced
+    # across threads (it was an unlocked class attribute) and shown as-is.
+    rate_limit = 30
 
     BASE_URL = "https://www.bedetheque.com"
 
-    # Minimum delay between requests (seconds)
-    MIN_REQUEST_DELAY = 2.0
-    _last_request_time = 0
-
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
-        self._session = None
 
-    def _get_session(self) -> requests.Session:
-        """Get or create a requests session with proper headers."""
-        if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    @classmethod
+    def _http(cls) -> HttpClient:
+        # CLU names itself rather than posing as Chrome, so the site can tell
+        # its requests apart (#704).
+        return shared_http_client("bedetheque", lambda: HttpClient(
+            "bedetheque", cls.display_name, cls.BASE_URL, cls.rate_limit,
+            headers={
+                "User-Agent": CLU_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-            })
-        return self._session
-
-    def _respect_rate_limit(self):
-        """Ensure we don't make requests too quickly."""
-        current_time = time.time()
-        elapsed = current_time - BedethequeProvider._last_request_time
-        if elapsed < self.MIN_REQUEST_DELAY:
-            time.sleep(self.MIN_REQUEST_DELAY - elapsed)
-        BedethequeProvider._last_request_time = time.time()
+            },
+        ))
 
     def _make_request(self, url: str) -> Optional[str]:
-        """Make a request with rate limiting and error handling."""
+        """One paced page fetch; the HTML, or None."""
         if not BS4_AVAILABLE:
             app_logger.warning("BeautifulSoup not available for Bedetheque provider")
             return None
 
-        try:
-            self._respect_rate_limit()
-            session = self._get_session()
-            response = session.get(url, timeout=30)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
-            app_logger.error(f"Bedetheque request failed: {e}")
-            return None
+        resp = self._http().get(url, context=f"for {url}")
+        return resp.text if resp is not None else None
 
     def _is_configured(self) -> bool:
         """Check if BeautifulSoup is available."""

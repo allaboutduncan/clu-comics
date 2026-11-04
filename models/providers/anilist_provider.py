@@ -4,10 +4,11 @@ AniList Provider Adapter.
 Uses the AniList GraphQL API for manga/anime metadata.
 API Documentation: https://anilist.gitbook.io/anilist-apiv2-docs/
 """
-import requests
 from typing import Optional, List, Dict, Any
 
 from core.app_logging import app_logger
+from core.http_client import HttpClient, json_or_none, shared_http_client
+from core.version import CLU_USER_AGENT
 from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult, IssueResult
 from . import register_provider
 
@@ -25,42 +26,45 @@ class AniListProvider(BaseProvider):
     display_name = "AniList"
     requires_auth = False  # Public API works without auth
     auth_fields = []  # No credentials needed for public searches
-    rate_limit = 90  # AniList allows 90 requests per minute
+    # AniList's documented limit is 90/min, but its docs have said for a long
+    # time that the API is "in a degraded state and limited to 30 requests per
+    # minute". Enforce what it actually accepts; raise this when that lifts.
+    rate_limit = 30
 
     GRAPHQL_URL = "https://graphql.anilist.co"
 
     def __init__(self, credentials: Optional[ProviderCredentials] = None):
         super().__init__(credentials)
 
-    def _make_request(self, query: str, variables: Dict[str, Any] = None) -> Optional[Dict]:
-        """Make a GraphQL request to AniList."""
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+    @classmethod
+    def _http(cls) -> HttpClient:
+        return shared_http_client("anilist", lambda: HttpClient(
+            "anilist", cls.display_name, cls.GRAPHQL_URL, cls.rate_limit,
+            headers={"User-Agent": CLU_USER_AGENT, "Accept": "application/json"},
+        ))
 
-        # Add authorization if we have an API key/token
+    def _make_request(self, query: str, variables: Dict[str, Any] = None) -> Optional[Dict]:
+        """One paced GraphQL request to AniList; its ``data``, or None."""
+        # The token is per provider instance and the session is shared, so it
+        # travels with the request rather than on the session.
+        headers = {}
         if self.credentials and self.credentials.api_key:
             headers["Authorization"] = f"Bearer {self.credentials.api_key}"
 
-        try:
-            response = requests.post(
-                self.GRAPHQL_URL,
-                json={"query": query, "variables": variables or {}},
-                headers=headers,
-                timeout=30
-            )
-            response.raise_for_status()
-            data = response.json()
-
-            if "errors" in data:
-                app_logger.error(f"AniList GraphQL errors: {data['errors']}")
-                return None
-
-            return data.get("data")
-        except requests.RequestException as e:
-            app_logger.error(f"AniList request failed: {e}")
+        context = "for a GraphQL query"
+        resp = self._http().post(
+            self.GRAPHQL_URL,
+            json={"query": query, "variables": variables or {}},
+            headers=headers,
+            context=context,
+        )
+        data = json_or_none(resp, self.display_name, context)
+        if data is None:
             return None
+        if "errors" in data:
+            app_logger.error(f"AniList GraphQL errors: {data['errors']}")
+            return None
+        return data.get("data")
 
     def test_connection(self) -> bool:
         """Test connection to AniList API."""

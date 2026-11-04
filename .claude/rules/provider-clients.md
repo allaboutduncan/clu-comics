@@ -66,9 +66,30 @@ from it is handled as `ERROR`.
 
 ### `HttpClient` (`core/http_client.py`)
 
-This is the `GuardedClient` for plain-`requests` providers. GCD API uses it
-(#704 PR 1). MangaDex, MangaUpdates, Bedetheque and AniList move onto it next.
-`get`/`post` return the `Response`, or `default`.
+This is the `GuardedClient` for plain-`requests` providers. GCD API, MangaDex,
+MangaUpdates, Bedetheque and AniList all use it. `get`/`post` return the
+`Response`, or `default`. An anonymous provider gets one client through
+`shared_http_client(name, build)`, one session for every thread. GCD API keeps
+one client per credential pair. `json_or_none` turns a response into a body,
+or `None` if the response is missing or not JSON.
+
+Every provider sets `rate_limit` to the rate it actually enforces, which is
+also what Settings shows:
+
+| Provider | `rate_limit` | Why |
+|---|---|---|
+| GCD API | 30 | |
+| MangaDex | 180 | ~5/s per IP is the documented floor |
+| MangaUpdates | 30 | |
+| Bedetheque | 30 | The 2s gap it always used |
+| AniList | 30 | Its docs say "degraded state … limited to 30 requests per minute". Raise this when that lifts. |
+
+**User-Agent.** Providers that ask clients not to pose as a browser get
+`core.version.CLU_USER_AGENT`: Metron, MangaDex (which refuses spoofed agents),
+MangaUpdates, Bedetheque and AniList. The two behind Cloudflare's bot check,
+ComicVine and comics.org, keep `DEFAULT_PROVIDER_USER_AGENT`. A per-user token,
+such as AniList's, is passed as a per-request header, never set on the shared
+session.
 
 - **Even spacing, not a burst window.** The pacer is `get_limiter("http:<name>", 1,
   60 / per_minute)`, a one-slot window. A 180/min sliding window would allow

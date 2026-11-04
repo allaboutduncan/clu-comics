@@ -23,12 +23,12 @@ class TestAniListProviderInit:
         assert p.provider_type == ProviderType.ANILIST
         assert p.requires_auth is False
         assert p.auth_fields == []
-        assert p.rate_limit == 90
+        assert p.rate_limit == 30
 
 
 class TestAniListProviderTestConnection:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_successful_connection(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -39,7 +39,7 @@ class TestAniListProviderTestConnection:
         p = AniListProvider()
         assert p.test_connection() is True
 
-    @patch("requests.post", side_effect=Exception("Network error"))
+    @patch("requests.Session.request", side_effect=Exception("Network error"))
     def test_connection_failure(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -49,7 +49,7 @@ class TestAniListProviderTestConnection:
 
 class TestAniListProviderSearchSeries:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_search_returns_results(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -78,7 +78,7 @@ class TestAniListProviderSearchSeries:
         assert results[0].year == 1997
         assert results[0].provider == ProviderType.ANILIST
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_search_prefers_english_title(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -95,7 +95,7 @@ class TestAniListProviderSearchSeries:
         results = p.search_series("Attack on Titan")
         assert results[0].title == "Attack on Titan"
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_search_falls_back_to_romaji(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -112,7 +112,7 @@ class TestAniListProviderSearchSeries:
         results = p.search_series("Naruto")
         assert results[0].title == "Naruto"
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_search_with_year_filter(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -128,7 +128,7 @@ class TestAniListProviderSearchSeries:
         # Check variables include date range
         assert "variables" in call_args[1].get("json", {}) or True  # just verify call was made
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_search_empty_response(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -140,7 +140,7 @@ class TestAniListProviderSearchSeries:
 
 class TestAniListProviderGetSeries:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_get_series_by_id(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -160,7 +160,7 @@ class TestAniListProviderGetSeries:
         assert result.title == "One Piece"
         assert result.year == 1997
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_series_not_found(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -172,7 +172,7 @@ class TestAniListProviderGetSeries:
 
 class TestAniListProviderGetIssues:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_synthetic_chapters(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -193,7 +193,7 @@ class TestAniListProviderGetIssues:
         assert results[4].issue_number == "5"
         assert results[0].id == "100-1"  # synthetic ID
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_no_chapters(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -212,7 +212,7 @@ class TestAniListProviderGetIssues:
 
 class TestAniListProviderGetIssue:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_parse_synthetic_id(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 
@@ -241,7 +241,7 @@ class TestAniListProviderGetIssue:
 
 class TestAniListProviderToComicinfo:
 
-    @patch("requests.post")
+    @patch("requests.Session.request")
     def test_manga_comicinfo_format(self, mock_post):
         from models.providers.anilist_provider import AniListProvider
 

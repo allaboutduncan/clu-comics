@@ -12,7 +12,8 @@ unpaced (#703). Metron is therefore paced inside mokkari, by the limiter its
 Session is built with, and no longer uses this module. ComicVine still takes
 a slot here per call. The plain-``requests`` providers take one per request
 they send, through ``core.http_client`` (a one-slot window per provider, so
-sends are evenly spaced): GCD API today, the rest as #704 moves them.
+sends are evenly spaced): GCD API, MangaDex, MangaUpdates, Bedetheque and
+AniList.
 """
 
 import threading
