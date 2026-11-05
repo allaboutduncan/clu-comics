@@ -129,90 +129,180 @@ class TestMaxDelay:
         assert cv._cv_max_delay() == 60.0
 
 
-class TestProactiveThrottle:
-    """Reactive backoff alone means we only slow down after ComicVine has
-    already rejected us. Every call must take a slot from the shared budget
-    first, so concurrent sweeps and web requests pace each other."""
+class TestCallPolicy:
+    """ComicVine on the shared call policy (#704).
 
-    def test_every_attempt_takes_a_slot(self):
+    Pacing is Simyan's own, per HTTP send. CLU used to take a second slot per
+    *call* from a 180/h limiter, so a paginated list cost one slot however many
+    pages it sent -- the #703 anti-pattern. What CLU adds is the auth lockout,
+    the hourly quota latch and a bounded wait for live web requests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _fresh_policy(self):
         import models.comicvine as cv
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
-            cv._cv_call_with_retry(lambda: "ok", "test")
+        cv._hourly.reset()
+        with patch.object(cv._auth_block, "blocked", return_value=False), \
+             patch.object(cv._auth_block, "latch") as latch:
+            self.latch = latch
+            yield
+        cv._hourly.reset()
 
-        assert acq.call_count == 1
+    def test_there_is_no_per_call_limiter_any_more(self):
+        import models.comicvine as cv
+
+        assert not hasattr(cv, "_comicvine_rate_limiter")
+        assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
+
+    def test_an_invalid_key_latches_the_lockout_and_still_raises(self):
+        import models.comicvine as cv
+        from simyan.errors import AuthenticationError
+
+        with pytest.raises(AuthenticationError):
+            cv._cv_call_with_retry(
+                MagicMock(side_effect=AuthenticationError("Invalid API Key")), "test"
+            )
+        self.latch.assert_called_once()
+        assert self.latch.call_args[0][0] == 401
+
+    def test_calls_are_skipped_while_locked(self):
+        import models.comicvine as cv
+
+        fn = MagicMock(return_value="ok")
+        with patch.object(cv._auth_block, "blocked", return_value=True):
+            with pytest.raises(cv.ComicVineUnavailable, match="rejected"):
+                cv._cv_call_with_retry(fn, "test")
+        fn.assert_not_called()
 
     @patch("models.comicvine.time.sleep")
-    @patch("models.comicvine._cv_retry_config", return_value=(2, 0.0))
-    def test_retries_also_take_a_slot(self, mock_cfg, mock_sleep):
+    def test_simyans_limiter_refusing_latches_the_hourly_quota(self, mock_sleep):
+        """Its per-second bucket never needs max_delay, so a refusal means the
+        200/hour bucket is spent: latch it instead of one max_delay per call."""
         import models.comicvine as cv
 
-        calls = {"n": 0}
+        refused = Exception("Service took too long to respond")
+        refused.__cause__ = Exception("Rate limit not cleared within max_delay=60s")
+        fn = MagicMock(side_effect=refused)
 
-        def flaky():
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise Exception("Rate limit exceeded. Slow down cowboy.")
-            return "ok"
+        with pytest.raises(Exception, match="too long"):
+            cv._cv_call_with_retry(fn, "test")
+        assert fn.call_count == 1, "a spent hourly bucket is not retried"
+        mock_sleep.assert_not_called()
+        assert cv._hourly.reached()
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
-            assert cv._cv_call_with_retry(flaky, "test") == "ok"
+        later = MagicMock(return_value="ok")
+        with pytest.raises(cv.ComicVineUnavailable, match="hourly"):
+            cv._cv_call_with_retry(later, "test")
+        later.assert_not_called()
+        assert cv.hourly_wait_seconds() >= 59
 
-        assert acq.call_count == 3
-
-    def test_background_callers_wait_indefinitely(self):
-        """A sweep on a daemon thread should ride out the budget, not skip it."""
+    def test_a_genuine_timeout_is_a_connection_error_not_a_quota(self):
+        import requests
         import models.comicvine as cv
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
-            cv._cv_call_with_retry(lambda: "ok", "test", blocking=True)
+        err = Exception("Service took too long to respond")
+        err.__cause__ = requests.Timeout("Read timed out")
+        with pytest.raises(Exception, match="too long"):
+            cv._cv_call_with_retry(MagicMock(side_effect=err), "test")
+        assert not cv._hourly.reached()
 
-        assert acq.call_args.kwargs["timeout"] is None
-
-    def test_interactive_callers_use_a_bounded_wait(self):
+    def test_a_web_request_does_not_wait_out_a_full_bucket(self):
         import models.comicvine as cv
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
-            cv._cv_call_with_retry(lambda: "ok", "test", blocking=False)
+        fn = MagicMock(return_value="ok")
+        with patch("models.comicvine._bucket_wait_seconds", return_value=600.0), \
+             patch("flask.has_request_context", return_value=True):
+            with pytest.raises(cv.ComicVineBusy):
+                cv._cv_call_with_retry(fn, "test")
+        fn.assert_not_called()
 
-        timeout = acq.call_args.kwargs["timeout"]
-        assert timeout is not None and timeout > 0
-
-    def test_saturated_throttle_still_lets_an_interactive_call_through(self):
-        """Better a slow answer than a held request thread -- the reactive
-        retry below still covers the call."""
+    def test_a_background_caller_rides_out_the_bucket(self):
+        """A sweep waits inside Simyan's limiter; only web requests are capped."""
         import models.comicvine as cv
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=False):
-            assert cv._cv_call_with_retry(lambda: "ok", "test", blocking=False) == "ok"
+        with patch("models.comicvine._bucket_wait_seconds", return_value=600.0):
+            assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
+            assert cv._cv_call_with_retry(lambda: "ok", "test", blocking=True) == "ok"
+            with pytest.raises(cv.ComicVineBusy):
+                cv._cv_call_with_retry(lambda: "ok", "test", blocking=False)
 
-    def test_defaults_to_blocking_outside_a_request_context(self):
+    def test_a_short_wait_does_not_refuse_a_web_request(self):
         import models.comicvine as cv
 
-        with patch.object(cv._comicvine_rate_limiter, "acquire", return_value=True) as acq:
-            cv._cv_call_with_retry(lambda: "ok", "test")
+        with patch("models.comicvine._bucket_wait_seconds", return_value=1.0), \
+             patch("flask.has_request_context", return_value=True):
+            assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
 
-        assert acq.call_args.kwargs["timeout"] is None
-
-    def test_defaults_to_bounded_wait_inside_a_request_context(self):
-        """Auto-detected so no call site has to declare itself: a live web
-        request is a thread a user is waiting on."""
+    @patch("models.comicvine.time.sleep")
+    def test_back_off_is_linear(self, mock_sleep):
         import models.comicvine as cv
 
-        with patch("flask.has_request_context", return_value=True):
-            with patch.object(
-                cv._comicvine_rate_limiter, "acquire", return_value=True
-            ) as acq:
-                cv._cv_call_with_retry(lambda: "ok", "test")
+        always = MagicMock(side_effect=Exception("Rate limit exceeded. Slow down cowboy."))
+        with patch("models.comicvine._cv_retry_config", return_value=(3, 5.0)):
+            with pytest.raises(Exception, match="Slow down"):
+                cv._cv_call_with_retry(always, "test")
+        assert [c.args[0] for c in mock_sleep.call_args_list] == [5.0, 10.0, 15.0]
+        assert always.call_count == 4
 
-        assert acq.call_args.kwargs["timeout"] is not None
 
-    def test_hourly_limit_sits_below_comicvines_own_budget(self):
-        """The shared limiter has to trip before Simyan's per_hour=200 bucket,
-        so the wait lands somewhere we log and bound."""
+class TestQuietWhilePaused:
+    """A latched quota fails every call at once; a sweep must not log an
+    ERROR per item for a condition the latch already announced."""
+
+    def test_skipped_calls_log_at_debug_real_failures_at_their_level(self):
         import models.comicvine as cv
 
-        assert cv._cv_hourly_limit() < 200
+        with patch.object(cv.app_logger, "debug") as debug, \
+             patch.object(cv.app_logger, "error") as error, \
+             patch.object(cv.app_logger, "warning") as warning:
+            cv.log_cv_failure("skipped", cv.ComicVineUnavailable("paused"))
+            cv.log_cv_failure("busy", cv.ComicVineBusy("busy"))
+            cv.log_cv_failure("boom", ValueError("x"))
+            cv.log_cv_failure("meh", ValueError("x"), "warning")
+        debug.assert_called_once_with("skipped")
+        assert [c.args[0] for c in error.call_args_list] == ["busy", "boom"]
+        warning.assert_called_once_with("meh")
+
+    def test_search_volumes_is_quiet_while_the_quota_is_latched(self):
+        import models.comicvine as cv
+
+        cv._hourly.latch_for(3600)
+        try:
+            with patch.object(cv, "SIMYAN_AVAILABLE", True), \
+                 patch.object(cv, "get_cv_client", return_value=MagicMock()), \
+                 patch.object(cv._auth_block, "blocked", return_value=False), \
+                 patch.object(cv.app_logger, "error") as error:
+                # search_volumes raises by contract; it must just not shout.
+                with pytest.raises(cv.ComicVineUnavailable):
+                    cv.search_volumes("key", "Batman")
+            error.assert_not_called()
+        finally:
+            cv._hourly.reset()
+
+
+class TestBucketWait:
+    """hourly_wait_seconds reads Simyan's real bucket without taking a slot."""
+
+    def test_reads_the_oldest_item_that_must_age_out(self, tmp_path):
+        import models.comicvine as cv
+        from pyrate_limiter import RateItem
+        from simyan.comicvine import Comicvine
+
+        client = Comicvine(api_key="k", cache_path=tmp_path / "c.sqlite",
+                           ratelimit_path=tmp_path / "r.sqlite")
+        try:
+            bucket = client._session.limiter.bucket_factory["comicvine"]
+            base = bucket.now() - 3_000_000  # 50 min ago
+            for i in range(200):
+                bucket.put(RateItem("comicvine", base + i * 1100, 1))
+            with patch.dict(cv._CV_CLIENT_CACHE, {"k": client}, clear=True):
+                assert cv._bucket_wait_seconds(1) == pytest.approx(600, abs=2)
+                assert cv._bucket_wait_seconds(3) == pytest.approx(602, abs=2)
+            with patch.dict(cv._CV_CLIENT_CACHE, {}, clear=True):
+                assert cv._bucket_wait_seconds(1) == 0
+        finally:
+            client._session.close()
 
 
 class TestRateLimitDetectionThroughCause:

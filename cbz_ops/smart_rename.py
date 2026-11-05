@@ -125,7 +125,7 @@ def _resolve_series_via_providers(cvinfo_path: str, library_id: Optional[int]):
                 if series_dict:
                     return series_dict, metron_api
             except Exception as e:
-                app_logger.warning(f"smart_rename: comicvine lookup failed for cv_id={cv_id}: {e}")
+                cv_mod.log_cv_failure(f"smart_rename: comicvine lookup failed for cv_id={cv_id}: {e}", e, "warning")
                 continue
         # Other providers (gcd, anilist, manga*) don't populate Mylar-style
         # series.json today; skip them silently.
@@ -185,7 +185,7 @@ def _build_comicvine_series_dict(api_key: str, cv_id: int) -> Optional[Dict]:
         )
         return None
     except Exception as e:
-        app_logger.error(f"smart_rename: ComicVine volume fetch failed for {cv_id}: {e}")
+        cv_mod.log_cv_failure(f"smart_rename: ComicVine volume fetch failed for {cv_id}: {e}", e)
         return None
 
 

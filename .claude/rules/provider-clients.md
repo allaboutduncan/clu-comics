@@ -10,9 +10,9 @@ paths:
 
 # Provider call layer: pacing, lockouts, quota latches
 
-`core/provider_client.py` is the call policy every HTTP metadata provider is
-meant to share (#704). Metron is its first user (#703); GCD API, MangaDex,
-Bedetheque and ComicVine are moving onto it one PR at a time. **Build a
+`core/provider_client.py` is the call policy every HTTP metadata provider
+shares (#704). Metron (#703), the plain-`requests` providers (through
+`HttpClient`) and ComicVine are all on it. **Build a
 provider's pacing, retry or auth handling on this module. Do not add another
 provider-local limiter or retry loop.**
 
@@ -116,6 +116,46 @@ The GCD API's lockout is `AuthLockout("gcd_api", ...)` in `models/gcd_api.py`.
 `test_connection` is the one bypass (`check_credentials()`). The credential
 save route clears **any** registered lockout (`routes/metadata._provider_lockout`),
 not only Metron's. It also drops the shared GCD client.
+
+### ComicVine (`models/comicvine.py`)
+
+`_ComicVineClient(GuardedClient)` has `AuthLockout("comicvine")` and
+`QuotaLatch("ComicVine", "hourly")`. `_cv_call_with_retry` is a thin shim
+over it until #704 PR 4, and it keeps its contract: it returns the result,
+or it **raises**.
+
+- **Pacing is Simyan's alone.** Each client is a `CachedLimiterSession`.
+  Its bucket allows 1 request per second and 200 per hour, and it is
+  consulted on every send, pagination included. CLU's per-call 180/h limiter
+  (`_comicvine_rate_limiter`) was the #703 anti-pattern and is gone.
+  `COMICVINE_RATE_LIMIT_PER_HOUR` now only logs a warning.
+- **Simyan's limiter refusing past `max_delay` → `QUOTA`.** Its per-second
+  bucket never needs that long, so a refusal means the 200/h bucket is spent.
+  Retrying it would cost one `max_delay` (60s) per series for an hour.
+  `_limiter_refused` matches "Rate limit not cleared" anywhere in the
+  `__cause__` chain. A genuine read timeout is `CONNECTION`.
+- **"Slow down cowboy" (a 420) → `RETRY`, with a real sleep.** Unlike
+  mokkari, Simyan's bucket doesn't learn from it: only 429 is in
+  `limit_statuses`. `_retry_wait` scales the sleep linearly
+  (`COMICVINE_RATE_LIMIT_BACKOFF` × attempt). After the last attempt the
+  rejection itself is raised.
+- **Interactive cap.** `_gate()` reads the bucket through `_bucket_wait_seconds`.
+  Inside a request it raises `ComicVineBusy` once the wait exceeds 10s.
+  `Bucket.waiting()` cannot be used for this: it answers only after a failed
+  put. So the code peeks at the item `limit - slots` places back from the
+  newest. `hourly_wait_seconds(slots)` is the public form, used by the Mylar
+  import to wait visibly.
+- **While the lockout or the quota is latched**, the shim raises
+  `ComicVineUnavailable` and sends nothing. `get_cv_client` still hands out
+  clients, because every read on one goes through the shim (the ratchet's
+  `comicvine` row). `_cv_search` is exempt as the version shim.
+- **`check_api_key(api_key, record=)`** is the connection test's deliberate
+  bypass: one request, no retry, and it ignores the lockout. With `record`
+  (the saved key, not a Guided Setup probe) a pass clears the lockout and a
+  401 latches it.
+
+`GuardedClient` changed for this: `_gate()` now runs inside the `try`, so a
+refusal is classified, and there is a `_retry_wait(wait, attempt)` hook.
 
 ### `AuthLockout(provider, display_name)`
 

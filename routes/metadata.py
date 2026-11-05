@@ -791,6 +791,7 @@ def _provider_lockout(provider_type):
     from core.provider_client import lockout_for
     import models.metron  # noqa: F401
     import models.gcd_api  # noqa: F401
+    import models.comicvine  # noqa: F401
 
     return lockout_for(provider_type)
 
@@ -1042,7 +1043,7 @@ def reset_provider_auth_block(provider_type):
     """Lift a provider's latched authentication block.
 
     Any provider that registers a ``core.provider_client.AuthLockout`` is
-    covered (Metron and the GCD API today). There is deliberately no timed
+    covered (Metron, ComicVine and the GCD API). There is deliberately no timed
     auto-retry: a rejected credential does not heal on its own, and retrying it
     is what got a user's IP banned by Metron, so clearing it takes a human
     saying so.

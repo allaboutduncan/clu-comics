@@ -38,6 +38,20 @@ _MOKKARI_READS = frozenset({
     "universe", "universes_list", "wish_list", "wish_list_items",
 })
 
+# simyan 3.0 Comicvine's read methods, plus the per-resource ``search_*s``
+# that later versions add (``_cv_search`` picks whichever exists).
+_SIMYAN_READS = frozenset({
+    "get_character", "get_concept", "get_creator", "get_issue", "get_item",
+    "get_location", "get_origin", "get_power", "get_publisher", "get_story_arc",
+    "get_team", "get_volume", "list_characters", "list_concepts",
+    "list_creators", "list_issues", "list_items", "list_locations",
+    "list_origins", "list_powers", "list_publishers", "list_story_arcs",
+    "list_teams", "list_volumes", "search", "search_characters",
+    "search_concepts", "search_creators", "search_issues", "search_items",
+    "search_locations", "search_origins", "search_powers", "search_publishers",
+    "search_story_arcs", "search_teams", "search_volumes",
+})
+
 PROVIDER_RULES = {
     "metron": {
         "owner": "models/metron.py",
@@ -46,6 +60,17 @@ PROVIDER_RULES = {
         "receivers": {"api"},
         "methods": _MOKKARI_READS,
         "guards": {"_api_call"},
+    },
+    "comicvine": {
+        "owner": "models/comicvine.py",
+        "client_ctor": {"Comicvine"},
+        "client_module": "simyan.comicvine",
+        "receivers": {"cv"},
+        "methods": _SIMYAN_READS,
+        "guards": {"_cv_call_with_retry"},
+        # The version shim: every caller reaches it from inside a guarded
+        # lambda (or check_api_key, the connection test's deliberate bypass).
+        "exempt_functions": {"_cv_search"},
     },
 }
 
@@ -119,6 +144,7 @@ def _is_guarded(call, parents, guards):
 def unguarded_calls(tree, rule):
     """``(lineno, "recv.method")`` for each provider call outside a guard."""
     parents = _parents(tree)
+    exempt = rule.get("exempt_functions", set())
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
@@ -127,6 +153,9 @@ def unguarded_calls(tree, rule):
         if not (isinstance(recv, ast.Name) and recv.id in rule["receivers"]):
             continue
         if node.func.attr not in rule["methods"]:
+            continue
+        scope = _enclosing_scope(node, parents)
+        if getattr(scope, "name", None) in exempt:
             continue
         if not _is_guarded(node, parents, rule["guards"]):
             found.append((node.lineno, f"{recv.id}.{node.func.attr}"))
@@ -255,6 +284,14 @@ class TestTheCheckerItself:
         assert self._check(
             "def f(api):\n    return retry(lambda: api.issue(1))\n"
         ) == [(2, "api.issue")]
+
+    def test_an_exempt_helper_is_not_flagged_but_its_caller_still_is(self):
+        rule = PROVIDER_RULES["comicvine"]
+        tree = ast.parse(
+            "def _cv_search(cv, q):\n    return cv.search(q)\n"
+            "def f(cv):\n    return cv.get_volume(1)\n"
+        )
+        assert unguarded_calls(tree, rule) == [(4, "cv.get_volume")]
 
     def test_flags_a_constructor_outside_the_owner(self):
         tree = ast.parse("from mokkari.session import Session\nMokkariSession('t')\n")
