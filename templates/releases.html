@@ -104,19 +104,20 @@
                 {% else %}
                 <div class="icon-overlay release-no-cover"><i class="bi bi-journal-text" aria-hidden="true"></i></div>
                 {% endif %}
-                {% if issue.number %}
-                <span class="issue-badge"><span class="issue-number">#{{ issue.number }}</span></span>
-                {% endif %}
+                {#- Pull List series get the diagonal corner ribbon, so the
+                    issue number goes in the caption rather than a sticker
+                    under it. -#}
                 {% if is_tracked %}
-                <span class="release-subscribed" title="Subscribed">
-                    <i class="bi bi-bookmark-check-fill" aria-hidden="true"></i><span class="visually-hidden">Subscribed</span>
-                </span>
+                <div class="release-ribbon-wrapper">
+                    <div class="release-ribbon">Subscribed</div>
+                </div>
                 {% endif %}
             </div>
             <div class="item-info">
                 <div class="item-details text-truncate">
                     <div class="item-name text-truncate" title="{{ issue.series.name }}">{{ issue.series.name }}</div>
                     <div class="item-meta text-truncate">
+                        {%- if issue.number %}#{{ issue.number }} &middot; {% endif %}
                         {%- if issue.series.volume %}Vol. {{ issue.series.volume }} &middot; {% endif %}{{ issue.cover_date }}
                     </div>
                 </div>
@@ -208,21 +209,35 @@
         color: var(--bs-secondary-color);
     }
 
-    /* Subscribed sticker: bottom left, 8px in, like the other cover stickers.
-       Fixed Cover Scrim + white ink (DESIGN.md Sticker Exception) so it reads
-       on any artwork; deliberately not Missing-Tag Red or Favourite Amber. */
-    .release-subscribed {
+    /* Subscribed ribbon: a diagonal band across the top-right corner of a
+       Pull List series' cover, readable at a glance while scanning the week.
+       The cover frame's overflow: clip trims the band's ends to the corner. */
+    .release-ribbon-wrapper {
         position: absolute;
-        bottom: 8px;
-        left: 8px;
-        padding: 2px 6px;
-        border-radius: 4px;
-        background: rgba(0, 0, 0, 0.6);
-        color: #fff;
-        font-size: 0.7rem;
-        font-weight: 700;
-        line-height: 1.5;
+        top: 0;
+        right: 0;
+        width: 110px;
+        height: 110px;
+        overflow: hidden;
+        pointer-events: none;
         z-index: 10;
+    }
+
+    .release-ribbon {
+        position: relative;
+        top: 25px;
+        left: -30px;
+        width: 200px;
+        padding: 6px 0;
+        transform: rotate(45deg);
+        background-color: var(--bs-success);
+        color: #fff;
+        box-shadow: 0 0 3px rgba(0, 0, 0, 0.3);
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-align: center;
+        text-transform: uppercase;
     }
 
     /* Shown while an issue page is loading after a click. */
