@@ -887,17 +887,17 @@ _sleep = time.sleep  # seam: tests replace it
 def _wait_for_comicvine(op_id, current, total, label):
     """Wait out ComicVine's hourly budget visibly, before a ComicVine-only series.
 
-    ``_cv_call_with_retry`` blocks a background thread until a slot frees, up to
-    the full hour, with no log line and no progress update -- so a large import
-    looked frozen, page and log alike, and the operations registry marked it
-    stalled. Waiting here instead keeps the job heartbeating and says why.
+    A call made while the budget is spent waits inside Simyan's limiter or is
+    skipped by the hourly quota latch, with no progress update either way -- so
+    a large import looked frozen, page and log alike, and the operations
+    registry marked it stalled. Waiting here instead keeps the job heartbeating
+    and says why.
     """
     from models import comicvine, comicvine_source
 
     if comicvine_source._local_available():
         return  # the local dump answers without touching the API
-    limiter = comicvine._comicvine_rate_limiter
-    wait = limiter.wait_time(_CV_CALLS_PER_SERIES)
+    wait = comicvine.hourly_wait_seconds(_CV_CALLS_PER_SERIES)
     if wait <= 0:
         return
     app_logger.info(
@@ -913,7 +913,7 @@ def _wait_for_comicvine(op_id, current, total, label):
                 f"{max(1, round(wait / 60))} min (next: {label})",
             )
         _sleep(min(wait, _WAIT_POLL_SECONDS))
-        wait = limiter.wait_time(_CV_CALLS_PER_SERIES)
+        wait = comicvine.hourly_wait_seconds(_CV_CALLS_PER_SERIES)
     app_logger.info(
         f"Mylar3 import: ComicVine limit cleared after "
         f"{max(1, round((time.monotonic() - started) / 60))} min; resuming"

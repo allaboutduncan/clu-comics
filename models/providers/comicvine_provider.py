@@ -10,6 +10,14 @@ from .base import BaseProvider, ProviderType, ProviderCredentials, SearchResult,
 from . import register_provider
 
 
+def _log_cv_failure(message, exc, level="error"):
+    # Imported lazily: models.comicvine is heavy and the providers package is
+    # imported early.
+    from models.comicvine import log_cv_failure
+
+    log_cv_failure(message, exc, level)
+
+
 @register_provider
 class ComicVineProvider(BaseProvider):
     """ComicVine metadata provider using the Simyan library."""
@@ -75,7 +83,9 @@ class ComicVineProvider(BaseProvider):
             # dozens of requests, or minutes of rate-limit backoff, on a button
             # the user is waiting on.
             from models import comicvine as cv_module
-            ok, error = cv_module.check_api_key(api_key)
+            ok, error = cv_module.check_api_key(
+                api_key, record=not getattr(self, "probe_only", False)
+            )
             if not ok:
                 self.last_error = error
                 app_logger.error(f"ComicVine connection test failed: {error}")
@@ -113,7 +123,7 @@ class ComicVineProvider(BaseProvider):
 
             return results
         except Exception as e:
-            app_logger.error(f"ComicVine search_series failed: {e}")
+            _log_cv_failure(f"ComicVine search_series failed: {e}", e)
             return []
 
     def get_series(self, series_id: str) -> Optional[SearchResult]:
@@ -140,7 +150,7 @@ class ComicVineProvider(BaseProvider):
                 description=details.get('description')
             )
         except Exception as e:
-            app_logger.error(f"ComicVine get_series failed: {e}")
+            _log_cv_failure(f"ComicVine get_series failed: {e}", e)
             return None
 
     def get_issues(self, series_id: str) -> List[IssueResult]:
@@ -197,7 +207,7 @@ class ComicVineProvider(BaseProvider):
 
             return results
         except Exception as e:
-            app_logger.error(f"ComicVine get_issues failed: {e}")
+            _log_cv_failure(f"ComicVine get_issues failed: {e}", e)
             return []
 
     def get_issue(self, issue_id: str) -> Optional[IssueResult]:
@@ -250,7 +260,7 @@ class ComicVineProvider(BaseProvider):
                 summary=issue.description if hasattr(issue, 'description') else None
             )
         except Exception as e:
-            app_logger.error(f"ComicVine get_issue failed: {e}")
+            _log_cv_failure(f"ComicVine get_issue failed: {e}", e)
             return None
 
     def get_issue_metadata(self, volume_id: str, issue_number: str, start_year: Optional[int] = None) -> Optional[Dict[str, Any]]:
@@ -270,7 +280,7 @@ class ComicVineProvider(BaseProvider):
                 api_key, int(volume_id), issue_number, start_year=start_year
             )
         except Exception as e:
-            app_logger.error(f"ComicVine get_issue_metadata failed: {e}")
+            _log_cv_failure(f"ComicVine get_issue_metadata failed: {e}", e)
             return None
 
     def to_comicinfo(self, issue: IssueResult, series: Optional[SearchResult] = None) -> Dict[str, Any]:
@@ -321,5 +331,5 @@ class ComicVineProvider(BaseProvider):
 
             return {k: v for k, v in comicinfo.items() if v is not None}
         except Exception as e:
-            app_logger.error(f"ComicVine to_comicinfo failed: {e}")
+            _log_cv_failure(f"ComicVine to_comicinfo failed: {e}", e)
             return {}

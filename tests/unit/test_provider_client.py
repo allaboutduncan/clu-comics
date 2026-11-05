@@ -222,6 +222,21 @@ class TestGuardedCall:
                 raise_auth_errors=True,
             )
 
+    def test_a_refusing_gate_is_classified_like_any_failure(self, client):
+        """ComicVine's interactive cap refuses from _gate(); that must reach
+        _classify, not escape call() raw."""
+        client._gate = MagicMock(side_effect=_Fail(Verdict.error()))
+        fn = MagicMock(return_value="ok")
+        assert client.call(fn, "ctx", default="fallback") == "fallback"
+        fn.assert_not_called()
+
+    def test_retry_wait_hook_scales_the_sleep(self, client):
+        client._retry_wait = lambda wait, attempt: wait * (attempt + 1)
+        fn = MagicMock(side_effect=_Fail(Verdict.retry(2.0)))
+        with patch("core.provider_client.time.sleep") as sleep:
+            client.call(fn, "ctx")
+        assert [c.args[0] for c in sleep.call_args_list] == [2.0, 4.0]
+
     def test_a_provider_without_a_lockout_never_pauses_on_auth(self):
         """Anonymous providers (MangaDex...) have nothing to reject; an AUTH
         verdict from one is an ordinary error, not a latch."""

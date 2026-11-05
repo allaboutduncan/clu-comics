@@ -135,7 +135,18 @@ class TestComicVineProviderTestConnection:
         p = ComicVineProvider(credentials=comicvine_creds)
         p._cv = MagicMock()  # Bypass _get_client, which needs a real simyan
         assert p.test_connection() is True
-        mock_check.assert_called_once_with(comicvine_creds.api_key)
+        # The saved key's test records its verdict on the lockout.
+        mock_check.assert_called_once_with(comicvine_creds.api_key, record=True)
+
+    @patch("models.comicvine.check_api_key", return_value=(True, None))
+    def test_an_unsaved_probe_records_nothing(self, mock_check, comicvine_creds):
+        from models.providers.comicvine_provider import ComicVineProvider
+
+        p = ComicVineProvider(credentials=comicvine_creds)
+        p._cv = MagicMock()
+        p.probe_only = True
+        assert p.test_connection() is True
+        mock_check.assert_called_once_with(comicvine_creds.api_key, record=False)
 
     @patch("models.comicvine.check_api_key", return_value=(False, "Invalid API Key"))
     def test_failed_connection(self, mock_check, comicvine_creds):
@@ -402,6 +413,40 @@ class TestComicVineCredentialCheckIsCheap:
         assert "Rate limit" in err
         assert cv.search_volumes.call_count == 1, "a credential check must not retry"
         mock_sleep.assert_not_called()
+
+    def test_a_recorded_check_latches_a_401_and_clears_on_success(self):
+        from simyan.errors import AuthenticationError
+        from models.comicvine import check_api_key
+
+        cv = MagicMock()
+        cv.search_volumes.side_effect = AuthenticationError("Invalid API Key")
+        with patch("models.comicvine.get_cv_client", return_value=cv), \
+             patch("models.comicvine.SIMYAN_AVAILABLE", True), \
+             patch("models.comicvine.latch_auth_failure") as latch, \
+             patch("models.comicvine.clear_auth_block") as clear:
+            assert check_api_key("bad", record=True)[0] is False
+            latch.assert_called_once()
+            assert check_api_key("bad")[0] is False  # unrecorded probe
+            latch.assert_called_once()
+
+            cv.search_volumes.side_effect = None
+            cv.search_volumes.return_value = [MagicMock()]
+            assert check_api_key("good", record=True) == (True, None)
+            clear.assert_called_once()
+            check_api_key("good")
+            clear.assert_called_once()
+
+    def test_check_api_key_runs_while_locked(self):
+        """A user who fixed their key has to be able to prove it."""
+        from models.comicvine import check_api_key, _auth_block
+
+        cv = MagicMock()
+        cv.search_volumes.return_value = [MagicMock()]
+        with patch("models.comicvine.get_cv_client", return_value=cv), \
+             patch("models.comicvine.SIMYAN_AVAILABLE", True), \
+             patch.object(_auth_block, "blocked", return_value=True), \
+             patch("models.comicvine.clear_auth_block"):
+            assert check_api_key("good", record=True) == (True, None)
 
     def test_check_api_key_reports_the_real_error(self):
         from models.comicvine import check_api_key

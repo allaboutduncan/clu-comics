@@ -270,6 +270,14 @@ class QuotaLatch:
         )
         return False
 
+    def remaining_seconds(self) -> float:
+        """Seconds until the window resets; 0 when it is not latched."""
+        with self._lock:
+            until = self._until
+        if until is None:
+            return 0.0
+        return max(0.0, (until - datetime.now(timezone.utc)).total_seconds())
+
     def reset(self) -> None:
         with self._lock:
             self._until = None
@@ -361,6 +369,12 @@ class GuardedClient(ABC):
     def _after_success(self) -> None:
         """Run after every successful attempt, e.g. to read quota headers."""
 
+    def _retry_wait(self, wait: float, attempt: int) -> float:
+        """Seconds to sleep before retry ``attempt + 1`` (0-based). The
+        verdict's wait as-is by default; a provider whose pacer cannot learn
+        from a rejection (simyan) scales it."""
+        return wait
+
     def paused_reason(self, ignore_auth_lock: bool = False) -> Optional[str]:
         """Why calls are being skipped right now, for a user-facing message."""
         if (
@@ -401,8 +415,10 @@ class GuardedClient(ABC):
                     f"{name} calls are paused (rate limit or auth); skipping {context}"
                 )
                 return default
-            self._gate()
             try:
+                # Inside the try: a gate that refuses (ComicVine's bounded
+                # interactive wait) is classified like any other failure.
+                self._gate()
                 result = fn()
             except Exception as e:
                 verdict = self._classify(e)
@@ -426,7 +442,9 @@ class GuardedClient(ABC):
                     return default
                 if verdict.kind == RETRY:
                     if attempt < self.max_retries - 1:
-                        self._log_retry(verdict.wait, attempt, context)
+                        self._log_retry(
+                            self._retry_wait(verdict.wait, attempt), attempt, context
+                        )
                         continue
                     app_logger.info(
                         f"{name} rate limit exceeded {context}: giving up after "

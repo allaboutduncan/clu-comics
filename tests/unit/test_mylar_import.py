@@ -568,22 +568,15 @@ class TestComicVineWait:
     """A ComicVine-only series waits out the hourly budget visibly, not silently."""
 
     def test_waits_with_progress_then_resumes(self):
-        from helpers.rate_limit import SlidingWindowRateLimiter
-
-        limiter = SlidingWindowRateLimiter(3, 3600.0)
-        for _ in range(3):
-            limiter.acquire()
+        # Simyan's bucket (or the latched quota) frees up after two polls.
+        waits = iter([1800.0, 900.0, 0.0])
         details = []
         sleeps = []
 
-        def fake_sleep(seconds):
-            sleeps.append(seconds)
-            if len(sleeps) == 2:
-                limiter.reset()  # the hour passes
-
-        with patch("models.comicvine._comicvine_rate_limiter", limiter), \
+        with patch("models.comicvine.hourly_wait_seconds",
+                   side_effect=lambda slots: next(waits)) as wait, \
                 patch("models.comicvine_source._local_available", return_value=False), \
-                patch.object(mylar_import, "_sleep", side_effect=fake_sleep), \
+                patch.object(mylar_import, "_sleep", side_effect=sleeps.append), \
                 patch.object(mylar_import, "_progress",
                              side_effect=lambda op, c, t, d: details.append(d)):
             mylar_import._wait_for_comicvine("op", 4, 10, "Saga (2012)")
@@ -592,19 +585,16 @@ class TestComicVineWait:
         assert all(s <= mylar_import._WAIT_POLL_SECONDS for s in sleeps)
         assert all("ComicVine's hourly request limit" in d for d in details)
         assert "Saga (2012)" in details[0]
+        assert wait.call_args[0][0] == mylar_import._CV_CALLS_PER_SERIES
 
     def test_no_wait_with_the_local_dump_or_free_slots(self):
-        from helpers.rate_limit import SlidingWindowRateLimiter
-
-        full = SlidingWindowRateLimiter(1, 3600.0)
-        full.acquire()
-        with patch("models.comicvine._comicvine_rate_limiter", full), \
+        with patch("models.comicvine.hourly_wait_seconds", return_value=3600.0), \
                 patch("models.comicvine_source._local_available", return_value=True), \
                 patch.object(mylar_import, "_sleep") as sleep:
             mylar_import._wait_for_comicvine(None, 0, 1, "X")
         sleep.assert_not_called()
 
-        with patch("models.comicvine._comicvine_rate_limiter", SlidingWindowRateLimiter(9, 3600.0)), \
+        with patch("models.comicvine.hourly_wait_seconds", return_value=0.0), \
                 patch("models.comicvine_source._local_available", return_value=False), \
                 patch.object(mylar_import, "_sleep") as sleep:
             mylar_import._wait_for_comicvine(None, 0, 1, "X")

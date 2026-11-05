@@ -220,6 +220,46 @@ def _no_provider_pacing(request):
 
 
 # ---------------------------------------------------------------------------
+# Fixture: Provider latches don't outlive a test (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_provider_latches():
+    """Auth lockouts and quota latches are module-level state.
+
+    A test that gets a real 401 (one route test saves a fake ComicVine key and
+    then tests it) latches the lockout's in-process memo, and every later test
+    in the run would find ComicVine paused. ``forget()`` alone is not enough:
+    when the next test's database has no ``user_preferences`` table the read
+    fails, and ``blocked()`` answers from the stale memo. So the memo's values
+    are cleared too, and the next read comes from that test's own database.
+    Only modules already imported are touched; this fixture must not import
+    them.
+    """
+    yield
+    import sys
+
+    provider_client = sys.modules.get("core.provider_client")
+    if provider_client is not None:
+        with provider_client._LOCKOUTS_LOCK:
+            lockouts = list(provider_client._LOCKOUTS.values())
+        for lockout in lockouts:
+            with lockout._lock:
+                lockout._loaded = False
+                lockout._blocked = False
+                lockout._error = None
+                lockout._blocked_at = None
+    for module_name, latch_name in (
+        ("models.comicvine", "_hourly"),
+        ("models.gcd_api", "_quota"),
+        ("models.metron", "_daily"),
+    ):
+        module = sys.modules.get(module_name)
+        latch = getattr(module, latch_name, None) if module is not None else None
+        if latch is not None:
+            latch.reset()
+
+
+# ---------------------------------------------------------------------------
 # Fixture: Logging suppression (autouse)
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)

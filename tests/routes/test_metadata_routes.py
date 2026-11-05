@@ -2541,7 +2541,7 @@ class TestProviderAuthBlockRoutes:
     def test_reset_auth_rejects_a_provider_without_a_block(self, client):
         """Only providers with a lockout latch one; pretending otherwise would
         imply the others have a brake they do not have."""
-        resp = client.post('/api/providers/comicvine/reset-auth')
+        resp = client.post('/api/providers/mangadex/reset-auth')
         assert resp.status_code == 400
 
     def test_listing_surfaces_the_block_for_metron(self, client):

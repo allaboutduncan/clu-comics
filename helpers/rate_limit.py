@@ -8,9 +8,9 @@ tripped by the aggregate rather than by any one caller.
 **Take a slot per HTTP request, never per logical call** (see
 ``core/provider_client.py``). One call to a library that follows ``next``
 links is many requests, and a slot per call is how Metron's pages went out
-unpaced (#703). Metron is therefore paced inside mokkari, by the limiter its
-Session is built with, and no longer uses this module. ComicVine still takes
-a slot here per call. The plain-``requests`` providers take one per request
+unpaced (#703). Metron and ComicVine are therefore paced inside their
+libraries (mokkari's limiter, Simyan's bucket), once per send, and no longer
+use this module. The plain-``requests`` providers take one per request
 they send, through ``core.http_client`` (a one-slot window per provider, so
 sends are evenly spaced): GCD API, MangaDex, MangaUpdates, Bedetheque and
 AniList.
