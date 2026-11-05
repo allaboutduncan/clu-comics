@@ -1776,13 +1776,13 @@ class TestReleasesPublisherFilter:
                 patch("core.database.get_tracked_series_lookup", return_value=set()):
             html = self._render_releases_page(client, app)
 
-        # Series 11 is subscribed (cover sticker + table badge); series 99 is not.
-        assert html.count('<span class="release-subscribed" title="Subscribed">') == 1
+        # Series 11 is subscribed (cover ribbon + table badge); series 99 is not.
+        assert html.count('<div class="release-ribbon">Subscribed</div>') == 1
         assert html.count('<span class="badge bg-success ms-1">Subscribed</span>') == 1
 
     def test_cards_are_the_shared_cover_card(self, client, app):
         # Releases uses collection.css's cover card like every other cover
-        # grid: no page-built card, ribbon, tracked border or entrance animation.
+        # grid: no page-built card, tracked border or entrance animation.
         html = self._render_releases_page(client, app)
 
         assert "css/collection.css" in html
@@ -1792,9 +1792,11 @@ class TestReleasesPublisherFilter:
         cards = html[html.index('id="releases-cards"'):html.index('id="releases-table"')]
         assert cards.count('class="thumbnail-container"') == 2
         assert cards.count('class="item-name text-truncate"') == 2
-        # The issue number lives in the shared gold sticker.
-        assert cards.count('<span class="issue-badge"><span class="issue-number">#1</span></span>') == 2
-        for old in ("ribbon", "stagger-load", "fade-in",
+        # The top-right corner belongs to the Subscribed ribbon, so the issue
+        # number is in the caption, not the gold issue sticker.
+        assert "issue-badge" not in cards
+        assert cards.count("#1 &middot; ") == 2
+        for old in ("stagger-load", "fade-in",
                     "release-cover", "no-cover-placeholder"):
             assert old not in html
         from pathlib import Path
