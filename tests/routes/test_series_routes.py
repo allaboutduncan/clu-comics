@@ -8,15 +8,26 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
-def _pass_through_api_call(mock_metron):
-    """Let a patched ``routes.series.metron`` run the wrapped Metron call.
+def _real_client(mock_metron, session):
+    """Hand a patched ``routes.series.metron`` a real ``MetronClient``.
 
-    The routes call ``metron._api_call(lambda: api.X(...), ...)`` (#703), so a
-    bare MagicMock module would swallow the lambda and the mocked ``api`` would
-    never be asked.
+    The routes call ``api.using(...).series(...)``, so a bare MagicMock client
+    would answer from a fresh mock and ``session`` would never be asked. A
+    real client over the mock session also runs the real call policy.
     """
-    mock_metron._api_call.side_effect = lambda fn, context, default=None, **kw: fn()
+    from models.metron import MetronClient
+
+    client = MetronClient(session)
+    mock_metron.get_flask_api.return_value = client
     mock_metron.paused_reason.return_value = None
+    return client
+
+
+def _pause_metron():
+    """Latch Metron's daily quota, so the real policy skips every call."""
+    import models.metron
+
+    models.metron._daily.latch_for(3600, "test")
 
 
 class TestSeriesSearch:
@@ -25,8 +36,8 @@ class TestSeriesSearch:
     def test_search_while_metron_is_paused_is_a_503(self, mock_metron, client):
         """A skipped call (spent daily quota, rejected credentials) says why,
         rather than answering "no results"."""
-        mock_metron.get_flask_api.return_value = MagicMock()
-        mock_metron._api_call.return_value = None
+        _real_client(mock_metron, MagicMock())
+        _pause_metron()
         mock_metron.paused_reason.return_value = "Metron's daily request limit was reached"
 
         resp = client.get("/api/series/search?q=batman")
@@ -35,20 +46,26 @@ class TestSeriesSearch:
         assert resp.get_json()["error"] == "Metron's daily request limit was reached"
 
     @patch("routes.series.metron")
-    def test_search_goes_through_api_call_and_keeps_its_unavailable_503(
+    def test_search_raises_api_errors_and_keeps_its_unavailable_503(
         self, mock_metron, client
     ):
-        _pass_through_api_call(mock_metron)
+        """Without ``raise_api_errors`` the failure would come back as None and
+        be answered as a rate limit, not "unavailable"."""
+        import requests
+        from mokkari.exceptions import ApiError
+
+        error = ApiError("boom")
+        error.__cause__ = requests.exceptions.ConnectionError("boom")
         mock_api = MagicMock()
-        mock_api.series_list.side_effect = ConnectionError("boom")
-        mock_metron.get_flask_api.return_value = mock_api
+        mock_api.series_list.side_effect = error
+        _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = True
 
         resp = client.get("/api/series/search?q=batman")
 
         assert resp.status_code == 503
         assert "unavailable" in resp.get_json()["error"]
-        assert mock_metron._api_call.call_args.kwargs["raise_api_errors"] is True
+        mock_api.series_list.assert_called_once()
 
     def test_empty_query(self, client):
         resp = client.get("/api/series/search?q=")
@@ -77,8 +94,7 @@ class TestSeriesSearch:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = [mock_series]
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
 
         mock_app = MagicMock()
@@ -114,8 +130,7 @@ class TestSeriesSearch:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = [mock_series]
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
 
         # Series id 100 has a mapped folder -> subscribed
@@ -137,8 +152,7 @@ class TestSeriesSearch:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = []
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
 
         mock_app = MagicMock()
@@ -158,8 +172,7 @@ class TestSeriesSearch:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = []
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
 
         mock_app = MagicMock()
@@ -689,8 +702,7 @@ class TestPublishersApi:
 
         mock_api = MagicMock()
         mock_api.publishers_list.return_value = [pub1, pub2]
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
 
         resp = client.post("/api/publishers/sync")
@@ -705,8 +717,8 @@ class TestPublishersApi:
     def test_sync_publishers_while_metron_is_paused_saves_nothing(
         self, mock_save, mock_metron, client
     ):
-        mock_metron.get_flask_api.return_value = MagicMock()
-        mock_metron._api_call.return_value = None
+        _real_client(mock_metron, MagicMock())
+        _pause_metron()
         mock_metron.paused_reason.return_value = "Metron rejected the saved credentials"
 
         resp = client.post("/api/publishers/sync")
@@ -859,8 +871,7 @@ class TestSeriesPageForceRefresh:
             )
 
         mock_api.series.side_effect = _series
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.is_connection_error.return_value = False
         mock_metron.get_all_issues_for_series.return_value = []
         mock_metron.purge_series_cache.side_effect = lambda *a, **k: calls.append("purge")
@@ -868,7 +879,7 @@ class TestSeriesPageForceRefresh:
         resp = client_with_data.get("/series/batman-v2020-100?refresh=1")
 
         assert resp.status_code == 200
-        mock_metron.purge_series_cache.assert_called_once_with(100, api=mock_api)
+        mock_metron.purge_series_cache.assert_called_once_with(100, api=api)
         # Purging after the fetch would be useless.
         assert calls == ["purge", "fetch"]
         assert "Summary edited on Metron" in resp.get_data(as_text=True)
@@ -895,14 +906,13 @@ class TestSyncSeriesDescription:
 
         mock_api = MagicMock()
         mock_api.series.return_value = {"id": 100, "desc": "Rewritten summary"}
-        mock_metron.get_flask_api.return_value = mock_api
-        _pass_through_api_call(mock_metron)
+        api = _real_client(mock_metron, mock_api)
         mock_metron.get_all_issues_for_series.return_value = []
 
         resp = client_with_data.post("/api/sync/series/100")
 
         assert resp.status_code == 200
-        mock_metron.purge_series_cache.assert_called_once_with(100, api=mock_api)
+        mock_metron.purge_series_cache.assert_called_once_with(100, api=api)
         # The seeded row already had a description; a changed one must still land.
         assert get_series_by_id(100)["desc"] == "Rewritten summary"
 

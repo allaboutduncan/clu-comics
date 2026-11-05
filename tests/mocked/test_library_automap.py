@@ -16,6 +16,13 @@ from helpers.comicvine_ids import make_comicvine_series_id
 from models import library_automap
 
 
+def _client(session):
+    """A real ``MetronClient`` over a mock session, so the call policy runs."""
+    from models.metron import MetronClient
+
+    return MetronClient(session)
+
+
 def _make_folder(root, name, *, series_json=None, wrap=True, cvinfo=None, comics=0):
     """Create a series folder with optional sidecars and dummy comic files.
 
@@ -67,7 +74,7 @@ class TestResolveIdentity:
         result = MagicMock()
         result.id = 4242
         api.series_list.return_value = [result]
-        ident = library_automap._resolve_identity(folder, api=api)
+        ident = library_automap._resolve_identity(folder, api=_client(api))
         assert ident["metron_id"] == 4242
         assert ident["source"] == "comicvine_id"
 
@@ -85,7 +92,7 @@ class TestResolveIdentity:
         )
         api = MagicMock()
         api.series_list.return_value = []
-        ident = library_automap._resolve_identity(folder, api=api, cv_available=False)
+        ident = library_automap._resolve_identity(folder, api=_client(api), cv_available=False)
         assert ident["metron_id"] is None
         assert "not in metron" in ident["reason"].lower()
 
@@ -233,7 +240,7 @@ class TestApply:
         with patch("core.database.save_series_mapping", return_value=True) as save, \
              patch("core.database.save_publisher") as save_pub:
             result = library_automap.apply_automap(
-                [{"folder": folder, "metron_id": 555, "series_name": "Batman"}], api=api
+                [{"folder": folder, "metron_id": 555, "series_name": "Batman"}], api=_client(api)
             )
         assert result["applied"] == 1
         assert result["applied_ids"] == [555]
@@ -247,7 +254,7 @@ class TestApply:
         with patch("core.database.save_series_mapping", return_value=True), \
              patch("core.database.save_publisher"):
             result = library_automap.apply_automap(
-                [{"folder": str(tmp_path / "gone"), "metron_id": 1}], api=api
+                [{"folder": str(tmp_path / "gone"), "metron_id": 1}], api=_client(api)
             )
         assert result["applied"] == 0
         assert len(result["failed"]) == 1
@@ -429,7 +436,7 @@ class TestComicVineResolution:
         result = MagicMock()
         result.id = 999
         api.series_list.return_value = [result]
-        ident = library_automap._resolve_identity(folder, api=api, cv_available=True)
+        ident = library_automap._resolve_identity(folder, api=_client(api), cv_available=True)
         assert ident["metron_id"] == 999
         assert ident["source"] == "comicvine_id"
 
@@ -529,7 +536,7 @@ class TestSyncAndMatch:
              patch("core.database.get_series_by_id", return_value={"id": 9, "name": "X"}), \
              patch("sync.sync_series_from_api", side_effect=do_sync) as sync_fn, \
              patch("helpers.collection.match_issues_to_collection") as match:
-            library_automap._sync_and_match(api=api, series_id=9)
+            library_automap._sync_and_match(api=_client(api), series_id=9)
         sync_fn.assert_called_once()
         match.assert_called_once()
 
@@ -801,7 +808,7 @@ class TestApplyDoesNotClobberName:
              patch("core.database.get_series_by_id",
                    return_value={"id": 888, "name": "Mister Miracle"}), \
              patch("models.library_automap.write_series_json") as write:
-            result = library_automap.apply_automap([item], api=self._failing_api())
+            result = library_automap.apply_automap([item], api=_client(self._failing_api()))
         assert result["applied"] == 1
         saved = save.call_args[0][0]
         assert saved["name"] == "Mister Miracle"
@@ -820,7 +827,7 @@ class TestApplyDoesNotClobberName:
              patch("core.database.get_series_by_id",
                    return_value={"id": 42, "name": "v2012"}), \
              patch("models.library_automap.write_series_json"):
-            library_automap.apply_automap([item], api=self._failing_api())
+            library_automap.apply_automap([item], api=_client(self._failing_api()))
         saved = save.call_args[0][0]
         assert saved["name"] == "Saga"
 
@@ -839,7 +846,7 @@ class TestRepairVolumeNamedSeries:
              patch("core.database.save_series_mapping", return_value=True) as save, \
              patch("core.database.save_publisher"), \
              patch("models.library_automap.write_series_json") as write:
-            repaired = library_automap.repair_volume_named_series(api)
+            repaired = library_automap.repair_volume_named_series(_client(api))
         assert repaired == 1
         saved, saved_path = save.call_args[0][:2]
         assert saved["name"] == "Mister Miracle"
@@ -880,7 +887,7 @@ class TestRepairVolumeNamedSeries:
         api = MagicMock()
         with patch("core.database.get_all_mapped_series", return_value=rows), \
              patch("core.database.save_series_mapping", return_value=True) as save:
-            repaired = library_automap.repair_volume_named_series(api)
+            repaired = library_automap.repair_volume_named_series(_client(api))
         assert repaired == 0
         api.series.assert_not_called()
         save.assert_not_called()
@@ -899,7 +906,7 @@ class TestRepairVolumeNamedSeries:
              patch("core.app_state.register_operation", return_value="op1") as reg, \
              patch("core.app_state.update_operation") as upd, \
              patch("core.app_state.complete_operation") as done:
-            library_automap.repair_volume_named_series(api)
+            library_automap.repair_volume_named_series(_client(api))
         reg.assert_called_once()
         assert reg.call_args.args[0] == "repair"
         assert reg.call_args.kwargs.get("total") == 1

@@ -106,7 +106,7 @@ def _fetch_metron(ids: Dict) -> Optional[Dict]:
         metron_id = metron.get_series_id_by_comicvine_id(api, ids["cv_id"])
     if not metron_id:
         return None
-    series = metron._api_call(lambda: api.series(metron_id), f"fetching series {metron_id} for series.json")
+    series = api.using(context=f"fetching series {metron_id} for series.json").series(metron_id)
     if not series:
         return None
     if hasattr(series, "model_dump"):

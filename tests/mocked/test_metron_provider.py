@@ -6,6 +6,13 @@ from models.providers.base import ProviderType, ProviderCredentials, SearchResul
 from tests.mocked.conftest import make_mock_series, make_mock_issue
 
 
+def _client(library):
+    """A real ``MetronClient`` over a mock session, so the call policy runs."""
+    from models.metron import MetronClient
+
+    return MetronClient(library)
+
+
 class TestMetronProviderInit:
 
     def test_provider_attributes(self):
@@ -81,7 +88,7 @@ class TestMetronProviderTestConnection:
 
         mock_api = MagicMock()
         mock_api.publishers_list.return_value = [MagicMock()]
-        mock_get_api.return_value = mock_api
+        mock_get_api.return_value = _client(mock_api)
 
         p = MetronProvider(credentials=metron_creds)
         assert p.test_connection() is True
@@ -112,21 +119,25 @@ class TestMetronProviderTestConnection:
 
     @patch("models.metron.latch_auth_failure")
     @patch("models.metron.auth_failure_status", return_value=401)
-    @patch("models.metron._api_call", side_effect=Exception("401 Unauthorized"))
+    @patch("models.metron._metron_policy.call", side_effect=Exception("401 Unauthorized"))
     @patch("models.metron.get_api")
     def test_rejection_latches_the_lockout(self, _api, _call, _status, latch, metron_creds):
         from models.providers.metron_provider import MetronProvider
+
+        _api.return_value = _client(MagicMock())
 
         assert MetronProvider(credentials=metron_creds).test_connection() is False
         latch.assert_called_once()
 
     @patch("models.metron.latch_auth_failure")
     @patch("models.metron.auth_failure_status", return_value=401)
-    @patch("models.metron._api_call", side_effect=Exception("401 Unauthorized"))
+    @patch("models.metron._metron_policy.call", side_effect=Exception("401 Unauthorized"))
     @patch("models.metron.get_api")
     def test_probe_rejection_does_not_latch(self, _api, _call, _status, latch, metron_creds):
         """Unsaved credentials (the Guided Setup's Test) must not lock out the saved ones."""
         from models.providers.metron_provider import MetronProvider
+
+        _api.return_value = _client(MagicMock())
 
         p = MetronProvider(credentials=metron_creds)
         p.probe_only = True
@@ -135,11 +146,13 @@ class TestMetronProviderTestConnection:
         latch.assert_not_called()
 
     @patch("models.metron.clear_auth_block")
-    @patch("models.metron._api_call", return_value=[MagicMock()])
+    @patch("models.metron._metron_policy.call", return_value=[MagicMock()])
     @patch("models.metron.get_api")
     def test_probe_success_does_not_clear_the_lockout(self, _api, _call, clear, metron_creds):
         """Clearing it would unblock *saved* credentials the probe never tested."""
         from models.providers.metron_provider import MetronProvider
+
+        _api.return_value = _client(MagicMock())
 
         p = MetronProvider(credentials=metron_creds)
         p.probe_only = True
@@ -275,7 +288,7 @@ class TestMetronProviderGetIssue:
 
         mock_api = MagicMock()
         mock_api.issue.return_value = make_mock_issue(id=500, number="1")
-        mock_get_api.return_value = mock_api
+        mock_get_api.return_value = _client(mock_api)
 
         p = MetronProvider(credentials=metron_creds)
         result = p.get_issue("500")
@@ -290,7 +303,7 @@ class TestMetronProviderGetIssue:
 
         mock_api = MagicMock()
         mock_api.issue.return_value = None
-        mock_get_api.return_value = mock_api
+        mock_get_api.return_value = _client(mock_api)
 
         p = MetronProvider(credentials=metron_creds)
         assert p.get_issue("9999") is None
@@ -305,7 +318,7 @@ class TestMetronProviderToComicinfo:
 
         mock_api = MagicMock()
         mock_api.issue.return_value = make_mock_issue()
-        mock_get_api.return_value = mock_api
+        mock_get_api.return_value = _client(mock_api)
         mock_map.return_value = {"Series": "Batman", "Number": "1", "Publisher": "DC Comics"}
 
         p = MetronProvider(credentials=metron_creds)
@@ -339,7 +352,7 @@ class TestMetronProviderToComicinfo:
         mock_api.cache = cache
         mock_api.api_url = "https://metron.cloud/api/{}/"
         mock_api.issue.return_value = make_mock_issue()
-        mock_get_api.return_value = mock_api
+        mock_get_api.return_value = _client(mock_api)
         mock_map.return_value = {"Series": "Batman", "Writer": "Joe Kelly"}
 
         p = MetronProvider(credentials=metron_creds)

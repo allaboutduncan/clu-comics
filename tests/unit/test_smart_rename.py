@@ -18,6 +18,14 @@ def _mock_rename_deps():
         yield
 
 
+def _metron_client(session):
+    """A real MetronClient over a fake session (imported late: smart_rename
+    keeps models.metron lazy)."""
+    from models.metron import MetronClient
+
+    return MetronClient(session)
+
+
 def _write_series_json(folder, name="Sandman", volume=2, year=1989):
     payload = {
         "metadata": {
@@ -312,12 +320,9 @@ class TestPlanSmartRenameAutoCreateSeriesJson:
         fake_api.series.return_value = series_obj
 
         fake_metron = MagicMock()
-        # _api_call is the pacing/auth funnel every Metron call goes through,
-        # not a data source -- keep it transparent so the fake api is what the
-        # test actually exercises.
-        fake_metron._api_call.side_effect = lambda fn, *a, **kw: fn()
         fake_metron.is_metron_configured.return_value = True
-        fake_metron.get_flask_api.return_value = fake_api
+        # A real MetronClient over the fake session, so the call policy runs.
+        fake_metron.get_flask_api.return_value = _metron_client(fake_api)
         fake_metron.get_series_id.return_value = 42
 
         with _enable_custom_rename(), \
@@ -363,12 +368,9 @@ class TestPlanSmartRenameAutoCreateSeriesJson:
         fake_api = MagicMock()
         fake_api.series.return_value = series_obj
         fake_metron = MagicMock()
-        # _api_call is the pacing/auth funnel every Metron call goes through,
-        # not a data source -- keep it transparent so the fake api is what the
-        # test actually exercises.
-        fake_metron._api_call.side_effect = lambda fn, *a, **kw: fn()
         fake_metron.is_metron_configured.return_value = True
-        fake_metron.get_flask_api.return_value = fake_api
+        # A real MetronClient over the fake session, so the call policy runs.
+        fake_metron.get_flask_api.return_value = _metron_client(fake_api)
         fake_metron.get_series_id.return_value = 42
         return fake_metron
 

@@ -124,11 +124,10 @@ class TestMetronArcBrowse:
         assert data["success"] is False
         assert "not configured" in data["message"]
 
-    @patch("routes.reading_lists.fetch_arcs_page")
     @patch("routes.reading_lists.get_flask_api")
     @patch("routes.reading_lists.is_metron_configured", return_value=True)
-    def test_arc_browse_returns_arcs(self, mock_configured, mock_api, mock_fetch, client):
-        mock_api.return_value = MagicMock()
+    def test_arc_browse_returns_arcs(self, mock_configured, mock_api, client):
+        mock_fetch = mock_api.return_value.arcs_page
         mock_fetch.return_value = {
             "results": [
                 {"id": 10, "name": "Knightfall"},
@@ -148,11 +147,10 @@ class TestMetronArcBrowse:
         assert data["count"] == 100
         assert data["page"] == 1
 
-    @patch("routes.reading_lists.fetch_arcs_page")
     @patch("routes.reading_lists.get_flask_api")
     @patch("routes.reading_lists.is_metron_configured", return_value=True)
-    def test_arc_browse_with_search(self, mock_configured, mock_api, mock_fetch, client):
-        mock_api.return_value = MagicMock()
+    def test_arc_browse_with_search(self, mock_configured, mock_api, client):
+        mock_fetch = mock_api.return_value.arcs_page
         mock_fetch.return_value = {
             "results": [{"id": 10, "name": "Knightfall"}],
             "has_next": False,
@@ -166,13 +164,12 @@ class TestMetronArcBrowse:
 
         # Verify search param was forwarded
         call_args = mock_fetch.call_args
-        assert call_args[0][1] == {"name": "knight"}
+        assert call_args[0][0] == {"name": "knight"}
 
-    @patch("routes.reading_lists.fetch_arcs_page")
     @patch("routes.reading_lists.get_flask_api")
     @patch("routes.reading_lists.is_metron_configured", return_value=True)
-    def test_arc_browse_page_param(self, mock_configured, mock_api, mock_fetch, client):
-        mock_api.return_value = MagicMock()
+    def test_arc_browse_page_param(self, mock_configured, mock_api, client):
+        mock_fetch = mock_api.return_value.arcs_page
         mock_fetch.return_value = {
             "results": [{"id": 30, "name": "War of the Realms"}],
             "has_next": False,
@@ -189,11 +186,10 @@ class TestMetronArcBrowse:
         call_args = mock_fetch.call_args
         assert call_args[1]["page"] == 2
 
-    @patch("routes.reading_lists.fetch_arcs_page")
     @patch("routes.reading_lists.get_flask_api")
     @patch("routes.reading_lists.is_metron_configured", return_value=True)
-    def test_arc_browse_api_failure(self, mock_configured, mock_api, mock_fetch, client):
-        mock_api.return_value = MagicMock()
+    def test_arc_browse_api_failure(self, mock_configured, mock_api, client):
+        mock_fetch = mock_api.return_value.arcs_page
         mock_fetch.return_value = {
             "results": [],
             "has_next": False,
