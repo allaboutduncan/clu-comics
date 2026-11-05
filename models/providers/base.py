@@ -268,8 +268,8 @@ class BaseProvider(ABC):
     # This pair is metadata for the settings UI, and the number shown should be
     # the number enforced. Enforcement lives with each provider's own client and
     # runs per HTTP send (see core/provider_client.py): Metron's session limiter
-    # is seeded from MetronProvider.rate_limit; ComicVine paces in
-    # models.comicvine._cv_call_with_retry. #704 moves the rest onto the same layer.
+    # is seeded from MetronProvider.rate_limit; ComicVine is paced by Simyan's
+    # own bucket; the plain-requests providers by core.http_client.
     rate_limit: int = 30
     rate_limit_window_seconds: int = 60
 

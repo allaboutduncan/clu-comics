@@ -162,10 +162,8 @@ class ComicVineProvider(BaseProvider):
 
             # Get volume issues through API. Retry on rate-limit so a burst
             # throttle doesn't drop the whole volume to the review queue.
-            from models.comicvine import _cv_call_with_retry
-            issues = _cv_call_with_retry(
-                lambda: cv.list_issues(params={"filter": f"volume:{series_id}"}),
-                f"volume issues {series_id}",
+            issues = cv.using(context=f"volume issues {series_id}").list_issues(
+                params={"filter": f"volume:{series_id}"}
             )
 
             if not issues:
@@ -217,11 +215,7 @@ class ComicVineProvider(BaseProvider):
             if not cv:
                 return None
 
-            from models.comicvine import _cv_call_with_retry
-            issue = _cv_call_with_retry(
-                lambda: cv.get_issue(int(issue_id)),
-                f"issue detail {issue_id}",
-            )
+            issue = cv.using(context=f"issue detail {issue_id}").get_issue(int(issue_id))
             if not issue:
                 return None
 
