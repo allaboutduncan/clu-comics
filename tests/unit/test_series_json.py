@@ -542,8 +542,9 @@ class TestComicVineImageIsJsonSafe:
         )
         cv_module = MagicMock()
         cv_module.is_simyan_available.return_value = True
-        cv_module._cv_call_with_retry.side_effect = lambda fn, _label: fn()
-        cv_module.get_cv_client.return_value.get_volume.return_value = volume
+        client = cv_module.get_cv_client.return_value
+        client.using.return_value = client  # a using() view is the same client
+        client.get_volume.return_value = volume
         with patch.dict("sys.modules", {"models.comicvine": cv_module}), \
              patch("models.comicvine", cv_module, create=True):
             from cbz_ops.smart_rename import _build_comicvine_series_dict

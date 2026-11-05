@@ -150,9 +150,7 @@ def _build_comicvine_series_dict(api_key: str, cv_id: int) -> Optional[Dict]:
         return None
     try:
         cv = cv_module.get_cv_client(api_key)
-        volume = cv_module._cv_call_with_retry(
-            lambda: cv.get_volume(cv_id), f"smart_rename volume {cv_id}"
-        )
+        volume = cv.using(context=f"smart_rename volume {cv_id}").get_volume(cv_id)
         if not volume:
             return None
         publisher = getattr(volume, "publisher", None)

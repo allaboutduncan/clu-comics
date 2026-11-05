@@ -9,13 +9,22 @@ that (#703).
 Asserted over the AST, because app.py cannot be imported in tests.
 
 **Adding a provider (#704):** add a row to ``PROVIDER_RULES``. ``owner`` is
-the one module allowed to build the provider's client, ``client_ctor`` the
-names that build it, and every call to one of ``methods`` on a receiver in
-``receivers`` must sit inside a ``lambda`` -- or a nested ``def`` passed by
-name -- given to one of ``guards``. A plain-``requests`` provider instead
-goes in ``HTTP_PROVIDER_MODULES``: it may not touch ``requests`` at all, only
-``core.http_client.HttpClient``.
+the one module allowed to build the provider's library object, and
+``client_ctor`` / ``client_module`` the names that build it. Then one of:
+
+* ``client_class`` -- a ``core.provider_client.LibraryClient`` subclass whose
+  methods carry the library's names and run under the policy. Nothing
+  outside the owner may reach its ``_library``, the shim names in ``retired``
+  may appear nowhere, and every read the installed library has must be in
+  its ``READ_METHODS``. (ComicVine; Metron after #704 PR 4b.)
+* ``guards`` -- the older shape: every call to one of ``methods`` on a
+  receiver in ``receivers`` must sit inside a ``lambda`` -- or a nested
+  ``def`` passed by name -- given to one of ``guards``. (Metron until 4b.)
+
+A plain-``requests`` provider instead goes in ``HTTP_PROVIDER_MODULES``: it
+may not touch ``requests`` at all, only ``core.http_client.HttpClient``.
 """
+import importlib
 import ast
 import os
 
@@ -38,20 +47,6 @@ _MOKKARI_READS = frozenset({
     "universe", "universes_list", "wish_list", "wish_list_items",
 })
 
-# simyan 3.0 Comicvine's read methods, plus the per-resource ``search_*s``
-# that later versions add (``_cv_search`` picks whichever exists).
-_SIMYAN_READS = frozenset({
-    "get_character", "get_concept", "get_creator", "get_issue", "get_item",
-    "get_location", "get_origin", "get_power", "get_publisher", "get_story_arc",
-    "get_team", "get_volume", "list_characters", "list_concepts",
-    "list_creators", "list_issues", "list_items", "list_locations",
-    "list_origins", "list_powers", "list_publishers", "list_story_arcs",
-    "list_teams", "list_volumes", "search", "search_characters",
-    "search_concepts", "search_creators", "search_issues", "search_items",
-    "search_locations", "search_origins", "search_powers", "search_publishers",
-    "search_story_arcs", "search_teams", "search_volumes",
-})
-
 PROVIDER_RULES = {
     "metron": {
         "owner": "models/metron.py",
@@ -65,13 +60,16 @@ PROVIDER_RULES = {
         "owner": "models/comicvine.py",
         "client_ctor": {"Comicvine"},
         "client_module": "simyan.comicvine",
-        "receivers": {"cv"},
-        "methods": _SIMYAN_READS,
-        "guards": {"_cv_call_with_retry"},
-        # The version shim: every caller reaches it from inside a guarded
-        # lambda (or check_api_key, the connection test's deliberate bypass).
-        "exempt_functions": {"_cv_search"},
+        "client_class": ("models.comicvine", "ComicVineClient"),
+        "library_class": ("simyan.comicvine", "Comicvine"),
+        "retired": {"_cv_call_with_retry", "_cv_search"},
     },
+}
+
+# Modules that may reach a LibraryClient's ``_library``: the base class and
+# each client's owner.
+_LIBRARY_OWNERS = {"core/provider_client.py"} | {
+    rule["owner"] for rule in PROVIDER_RULES.values() if "client_class" in rule
 }
 
 
@@ -144,7 +142,6 @@ def _is_guarded(call, parents, guards):
 def unguarded_calls(tree, rule):
     """``(lineno, "recv.method")`` for each provider call outside a guard."""
     parents = _parents(tree)
-    exempt = rule.get("exempt_functions", set())
     found = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
@@ -153,9 +150,6 @@ def unguarded_calls(tree, rule):
         if not (isinstance(recv, ast.Name) and recv.id in rule["receivers"]):
             continue
         if node.func.attr not in rule["methods"]:
-            continue
-        scope = _enclosing_scope(node, parents)
-        if getattr(scope, "name", None) in exempt:
             continue
         if not _is_guarded(node, parents, rule["guards"]):
             found.append((node.lineno, f"{recv.id}.{node.func.attr}"))
@@ -173,7 +167,81 @@ def client_constructions(tree, rule):
     return found
 
 
-@pytest.mark.parametrize("provider", sorted(PROVIDER_RULES))
+_GUARD_RULES = sorted(p for p, r in PROVIDER_RULES.items() if "guards" in r)
+_CLIENT_RULES = sorted(p for p, r in PROVIDER_RULES.items() if "client_class" in r)
+
+
+def library_access(tree):
+    """Lines that read ``._library`` on anything."""
+    return [
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "_library"
+    ]
+
+
+def name_uses(tree, names):
+    """Lines that define, call, import or mention any of ``names``."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in names:
+            found.append(node.lineno)
+        elif isinstance(node, ast.Attribute) and node.attr in names:
+            found.append(node.lineno)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names:
+            found.append(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and any(a.name in names for a in node.names):
+            found.append(node.lineno)
+    return found
+
+
+def test_only_owners_reach_the_library_object():
+    """Holding the raw Simyan/mokkari object is how a call skips the policy."""
+    offenders = [
+        f"{rel}:{lineno}"
+        for rel, path in _repo_modules()
+        if rel not in _LIBRARY_OWNERS
+        for lineno in library_access(_parse(path))
+    ]
+    assert not offenders, (
+        "only a client's owner module may touch LibraryClient._library; call "
+        "the client's methods instead:\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("provider", _CLIENT_RULES)
+def test_retired_shims_are_gone(provider):
+    retired = PROVIDER_RULES[provider]["retired"]
+    offenders = [
+        f"{rel}:{lineno}"
+        for rel, path in _repo_modules()
+        for lineno in name_uses(_parse(path), retired)
+    ]
+    assert not offenders, (
+        f"{sorted(retired)} were replaced by the {provider} client's methods:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("provider", _CLIENT_RULES)
+def test_the_client_lists_every_installed_read(provider):
+    """A read the library gains must not be reachable only by going around
+    the client -- and there is no __getattr__ to forward it."""
+    rule = PROVIDER_RULES[provider]
+    module, cls = rule["client_class"]
+    client_class = getattr(importlib.import_module(module), cls)
+    lib_module, lib_cls = rule["library_class"]
+    library = getattr(importlib.import_module(lib_module), lib_cls)
+    installed = {
+        name for name in dir(library)
+        if not name.startswith("_") and callable(getattr(library, name))
+    }
+    missing = installed - client_class.READ_METHODS
+    assert not missing, f"{cls}.READ_METHODS lacks {sorted(missing)}"
+    for name in client_class.READ_METHODS:
+        assert callable(getattr(client_class, name)), name
+
+
+@pytest.mark.parametrize("provider", _GUARD_RULES)
 def test_every_provider_call_is_guarded(provider):
     rule = PROVIDER_RULES[provider]
     offenders = []
@@ -285,13 +353,18 @@ class TestTheCheckerItself:
             "def f(api):\n    return retry(lambda: api.issue(1))\n"
         ) == [(2, "api.issue")]
 
-    def test_an_exempt_helper_is_not_flagged_but_its_caller_still_is(self):
-        rule = PROVIDER_RULES["comicvine"]
+    def test_flags_library_access_and_retired_names(self):
         tree = ast.parse(
-            "def _cv_search(cv, q):\n    return cv.search(q)\n"
-            "def f(cv):\n    return cv.get_volume(1)\n"
+            "from models.comicvine import _cv_call_with_retry\n"
+            "def f(cv):\n    return cv._library.get_volume(1)\n"
         )
-        assert unguarded_calls(tree, rule) == [(4, "cv.get_volume")]
+        assert library_access(tree) == [3]
+        assert name_uses(tree, {"_cv_call_with_retry"}) == [1]
+
+    def test_accepts_client_methods(self):
+        tree = ast.parse("def f(cv):\n    return cv.using(context='x').get_volume(1)\n")
+        assert library_access(tree) == []
+        assert name_uses(tree, {"_cv_call_with_retry", "_cv_search"}) == []
 
     def test_flags_a_constructor_outside_the_owner(self):
         tree = ast.parse("from mokkari.session import Session\nMokkariSession('t')\n")

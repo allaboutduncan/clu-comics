@@ -640,6 +640,13 @@ class TestApplySmartRename:
         assert summary["skipped"] >= 1
 
 
+def _client(library):
+    """A real ComicVineClient over a mock Simyan, so the guard runs."""
+    from models.comicvine import ComicVineClient
+
+    return ComicVineClient(library)
+
+
 class TestBuildComicvineSeriesDict:
     """Regression cover for a fallback that never worked: this built its own
     Simyan client with `cache=None`, which Simyan 3.x rejects with TypeError,
@@ -661,7 +668,7 @@ class TestBuildComicvineSeriesDict:
         cv = MagicMock()
         cv.get_volume.return_value = self._volume()
         with patch("models.comicvine.is_simyan_available", return_value=True), \
-             patch("models.comicvine.get_cv_client", return_value=cv):
+             patch("models.comicvine.get_cv_client", return_value=_client(cv)):
             result = sr._build_comicvine_series_dict("KEY", 4050)
 
         assert result["name"] == "Batman"
@@ -680,25 +687,27 @@ class TestBuildComicvineSeriesDict:
         cv = MagicMock()
         cv.get_volume.return_value = self._volume()
         with patch("models.comicvine.is_simyan_available", return_value=True), \
-             patch("models.comicvine.get_cv_client", return_value=cv) as get_client, \
+             patch("models.comicvine.get_cv_client", return_value=_client(cv)) as get_client, \
              patch.object(cv_module, "Comicvine", create=True) as raw_ctor:
             sr._build_comicvine_series_dict("KEY", 4050)
 
         get_client.assert_called_once_with("KEY")
         raw_ctor.assert_not_called()
 
-    def test_goes_through_the_shared_throttle(self):
+    def test_goes_through_the_call_policy(self):
         import cbz_ops.smart_rename as sr
+        import models.comicvine as cv_module
 
         cv = MagicMock()
         cv.get_volume.return_value = self._volume()
         with patch("models.comicvine.is_simyan_available", return_value=True), \
-             patch("models.comicvine.get_cv_client", return_value=cv), \
-             patch("models.comicvine._cv_call_with_retry",
-                   side_effect=lambda fn, desc: fn()) as retry:
+             patch("models.comicvine.get_cv_client", return_value=_client(cv)), \
+             patch.object(cv_module._cv_policy, "call",
+                          wraps=cv_module._cv_policy.call) as policy_call:
             sr._build_comicvine_series_dict("KEY", 4050)
 
-        retry.assert_called_once()
+        policy_call.assert_called_once()
+        cv.get_volume.assert_called_once_with(4050)
 
     def test_missing_volume_returns_none(self):
         import cbz_ops.smart_rename as sr
@@ -706,7 +715,7 @@ class TestBuildComicvineSeriesDict:
         cv = MagicMock()
         cv.get_volume.return_value = None
         with patch("models.comicvine.is_simyan_available", return_value=True), \
-             patch("models.comicvine.get_cv_client", return_value=cv):
+             patch("models.comicvine.get_cv_client", return_value=_client(cv)):
             assert sr._build_comicvine_series_dict("KEY", 4050) is None
 
     def test_simyan_unavailable_returns_none(self):
@@ -724,5 +733,5 @@ class TestBuildComicvineSeriesDict:
         cv = MagicMock()
         cv.get_volume.side_effect = RuntimeError("ComicVine down")
         with patch("models.comicvine.is_simyan_available", return_value=True), \
-             patch("models.comicvine.get_cv_client", return_value=cv):
+             patch("models.comicvine.get_cv_client", return_value=_client(cv)):
             assert sr._build_comicvine_series_dict("KEY", 4050) is None

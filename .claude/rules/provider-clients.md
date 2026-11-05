@@ -117,12 +117,41 @@ The GCD API's lockout is `AuthLockout("gcd_api", ...)` in `models/gcd_api.py`.
 save route clears **any** registered lockout (`routes/metadata._provider_lockout`),
 not only Metron's. It also drops the shared GCD client.
 
+### `LibraryClient` (`core/provider_client.py`) — method-named clients
+
+A provider whose calls go through a client library (simyan, mokkari) gives
+callers a `LibraryClient` subclass, not the library object. Every method has
+the library's own name and runs under the provider's `GuardedClient`:
+`cv.get_volume(4050)`, `cv.list_issues(params=...)`. ComicVine uses it now
+(#704 PR 4a). Metron moves onto it in 4b, which retires `_api_call`.
+
+- **The methods are generated from `READ_METHODS`** when the subclass is
+  defined, and there is **no `__getattr__`**. A name not on the list is an
+  `AttributeError`, so a read a library adds can never be reached around the
+  policy. The ratchet asserts that every public read the *installed* library
+  has is on the list.
+- **`using(**options)` returns a view** on the same library object and policy,
+  with different `CallOptions`: `context` (the log name, by default
+  `"<method>(<args>)"` capped at 60 chars), `default`, `raise_api_errors`,
+  `ignore_auth_lock`, `raise_auth_errors`, and ComicVine's `blocking`. Sites
+  converted from a shim pass their old context string, so log lines don't
+  change.
+- **Each provider keeps its failure contract**, via `_run`. The base returns
+  `options.default`. `ComicVineClient` overrides `_run` to **raise**, as its
+  callers always expected.
+- **`bool(client)` is always True**, so `if not api:` still means "no client
+  was issued".
+- **Only the owner module touches `client._library`** (the ratchet's
+  `test_only_owners_reach_the_library_object`).
+
 ### ComicVine (`models/comicvine.py`)
 
-`_ComicVineClient(GuardedClient)` has `AuthLockout("comicvine")` and
-`QuotaLatch("ComicVine", "hourly")`. `_cv_call_with_retry` is a thin shim
-over it until #704 PR 4, and it keeps its contract: it returns the result,
-or it **raises**.
+`_ComicVinePolicy(GuardedClient)` has `AuthLockout("comicvine")` and
+`QuotaLatch("ComicVine", "hourly")`. `get_cv_client(key)` returns a cached
+`ComicVineClient`. Its methods return the result or **raise**.
+`search_resource(resource, query, max_results=None)` is the guarded
+cross-version search ("volume", "story_arc"...). `_raw_search` underneath it
+picks `search_<x>s` or the legacy `search`.
 
 - **Pacing is Simyan's alone.** Each client is a `CachedLimiterSession`.
   Its bucket allows 1 request per second and 200 per hour, and it is
@@ -145,14 +174,17 @@ or it **raises**.
   put. So the code peeks at the item `limit - slots` places back from the
   newest. `hourly_wait_seconds(slots)` is the public form, used by the Mylar
   import to wait visibly.
-- **While the lockout or the quota is latched**, the shim raises
+- **While the lockout or the quota is latched**, every method raises
   `ComicVineUnavailable` and sends nothing. `get_cv_client` still hands out
-  clients, because every read on one goes through the shim (the ratchet's
-  `comicvine` row). `_cv_search` is exempt as the version shim.
+  clients, because no caller can reach Simyan except through a guarded
+  method.
 - **`check_api_key(api_key, record=)`** is the connection test's deliberate
-  bypass: one request, no retry, and it ignores the lockout. With `record`
-  (the saved key, not a Guided Setup probe) a pass clears the lockout and a
-  401 latches it.
+  bypass: one `_raw_search` on `client._library`, no retry, and it ignores
+  the lockout. With `record` (the saved key, not a Guided Setup probe) a pass
+  clears the lockout and a 401 latches it.
+- **Quiet while paused.** A latched quota fails every call at once, so the
+  per-item handlers log through `log_cv_failure`, which uses DEBUG for a
+  skipped call.
 
 `GuardedClient` changed for this: `_gate()` now runs inside the `try`, so a
 refusal is classified, and there is a `_retry_wait(wait, attempt)` hook.
@@ -178,15 +210,21 @@ each direction, never per call.
 1. Subclass `GuardedClient` and write `_classify` for that library's errors.
 2. Build an `AuthLockout` and a `QuotaLatch` for it.
 3. Pace per send, as described above.
-4. Add a row to `PROVIDER_RULES` in `tests/unit/test_provider_calls_guarded.py`.
-   That ratchet asserts every client method call sits in a lambda (or a named
-   nested `def`) passed to the guard, and that only the owner module builds the
-   client. On `main` it caught the eight raw Metron calls that #703 fixed.
-   A plain-`requests` provider goes in `HTTP_PROVIDER_MODULES` instead. Those
-   modules may not import `requests` or build a `Session`.
+4. Give callers a `LibraryClient` subclass, not the library object.
+5. Add a row to `PROVIDER_RULES` in `tests/unit/test_provider_calls_guarded.py`
+   with `client_class` and `library_class`. The ratchet then asserts:
+   - only the owner module builds the library object or reaches `_library`;
+   - the names in `retired` appear nowhere;
+   - `READ_METHODS` covers every read the installed library has.
+
+   Metron's row still uses the older lambda-shape check (`guards`) until #704
+   PR 4b. On `main` that check caught the eight raw Metron calls that #703
+   fixed. A plain-`requests` provider goes in `HTTP_PROVIDER_MODULES` instead.
+   Those modules may not import `requests` or build a `Session`.
 
 Tests: `tests/unit/test_provider_client.py` (the policy, against a fake
-client), `tests/unit/test_provider_calls_guarded.py` (the ratchet), and
+client), `tests/unit/test_library_client.py` (generated methods, `using()`,
+automatic context), `tests/unit/test_provider_calls_guarded.py` (the ratchet), and
 `TestPerSendPacing` / `TestRateLimitClassification` / `TestFetchArcsPagePacing`
 in `tests/mocked/test_metron_model.py`. `TestPerSendPacing` drives a real
 mokkari Session through a paginated list and counts one limiter slot per page.

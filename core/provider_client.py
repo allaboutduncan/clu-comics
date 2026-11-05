@@ -31,10 +31,11 @@ be a cycle -- and reaches ``core.database`` lazily.
 """
 
 import json
+import reprlib
 import threading
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -477,3 +478,109 @@ class GuardedClient(ABC):
             handler.flush()
         time.sleep(wait)
         app_logger.info(f"{name} rate limit wait complete, retrying {context}")
+
+
+# ---------------------------------------------------------------------------
+# Method-named clients
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallOptions:
+    """Per-call options for a ``LibraryClient`` method; see ``GuardedClient.call``.
+
+    ``context`` names the call in log lines (default: ``"<method>(<args>)"``).
+    ``blocking`` is ComicVine's: None auto-detects a live web request.
+    """
+
+    context: Optional[str] = None
+    default: Any = None
+    raise_api_errors: bool = False
+    ignore_auth_lock: bool = False
+    raise_auth_errors: bool = False
+    blocking: Optional[bool] = None
+
+
+_CONTEXT_REPR = reprlib.Repr()
+_CONTEXT_REPR.maxstring = 40
+_CONTEXT_REPR.maxother = 40
+_CONTEXT_MAX = 60
+
+
+def _guarded_method(name: str):
+    def method(self, *args, **kwargs):
+        return self._invoke(name, args, kwargs)
+
+    method.__name__ = name
+    method.__qualname__ = name
+    method.__doc__ = f"``{name}`` on the wrapped library object, under the call policy."
+    return method
+
+
+class LibraryClient:
+    """A provider's library object behind its ``GuardedClient`` policy (#704).
+
+    Callers use the library's own method names -- ``api.series(5)``,
+    ``cv.get_volume(4050)`` -- and every one of them runs under the policy,
+    so the auth lockout and quota latch cannot be forgotten at a call site.
+
+    The methods are **generated from ``READ_METHODS``** when a subclass is
+    defined. There is deliberately no ``__getattr__``: an unlisted name is an
+    ``AttributeError``, so a method a library adds is never silently reachable
+    unguarded. Nothing outside the owner module may touch ``_library``.
+
+    ``using(**options)`` returns a view on the same library object and policy
+    with different ``CallOptions``, for a site that needs a context string, a
+    default, or one of the ``GuardedClient.call`` flags.
+    """
+
+    READ_METHODS: frozenset = frozenset()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        for name in cls.READ_METHODS:
+            if name not in cls.__dict__:
+                setattr(cls, name, _guarded_method(name))
+
+    def __init__(self, library, policy: GuardedClient, options: Optional[CallOptions] = None):
+        self._library = library
+        self._policy = policy
+        self._options = options or CallOptions()
+
+    def __bool__(self) -> bool:
+        # ``if not api:`` keeps meaning "no client was issued".
+        return True
+
+    def using(self, **changes) -> "LibraryClient":
+        view = object.__new__(type(self))
+        view.__dict__.update(self.__dict__)
+        view._options = replace(self._options, **changes)
+        return view
+
+    def _context(self, name: str, args, kwargs) -> str:
+        if self._options.context:
+            return self._options.context
+        parts = [_CONTEXT_REPR.repr(a) for a in args]
+        parts += [f"{k}={_CONTEXT_REPR.repr(v)}" for k, v in kwargs.items()]
+        text = f"{name}({', '.join(parts)})"
+        return text if len(text) <= _CONTEXT_MAX else text[: _CONTEXT_MAX - 4] + "...)"
+
+    def _invoke(self, name: str, args, kwargs):
+        library = self._library
+        return self._run(
+            lambda: getattr(library, name)(*args, **kwargs),
+            self._context(name, args, kwargs),
+        )
+
+    def _run(self, fn, context: str):
+        """Run ``fn`` under the policy. Returns ``options.default`` on failure;
+        a subclass whose callers expect an exception overrides this."""
+        options = self._options
+        return self._policy.call(
+            fn,
+            context,
+            options.default,
+            ignore_auth_lock=options.ignore_auth_lock,
+            raise_auth_errors=options.raise_auth_errors,
+            raise_api_errors=options.raise_api_errors,
+        )

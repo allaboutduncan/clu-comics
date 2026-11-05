@@ -10,6 +10,21 @@ from unittest.mock import patch, MagicMock
 from tests.mocked.conftest import make_mock_cv_volume, make_mock_cv_issue
 
 
+
+def _call(fn, context="test", blocking=None):
+    """One ComicVineClient method call whose library work is ``fn()``.
+
+    The real client and policy run; only Simyan is a mock.
+    """
+    import models.comicvine as cv
+
+    library = MagicMock()
+    library.get_volume.side_effect = lambda *a, **k: fn()
+    return cv.ComicVineClient(library).using(
+        context=context, blocking=blocking
+    ).get_volume(1)
+
+
 class TestIsSimyanAvailable:
 
     def test_returns_bool(self):
@@ -55,10 +70,10 @@ class TestClientCache:
         first = MagicMock(name="first")
         second = MagicMock(name="second")
         with patch.object(cv, "_make_cv_client", side_effect=[first, second]):
-            assert cv.get_cv_client("KEY") is first
+            assert cv.get_cv_client("KEY")._library is first
             cv.invalidate_cv_client_cache()
             first._session.close.assert_called_once()
-            assert cv.get_cv_client("KEY") is second
+            assert cv.get_cv_client("KEY")._library is second
 
     def test_concurrent_callers_share_one_client(self):
         """Background sweeps, the wanted-cache refresh and live web requests can
@@ -94,7 +109,7 @@ class TestClientCache:
         # Losers of the race must have had their session closed, or their
         # Leaker threads outlive them.
         for client in built:
-            if client is not results[0]:
+            if client is not results[0]._library:
                 client._session.close.assert_called_once()
 
 
@@ -153,14 +168,14 @@ class TestCallPolicy:
         import models.comicvine as cv
 
         assert not hasattr(cv, "_comicvine_rate_limiter")
-        assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
+        assert _call(lambda: "ok", "test") == "ok"
 
     def test_an_invalid_key_latches_the_lockout_and_still_raises(self):
         import models.comicvine as cv
         from simyan.errors import AuthenticationError
 
         with pytest.raises(AuthenticationError):
-            cv._cv_call_with_retry(
+            _call(
                 MagicMock(side_effect=AuthenticationError("Invalid API Key")), "test"
             )
         self.latch.assert_called_once()
@@ -172,7 +187,7 @@ class TestCallPolicy:
         fn = MagicMock(return_value="ok")
         with patch.object(cv._auth_block, "blocked", return_value=True):
             with pytest.raises(cv.ComicVineUnavailable, match="rejected"):
-                cv._cv_call_with_retry(fn, "test")
+                _call(fn, "test")
         fn.assert_not_called()
 
     @patch("models.comicvine.time.sleep")
@@ -186,14 +201,14 @@ class TestCallPolicy:
         fn = MagicMock(side_effect=refused)
 
         with pytest.raises(Exception, match="too long"):
-            cv._cv_call_with_retry(fn, "test")
+            _call(fn, "test")
         assert fn.call_count == 1, "a spent hourly bucket is not retried"
         mock_sleep.assert_not_called()
         assert cv._hourly.reached()
 
         later = MagicMock(return_value="ok")
         with pytest.raises(cv.ComicVineUnavailable, match="hourly"):
-            cv._cv_call_with_retry(later, "test")
+            _call(later, "test")
         later.assert_not_called()
         assert cv.hourly_wait_seconds() >= 59
 
@@ -204,7 +219,7 @@ class TestCallPolicy:
         err = Exception("Service took too long to respond")
         err.__cause__ = requests.Timeout("Read timed out")
         with pytest.raises(Exception, match="too long"):
-            cv._cv_call_with_retry(MagicMock(side_effect=err), "test")
+            _call(MagicMock(side_effect=err), "test")
         assert not cv._hourly.reached()
 
     def test_a_web_request_does_not_wait_out_a_full_bucket(self):
@@ -214,7 +229,7 @@ class TestCallPolicy:
         with patch("models.comicvine._bucket_wait_seconds", return_value=600.0), \
              patch("flask.has_request_context", return_value=True):
             with pytest.raises(cv.ComicVineBusy):
-                cv._cv_call_with_retry(fn, "test")
+                _call(fn, "test")
         fn.assert_not_called()
 
     def test_a_background_caller_rides_out_the_bucket(self):
@@ -222,17 +237,17 @@ class TestCallPolicy:
         import models.comicvine as cv
 
         with patch("models.comicvine._bucket_wait_seconds", return_value=600.0):
-            assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
-            assert cv._cv_call_with_retry(lambda: "ok", "test", blocking=True) == "ok"
+            assert _call(lambda: "ok", "test") == "ok"
+            assert _call(lambda: "ok", "test", blocking=True) == "ok"
             with pytest.raises(cv.ComicVineBusy):
-                cv._cv_call_with_retry(lambda: "ok", "test", blocking=False)
+                _call(lambda: "ok", "test", blocking=False)
 
     def test_a_short_wait_does_not_refuse_a_web_request(self):
         import models.comicvine as cv
 
         with patch("models.comicvine._bucket_wait_seconds", return_value=1.0), \
              patch("flask.has_request_context", return_value=True):
-            assert cv._cv_call_with_retry(lambda: "ok", "test") == "ok"
+            assert _call(lambda: "ok", "test") == "ok"
 
     @patch("models.comicvine.time.sleep")
     def test_back_off_is_linear(self, mock_sleep):
@@ -241,7 +256,7 @@ class TestCallPolicy:
         always = MagicMock(side_effect=Exception("Rate limit exceeded. Slow down cowboy."))
         with patch("models.comicvine._cv_retry_config", return_value=(3, 5.0)):
             with pytest.raises(Exception, match="Slow down"):
-                cv._cv_call_with_retry(always, "test")
+                _call(always, "test")
         assert [c.args[0] for c in mock_sleep.call_args_list] == [5.0, 10.0, 15.0]
         assert always.call_count == 4
 
@@ -270,7 +285,7 @@ class TestQuietWhilePaused:
         cv._hourly.latch_for(3600)
         try:
             with patch.object(cv, "SIMYAN_AVAILABLE", True), \
-                 patch.object(cv, "get_cv_client", return_value=MagicMock()), \
+                 patch.object(cv, "get_cv_client", return_value=cv.ComicVineClient(MagicMock())), \
                  patch.object(cv._auth_block, "blocked", return_value=False), \
                  patch.object(cv.app_logger, "error") as error:
                 # search_volumes raises by contract; it must just not shout.
@@ -296,7 +311,7 @@ class TestBucketWait:
             base = bucket.now() - 3_000_000  # 50 min ago
             for i in range(200):
                 bucket.put(RateItem("comicvine", base + i * 1100, 1))
-            with patch.dict(cv._CV_CLIENT_CACHE, {"k": client}, clear=True):
+            with patch.dict(cv._CV_CLIENT_CACHE, {"k": cv.ComicVineClient(client)}, clear=True):
                 assert cv._bucket_wait_seconds(1) == pytest.approx(600, abs=2)
                 assert cv._bucket_wait_seconds(3) == pytest.approx(602, abs=2)
             with patch.dict(cv._CV_CLIENT_CACHE, {}, clear=True):
@@ -352,7 +367,6 @@ class TestRateLimitRetry:
 
     @patch("models.comicvine.time.sleep")
     def test_retries_then_succeeds(self, mock_sleep):
-        from models.comicvine import _cv_call_with_retry
 
         calls = {"n": 0}
 
@@ -362,13 +376,12 @@ class TestRateLimitRetry:
                 raise Exception("Rate limit exceeded. Slow down cowboy.")
             return "ok"
 
-        assert _cv_call_with_retry(flaky, "test") == "ok"
+        assert _call(flaky, "test") == "ok"
         assert calls["n"] == 3
         assert mock_sleep.call_count == 2  # backed off before each retry
 
     @patch("models.comicvine.time.sleep")
     def test_non_rate_limit_error_not_retried(self, mock_sleep):
-        from models.comicvine import _cv_call_with_retry
 
         calls = {"n": 0}
 
@@ -377,14 +390,13 @@ class TestRateLimitRetry:
             raise ValueError("something else")
 
         with pytest.raises(ValueError):
-            _cv_call_with_retry(boom, "test")
+            _call(boom, "test")
         assert calls["n"] == 1  # raised immediately, no retry
         mock_sleep.assert_not_called()
 
     @patch("models.comicvine.time.sleep")
     @patch("models.comicvine._cv_retry_config", return_value=(2, 0.0))
     def test_gives_up_after_retries(self, mock_cfg, mock_sleep):
-        from models.comicvine import _cv_call_with_retry
 
         calls = {"n": 0}
 
@@ -393,7 +405,7 @@ class TestRateLimitRetry:
             raise Exception("Rate limit exceeded. Slow down cowboy.")
 
         with pytest.raises(Exception, match="Rate limit"):
-            _cv_call_with_retry(always, "test")
+            _call(always, "test")
         assert calls["n"] == 3  # first attempt + 2 retries
 
     @patch("models.comicvine.time.sleep")
@@ -985,48 +997,48 @@ class TestSimyanImportTolerance:
 
 
 class TestCvSearch:
-    """_cv_search bridges Simyan's pre- and post-3.1 search APIs."""
+    """_raw_search bridges Simyan's pre- and post-3.1 search APIs."""
 
     def test_prefers_per_resource_method(self):
-        from models.comicvine import _cv_search
+        from models.comicvine import _raw_search
 
         cv = MagicMock()
         cv.search_volumes.return_value = ["hit"]
 
-        assert _cv_search(cv, "volume", "Batman") == ["hit"]
+        assert _raw_search(cv, "volume", "Batman") == ["hit"]
         cv.search_volumes.assert_called_once_with("Batman")
         cv.search.assert_not_called()
 
     def test_story_arc_pluralizes(self):
-        from models.comicvine import _cv_search
+        from models.comicvine import _raw_search
 
         cv = MagicMock()
         cv.search_story_arcs.return_value = ["arc"]
 
-        assert _cv_search(cv, "story_arc", "Court of Owls") == ["arc"]
+        assert _raw_search(cv, "story_arc", "Court of Owls") == ["arc"]
         cv.search_story_arcs.assert_called_once_with("Court of Owls")
 
     @patch("models.comicvine.ComicvineResource")
     def test_falls_back_to_legacy_search(self, mock_resource):
         """Simyan <= 3.0 has only search(resource=...)."""
-        from models.comicvine import _cv_search
+        from models.comicvine import _raw_search
 
         cv = MagicMock(spec=["search"])
         cv.search.return_value = ["hit"]
 
-        assert _cv_search(cv, "volume", "Batman") == ["hit"]
+        assert _raw_search(cv, "volume", "Batman") == ["hit"]
         cv.search.assert_called_once_with(
             resource=mock_resource.VOLUME, query="Batman"
         )
 
     @patch("models.comicvine.ComicvineResource", None)
     def test_raises_when_neither_api_exists(self):
-        from models.comicvine import _cv_search
+        from models.comicvine import _raw_search
 
         cv = MagicMock(spec=["get_volume"])
 
         with pytest.raises(RuntimeError, match="search_volumes"):
-            _cv_search(cv, "volume", "Batman")
+            _raw_search(cv, "volume", "Batman")
 
 
 class TestSearchVolumesIssueCount:
