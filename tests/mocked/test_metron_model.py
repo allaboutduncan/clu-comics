@@ -13,6 +13,20 @@ from mokkari.exceptions import ApiError, RateLimitError
 from tests.mocked.conftest import make_mock_series, make_mock_issue
 
 
+def _client(library):
+    """A real ``MetronClient`` over ``library``, so the call policy runs."""
+    from models.metron import MetronClient
+
+    return MetronClient(library)
+
+
+def _call(fn, context="test context", default=None, **flags):
+    """Run ``fn`` as the body of one guarded ``MetronClient`` method call."""
+    library = MagicMock()
+    library.series.side_effect = lambda *a, **kw: fn()
+    return _client(library).using(context=context, default=default, **flags).series()
+
+
 class TestGetApi:
 
     @patch("models.metron.MokkariSession")
@@ -182,7 +196,7 @@ class TestPurgeSeriesCache:
         _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
         _store(cache, self.ISSUES_URL, {"results": []}, "issue", "list")
 
-        assert purge_series_cache(8859, api=session) == 2
+        assert purge_series_cache(8859, api=_client(session)) == 2
         assert cache.get(self.SERIES_URL) is None
         assert cache.get(self.ISSUES_URL) is None
 
@@ -194,7 +208,7 @@ class TestPurgeSeriesCache:
         _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
         _store(cache, other_detail, {"desc": "different series"}, "series")
 
-        assert purge_series_cache(8859, api=session) == 1
+        assert purge_series_cache(8859, api=_client(session)) == 1
         assert cache.get(other_detail) == {"desc": "different series"}
 
     def test_next_fetch_sees_the_new_body(self, tmp_path):
@@ -202,7 +216,7 @@ class TestPurgeSeriesCache:
 
         session, cache = _cache_session(tmp_path)
         _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
-        purge_series_cache(8859, api=session)
+        purge_series_cache(8859, api=_client(session))
         _store(cache, self.SERIES_URL, {"desc": "new summary"}, "series")
 
         assert cache.get(self.SERIES_URL) == {"desc": "new summary"}
@@ -210,7 +224,7 @@ class TestPurgeSeriesCache:
     def test_session_without_a_cache_is_a_no_op(self):
         from models.metron import purge_series_cache
 
-        assert purge_series_cache(8859, api=SimpleNamespace(cache=None)) == 0
+        assert purge_series_cache(8859, api=_client(SimpleNamespace(cache=None))) == 0
 
     def test_non_numeric_series_id_is_a_no_op(self, tmp_path):
         from models.metron import purge_series_cache
@@ -218,7 +232,7 @@ class TestPurgeSeriesCache:
         session, cache = _cache_session(tmp_path)
         _store(cache, self.SERIES_URL, {"desc": "old summary"}, "series")
 
-        assert purge_series_cache("not-an-id", api=session) == 0
+        assert purge_series_cache("not-an-id", api=_client(session)) == 0
         assert cache.get(self.SERIES_URL) == {"desc": "old summary"}
 
     def test_a_failing_cache_never_raises(self):
@@ -229,7 +243,7 @@ class TestPurgeSeriesCache:
         session = SimpleNamespace(cache=cache, api_url="https://metron.cloud/api/{}/")
 
         with patch("core.database.get_issues_for_series", return_value=[]):
-            assert purge_series_cache(8859, api=session) == 0
+            assert purge_series_cache(8859, api=_client(session)) == 0
 
     @patch("models.metron.MokkariSession")
     def test_defaults_to_every_cached_session(self, mock_session_class, tmp_path):
@@ -263,7 +277,7 @@ class TestPurgeIssueCache:
         session, cache = _cache_session(tmp_path)
         _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
 
-        assert purge_issue_cache(172615, api=session) == 1
+        assert purge_issue_cache(172615, api=_client(session)) == 1
         assert cache.get(self.ISSUE_URL) is None
 
     def test_leaves_other_issues_alone(self, tmp_path):
@@ -276,7 +290,7 @@ class TestPurgeIssueCache:
         _store(cache, other_issue, {"credits": ["someone"]}, "issue")
         _store(cache, filtered, {"results": []}, "credit", "list")
 
-        assert purge_issue_cache(172615, api=session) == 1
+        assert purge_issue_cache(172615, api=_client(session)) == 1
         assert cache.get(other_issue) == {"credits": ["someone"]}
         assert cache.get(filtered) == {"results": []}
 
@@ -294,12 +308,12 @@ class TestPurgeIssueCache:
             real._get(["issue", 172615])
         assert cache.get(real._url(["issue", 172615])) == body
 
-        assert purge_issue_cache(172615, api=real) == 1
+        assert purge_issue_cache(172615, api=_client(real)) == 1
 
     def test_session_without_a_cache_is_a_no_op(self):
         from models.metron import purge_issue_cache
 
-        assert purge_issue_cache(172615, api=SimpleNamespace(cache=None)) == 0
+        assert purge_issue_cache(172615, api=_client(SimpleNamespace(cache=None))) == 0
 
     def test_non_numeric_issue_id_is_a_no_op(self, tmp_path):
         from models.metron import purge_issue_cache
@@ -307,7 +321,7 @@ class TestPurgeIssueCache:
         session, cache = _cache_session(tmp_path)
         _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
 
-        assert purge_issue_cache("not-an-id", api=session) == 0
+        assert purge_issue_cache("not-an-id", api=_client(session)) == 0
         assert cache.get(self.ISSUE_URL) == {"credits": []}
 
     def test_series_purge_also_drops_known_issue_details(self, tmp_path):
@@ -323,7 +337,7 @@ class TestPurgeIssueCache:
             "core.database.get_issues_for_series",
             return_value=[{"id": 172615}, {"id": 999999}],
         ):
-            assert purge_series_cache(8859, api=session) == 2
+            assert purge_series_cache(8859, api=_client(session)) == 2
 
         assert cache.get(self.ISSUE_URL) is None
 
@@ -334,7 +348,7 @@ class TestPurgeIssueCache:
         _store(cache, "https://metron.cloud/api/series/8859/", {"desc": "old"}, "series")
 
         with patch("core.database.get_issues_for_series", side_effect=RuntimeError("db down")):
-            assert purge_series_cache(8859, api=session) == 1
+            assert purge_series_cache(8859, api=_client(session)) == 1
 
 
 class TestFetchIssueDetail:
@@ -356,7 +370,7 @@ class TestFetchIssueDetail:
         _store(cache, self.ISSUE_URL, {"credits": []}, "issue")
         api.issue.return_value = SimpleNamespace(id=172615)
 
-        result = fetch_issue_detail(api, 172615)
+        result = fetch_issue_detail(_client(api), 172615)
 
         assert cache.get(self.ISSUE_URL) is None
         api.issue.assert_called_once_with(172615)
@@ -366,7 +380,7 @@ class TestFetchIssueDetail:
         from models.metron import fetch_issue_detail
 
         api, _ = self._session_with_cache(tmp_path)
-        assert fetch_issue_detail(api, "not-an-id") is None
+        assert fetch_issue_detail(_client(api), "not-an-id") is None
         api.issue.assert_not_called()
 
     def test_get_issue_metadata_uses_the_purging_fetch(self, tmp_path):
@@ -378,7 +392,7 @@ class TestFetchIssueDetail:
         api.issues_list.return_value = [SimpleNamespace(id=172615)]
         api.issue.return_value = {"number": "3", "credits": [{"creator": "Bengal"}]}
 
-        result = get_issue_metadata(api, 15845, "3")
+        result = get_issue_metadata(_client(api), 15845, "3")
 
         assert cache.get(self.ISSUE_URL) is None
         assert result["credits"] == [{"creator": "Bengal"}]
@@ -399,7 +413,7 @@ class TestListIssuesModifiedSince:
             SimpleNamespace(id=999, modified="2026-08-26T09:00:00"),
         ]
 
-        changed = list_issues_modified_since(api, "2026-08-25")
+        changed = list_issues_modified_since(_client(api), "2026-08-25")
 
         api.issues_list.assert_called_once_with({"modified_gt": "2026-08-25"})
         assert changed == {
@@ -412,7 +426,7 @@ class TestListIssuesModifiedSince:
 
         api = MagicMock()
         assert list_issues_modified_since(None, "2026-08-25") == {}
-        assert list_issues_modified_since(api, "") == {}
+        assert list_issues_modified_since(_client(api), "") == {}
         api.issues_list.assert_not_called()
 
     def test_an_api_error_is_an_empty_result(self):
@@ -425,7 +439,7 @@ class TestListIssuesModifiedSince:
         api = MagicMock()
         api.issues_list.side_effect = ApiError("boom")
 
-        assert list_issues_modified_since(api, "2026-08-25") == {}
+        assert list_issues_modified_since(_client(api), "2026-08-25") == {}
 
     def test_entries_without_an_id_are_dropped(self):
         from models.metron import list_issues_modified_since
@@ -436,7 +450,7 @@ class TestListIssuesModifiedSince:
             SimpleNamespace(id=7, modified=None),
         ]
 
-        assert list_issues_modified_since(api, "2026-08-25") == {7: ""}
+        assert list_issues_modified_since(_client(api), "2026-08-25") == {7: ""}
 
 
 def _page(results):
@@ -465,8 +479,8 @@ class TestChangedSinceIsNeverServedFromCache:
         with patch.object(Session, "_request_data", side_effect=bodies) as http, \
              patch.object(Session, "issues_list",
                           lambda self, p: self._get_results(["issue"], p)["results"]):
-            assert list_issues_modified_since(real, "2026-10-25") == {1: "a"}
-            assert list_issues_modified_since(real, "2026-10-25") == {1: "a", 2: "b"}
+            assert list_issues_modified_since(_client(real), "2026-10-25") == {1: "a"}
+            assert list_issues_modified_since(_client(real), "2026-10-25") == {1: "a", 2: "b"}
         assert http.call_count == 2
 
     def test_leaves_other_issue_lists_cached(self, tmp_path):
@@ -479,7 +493,7 @@ class TestChangedSinceIsNeverServedFromCache:
             real._get_results(["issue"], {"modified_gt": "2026-10-25"})
             real._get_results(["issue"], {"series_id": 8859})
 
-        assert purge_modified_since_cache("issue", "2026-10-25", api=real) == 1
+        assert purge_modified_since_cache("issue", "2026-10-25", api=_client(real)) == 1
         assert cache.get(real._url(["issue"]) + "?series_id=8859") is not None
 
     def test_reading_list_purge_reaches_per_user_keys(self, tmp_path):
@@ -496,7 +510,7 @@ class TestChangedSinceIsNeverServedFromCache:
             real._get_results(["reading_list", 3, "items"])
 
         assert cache.delete(real._url(["reading_list", 3])) is False
-        assert purge_reading_list_cache(api=real) == 2
+        assert purge_reading_list_cache(api=_client(real)) == 2
 
         with patch.object(Session, "_request_data",
                           return_value={"id": 3, "modified": "new"}) as http:
@@ -506,10 +520,11 @@ class TestChangedSinceIsNeverServedFromCache:
     def test_reading_list_sweep_purges_before_listing(self):
         from models.metron import list_reading_lists_modified_since
 
-        api = MagicMock()
-        api.reading_lists_list.return_value = []
+        session = MagicMock()
+        session.reading_lists_list.return_value = []
+        api = _client(session)
         with patch("models.metron.purge_reading_list_cache") as purge:
-            purge.side_effect = lambda **kw: api.reading_lists_list.assert_not_called()
+            purge.side_effect = lambda **kw: session.reading_lists_list.assert_not_called()
             assert list_reading_lists_modified_since(api, "2026-10-25") == {}
         purge.assert_called_once_with(api=api)
 
@@ -523,10 +538,10 @@ class TestChangedSinceIsNeverServedFromCache:
             real._get_results(["arc", 7, "issue_list"], resource="issue")
             real._get_results(["arc", 70, "issue_list"], resource="issue")
 
-        assert purge_arc_issues_cache(7, api=real) == 1
+        assert purge_arc_issues_cache(7, api=_client(real)) == 1
         assert cache.get(real._url(["arc", 7, "issue_list"])) is None
         assert cache.get(real._url(["arc", 70, "issue_list"])) is not None
-        assert purge_arc_issues_cache("nope", api=real) == 0
+        assert purge_arc_issues_cache("nope", api=_client(real)) == 0
 
 
 class TestIsConnectionError:
@@ -590,7 +605,7 @@ class TestGetSeriesIdByComicvineId:
         mock_series = make_mock_series(id=42)
         mock_api.series_list.return_value = [mock_series]
 
-        assert get_series_id_by_comicvine_id(mock_api, 12345) == 42
+        assert get_series_id_by_comicvine_id(_client(mock_api), 12345) == 42
 
     def test_not_found(self):
         from models.metron import get_series_id_by_comicvine_id
@@ -598,7 +613,7 @@ class TestGetSeriesIdByComicvineId:
         mock_api = MagicMock()
         mock_api.series_list.return_value = []
 
-        assert get_series_id_by_comicvine_id(mock_api, 99999) is None
+        assert get_series_id_by_comicvine_id(_client(mock_api), 99999) is None
 
 
 class TestSearchSeriesByName:
@@ -610,7 +625,7 @@ class TestSearchSeriesByName:
         s = make_mock_series(id=100, name="Batman", year_began=2016)
         mock_api.series_list.return_value = [s]
 
-        result = search_series_by_name(mock_api, "Batman")
+        result = search_series_by_name(_client(mock_api), "Batman")
         assert result is not None
         assert result["id"] == 100
         assert result["name"] == "Batman"
@@ -623,7 +638,7 @@ class TestSearchSeriesByName:
         s2 = make_mock_series(id=2, name="Batman", year_began=2016)
         mock_api.series_list.return_value = [s1, s2]
 
-        result = search_series_by_name(mock_api, "Batman", year=2016)
+        result = search_series_by_name(_client(mock_api), "Batman", year=2016)
         assert result["id"] == 2  # Closer to 2016
 
     def test_no_results(self):
@@ -632,7 +647,7 @@ class TestSearchSeriesByName:
         mock_api = MagicMock()
         mock_api.series_list.return_value = []
 
-        assert search_series_by_name(mock_api, "Nonexistent") is None
+        assert search_series_by_name(_client(mock_api), "Nonexistent") is None
 
     def test_no_api(self):
         from models.metron import search_series_by_name
@@ -659,7 +674,7 @@ class TestSearchSeriesList:
             self._make(id=2, name="Batman Beyond", year_began=1999),
         ]
 
-        results = search_series_list(mock_api, "Batman")
+        results = search_series_list(_client(mock_api), "Batman")
         assert len(results) == 2
         assert {r["id"] for r in results} == {1, 2}
         first = next(r for r in results if r["id"] == 1)
@@ -677,7 +692,7 @@ class TestSearchSeriesList:
             self._make(id=2, name="Batman", year_began=2016),
         ]
 
-        results = search_series_list(mock_api, "Batman", year=2016)
+        results = search_series_list(_client(mock_api), "Batman", year=2016)
         assert results[0]["id"] == 2  # closest year first
 
     def test_no_results(self):
@@ -685,7 +700,7 @@ class TestSearchSeriesList:
 
         mock_api = MagicMock()
         mock_api.series_list.return_value = []
-        assert search_series_list(mock_api, "Nonexistent") == []
+        assert search_series_list(_client(mock_api), "Nonexistent") == []
 
     def test_no_api(self):
         from models.metron import search_series_list
@@ -700,7 +715,7 @@ class TestGetSeriesDetails:
         mock_api = MagicMock()
         mock_api.series.return_value = make_mock_series(id=100, cv_id=12345)
 
-        result = get_series_details(mock_api, 100)
+        result = get_series_details(_client(mock_api), 100)
         assert result["id"] == 100
         assert result["cv_id"] == 12345
 
@@ -710,7 +725,7 @@ class TestGetSeriesDetails:
         mock_api = MagicMock()
         mock_api.series.return_value = None
 
-        assert get_series_details(mock_api, 9999) is None
+        assert get_series_details(_client(mock_api), 9999) is None
 
 
 class TestGetSeries:
@@ -722,7 +737,7 @@ class TestGetSeries:
         model = make_mock_series(id=100, cv_id=12345)
         mock_api.series.return_value = model
 
-        assert get_series(mock_api, 100) is model
+        assert get_series(_client(mock_api), 100) is model
         mock_api.series.assert_called_once_with(100)
 
     def test_missing_api_or_id(self):
@@ -732,7 +747,7 @@ class TestGetSeries:
         assert get_series(MagicMock(), None) is None
 
     def test_waits_and_retries_on_rate_limit(self):
-        # A transient RateLimitError must be retried (via _api_call), not raised,
+        # A transient RateLimitError must be retried by the policy, not raised,
         # so bulk callers don't error out mid-scan.
         from models.metron import get_series
         from mokkari.exceptions import RateLimitError
@@ -742,7 +757,7 @@ class TestGetSeries:
         mock_api.series.side_effect = [RateLimitError("rate limited", retry_after=0), model]
 
         with patch("models.metron.time.sleep"):
-            result = get_series(mock_api, 100)
+            result = get_series(_client(mock_api), 100)
         assert result is model
         assert mock_api.series.call_count == 2
 
@@ -758,7 +773,7 @@ class TestGetIssueMetadata:
         full_issue = make_mock_issue(id=500)
         mock_api.issue.return_value = full_issue
 
-        result = get_issue_metadata(mock_api, 100, "1")
+        result = get_issue_metadata(_client(mock_api), 100, "1")
         assert result is not None
         mock_api.issues_list.assert_called_once()
         mock_api.issue.assert_called_once_with(500)
@@ -769,7 +784,7 @@ class TestGetIssueMetadata:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = []
 
-        assert get_issue_metadata(mock_api, 100, "999") is None
+        assert get_issue_metadata(_client(mock_api), 100, "999") is None
 
 
 class TestGetAllIssuesForSeries:
@@ -780,7 +795,7 @@ class TestGetAllIssuesForSeries:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = [MagicMock(id=1), MagicMock(id=2)]
 
-        result = get_all_issues_for_series(mock_api, 100)
+        result = get_all_issues_for_series(_client(mock_api), 100)
         assert len(result) == 2
 
     def test_empty_series(self):
@@ -789,7 +804,7 @@ class TestGetAllIssuesForSeries:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = []
 
-        assert get_all_issues_for_series(mock_api, 100) == []
+        assert get_all_issues_for_series(_client(mock_api), 100) == []
 
 
 class TestMapToComicinfo:
@@ -1078,7 +1093,7 @@ def _counting_limiter(burst_period=0.06):
 
 
 class TestPerSendPacing:
-    """#703: CLU took one slot per ``_api_call`` while mokkari followed every
+    """#703: CLU took one slot per guarded call while mokkari followed every
     ``next`` link inside it, so one list call sent dozens of unpaced pages.
     Pacing now lives on the session and runs once per HTTP send."""
 
@@ -1092,7 +1107,6 @@ class TestPerSendPacing:
 
     def test_every_page_of_a_list_takes_a_slot(self):
         import requests
-        from models.metron import _api_call
 
         limiter = _counting_limiter()
         session = self._real_session(limiter)
@@ -1103,7 +1117,7 @@ class TestPerSendPacing:
         ]
 
         with patch.object(requests.Session, "request", side_effect=pages) as send:
-            result = _api_call(lambda: session.publishers_list({}), "all publishers", default=[])
+            result = _call(lambda: session.publishers_list({}), "all publishers", default=[])
 
         assert [p.id for p in result] == [1, 2, 3]
         assert send.call_count == 3
@@ -1113,7 +1127,6 @@ class TestPerSendPacing:
         """The two retry layers used to stack: mokkari retried the page, then
         ``_handle_rate_limit`` slept and re-ran the list from page 1."""
         import requests
-        from models.metron import _api_call
 
         limiter = _counting_limiter()
         session = self._real_session(limiter)
@@ -1126,7 +1139,7 @@ class TestPerSendPacing:
 
         with patch.object(requests.Session, "request", side_effect=pages) as send, \
                 patch("models.metron.time.sleep") as sleep:
-            result = _api_call(fn, "all publishers", default=[])
+            result = _call(fn, "all publishers", default=[])
 
         assert [p.id for p in result] == [1, 2]
         assert fn.call_count == 1
@@ -1189,43 +1202,42 @@ class TestRateLimitClassification:
     def test_a_refusal_from_the_limiter_latches_the_daily_window(self):
         """mokkari raises the base RateLimitError only for a request it never
         sent: its limiter refusing because the daily window is spent."""
-        from models.metron import _api_call, daily_limit_reached
+        from models.metron import daily_limit_reached
 
         fn = MagicMock(side_effect=RateLimitError("daily limit", retry_after=30))
         with patch("models.metron.time.sleep") as sleep:
-            assert _api_call(fn, "test context", default="fallback") == "fallback"
+            assert _call(fn, "test context", default="fallback") == "fallback"
         assert fn.call_count == 1
         sleep.assert_not_called()
         assert daily_limit_reached() is True
 
         later = MagicMock(return_value="ok")
-        assert _api_call(later, "later", default="fallback") == "fallback"
+        assert _call(later, "later", default="fallback") == "fallback"
         later.assert_not_called()
 
     def test_a_429_from_metron_retries_without_sleeping(self):
         """The session's limiter already blocks every thread for Retry-After;
         sleeping in CLU too is how the retry layers stacked."""
-        from models.metron import _api_call, daily_limit_reached
+        from models.metron import daily_limit_reached
 
         class Server429(RateLimitError):
             """Stands in for mokkari's private ``_ServerRateLimitError``."""
 
         fn = MagicMock(side_effect=[Server429("429", retry_after=10), "ok"])
         with patch("models.metron.time.sleep") as sleep:
-            assert _api_call(fn, "test context") == "ok"
+            assert _call(fn, "test context") == "ok"
         assert fn.call_count == 2
         sleep.assert_not_called()
         assert daily_limit_reached() is False
 
     def test_a_429_that_keeps_coming_gives_up_after_three_attempts(self):
-        from models.metron import _api_call
 
         class Server429(RateLimitError):
             pass
 
         fn = MagicMock(side_effect=Server429("429", retry_after=10))
         with patch("models.metron.time.sleep"):
-            assert _api_call(fn, "test context", default="fallback") == "fallback"
+            assert _call(fn, "test context", default="fallback") == "fallback"
         assert fn.call_count == 3
 
 
@@ -1271,7 +1283,7 @@ class TestDailyQuota:
         """The regression test for the reported log: a spent daily quota was
         surfacing as a 59.5s wait retried 3x per series, for every series in a
         sweep. It must now short-circuit."""
-        from models.metron import _api_call, _observe_sustained
+        from models.metron import _observe_sustained
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1290,14 +1302,14 @@ class TestDailyQuota:
             return "ok"
 
         with patch("models.metron.time.sleep") as mock_sleep:
-            result = _api_call(fn, "test context", default="fallback")
+            result = _call(fn, "test context", default="fallback")
 
         assert result == "fallback"
         assert called["n"] == 0
         mock_sleep.assert_not_called()
 
     def test_calls_resume_once_the_daily_window_has_reset(self):
-        from models.metron import _api_call, _observe_sustained, daily_limit_reached
+        from models.metron import _observe_sustained, daily_limit_reached
 
         session = MagicMock()
         session.rate_limit_status = _status(
@@ -1313,13 +1325,12 @@ class TestDailyQuota:
         time.sleep(0.1)
 
         assert daily_limit_reached() is False
-        assert _api_call(lambda: "ok", "test context") == "ok"
+        assert _call(lambda: "ok", "test context") == "ok"
 
     def test_sub_threshold_retry_after_gives_up_on_the_first_attempt(self):
         """mokkari reports retry_after as max(burst_wait, sustained_wait), so a
         spent daily quota can arrive as 59.5s -- just under the old 60s 'this is
         the daily cap' threshold. The headers say which window it really is."""
-        from models.metron import _api_call
         import models.metron as metron
 
         session = MagicMock()
@@ -1331,7 +1342,7 @@ class TestDailyQuota:
             )
         )
         with metron._SESSION_CACHE_LOCK:
-            metron._SESSION_CACHE[("u", "p")] = session
+            metron._SESSION_CACHE[("u", "p")] = _client(session)
 
         calls = {"n": 0}
 
@@ -1340,7 +1351,7 @@ class TestDailyQuota:
             raise RateLimitError("slow down", retry_after=59.5)
 
         with patch("models.metron.time.sleep") as mock_sleep:
-            result = _api_call(fn, "test context", default="fallback")
+            result = _call(fn, "test context", default="fallback")
 
         assert result == "fallback"
         assert calls["n"] == 1  # not 3
@@ -1370,7 +1381,7 @@ class TestDailyQuota:
         assert daily_limit_reached() is False
 
     def test_successful_call_observes_the_headers(self):
-        from models.metron import _api_call, daily_limit_reached
+        from models.metron import daily_limit_reached
         import models.metron as metron
 
         session = MagicMock()
@@ -1382,9 +1393,9 @@ class TestDailyQuota:
             )
         )
         with metron._SESSION_CACHE_LOCK:
-            metron._SESSION_CACHE[("u", "p")] = session
+            metron._SESSION_CACHE[("u", "p")] = _client(session)
 
-        assert _api_call(lambda: "ok", "test context") == "ok"
+        assert _call(lambda: "ok", "test context") == "ok"
 
         assert daily_limit_reached() is True
 
@@ -1404,7 +1415,7 @@ class TestGetReleases:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = [MagicMock(), MagicMock()]
 
-        result = get_releases(mock_api, "2024-01-01", "2024-01-07")
+        result = get_releases(_client(mock_api), "2024-01-01", "2024-01-07")
         assert len(result) == 2
 
     def test_no_api(self):
@@ -1419,7 +1430,7 @@ class TestGetReleases:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = []
 
-        get_releases(mock_api, "2024-01-01", "2024-01-07", publisher_name="Marvel")
+        get_releases(_client(mock_api), "2024-01-01", "2024-01-07", publisher_name="Marvel")
 
         params = mock_api.issues_list.call_args[0][0]
         assert params["publisher_name"] == "Marvel"
@@ -1432,7 +1443,7 @@ class TestGetReleases:
         mock_api = MagicMock()
         mock_api.issues_list.return_value = []
 
-        get_releases(mock_api, "2024-01-01", "2024-01-07")
+        get_releases(_client(mock_api), "2024-01-01", "2024-01-07")
 
         assert "publisher_name" not in mock_api.issues_list.call_args[0][0]
 
@@ -1669,28 +1680,28 @@ class TestAuthLockout:
     def test_a_401_stops_every_later_call(self, prefs):
         """The regression test for the bug report: after one rejection, nothing
         else reaches Metron."""
-        from models.metron import _api_call, auth_blocked
+        from models.metron import auth_blocked
 
         first = MagicMock(side_effect=_http_api_error(401, "Invalid username/password."))
-        assert _api_call(first, "first call", default="fallback") == "fallback"
+        assert _call(first, "first call", default="fallback") == "fallback"
         assert auth_blocked() is True
 
         second = MagicMock(return_value="should not happen")
-        assert _api_call(second, "second call", default="fallback") == "fallback"
+        assert _call(second, "second call", default="fallback") == "fallback"
         second.assert_not_called()
 
     def test_a_404_does_not_latch(self, prefs):
-        from models.metron import _api_call, auth_blocked
+        from models.metron import auth_blocked
 
-        assert _api_call(
+        assert _call(
             MagicMock(side_effect=_http_api_error(404)), "missing", default=None
         ) is None
         assert auth_blocked() is False
 
     def test_the_reason_is_kept_for_the_settings_page(self, prefs):
-        from models.metron import _api_call, auth_block_state
+        from models.metron import auth_block_state
 
-        _api_call(
+        _call(
             MagicMock(side_effect=_http_api_error(401, '{"detail": "Invalid token."}')),
             "fetching a series",
         )
@@ -1703,9 +1714,9 @@ class TestAuthLockout:
     def test_it_is_persisted_so_a_restart_does_not_resume_hammering(self, prefs):
         """The container that crash-loops with bad credentials is exactly the
         case in the bug report, so the flag has to outlive the process."""
-        from models.metron import _api_call, auth_blocked, PREF_AUTH_BLOCKED
+        from models.metron import auth_blocked, PREF_AUTH_BLOCKED
 
-        _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+        _call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
         assert prefs.get(PREF_AUTH_BLOCKED) is True
 
         # Simulate a restart: the memo is gone, the preference store is not.
@@ -1714,23 +1725,22 @@ class TestAuthLockout:
         assert auth_blocked() is True
 
     def test_clearing_re_enables_metron(self, prefs):
-        from models.metron import _api_call, auth_blocked, clear_auth_block
+        from models.metron import auth_blocked, clear_auth_block
 
-        _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+        _call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
         assert auth_blocked() is True
 
         clear_auth_block()
         assert auth_blocked() is False
 
         called = MagicMock(return_value="ok")
-        assert _api_call(called, "after the fix") == "ok"
+        assert _call(called, "after the fix") == "ok"
         called.assert_called_once()
 
     def test_a_rejected_credential_marks_the_provider_invalid(self, prefs):
-        from models.metron import _api_call
 
         with patch("core.database.update_provider_validity") as mark:
-            _api_call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
+            _call(MagicMock(side_effect=_http_api_error(401)), "fetching a series")
         mark.assert_called_once_with("metron", False)
 
     def test_get_api_refuses_to_hand_out_a_client(self, prefs):
@@ -1752,20 +1762,19 @@ class TestAuthLockout:
             session_class.return_value = MagicMock()
             assert get_api(api_token="tok", ignore_auth_lock=True) is not None
 
-    def test_api_call_may_be_told_to_run_while_blocked(self, prefs):
-        from models.metron import _api_call, latch_auth_failure
+    def test_a_call_may_be_told_to_run_while_blocked(self, prefs):
+        from models.metron import latch_auth_failure
 
         latch_auth_failure(401, "Invalid token.")
         called = MagicMock(return_value="ok")
-        assert _api_call(called, "testing", ignore_auth_lock=True) == "ok"
+        assert _call(called, "testing", ignore_auth_lock=True) == "ok"
         called.assert_called_once()
 
-    def test_api_call_can_re_raise_an_auth_error_for_the_test_button(self, prefs):
+    def test_a_call_can_re_raise_an_auth_error_for_the_test_button(self, prefs):
         from mokkari.exceptions import ApiError
-        from models.metron import _api_call
 
         with pytest.raises(ApiError):
-            _api_call(
+            _call(
                 MagicMock(side_effect=_http_api_error(401)),
                 "testing",
                 ignore_auth_lock=True,
@@ -1832,18 +1841,18 @@ class TestAuthLockout:
         """Routes keep their own "Metron is unavailable" 503."""
         import requests
         from mokkari.exceptions import ApiError
-        from models.metron import _api_call, auth_blocked
+        from models.metron import auth_blocked
 
         error = ApiError("Connection error")
         error.__cause__ = requests.exceptions.ConnectionError("boom")
         with pytest.raises(ApiError):
-            _api_call(MagicMock(side_effect=error), "testing", raise_api_errors=True)
+            _call(MagicMock(side_effect=error), "testing", raise_api_errors=True)
         assert auth_blocked() is False
 
     def test_raise_api_errors_still_latches_a_rejected_credential(self, prefs):
-        from models.metron import _api_call, auth_blocked
+        from models.metron import auth_blocked
 
-        result = _api_call(
+        result = _call(
             MagicMock(side_effect=_http_api_error(401)),
             "testing",
             default="fallback",
@@ -1929,22 +1938,21 @@ class TestTokenOnlyAuth:
         assert "username" not in params and "passwd" not in params
 
 
-class TestFetchArcsPageAuth:
-    """fetch_arcs_page builds its own HTTP request to escape mokkari's
+class TestArcsPageAuth:
+    """MetronClient.arcs_page builds its own HTTP request to escape mokkari's
     auto-pagination, so it has to carry the auth rules by hand."""
 
     def test_the_token_is_sent_as_a_bearer_header(self, prefs):
         """mokkari 5 keeps the token out of ``api.header``; without adding it
         here every arc page is a 401, which latches the lockout for all of
         Metron."""
-        from models.metron import fetch_arcs_page
 
         api = SimpleNamespace(api_token="tok-123", header={"User-Agent": "CLU"})
         response = MagicMock(status_code=200)
         response.json.return_value = {"results": [], "next": None, "count": 0}
 
         with patch("models.metron.requests_lib.get", return_value=response) as get:
-            fetch_arcs_page(api, page=1)
+            _client(api).arcs_page(page=1)
 
         headers = get.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer tok-123"
@@ -1962,20 +1970,20 @@ class TestFetchArcsPageAuth:
         assert session.api_token == "tok-123"
 
     def test_a_401_latches_the_lockout_and_stops_retrying(self, prefs):
-        from models.metron import auth_blocked, fetch_arcs_page
+        from models.metron import auth_blocked
 
         api = SimpleNamespace(api_token="tok-123", header={})
         response = MagicMock(status_code=401, text='{"detail": "Invalid token."}')
 
         with patch("models.metron.requests_lib.get", return_value=response) as get:
-            result = fetch_arcs_page(api, page=1)
+            result = _client(api).arcs_page(page=1)
 
         assert get.call_count == 1
         assert result["results"] == []
         assert auth_blocked() is True
 
 
-class TestFetchArcsPagePacing:
+class TestArcsPagePacing:
     """The hand-built arc request never passes through mokkari's send, so it
     takes the session's limiter itself -- the same one every other Metron
     request takes."""
@@ -1991,24 +1999,22 @@ class TestFetchArcsPagePacing:
         return response
 
     def test_takes_and_releases_the_session_limiter(self):
-        from models.metron import fetch_arcs_page
 
         api = self._api()
         with patch("models.metron.requests_lib.get", return_value=self._ok()):
-            result = fetch_arcs_page(api, page=1)
+            result = _client(api).arcs_page(page=1)
 
         assert result["results"] == [{"id": 1}]
         api.rate_limiter.acquire.assert_called_once_with("S")
         api.rate_limiter.release.assert_called_once()
 
     def test_a_429_backs_off_every_sender_and_retries_without_sleeping(self):
-        from models.metron import fetch_arcs_page
 
         api = self._api()
         rejected = MagicMock(status_code=429, headers={"Retry-After": "5"})
         with patch("models.metron.requests_lib.get", side_effect=[rejected, self._ok()]) as get, \
                 patch("models.metron.time.sleep") as sleep:
-            result = fetch_arcs_page(api, page=1)
+            result = _client(api).arcs_page(page=1)
 
         assert result["results"] == [{"id": 1}]
         assert get.call_count == 2
@@ -2017,24 +2023,24 @@ class TestFetchArcsPagePacing:
         sleep.assert_not_called()
 
     def test_a_refusal_from_the_limiter_latches_the_daily_window(self):
-        from models.metron import daily_limit_reached, fetch_arcs_page
+        from models.metron import daily_limit_reached
 
         api = self._api()
         api.rate_limiter.acquire.side_effect = RateLimitError("daily", retry_after=3600)
         with patch("models.metron.requests_lib.get") as get:
-            result = fetch_arcs_page(api, page=1)
+            result = _client(api).arcs_page(page=1)
 
         get.assert_not_called()
         assert result["results"] == []
         assert daily_limit_reached() is True
 
     def test_a_daily_429_latches_instead_of_retrying(self):
-        from models.metron import daily_limit_reached, fetch_arcs_page
+        from models.metron import daily_limit_reached
 
         api = self._api()
         rejected = MagicMock(status_code=429, headers={"Retry-After": "7200"})
         with patch("models.metron.requests_lib.get", return_value=rejected) as get:
-            fetch_arcs_page(api, page=1)
+            _client(api).arcs_page(page=1)
 
         assert get.call_count == 1
         assert daily_limit_reached() is True
@@ -2052,7 +2058,7 @@ class TestListReadingListsModifiedSince:
 
         api = MagicMock()
         api.reading_lists_list.return_value = []
-        list_reading_lists_modified_since(api, "2026-05-09")
+        list_reading_lists_modified_since(_client(api), "2026-05-09")
 
         assert api.reading_lists_list.call_args[0][0] == {"modified_gt": "2026-05-09"}
 
@@ -2064,7 +2070,7 @@ class TestListReadingListsModifiedSince:
             SimpleNamespace(id=10, modified="2026-05-10 08:00:00+00:00"),
             SimpleNamespace(id=11, modified="2026-05-11 08:00:00+00:00"),
         ]
-        assert list_reading_lists_modified_since(api, "2026-05-09") == {
+        assert list_reading_lists_modified_since(_client(api), "2026-05-09") == {
             10: "2026-05-10 08:00:00+00:00",
             11: "2026-05-11 08:00:00+00:00",
         }
@@ -2074,16 +2080,16 @@ class TestListReadingListsModifiedSince:
 
         api = MagicMock()
         api.reading_lists_list.return_value = []
-        assert list_reading_lists_modified_since(api, "2026-05-09") == {}
+        assert list_reading_lists_modified_since(_client(api), "2026-05-09") == {}
 
     def test_none_when_the_call_fails(self):
-        """An ApiError comes back through _api_call as the default, and the
+        """An ApiError comes back through the client as the default, and the
         default here is None -- a sweep must not read that as evidence."""
         from models.metron import list_reading_lists_modified_since
 
         api = MagicMock()
         api.reading_lists_list.side_effect = ApiError("nope")
-        assert list_reading_lists_modified_since(api, "2026-05-09") is None
+        assert list_reading_lists_modified_since(_client(api), "2026-05-09") is None
 
     def test_none_without_an_api_or_a_date(self):
         from models.metron import list_reading_lists_modified_since
@@ -2104,5 +2110,89 @@ class TestSearchSeriesListSeparators(TestSearchSeriesList):
             [target] if params["name"] == "Nova: Return of the Rings" else []
         )
 
-        results = search_series_list(mock_api, "Nova - Return of the Rings", 2026)
+        results = search_series_list(_client(mock_api), "Nova - Return of the Rings", 2026)
         assert [r["id"] for r in results] == [16921]
+
+
+class TestMetronClient:
+    """#704 PR 4b: callers use mokkari's own method names on a client that
+    runs every one of them under the call policy."""
+
+    @patch("models.metron.MokkariSession")
+    def test_get_api_hands_out_a_client_over_the_cached_session(self, session_class):
+        from models.metron import MetronClient, get_api
+
+        session = MagicMock()
+        session_class.return_value = session
+        api = get_api(api_token="tok")
+
+        assert isinstance(api, MetronClient)
+        assert api._library is session
+        assert get_api(api_token="tok") is api
+
+    def test_a_method_runs_under_the_policy(self):
+        """A paused Metron answers the default without asking the session."""
+        import models.metron as metron
+
+        session = MagicMock()
+        metron._daily.latch_for(3600, "test")
+
+        assert _client(session).using(default=[]).series_list({"name": "x"}) == []
+        session.series_list.assert_not_called()
+
+    def test_writes_clu_never_sends_are_not_reachable(self):
+        with pytest.raises(AttributeError):
+            _client(MagicMock()).series_post({"name": "x"})
+
+    def test_scrobble_reports_success_and_failure(self):
+        from models.metron import scrobble_issue
+
+        session = MagicMock()
+        session.collection_scrobble.return_value = SimpleNamespace(id=1)
+        assert scrobble_issue(_client(session), 5, "2026-01-01T00:00:00") is True
+
+        session.collection_scrobble.side_effect = ApiError("nope")
+        assert scrobble_issue(_client(session), 5, "2026-01-01T00:00:00") is False
+
+
+class TestAFailedRequestIsNotANotFound:
+    """The multi-request helpers were split so each request is guarded on its
+    own (#704 PR 4b). A failed request comes back as None, and must not be
+    reported as Metron not carrying the series."""
+
+    def test_cv_id_lookup(self):
+        from models.metron import get_series_id_by_comicvine_id
+
+        session = MagicMock()
+        session.series_list.side_effect = ApiError("boom")
+        with patch("models.metron.app_logger") as log:
+            assert get_series_id_by_comicvine_id(_client(session), 12345) is None
+        assert not any(
+            "No Metron series found" in str(c) for c in log.info.call_args_list
+        )
+
+    def test_series_search(self):
+        from models.metron import search_series_by_name
+
+        session = MagicMock()
+        session.series_list.side_effect = ApiError("boom")
+        with patch("models.metron.app_logger") as log:
+            assert search_series_by_name(_client(session), "Batman") is None
+        assert not any(
+            "No Metron series found" in str(c) for c in log.info.call_args_list
+        )
+
+    def test_a_failed_spelling_moves_on_to_the_next(self):
+        """Each spelling is its own request: one failing must not abandon the
+        rest, as it did when all of them ran inside one guarded call."""
+        from models.metron import search_series_list
+
+        target = MagicMock(id=16921, image=None, desc="", issue_count=3, year_began=2026)
+        target.name = "Nova: Return of the Rings"
+        session = MagicMock()
+        session.series_list.side_effect = [ApiError("boom"), [target]]
+
+        results = search_series_list(_client(session), "Nova - Return of the Rings")
+
+        assert [r["id"] for r in results] == [16921]
+        assert session.series_list.call_count == 2

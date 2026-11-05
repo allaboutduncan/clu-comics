@@ -112,13 +112,11 @@ class MetronProvider(BaseProvider):
             # A lightweight, paced request: publishers_list is the cheapest
             # authenticated endpoint. Paced because the burst limiter is
             # process-wide and a Test click during a sync must not jump it.
-            result = metron_module._api_call(
-                lambda: api.publishers_list({"name": "Marvel"}),
-                "testing the Metron connection",
-                default=None,
+            result = api.using(
+                context="testing the Metron connection",
                 ignore_auth_lock=True,
                 raise_auth_errors=True,
-            )
+            ).publishers_list({"name": "Marvel"})
             if result is None:
                 self.last_error = "Metron did not return a result"
                 return False
@@ -270,14 +268,7 @@ class MetronProvider(BaseProvider):
             if not api:
                 return None
 
-            # Guarded: without _api_call this raw mokkari call would ignore the
-            # auth lockout and the daily-quota latch.
-            from models import metron as metron_module
-
-            issue = metron_module._api_call(
-                lambda: api.issue(int(issue_id)),
-                f"fetching issue {issue_id}",
-            )
+            issue = api.using(context=f"fetching issue {issue_id}").issue(int(issue_id))
             if not issue:
                 return None
 

@@ -133,13 +133,9 @@ def _backfill_cv_id(series, api):
     if not api or not metron_id:
         return None
     try:
-        # Lazy: models.metron is heavy, and this module is imported by tools
-        # that never reach this branch.
-        from models import metron
-
-        fresh = metron._api_call(
-            lambda: api.series(metron_id), f"series.json cv_id backfill for {metron_id}"
-        )
+        fresh = api.using(
+            context=f"series.json cv_id backfill for {metron_id}"
+        ).series(metron_id)
         return _get(fresh, "cv_id") if fresh is not None else None
     except Exception as e:
         app_logger.warning(f"series.json cv_id backfill failed for {metron_id}: {e}")

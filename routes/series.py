@@ -897,11 +897,9 @@ def issue_view(slug):
         return redirect(url_for(".releases"))
 
     try:
-        full_issue = metron._api_call(
-            lambda: api.issue(issue_id),
-            f"resolving issue {issue_id}",
-            raise_api_errors=True,
-        )
+        full_issue = api.using(
+            raise_api_errors=True, context=f"resolving issue {issue_id}"
+        ).issue(issue_id)
         if full_issue is None:
             flash(metron.paused_reason() or "Issue not found on Metron", "error")
             return redirect(url_for(".releases"))
@@ -1005,11 +1003,9 @@ def series_view(slug):
 
         else:
             app_logger.info(f"Fetching series details for series_id: {series_id}")
-            series_info = metron._api_call(
-                lambda: api.series(series_id),
-                f"fetching series {series_id}",
-                raise_api_errors=True,
-            )
+            series_info = api.using(
+                raise_api_errors=True, context=f"fetching series {series_id}"
+            ).series(series_id)
             if series_info is None:
                 flash(metron.paused_reason() or "Series not found on Metron", "error")
                 return redirect(url_for(".releases"))
@@ -1234,7 +1230,7 @@ def series_view(slug):
 
 
 def _metron_skipped_response():
-    """503 for a Metron call ``_api_call`` skipped or gave up on.
+    """503 for a Metron call the call policy skipped or gave up on.
 
     With ``raise_api_errors=True`` a ``None`` result means Metron is paused
     (rejected credentials, spent daily quota) or still rate limiting after the
@@ -1275,11 +1271,9 @@ def api_search_series():
             except (TypeError, ValueError):
                 pass  # ignore non-numeric publisher filter
 
-        results = metron._api_call(
-            lambda: api.series_list(filters),
-            f"searching series '{query}'",
-            raise_api_errors=True,
-        )
+        results = api.using(
+            raise_api_errors=True, context=f"searching series '{query}'"
+        ).series_list(filters)
         if results is None:
             return _metron_skipped_response()
 
@@ -1649,11 +1643,9 @@ def check_series_collection(series_id):
                     {"error": "Metron API not configured and no cached data"}
                 ), 500
 
-            series_info = metron._api_call(
-                lambda: api.series(series_id),
-                f"fetching series {series_id}",
-                raise_api_errors=True,
-            )
+            series_info = api.using(
+                raise_api_errors=True, context=f"fetching series {series_id}"
+            ).series(series_id)
             if series_info is None:
                 return _metron_skipped_response()
             all_issues_result = metron.get_all_issues_for_series(api, series_id)
@@ -1948,11 +1940,9 @@ def sync_series(series_id):
         # which serves stale bodies until the process restarts.
         metron.purge_series_cache(series_id, api=api)
 
-        series_info = metron._api_call(
-            lambda: api.series(series_id),
-            f"syncing series {series_id}",
-            raise_api_errors=True,
-        )
+        series_info = api.using(
+            raise_api_errors=True, context=f"syncing series {series_id}"
+        ).series(series_id)
         if series_info is None and metron.paused_reason():
             return _metron_skipped_response()
         if not series_info:
@@ -2029,10 +2019,9 @@ def sync_all_series():
         for series in series_to_sync:
             series_id = series["id"]
             try:
-                series_info = metron._api_call(
-                    lambda sid=series_id: api.series(sid),
-                    f"syncing series {series_id}",
-                )
+                series_info = api.using(
+                    context=f"syncing series {series_id}"
+                ).series(series_id)
                 if not series_info:
                     results.append(
                         {"series_id": series_id, "success": False, "error": "Not found"}
@@ -2480,11 +2469,9 @@ def api_search_publishers():
                 }
             ), 400
 
-        results = metron._api_call(
-            lambda: api.publishers_list({"name": query}),
-            f"searching publishers '{query}'",
-            raise_api_errors=True,
-        )
+        results = api.using(
+            raise_api_errors=True, context=f"searching publishers '{query}'"
+        ).publishers_list({"name": query})
         if results is None:
             return _metron_skipped_response()
 
@@ -2537,11 +2524,9 @@ def api_sync_publishers():
 
         # Empty filters page through every publisher on Metron; each page is
         # paced by the session's limiter, not by this one call.
-        results = metron._api_call(
-            lambda: api.publishers_list({}),
-            "syncing all publishers",
-            raise_api_errors=True,
-        )
+        results = api.using(
+            raise_api_errors=True, context="syncing all publishers"
+        ).publishers_list({})
         if results is None:
             return _metron_skipped_response()
 

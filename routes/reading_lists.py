@@ -58,7 +58,6 @@ from models.metron import (
     fetch_reading_list_detail,
     fetch_reading_list_items,
     fetch_arcs,
-    fetch_arcs_page,
     fetch_arc_detail,
     fetch_arc_issues,
 )
@@ -1321,7 +1320,7 @@ def metron_browse_arcs():
     page = request.args.get('page', 1, type=int)
     params = {"name": search} if search else None
 
-    result = fetch_arcs_page(api, params, page=page)
+    result = api.arcs_page(params, page=page)
     return jsonify({'success': True, **result})
 
 

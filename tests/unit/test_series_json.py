@@ -176,20 +176,22 @@ class TestBuildMetadata:
         assert meta["status"] == "Continuing"
 
     def test_backfills_cv_id_from_api_when_missing(self):
+        from models.metron import MetronClient
         from models.series_json import build_metadata
         series = self._dict_series(cv_id=None)
         api = MagicMock()
         api.series.return_value = MagicMock(cv_id=77777)
-        meta = build_metadata(series, api=api)
+        meta = build_metadata(series, api=MetronClient(api))
         assert meta["comicid"] == "77777"
         api.series.assert_called_once_with(12345)
 
     def test_api_failure_during_backfill_is_silent(self):
+        from models.metron import MetronClient
         from models.series_json import build_metadata
         series = self._dict_series(cv_id=None)
         api = MagicMock()
         api.series.side_effect = RuntimeError("network down")
-        meta = build_metadata(series, api=api)
+        meta = build_metadata(series, api=MetronClient(api))
         assert meta["comicid"] == ""
 
 

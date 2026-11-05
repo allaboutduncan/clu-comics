@@ -19,7 +19,7 @@ provider-local limiter or retry loop.**
 ### Pace where each HTTP request is sent, never once per call
 
 One logical call can be many requests. mokkari and simyan follow every `next`
-link inside one list call, so CLU taking one limiter slot per `_api_call` let a
+link inside one list call, so CLU taking one limiter slot per call let a
 long Metron series send dozens of unpaced pages and draw a stream of 429s
 (#703). The rule follows from that:
 
@@ -122,8 +122,9 @@ not only Metron's. It also drops the shared GCD client.
 A provider whose calls go through a client library (simyan, mokkari) gives
 callers a `LibraryClient` subclass, not the library object. Every method has
 the library's own name and runs under the provider's `GuardedClient`:
-`cv.get_volume(4050)`, `cv.list_issues(params=...)`. ComicVine uses it now
-(#704 PR 4a). Metron moves onto it in 4b, which retires `_api_call`.
+`api.series(5)`, `cv.get_volume(4050)`. ComicVine (#704 PR 4a) and Metron
+(4b) both use it; the lambda shims `_cv_call_with_retry` and `_api_call` are
+gone.
 
 - **The methods are generated from `READ_METHODS`** when the subclass is
   defined, and there is **no `__getattr__`**. A name not on the list is an
@@ -137,8 +138,14 @@ the library's own name and runs under the provider's `GuardedClient`:
   converted from a shim pass their old context string, so log lines don't
   change.
 - **Each provider keeps its failure contract**, via `_run`. The base returns
-  `options.default`. `ComicVineClient` overrides `_run` to **raise**, as its
-  callers always expected.
+  `options.default`, which is Metron's contract (`MetronClient`).
+  `ComicVineClient` overrides `_run` to **raise**, as its callers always
+  expected.
+- **Guard one request per method call.** A helper that makes several requests
+  calls the client once per request and post-processes outside it, so a
+  failed request retries on its own. It must then tell a failed request
+  (`None`) from an empty answer (`[]`): "not found on Metron" is logged only
+  for the second.
 - **`bool(client)` is always True**, so `if not api:` still means "no client
   was issued".
 - **Only the owner module touches `client._library`** (the ratchet's
@@ -189,6 +196,25 @@ picks `search_<x>s` or the legacy `search`.
 `GuardedClient` changed for this: `_gate()` now runs inside the `try`, so a
 refusal is classified, and there is a `_retry_wait(wait, attempt)` hook.
 
+### Metron (`models/metron.py`)
+
+`_MetronPolicy(GuardedClient)` has `AuthLockout("metron")` and
+`QuotaLatch("Metron", "daily")`. `get_api()` / `get_flask_api()` return a
+`MetronClient`, cached per token in `_SESSION_CACHE`, and refuse to hand one
+out while the lockout is latched. Its methods return the result or the
+default. See `.claude/rules/metadata.md` for the lockout and pacing details.
+
+- **`READ_METHODS` is mokkari's reads plus `collection_scrobble`**, the one
+  write CLU sends. The other writes (`*_post`, `*_patch`, `collection_add`...)
+  are deliberately absent; the ratchet lists them in `not_reads`, so a new
+  mokkari method fails until someone classifies it.
+- **`api.arcs_page(params, page)`** is the one request mokkari does not send.
+  It builds its own request to escape auto-pagination, so it takes the
+  session's limiter, adds the Bearer token, and latches the lockout and the
+  daily quota itself.
+- **The purge helpers take a client** (`purge_series_cache(id, api=api)`) and
+  purge its session's cache; with none they purge every cached session.
+
 ### `AuthLockout(provider, display_name)`
 
 This is the 401/403 brake moved out of Metron unchanged. It is persisted to
@@ -215,16 +241,17 @@ each direction, never per call.
    with `client_class` and `library_class`. The ratchet then asserts:
    - only the owner module builds the library object or reaches `_library`;
    - the names in `retired` appear nowhere;
-   - `READ_METHODS` covers every read the installed library has.
+   - `READ_METHODS` covers every public method the installed library has,
+     except the writes listed in the row's `not_reads`.
 
-   Metron's row still uses the older lambda-shape check (`guards`) until #704
-   PR 4b. On `main` that check caught the eight raw Metron calls that #703
-   fixed. A plain-`requests` provider goes in `HTTP_PROVIDER_MODULES` instead.
-   Those modules may not import `requests` or build a `Session`.
+   It replaced a lambda-shape check that caught the eight raw Metron calls
+   #703 fixed; with no shim left there is no lambda to check. A
+   plain-`requests` provider goes in `HTTP_PROVIDER_MODULES` instead. Those
+   modules may not import `requests` or build a `Session`.
 
 Tests: `tests/unit/test_provider_client.py` (the policy, against a fake
 client), `tests/unit/test_library_client.py` (generated methods, `using()`,
 automatic context), `tests/unit/test_provider_calls_guarded.py` (the ratchet), and
-`TestPerSendPacing` / `TestRateLimitClassification` / `TestFetchArcsPagePacing`
-in `tests/mocked/test_metron_model.py`. `TestPerSendPacing` drives a real
+`TestPerSendPacing` / `TestRateLimitClassification` / `TestArcsPagePacing` /
+`TestAFailedRequestIsNotANotFound` in `tests/mocked/test_metron_model.py`. `TestPerSendPacing` drives a real
 mokkari Session through a paginated list and counts one limiter slot per page.

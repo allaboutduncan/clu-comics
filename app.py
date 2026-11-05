@@ -649,14 +649,13 @@ def scheduled_series_sync():
             local_issue_count = series.get("issue_count", 0)
             try:
                 # 1. Fetch BASIC series info (1 API call, with rate-limit handling)
-                series_info = metron._api_call(
-                    lambda: api.series(series_id),
-                    f"fetching series info for {series_id}",
-                )
-                # No sleep here: metron._api_call already paces every request
-                # through the shared sliding-window limiter, retuned from the
-                # rate-limit headers Metron returns. A fixed sleep on top just
-                # added dead time per series without adding protection.
+                series_info = api.using(
+                    context=f"fetching series info for {series_id}"
+                ).series(series_id)
+                # No sleep here: the session's limiter paces every request,
+                # retuned from the rate-limit headers Metron returns. A fixed
+                # sleep on top just added dead time per series without adding
+                # protection.
                 if not series_info:
                     fail_count += 1
                     continue
@@ -699,7 +698,7 @@ def scheduled_series_sync():
                 app_logger.info(f"Fetching updates for series {series_id}...")
                 all_issues_result = metron.get_all_issues_for_series(api, series_id)
                 all_issues = list(all_issues_result) if all_issues_result else []
-                # Paced by metron._api_call -- see the note above.
+                # Paced by the session's limiter -- see the note above.
 
                 # 4. Save and Cleanup
                 save_issues_bulk(all_issues, series_id)
