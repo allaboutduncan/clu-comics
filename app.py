@@ -3262,20 +3262,16 @@ from helpers.library import (
 
 
 def _is_nested_library_folder(folder_path):
-    """True if *folder_path* is at least two levels below its library root.
+    """True if *folder_path* is below its library root (never the root itself).
 
-    The auto-metadata hooks run on series folders (``<root>/Publisher/Series``),
-    never on a library root or a publisher folder directly under it.
+    This used to demand two levels (``<root>/Publisher/Series``), which made
+    every auto-metadata hook a silent no-op on a flat library whose series
+    folders sit directly under the root. What marks a series folder is its
+    cvinfo, which every hook requires next; a publisher folder has none.
     """
-    normalized = os.path.normpath(folder_path)
-    # Longest root first, so a library nested inside another is measured
-    # from its own root.
-    for root in sorted(get_library_roots(), key=len, reverse=True):
-        root_normalized = os.path.normpath(root)
-        if normalized.startswith(root_normalized + os.sep):
-            rel_path = os.path.relpath(normalized, root_normalized)
-            return "/" in rel_path.replace("\\", "/")
-    return False
+    from helpers.library import is_below_library_root
+
+    return is_below_library_root(folder_path)
 
 
 def log_file_if_in_data(file_path):
@@ -4907,7 +4903,7 @@ def api_on_the_stack():
 def auto_fetch_comicvine_metadata(destination_path):
     """
     Automatically fetch ComicVine metadata for moved files if conditions are met.
-    Only triggers for non-root /data directories that have a cvinfo file.
+    Only triggers for folders below a library root that have a cvinfo file.
 
     Returns:
         The final file path (renamed path if file was renamed, original path otherwise)
@@ -4935,8 +4931,7 @@ def auto_fetch_comicvine_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check: Is this a series folder inside a library? (at least 2 path
-        # components below the library root)
+        # Check: Is this folder below a library root (not the root itself)?
         if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping auto-metadata for root-level directory: {folder_path}"
@@ -4985,7 +4980,7 @@ def auto_fetch_comicvine_metadata(destination_path):
 def auto_fetch_metron_metadata(destination_path):
     """
     Automatically fetch Metron metadata for moved files if conditions are met.
-    Only triggers for non-root /data directories that have a cvinfo file.
+    Only triggers for folders below a library root that have a cvinfo file.
 
     Returns:
         The final file path (renamed path if file was renamed, original path otherwise)
@@ -5026,7 +5021,7 @@ def auto_fetch_metron_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check 3: Is this a series folder inside a library?
+        # Check 3: Is this folder below a library root (not the root itself)?
         if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping Metron metadata for root-level directory: {folder_path}"
@@ -5041,7 +5036,7 @@ def auto_fetch_metron_metadata(destination_path):
                 break
 
         if not cvinfo_path:
-            app_logger.debug(
+            app_logger.info(
                 f"No cvinfo file found in {folder_path}, skipping Metron metadata"
             )
             return destination_path
@@ -5055,7 +5050,10 @@ def auto_fetch_metron_metadata(destination_path):
         # Get Metron series ID (from cvinfo or lookup by CV ID)
         series_id = get_series_id(cvinfo_path, api)
         if not series_id:
-            app_logger.debug("Could not determine Metron series ID")
+            app_logger.info(
+                f"Could not determine Metron series ID from {cvinfo_path}, "
+                f"skipping Metron metadata"
+            )
             return destination_path
 
         # Track if we've saved cvinfo fields (only need to do once per folder)
@@ -5179,8 +5177,8 @@ def auto_fetch_metron_metadata(destination_path):
 def auto_fetch_comicvine_sqlite_metadata(destination_path):
     """
     Automatically fetch metadata from the local ComicVine SQLite database for
-    moved files if conditions are met. Only triggers for non-root /data
-    directories that have a cvinfo file. Uses the same ComicVine volume ID stored
+    moved files if conditions are met. Only triggers for folders below a
+    library root that have a cvinfo file. Uses the same ComicVine volume ID stored
     in cvinfo as the online ComicVine provider.
 
     Returns:
@@ -5222,7 +5220,7 @@ def auto_fetch_comicvine_sqlite_metadata(destination_path):
             folder_path = destination_path
             target_file = None
 
-        # Check: Is this a series folder inside a library?
+        # Check: Is this folder below a library root (not the root itself)?
         if not _is_nested_library_folder(folder_path):
             app_logger.debug(
                 f"Skipping local ComicVine metadata for root-level directory: {folder_path}"

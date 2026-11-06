@@ -101,6 +101,28 @@ def is_valid_library_path(path):
     return False
 
 
+def is_below_library_root(path):
+    """True if *path* is strictly inside an enabled library root.
+
+    A library root itself is False. Depth is not otherwise constrained:
+    a flat library keeps its series folders directly under the root
+    (``<root>/Series (2025)``), and a ``<root>/Publisher/Series`` layout
+    is equally valid.
+    """
+    if not path:
+        return False
+    normalized = os.path.normpath(path)
+    # Longest root first, so a library nested inside another is measured
+    # from its own root (and its root is still refused).
+    for root in sorted(get_library_roots(), key=len, reverse=True):
+        root_normalized = os.path.normpath(root)
+        if normalized == root_normalized:
+            return False
+        if normalized.startswith(root_normalized + os.sep):
+            return True
+    return False
+
+
 def library_root_for(path):
     """The enabled library root containing *path*, or None.
 
