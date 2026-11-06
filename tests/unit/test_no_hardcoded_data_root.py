@@ -191,6 +191,13 @@ class TestAppWiring:
     def test_auto_metadata_measures_depth_from_the_files_library(self, app_tree, name):
         assert "_is_nested_library_folder" in _called_names(_func(app_tree, name))
 
+    def test_depth_gate_is_the_tested_helper(self, app_tree):
+        """The gate once demanded <root>/Publisher/Series, so every hook was a
+        silent no-op on a flat library. It must stay the helper the unit tests
+        in test_library_below_root.py pin."""
+        assert "is_below_library_root" in _called_names(
+            _func(app_tree, "_is_nested_library_folder"))
+
     def test_home_page_hands_the_grid_its_default_root(self, app_tree):
         """collection.js builds clean URLs relative to the default library."""
         index = _func(app_tree, "index")
