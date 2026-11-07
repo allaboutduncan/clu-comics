@@ -796,6 +796,42 @@ CLAIM_SUFFIX = ".claim.crdownload"
 _MAX_CLAIM_CANDIDATES = 1000
 
 
+_MAX_DOWNLOAD_NAME_BYTES = 200
+
+
+def safe_download_filename(name):
+    """Reduce a download's name to a single file name inside its directory.
+
+    The name comes from the remote server (``Content-Disposition``, the URL
+    path, MEGA's file attributes) or from an unauthenticated ``/download``
+    request, and was joined onto the download directory as-is -- so a header
+    of ``filename="../../app/x.py"`` (percent-encoded or not) wrote the body
+    wherever the service account could create a file (GHSA-f7j2-w7wv-3xp4).
+
+    Only the last segment survives, with either separator, a drive prefix,
+    control characters and ``.``/``..`` gone. The result is capped well under
+    NAME_MAX so a hostile length cannot push every candidate into ``OSError``.
+    Ordinary comic names ("Batman 001 (2024).cbz") come through unchanged --
+    the File Manager shows them, so this is not ``secure_filename``.
+    """
+    name = "" if name is None else str(name)
+    name = "".join(c for c in name if c >= " " and c != "\x7f")
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = os.path.splitdrive(name)[1].strip()
+    if name in ("", ".", ".."):
+        import uuid
+        return f"download_{uuid.uuid4().hex}"
+
+    if len(name.encode("utf-8")) > _MAX_DOWNLOAD_NAME_BYTES:
+        base, ext = os.path.splitext(name)
+        if len(ext.encode("utf-8")) > 16:
+            base, ext = name, ""
+        budget = _MAX_DOWNLOAD_NAME_BYTES - len(ext.encode("utf-8"))
+        base = base.encode("utf-8")[:budget].decode("utf-8", "ignore").rstrip()
+        name = (base or "download") + ext
+    return name
+
+
 def claim_download_path(dl_dir, filename):
     """Reserve a free destination name in *dl_dir*, atomically.
 
@@ -813,7 +849,11 @@ def claim_download_path(dl_dir, filename):
     The claim is on the destination name rather than the per-attempt temp file:
     the temp name carries the attempt number, so claiming it would release and
     re-take the reservation on every retry and reopen the same window.
+
+    *filename* is reduced to one bare segment first (:func:`safe_download_filename`):
+    every caller passes a name that came from somewhere it does not control.
     """
+    filename = safe_download_filename(filename)
     base, ext = os.path.splitext(filename)
     for counter in range(_MAX_CLAIM_CANDIDATES):
         candidate = filename if counter == 0 else f"{base}_{counter}{ext}"

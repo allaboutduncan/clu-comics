@@ -1475,7 +1475,9 @@ def download_mega(url: str, download_id: str, dest_name: Optional[str] = None, h
         # Download into WATCH, MegaDownloader handles decryption
         _watch_dir = _download_dir()
         monitor_logger.debug(f"Starting MEGA download to {_watch_dir}")
-        result_path = mega_dl.download(_watch_dir, progress_callback=progress_callback)
+        result_path = mega_dl.download(
+            _watch_dir, progress_callback=progress_callback, dest_path=out_path
+        )
         monitor_logger.debug(f"Download returned path: {result_path}")
 
         # If dest_name was specified, rename the file

@@ -184,7 +184,15 @@ class MegaDownloader:
             "download_url": file_info['g']
         }
 
-    def download(self, dest_folder: str, progress_callback=None):
+    def download(self, dest_folder: str, progress_callback=None, dest_path=None):
+        """Download and decrypt into *dest_path*, or *dest_folder* under MEGA's name.
+
+        MEGA's ``n`` attribute is whatever the uploader called the file, so it
+        is reduced to one bare segment before it touches the filesystem
+        (GHSA-f7j2-w7wv-3xp4). api.py passes the name it already reserved as
+        *dest_path*, so the download never lands on -- or replaces -- anything
+        but its own claim.
+        """
         logger.debug(f"Starting download to folder: {dest_folder}")
 
         meta = self.get_metadata()
@@ -222,7 +230,11 @@ class MegaDownloader:
         cipher = Cipher(algorithms.AES(file_key), modes.CTR(iv))
         decryptor = cipher.decryptor()
 
-        full_path = os.path.join(dest_folder, filename)
+        if dest_path:
+            full_path = dest_path
+        else:
+            from core.download_utils import safe_download_filename
+            full_path = os.path.join(dest_folder, safe_download_filename(filename))
         temp_path = full_path + '.part'
         downloaded_bytes = 0
 

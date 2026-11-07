@@ -394,3 +394,68 @@ class TestMegaClaimIsBoundBeforeTheTry:
                     for t in stmt.targets)
         ]
         assert assigned_before, "claim_path must be bound before the try block"
+
+
+class TestRemoteNamesCannotLeaveTheDirectory:
+    """GHSA-f7j2-w7wv-3xp4: an unauthenticated /download points at a server
+    whose Content-Disposition names ``../../somewhere``. Every downloader
+    reserves its name here, so this is where the name is confined."""
+
+    @pytest.mark.parametrize("hostile", [
+        "../escape.cbz",
+        "../../../../escape.cbz",
+        "..\\..\\escape.cbz",
+        "/etc/escape.cbz",
+        "sub/dir/escape.cbz",
+        "C:\\escape.cbz",
+    ])
+    def test_claim_lands_in_dl_dir(self, tmp_path, hostile):
+        dl_dir = tmp_path / "watch"
+        dl_dir.mkdir()
+
+        final, claim = claim_download_path(str(dl_dir), hostile)
+
+        assert os.path.dirname(final) == str(dl_dir)
+        assert os.path.basename(final) == "escape.cbz"
+        assert os.path.dirname(claim) == str(dl_dir)
+        release_download_claim(claim)
+
+    @pytest.mark.parametrize("name", ["..", ".", "", "../", "a/..", None])
+    def test_dot_and_empty_names_get_a_generated_one(self, tmp_path, name):
+        final, claim = claim_download_path(str(tmp_path), name)
+
+        assert os.path.dirname(final) == str(tmp_path)
+        assert os.path.basename(final).startswith("download_")
+        release_download_claim(claim)
+
+    def test_ordinary_comic_names_are_untouched(self):
+        from core.download_utils import safe_download_filename
+
+        for name in ("Batman 001 (2024).cbz", "Hokum & Hex #1 - Title: Sub.cbr"):
+            assert safe_download_filename(name) == name
+
+    def test_control_characters_are_dropped(self):
+        from core.download_utils import safe_download_filename
+
+        assert safe_download_filename("a\x00b\nc.cbz") == "abc.cbz"
+
+    def test_overlong_name_keeps_its_extension(self, tmp_path):
+        from core.download_utils import safe_download_filename
+
+        name = safe_download_filename("x" * 5000 + ".cbz")
+        assert name.endswith(".cbz") and len(name.encode()) <= 200
+        final, claim = claim_download_path(str(tmp_path), "x" * 5000 + ".cbz")
+        assert os.path.exists(claim)
+        release_download_claim(claim)
+
+    def test_download_mega_writes_to_its_claim(self, api_tree):
+        """MEGA's downloader would otherwise join its own remote name."""
+        node = _func(api_tree, "download_mega")
+        calls = [
+            c for c in ast.walk(node)
+            if isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+            and c.func.attr == "download"
+        ]
+        assert calls and all(
+            any(k.arg == "dest_path" for k in c.keywords) for c in calls
+        ), "download_mega must pass its claimed path as dest_path"

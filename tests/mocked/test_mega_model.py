@@ -350,3 +350,50 @@ class TestDownloadCleanupOnError:
         # Neither final nor temp files should remain
         assert not os.path.exists(os.path.join(str(tmp_path), "comic.cbz"))
         assert not os.path.exists(os.path.join(str(tmp_path), "comic.cbz.part"))
+
+
+class TestDownloadHostileName:
+    """MEGA's ``n`` attribute is whatever the uploader chose
+    (GHSA-f7j2-w7wv-3xp4): it must never steer the write out of the folder."""
+
+    def _mock(self, mock_post, mock_get, name):
+        meta_key = _derive_meta_key(RAW_KEY_32)
+        encrypted_attr = _encrypt_attr(name, meta_key)
+        encoded_attr = base64.urlsafe_b64encode(encrypted_attr).rstrip(b"=").decode()
+        mock_meta_resp = MagicMock()
+        mock_meta_resp.json.return_value = [{
+            "at": encoded_attr, "s": 4, "g": "https://dl.example.com/file",
+        }]
+        mock_meta_resp.status_code = 200
+        mock_post.return_value = mock_meta_resp
+        mock_dl_resp = MagicMock()
+        mock_dl_resp.iter_content.return_value = [b"ABCD"]
+        mock_get.return_value = mock_dl_resp
+
+    @patch("models.mega.requests.get")
+    @patch("models.mega.requests.post")
+    def test_traversal_name_stays_in_folder(self, mock_post, mock_get, tmp_path):
+        from models.mega import MegaDownloader
+
+        dest = tmp_path / "watch"
+        dest.mkdir()
+        self._mock(mock_post, mock_get, "../escape.cbz")
+
+        result = MegaDownloader(f"https://mega.nz/file/AbCdEfGh#{B64_KEY_32}").download(str(dest))
+
+        assert result == os.path.join(str(dest), "escape.cbz")
+        assert not (tmp_path / "escape.cbz").exists()
+
+    @patch("models.mega.requests.get")
+    @patch("models.mega.requests.post")
+    def test_dest_path_wins_over_remote_name(self, mock_post, mock_get, tmp_path):
+        from models.mega import MegaDownloader
+
+        self._mock(mock_post, mock_get, "../../escape.cbz")
+        claimed = str(tmp_path / "claimed.cbz")
+
+        result = MegaDownloader(f"https://mega.nz/file/AbCdEfGh#{B64_KEY_32}").download(
+            str(tmp_path), dest_path=claimed)
+
+        assert result == claimed
+        assert os.listdir(tmp_path) == ["claimed.cbz"]
