@@ -1165,7 +1165,15 @@ def rename_directory():
             f"Successfully renamed files in directory: {directory_path} "
             f"({len(renamed_pairs)} file(s), {len(affected_series)} series reconciled)"
         )
-        return jsonify({"success": True, "message": f"Successfully renamed files in {os.path.basename(directory_path)}"})
+        # Say what actually happened: a blanket "Successfully renamed" when
+        # nothing changed read as a working rename (#716).
+        folder_name = os.path.basename(os.path.normpath(directory_path))
+        renamed = len(renamed_pairs)
+        if renamed:
+            message = f"Renamed {renamed} file{'s' if renamed != 1 else ''} in {folder_name}"
+        else:
+            message = f"No files in {folder_name} needed renaming"
+        return jsonify({"success": True, "renamed": renamed, "message": message})
 
     except ImportError as e:
         app_logger.error(f"Failed to import rename module: {e}")

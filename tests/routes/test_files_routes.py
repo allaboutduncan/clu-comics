@@ -1203,6 +1203,50 @@ class TestRenameDirectory:
         assert resp.status_code == 200
         assert fake_app.update_index_on_move.call_count == 2
 
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_reports_renamed_count(self, mock_crit, client, tmp_path):
+        pairs = [
+            (str(tmp_path / "a.cbz"), str(tmp_path / "Batman 001.cbz")),
+            (str(tmp_path / "b.cbz"), str(tmp_path / "Batman 002.cbz")),
+        ]
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+        fake_collection = types.ModuleType("helpers.collection")
+        fake_collection._series_id_for_path = MagicMock(return_value=None)
+        fake_collection.reconcile_wanted_for_series = MagicMock()
+
+        with patch.dict(sys.modules, {"app": fake_app,
+                                      "helpers.collection": fake_collection}), \
+                patch("cbz_ops.rename.rename_files", return_value=pairs):
+            resp = client.post("/rename-directory",
+                               json={"directory": str(tmp_path)})
+
+        body = resp.get_json()
+        assert body["renamed"] == 2
+        assert body["message"].startswith("Renamed 2 files in ")
+
+    @patch("routes.files.is_critical_path", return_value=False)
+    def test_nothing_renamed_is_not_reported_as_renamed(
+        self, mock_crit, client, tmp_path
+    ):
+        """#716: a no-op rename used to say "Successfully renamed files"."""
+        fake_app = types.ModuleType("app")
+        fake_app.update_index_on_move = MagicMock()
+        fake_collection = types.ModuleType("helpers.collection")
+        fake_collection._series_id_for_path = MagicMock(return_value=None)
+        fake_collection.reconcile_wanted_for_series = MagicMock()
+
+        with patch.dict(sys.modules, {"app": fake_app,
+                                      "helpers.collection": fake_collection}), \
+                patch("cbz_ops.rename.rename_files", return_value=[]):
+            resp = client.post("/rename-directory",
+                               json={"directory": str(tmp_path)})
+
+        body = resp.get_json()
+        assert body["success"] is True
+        assert body["renamed"] == 0
+        assert "needed renaming" in body["message"]
+
 
 class TestRenameFilesReturnsPairs:
     """The fixture check for the cbz_ops change: rename_files must return real

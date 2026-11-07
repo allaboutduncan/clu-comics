@@ -1132,6 +1132,90 @@ class TestGetRenamedFilenameCustomPattern:
         assert result == "Batman 046 (1948).cbz"
 
 
+# ===== #716: folder rename reads {volume_year} from ComicInfo =====
+
+_PATTERN_716 = "{series_name} ({volume_year}) Issue {issue_number} ({issue_year})"
+
+
+def _ci_xml(volume=None, year=None, month=None):
+    parts = [b"<?xml version='1.0' encoding='utf-8'?><ComicInfo>",
+             b"<Series>Supergirl</Series><Number>9</Number>"]
+    if volume is not None:
+        parts.append(f"<Volume>{volume}</Volume>".encode())
+    if year is not None:
+        parts.append(f"<Year>{year}</Year>".encode())
+    if month is not None:
+        parts.append(f"<Month>{month}</Month>".encode())
+    parts.append(b"</ComicInfo>")
+    return b"".join(parts)
+
+
+class TestFolderRenameVolumeYear:
+    """"Rename files in this directory" left a name carrying a stale volume
+    year alone: the already-conforming shortcut ran before ComicInfo was read,
+    and {volume_year} was never taken from ComicInfo Volume at all."""
+
+    _make_cbz = TestGetRenamedFilenameCustomPattern._make_cbz
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_stale_volume_year_is_corrected(self, mock_config, tmp_path):
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl (2026) Issue 009 (2026).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(volume=2025, year=2026))
+        assert get_renamed_filename(name, file_path=path) == \
+            "Supergirl (2025) Issue 009 (2026).cbz"
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_name_agreeing_with_comicinfo_is_unchanged(self, mock_config, tmp_path):
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl (2025) Issue 009 (2026).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(volume=2025, year=2026))
+        assert get_renamed_filename(name, file_path=path) == name
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_volume_number_is_not_a_year(self, mock_config, tmp_path):
+        # GCD writes a volume *number* into Volume; it must not replace a year.
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl (2026) Issue 009 (2026).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(volume=1, year=2026))
+        assert get_renamed_filename(name, file_path=path) == name
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_no_comicinfo_keeps_conforming_name(self, mock_config, tmp_path):
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl (2026) Issue 009 (2026).cbz"
+        path = self._make_cbz(tmp_path, name)
+        assert get_renamed_filename(name, file_path=path) == name
+
+    @patch("cbz_ops.rename.load_custom_rename_config",
+           return_value=(True, "{series_name} {issue_number} ({issue_year}-{issue_month_m})"))
+    def test_conforming_month_survives_comicinfo_without_month(self, mock_config, tmp_path):
+        # The shortcut exists to keep metadata-only tokens a later pass can't
+        # re-derive; ComicInfo lacking a month must not strip it.
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl 009 (2026-03).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(year=2026))
+        assert get_renamed_filename(name, file_path=path) == name
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_non_conforming_name_takes_volume_year(self, mock_config, tmp_path):
+        from cbz_ops.rename import get_renamed_filename
+        name = "Supergirl 009 (2026) (Digital) (Zone-Empire).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(volume=2025, year=2026))
+        assert get_renamed_filename(name, file_path=path) == \
+            "Supergirl (2025) Issue 009 (2026).cbz"
+
+    @patch("cbz_ops.rename.load_custom_rename_config", return_value=(True, _PATTERN_716))
+    def test_rename_files_renames_the_stale_file(self, mock_config, tmp_path):
+        from cbz_ops.rename import rename_files
+        name = "Supergirl (2026) Issue 009 (2026).cbz"
+        path = self._make_cbz(tmp_path, name, _ci_xml(volume=2025, year=2026))
+        pairs = rename_files(str(tmp_path))
+        new_path = str(tmp_path / "Supergirl (2025) Issue 009 (2026).cbz")
+        assert pairs == [(path, new_path)]
+        assert os.path.exists(new_path)
+
+
 # ===== try_rule_engine =====
 
 class TestTryRuleEngine:

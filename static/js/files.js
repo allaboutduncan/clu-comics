@@ -715,8 +715,14 @@ function createListItem(itemName, fullPath, type, panel, isDraggable) {
           .then(result => {
             console.log('Rename result:', result);
             if (result.success) {
-              // Show success message using the enhanced showToast function
-              CLU.showToast('Rename Successful', `Successfully renamed files in ${fileData.name}`, 'success');
+              // The server reports how many files actually changed, so a
+              // no-op rename is not presented as a success (#716).
+              const renamedCount = result.renamed || 0;
+              CLU.showToast(
+                renamedCount ? 'Rename Successful' : 'Nothing to Rename',
+                result.message || `Renamed ${renamedCount} file(s) in ${fileData.name}`,
+                renamedCount ? 'success' : 'info'
+              );
               // Refresh the current directory listing
               if (panel === 'source') {
                 loadDirectories(currentSourcePath, 'source');
