@@ -1665,6 +1665,51 @@ def apply_custom_pattern(values, pattern):
     return result
 
 
+def _comicinfo_token_values(ci):
+    """Pattern-token values that only ComicInfo.xml can supply.
+
+    Shared by rename_comic_from_metadata and get_renamed_filename so a metadata
+    fetch and "Rename files in this directory" fill these tokens the same way
+    (#716). Only non-empty values are returned, so the result can be laid over
+    filename-derived values without blanking them.
+
+    - {volume_year} = ComicInfo Volume (ComicVine start_year / Metron
+      year_began). GCD stores a volume *number* there, so only a 4-digit year
+      counts; otherwise apply_custom_pattern falls back to the parsed year.
+    - {issue_year} = ComicInfo Year (the cover year).
+    - {issue_month_M}/{issue_month_m} = ComicInfo Month (the cover month).
+    - {issue_title} = ComicInfo Title.
+    """
+    ci = ci or {}
+    out = {}
+    vol_raw = str(ci.get("Volume", "") or "").strip()
+    if re.fullmatch(r"\d{4}", vol_raw):
+        out["volume_year"] = vol_raw
+    year = str(ci.get("Year", "") or "").strip()
+    if year:
+        out["issue_year"] = year
+    if ci.get("Month"):
+        month_name, month_padded = _format_issue_month(ci["Month"])
+        if month_name:
+            out["issue_month_M"] = month_name
+        if month_padded:
+            out["issue_month_m"] = month_padded
+    title = ci.get("Title") or ""
+    if title:
+        out["issue_title"] = title
+    return out
+
+
+# Tokens whose real value lives in ComicInfo.xml, not the filename.
+_COMICINFO_TOKENS = (
+    "{volume_year}",
+    "{issue_title}",
+    "{issue_year}",
+    "{issue_month_M}",
+    "{issue_month_m}",
+)
+
+
 # The name a renamer uses when no custom pattern is enabled: "Series 001".
 # Mirrors the default branch of CLU.buildRenamedName (static/js/clu-metadata.js).
 DEFAULT_METADATA_RENAME_PATTERN = "{series_name} {issue_number}"
@@ -1697,29 +1742,21 @@ def rename_comic_from_metadata(file_path, metadata, fallback_pattern=None):
         # it verbatim. Don't title-case here (that flattens acronyms like "AVX" -> "Avx");
         # smart_title_case is only for series names parsed out of messy filenames.
 
-        # {volume_year} = series/volume start year (ComicInfo Volume field:
-        # ComicVine start_year / Metron year_began). GCD stores a volume *number*
-        # there, so guard to a 4-digit year and let apply_custom_pattern fall back
-        # to the issue year when it isn't one.
-        vol_raw = str(metadata.get("Volume", "") or "").strip()
-        volume_year = vol_raw if re.fullmatch(r"\d{4}", vol_raw) else ""
-
-        # {issue_month_M}/{issue_month_m} = ComicInfo Month (the cover month)
-        issue_month_M, issue_month_m = _format_issue_month(metadata.get("Month"))
-
         pad_width = load_issue_pad_width()
         values = {
             "series_name": series,
             "volume_number": "",
-            "volume_year": volume_year,
-            # {issue_year} = ComicInfo Year (the cover year written to the XML)
+            "volume_year": "",
             "year": str(metadata.get("Year", "")),
-            "issue_year": str(metadata.get("Year", "")),
-            "issue_month_M": issue_month_M,
-            "issue_month_m": issue_month_m,
+            "issue_year": "",
+            "issue_month_M": "",
+            "issue_month_m": "",
             "issue_number": _pad_issue_number(str(metadata.get("Number", "")), pad_width),
-            "issue_title": metadata.get("Title", "") or "",
+            "issue_title": "",
         }
+        # The metadata-only tokens come from the same table the folder renamer
+        # (get_renamed_filename) uses, so the two cannot disagree (#716).
+        values.update(_comicinfo_token_values(metadata))
 
         new_name = apply_custom_pattern(values, custom_pattern)
         if not new_name:
@@ -1968,71 +2005,69 @@ def get_renamed_filename(filename, file_path=None):
         if custom_enabled and custom_pattern:
             app_logger.info(f"Custom rename pattern enabled: {custom_pattern}")
 
+            # Tokens whose real value lives in ComicInfo.xml. Read it once, up
+            # front: the conforming check below must see it too, or a name
+            # carrying a stale year round-trips to itself and is never fixed
+            # (#716: "Supergirl (2026) Issue 009 (2026)" with Volume 2025).
+            ci_overlay = {}
+            if (
+                file_path
+                and file_path.lower().endswith(".cbz")
+                and any(token in custom_pattern for token in _COMICINFO_TOKENS)
+            ):
+                try:
+                    from core.comicinfo import read_comicinfo_from_zip
+
+                    ci_overlay = _comicinfo_token_values(
+                        read_comicinfo_from_zip(file_path)
+                    )
+                except Exception:
+                    ci_overlay = {}
+
             # If the filename already conforms to the custom pattern, leave it
             # alone. Later rename passes (monitor, wanted-issues) would
             # otherwise strip tokens they cannot re-derive from the filename
             # (e.g. a cover month that came from metadata). The round-trip
             # check guards against names that only coincidentally half-match.
+            # ComicInfo values are laid over the parsed ones first, so a token
+            # the archive contradicts makes the name non-conforming.
             stem, _ = os.path.splitext(filename)
             conforming = reverse_parse_pattern(stem, custom_pattern)
             if conforming and apply_custom_pattern(conforming, custom_pattern) == stem:
-                app_logger.info(
-                    f"Filename already matches custom pattern, no rename needed: {filename}"
-                )
-                return filename
+                if not ci_overlay:
+                    app_logger.info(
+                        f"Filename already matches custom pattern, no rename needed: {filename}"
+                    )
+                    return filename
+                merged = {**conforming, **ci_overlay}
+                if apply_custom_pattern(merged, custom_pattern) == stem:
+                    app_logger.info(
+                        f"Filename already matches custom pattern and ComicInfo, "
+                        f"no rename needed: {filename}"
+                    )
+                    return filename
+                # The pattern's own reverse-parse is the most reliable source
+                # of series and issue for a name in the user's own format.
+                comic_values = merged
+            else:
+                # Extract comic values from the filename
+                comic_values = extract_comic_values(filename, pad_width)
 
-            # Extract comic values from the filename
-            comic_values = extract_comic_values(filename, pad_width)
+                # Manga volume names ("Series vNN (YYYY) ...") have no issue number, so
+                # extract_comic_values fills volume/year but leaves series empty. Recover
+                # the series as the text preceding the volume token; preserve the
+                # filename's casing (the default path does — don't smart_title_case and
+                # flatten manga titles).
+                if not comic_values.get("series_name") and comic_values.get("volume_number"):
+                    vol = comic_values["volume_number"]  # e.g. "v03"
+                    m = re.match(rf"^(.+?)\s+{re.escape(vol)}\b", filename, re.IGNORECASE)
+                    if m:
+                        comic_values["series_name"] = m.group(1).replace("_", " ").strip()
 
-            # Manga volume names ("Series vNN (YYYY) ...") have no issue number, so
-            # extract_comic_values fills volume/year but leaves series empty. Recover
-            # the series as the text preceding the volume token; preserve the
-            # filename's casing (the default path does — don't smart_title_case and
-            # flatten manga titles).
-            if not comic_values.get("series_name") and comic_values.get("volume_number"):
-                vol = comic_values["volume_number"]  # e.g. "v03"
-                m = re.match(rf"^(.+?)\s+{re.escape(vol)}\b", filename, re.IGNORECASE)
-                if m:
-                    comic_values["series_name"] = m.group(1).replace("_", " ").strip()
-
-            # Default issue_year to the year parsed from the filename;
-            # ComicInfo.xml (read below) takes precedence when available.
-            comic_values.setdefault("issue_year", comic_values.get("year", ""))
-
-            # Tokens that require reading ComicInfo.xml for accurate values.
-            # ComicInfo Year/Month hold the issue's (cover) year and month.
-            needs_comicinfo = any(
-                token in custom_pattern
-                for token in (
-                    "{issue_title}",
-                    "{issue_year}",
-                    "{issue_month_M}",
-                    "{issue_month_m}",
-                )
-            )
-
-            # Read issue title / publication year from ComicInfo.xml if needed
-            if (
-                file_path
-                and file_path.lower().endswith(".cbz")
-                and needs_comicinfo
-            ):
-                try:
-                    from core.comicinfo import read_comicinfo_from_zip
-
-                    comicinfo = read_comicinfo_from_zip(file_path)
-                    if comicinfo.get("Title"):
-                        comic_values["issue_title"] = comicinfo["Title"]
-                    if comicinfo.get("Year"):
-                        comic_values["issue_year"] = str(comicinfo["Year"])
-                    if comicinfo.get("Month"):
-                        month_name, month_padded = _format_issue_month(
-                            comicinfo["Month"]
-                        )
-                        comic_values["issue_month_M"] = month_name
-                        comic_values["issue_month_m"] = month_padded
-                except Exception:
-                    pass
+                # Default issue_year to the year parsed from the filename;
+                # ComicInfo.xml takes precedence when available.
+                comic_values.setdefault("issue_year", comic_values.get("year", ""))
+                comic_values.update(ci_overlay)
 
             app_logger.info(f"Extracted comic values: {comic_values}")
 
