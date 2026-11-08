@@ -1,6 +1,6 @@
 """Background auto-generation of folder cover art.
 
-Folders get their `folder.png` from four places: a user-uploaded image, a
+Folders get their cover art from four places: a user-uploaded image, a
 pinned issue, the per-folder "Generate Thumbnail" menu action, or one of the
 two recursive sweeps ("Generate All Missing Thumbnails" and "Regenerate All
 Thumbnails"). The first two are manual by nature; the rest mean a new series
@@ -16,7 +16,8 @@ render once gets another chance the next time it matters.
 
 Two rules keep this from becoming a nuisance:
 
-* An existing `folder.*` image is never touched. Uploaded art always wins.
+* Existing art is never touched -- cached (core/folder_art.py) or a legacy
+  `folder.*` still on disk. Uploaded art always wins.
   This holds for *auto*-generation only — the explicit menu actions, and the
   "Regenerate All Thumbnails" sweep in particular, pass `overwrite=True` and
   will replace it. That sweep is destructive by design and sits behind a
@@ -34,7 +35,8 @@ which comics contribute covers, and the `STYLES` registry maps the site-wide
 `folder_thumbnail_style` preference to one of four composers. Everything from
 `select_cover_files` down is pure PIL with no Flask or filesystem-write
 dependency, which is what makes it testable — the orchestrator that reads
-preferences, resolves the cover cache and writes `folder.png` stays in
+preferences, resolves the cover cache and stores the result in the cache
+volume (core/folder_art.py) stays in
 `app.generate_folder_thumbnail_internal`.
 """
 
@@ -542,9 +544,11 @@ def may_write(folder_path, overwrite):
     if overwrite:
         return True
 
-    from helpers import find_folder_thumbnail
+    from core import folder_art
 
-    return find_folder_thumbnail(folder_path) is None
+    # Cached art (uploaded, imported, custom) and legacy art still on disk
+    # both count: either one is an image the user can see and may have chosen.
+    return not folder_art.has_art(folder_path, "folder")
 
 
 def _get_executor():

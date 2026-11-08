@@ -453,8 +453,9 @@
                                 </label>
                                 <small class="form-text text-muted d-block">
                                     As you browse, folders without cover art get a stacked-cover
-                                    <code>folder.png</code> generated in the background. An image you
-                                    uploaded yourself is never replaced. Turn this off to generate
+                                    image generated in the background and kept in the cache volume,
+                                    not in your library folders. An image you uploaded yourself is
+                                    never replaced. Turn this off to generate
                                     them only from the folder three-dots menu.
                                 </small>
                             </div>
@@ -1915,9 +1916,8 @@
                     <p class="text-muted">
                         How cover art is composed for folders in
                         <a href="{{ url_for('collection.collection') }}">Browse Library</a>.
-                        This is site-wide, not per user: the art is a real
-                        <code>folder.png</code> written into each folder, so everyone
-                        sees the same image.
+                        This is site-wide, not per user: each folder has one image,
+                        kept in the cache volume, so everyone sees the same art.
                     </p>
 
                     {# Rendered from folder_thumbnails.style_choices(), so adding a

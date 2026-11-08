@@ -23,9 +23,9 @@ from flask import (Blueprint, request, jsonify, render_template, redirect,
 from PIL import Image
 from core.app_logging import app_logger
 from core.metadata_normalize import strip_provider_ids
+from core import folder_art
 from core import folder_thumbnails
 from core import app_state
-from helpers import find_folder_thumbnail
 from helpers.paging import COLLECTION_DEFAULT_PER_PAGE, DEFAULT_PER_PAGE
 from helpers.library import (get_library_roots,
                              get_default_library_root, is_library_root,
@@ -436,6 +436,10 @@ def api_browse():
             user, directories, key='path', allow_traverse=True)
         files = filter_paths_for_user(user, files, key='path')
 
+        # Cached art for every listed folder in one query; only folders the
+        # index flags as having art but which are not cached touch the disk.
+        cached_art = folder_art.get_art_batch([d['path'] for d in directories])
+
         processed_directories = []
         for d in directories:
             dir_info = {
@@ -446,17 +450,19 @@ def api_browse():
                 'file_count': None
             }
 
-            # find_folder_thumbnail, not a local extension list: the indexer sets
-            # has_thumbnail from that same helper, so a narrower list here would
-            # report "has art" while never producing a URL for it, and the client
-            # only re-checks folders it was told have none.
-            if d.get('has_thumbnail'):
-                thumb_path = find_folder_thumbnail(d['path'])
-                if thumb_path:
-                    dir_info['thumbnail_url'] = url_for('.serve_folder_thumbnail', path=thumb_path)
-                else:
-                    # Indexed flag is stale (art deleted since the last scan).
-                    dir_info['has_thumbnail'] = False
+            # core.folder_art, not a local lookup: the indexer sets
+            # has_thumbnail from the same module, so a narrower check here
+            # would report "has art" while never producing a URL for it, and
+            # the client only re-checks folders it was told have none.
+            rec = cached_art.get(d['path'])
+            if rec is None and d.get('has_thumbnail'):
+                rec = folder_art.find_art(d['path'], 'folder')
+            if rec:
+                dir_info['has_thumbnail'] = True
+                dir_info['thumbnail_url'] = folder_art.art_url(d['path'], 'folder', record=rec)
+            elif d.get('has_thumbnail'):
+                # Indexed flag is stale (art deleted since the last scan).
+                dir_info['has_thumbnail'] = False
 
             processed_directories.append(dir_info)
 
@@ -507,18 +513,14 @@ def api_browse():
             "pinned_cover": get_folder_pin(path),
         }
 
-        # Check for header image
-        for ext in ['.jpg', '.png', '.gif', '.jpeg']:
-            header_name = f'header{ext}'
-            header_path = os.path.join(path, header_name)
-            if os.path.exists(header_path):
-                result['header_image_url'] = url_for('.serve_folder_thumbnail', path=header_path)
-                break
-
-        # Check for overlay image
-        overlay_path = os.path.join(path, 'overlay.png')
-        if os.path.exists(overlay_path):
-            result['overlay_image_url'] = url_for('.serve_folder_thumbnail', path=overlay_path)
+        # Header banner and page overlay: cached first, legacy header.* /
+        # overlay.png in the folder otherwise (core.folder_art).
+        header_url = folder_art.art_url(path, 'header')
+        if header_url:
+            result['header_image_url'] = header_url
+        overlay_url = folder_art.art_url(path, 'overlay')
+        if overlay_url:
+            result['overlay_image_url'] = overlay_url
 
         elapsed = time.time() - request_start
         app_logger.info(f"/api/browse returned {len(directories)} dirs, {len(files)} files for {path} in {elapsed:.3f}s")
@@ -604,7 +606,7 @@ def api_scan_directory():
         file_count = 0
 
         def check_has_thumbnail(folder_path):
-            return 1 if find_folder_thumbnail(folder_path) else 0
+            return 1 if folder_art.has_art(folder_path, 'folder') else 0
 
         parent_dir = os.path.dirname(path)
         add_file_index_entry(
@@ -727,8 +729,6 @@ def api_browse_thumbnails():
     """
     Batch fetch folder thumbnails for multiple paths.
     """
-    from app import find_folder_thumbnails_batch
-
     data = request.get_json()
     paths = data.get('paths', [])
 
@@ -744,15 +744,15 @@ def api_browse_thumbnails():
         return jsonify({"thumbnails": {}})
 
     try:
-        folder_thumbs = find_folder_thumbnails_batch(paths)
+        folder_thumbs = folder_art.find_art_batch(paths, 'folder')
 
         results = {}
         missing = []
-        for path, thumb in folder_thumbs.items():
-            if thumb:
+        for path, rec in folder_thumbs.items():
+            if rec:
                 results[path] = {
                     'has_thumbnail': True,
-                    'thumbnail_url': url_for('.serve_folder_thumbnail', path=thumb)
+                    'thumbnail_url': folder_art.art_url(path, 'folder', record=rec)
                 }
             else:
                 results[path] = {
@@ -968,33 +968,87 @@ def api_browse_by_metadata(category, name):
     return jsonify(result)
 
 
-# The mimetype served for each folder-art extension. Keyed on
-# helpers.FOLDER_THUMBNAIL_EXTENSIONS -- the same list find_folder_thumbnail
-# discovers art with -- so the set this route will serve cannot drift from the
-# set the rest of the app produces. There is deliberately no default: the old
+# The mimetype served for each folder-art extension -- core.folder_art owns
+# the list, so the set this route will serve cannot drift from the set the rest
+# of the app produces. There is deliberately no default: the old
 # ``mime_types.get(ext, 'image/jpeg')`` served a file of *any* type, just
 # relabelled as a JPEG, which turned a wrong path into a silent success.
-FOLDER_THUMBNAIL_MIME_TYPES = {
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-}
+FOLDER_THUMBNAIL_MIME_TYPES = folder_art.MIME_TYPES
 
-# The folder-level art this route serves, by stem: the cover
-# (find_folder_thumbnail), and the header banner and page overlay that
-# /api/browse points at. Leaving the last two off made both render broken.
-FOLDER_ART_STEMS = frozenset({'folder', 'header', 'overlay'})
+# The folder-level art this route serves, by stem: the cover, the header
+# banner and the page overlay. Leaving the last two off once made both render
+# broken.
+FOLDER_ART_STEMS = folder_art.KINDS
+
+
+def _send_art_file(image_path):
+    ext = os.path.splitext(image_path)[1].lower()
+    mimetype = FOLDER_THUMBNAIL_MIME_TYPES.get(ext)
+    if not mimetype or not os.path.isfile(image_path):
+        return send_file('static/images/error.svg', mimetype='image/svg+xml')
+    try:
+        return send_file(image_path, mimetype=mimetype)
+    except Exception as e:
+        app_logger.error(f"Error serving folder thumbnail {image_path}: {e}")
+        app_logger.error(traceback.format_exc())
+        return send_file('static/images/error.svg', mimetype='image/svg+xml')
+
+
+def _serve_folder_art(folder):
+    """The ``?folder=&kind=`` form: the art is resolved here, never named by the client.
+
+    Confined exactly like the legacy form -- library containment on the
+    realpath, then the per-user grant on the folder in ``'browse'`` mode -- and
+    both run before anything is looked up, so a denied folder cannot be told
+    apart from one without art. The cache path never comes from the request:
+    the client can only name a folder and one of ``folder_art.KINDS``.
+
+    Legacy art found on disk is copied into the cache on this first serve
+    (``import_disk_art``), so every later view of the folder reads the cache
+    volume instead of waking the data disk (#720).
+    """
+    kind = request.args.get('kind', 'folder')
+    real_folder = os.path.normpath(os.path.realpath(folder))
+
+    if not is_allowed_path(real_folder):
+        app_logger.warning(
+            f"Folder art denied, folder is outside every library: {folder}")
+        return jsonify({"error": "Access denied - path not in any library"}), 403
+
+    denied = enforce_path_access(real_folder, mode='browse')
+    if denied:
+        return denied
+
+    if kind not in folder_art.KINDS:
+        return jsonify({"error": "Access denied - not a folder thumbnail"}), 403
+
+    # Rows are keyed on the folder path byte-exact, as the grid sends it.
+    rec = folder_art.find_art(folder, kind)
+    if rec is None and real_folder != folder:
+        rec = folder_art.find_art(real_folder, kind)
+    if rec is None:
+        return send_file('static/images/error.svg', mimetype='image/svg+xml')
+
+    if rec['location'] == 'disk':
+        imported = folder_art.import_disk_art(rec['folder_path'], kind, rec['path'])
+        if imported:
+            rec = imported
+    return _send_art_file(rec['path'])
 
 
 @collection_bp.route('/api/folder-thumbnail')
 def serve_folder_thumbnail():
-    """Serve a folder's cover art (``folder.png`` and friends).
+    """Serve a folder's cover art, header banner or overlay.
 
-    A file-serve route taking a caller-supplied path, so it is confined before
-    anything is opened. ``os.path.normpath`` normalises a path; it does not
-    confine one, and this route once applied nothing else -- any logged-in
+    Two forms. ``?folder=<dir>&kind=folder|header|overlay`` is what every
+    producer in the app now emits (``core.folder_art.art_url``); see
+    :func:`_serve_folder_art`. ``?path=<file>`` is the legacy form, kept so
+    OPDS readers and bookmarks holding an old URL still work; it serves only a
+    ``folder.*`` / ``header.*`` / ``overlay.*`` file inside a library.
+
+    The legacy form takes a caller-supplied file path, so it is confined
+    before anything is opened. ``os.path.normpath`` normalises a path; it does
+    not confine one, and this route once applied nothing else -- any logged-in
     user, down to a Reader scoped to a single folder, could read any file the
     process could read, including ``/config`` and the provider credentials in
     it (GHSA-vhvw-93fg-whm8).
@@ -1011,15 +1065,17 @@ def serve_folder_thumbnail():
       (``/api/browse`` and ``/api/browse-thumbnails`` both pass
       ``allow_traverse=True``), and an ancestor's ``folder.png`` is never itself
       under a grant, so the strict form would 403 art the user is looking at.
-    * the name, which must be folder-level art (``FOLDER_ART_STEMS``): what
-      ``find_folder_thumbnail`` produces, or the ``header.*`` / ``overlay.png``
-      that ``/api/browse`` links to. Every producer of this URL is one of
-      those, so this costs nothing and stops the route being a reader for
-      arbitrary images sitting in a traversable ancestor.
+    * the name, which must be folder-level art (``FOLDER_ART_STEMS``). That
+      stops the route being a reader for arbitrary images sitting in a
+      traversable ancestor.
 
     All three run **before** the existence checks, so a denied path cannot be
     told apart from a missing one.
     """
+    folder = request.args.get('folder')
+    if folder:
+        return _serve_folder_art(folder)
+
     requested = request.args.get('path')
 
     if not requested:
@@ -1050,12 +1106,7 @@ def serve_folder_thumbnail():
         app_logger.error(f"Folder thumbnail path is not a file: {image_path}")
         return send_file('static/images/error.svg', mimetype='image/svg+xml')
 
-    try:
-        return send_file(image_path, mimetype=FOLDER_THUMBNAIL_MIME_TYPES[ext])
-    except Exception as e:
-        app_logger.error(f"Error serving folder thumbnail {image_path}: {e}")
-        app_logger.error(traceback.format_exc())
-        return send_file('static/images/error.svg', mimetype='image/svg+xml')
+    return _send_art_file(image_path)
 
 
 # =============================================================================
@@ -1458,8 +1509,7 @@ def _regenerate(folder_path):
 
 def _thumbnail_url(folder_path):
     """URL for a folder's freshly written art, or None if nothing was written."""
-    thumb = find_folder_thumbnail(folder_path)
-    return url_for('.serve_folder_thumbnail', path=thumb) if thumb else None
+    return folder_art.art_url(folder_path, 'folder')
 
 
 @collection_bp.route('/api/config/thumbnails', methods=['POST'])
@@ -1612,7 +1662,7 @@ def _run_thumbnail_sweep(op_id, folders, regenerate_all):
             # "Missing" mode leaves any existing art alone; "regenerate all"
             # replaces every image, including ones the user uploaded — which is
             # exactly why the UI puts a confirmation in front of it.
-            if not regenerate_all and find_folder_thumbnail(dirpath):
+            if not regenerate_all and folder_art.has_art(dirpath, 'folder'):
                 skipped += 1
             elif _regenerate(dirpath):
                 generated += 1
@@ -1624,6 +1674,10 @@ def _run_thumbnail_sweep(op_id, folders, regenerate_all):
             )
     finally:
         app_state.complete_operation(op_id)
+
+    # A sweep is the natural moment to drop art left behind by folders that
+    # were deleted or renamed outside CLU. Positive evidence only; never raises.
+    folder_art.prune_orphans()
 
     app_logger.info(
         f"Thumbnail sweep finished: {generated} generated, "

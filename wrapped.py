@@ -564,14 +564,16 @@ def generate_series_highlights_slide(year: int, theme: str) -> bytes:
 
         img_space_h = card_height - 60 
         
-        # --- Logic for folder.png ---
-        # Explicitly check for folder.png in the series directory
+        # --- Folder art ---
+        # The series folder's own art (cached, or a legacy folder.* on disk;
+        # see core/folder_art.py), then series_cover (db), then the first
+        # issue's thumbnail.
         series_folder_path = series['series_path']
-        folder_png_path = os.path.join(series_folder_path, 'folder.png')
-        
-        # Fallback logic: folder.png -> series_cover (db) -> first_issue_thumbnail
-        if os.path.exists(folder_png_path):
-            img_path = folder_png_path
+        from core import folder_art
+        folder_rec = folder_art.find_art(series_folder_path, 'folder')
+
+        if folder_rec:
+            img_path = folder_rec['path']
         else:
             series_cover = ImageUtils.get_series_cover(series_folder_path)
             thumb_path = ImageUtils.get_thumbnail_path(series['first_issue_path'])

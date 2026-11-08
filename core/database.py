@@ -1055,6 +1055,21 @@ def _init_db_locked():
             )
         """)
 
+        # Folder-level art (cover, header banner, overlay) kept in the cache
+        # volume rather than written into the library folder (#720). See
+        # core/folder_art.py. folder_path is byte-exact, like the pins, and is
+        # followed on a folder move by move_path_references.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS folder_art (
+                folder_path TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                file TEXT NOT NULL,
+                source TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (folder_path, kind)
+            )
+        """)
+
         # Create reading_positions table (save reading position for comics).
         # Shape matches the post-migration table produced by
         # _rebuild_add_user_scope(); page_number is 1-indexed.
@@ -10519,6 +10534,22 @@ def move_path_references(old_path, new_path, is_dir=False, conn=None):
             else:
                 sql = f"{verb} {table} SET {column} = ? WHERE {column} = ?"
             c.execute(sql, params)
+            moved += c.rowcount
+
+        if is_dir:
+            # Folder art is keyed on the folder itself as well as everything
+            # under it, so this one takes the exact path too (the generic loop
+            # above only rewrites descendants). Escaped, unlike the loop, so
+            # "/data/X_Men" does not take "/data/X-Men" with it. OR REPLACE:
+            # a destination that already had art keeps the moved art, and the
+            # displaced file is left for folder_art.prune_orphans.
+            c.execute(
+                "UPDATE OR REPLACE folder_art SET folder_path = "
+                "CASE WHEN folder_path = ? THEN ? ELSE ? || SUBSTR(folder_path, ?) END "
+                "WHERE folder_path = ? OR folder_path LIKE ? ESCAPE '\\'",
+                (old_path, new_path, new_path, len(old_path) + 1,
+                 old_path, _like_prefix(old_path)),
+            )
             moved += c.rowcount
 
         if owns_conn:

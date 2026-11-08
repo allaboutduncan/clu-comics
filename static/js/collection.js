@@ -5256,10 +5256,12 @@ function generateFolderThumbnail(folderPath, folderName) {
                     const img = gridItem.querySelector('.thumbnail');
                     const iconOverlay = gridItem.querySelector('.icon-overlay');
 
-                    if (img && container) {
-                        // Add cache-buster to force reload of new image
-                        const thumbnailUrl = `/api/folder-thumbnail?path=${encodeURIComponent(folderPath + '/folder.png')}&t=${Date.now()}`;
-                        img.src = thumbnailUrl;
+                    if (img && container && data.thumbnail_url) {
+                        // The server names the art (it lives in the cache
+                        // volume, not the folder -- #720); its v= changes with
+                        // every regeneration, so the browser cannot show the
+                        // old image.
+                        img.src = data.thumbnail_url;
                         img.style.display = 'block';
                         gridItem.classList.add('has-thumbnail');
                         container.classList.add('has-thumbnail');
@@ -5362,7 +5364,7 @@ function scanDirectory(folderPath, folderName) {
  * The pin is honoured by every thumbnail style, not just Single Image: it is
  * the whole image in Single, the front card in Fanned/Cascade and the top-left
  * tile in the Mosaic. The server rebuilds the art before replying, so by the
- * time this resolves the new folder.png is already on disk.
+ * time this resolves the new art is already in the cache.
  *
  * @param {string} comicPath - Path to the comic file
  * @param {boolean} isPinned - Whether this comic is the folder's current pin
@@ -5731,6 +5733,9 @@ function handleFileUpload(files, targetPath) {
     // Prepare form data
     const formData = new FormData();
     formData.append('target_dir', targetPath);
+    // folder.* / header.* / overlay.png dropped on a folder become its art,
+    // stored in the cache volume rather than written into the library (#720).
+    formData.append('folder_art', '1');
 
     validFiles.forEach(file => {
         formData.append('files', file);
@@ -5771,8 +5776,11 @@ function handleFileUpload(files, targetPath) {
                     CLU.showError(`Errors: ${data.errors.map(e => e.name).join(', ')}`);
                 }
 
-                // Refresh the current view if we're in the same directory (preserve current page)
-                if (currentPath === targetPath || currentPath === '') {
+                // Refresh the current view if we're in the same directory
+                // (preserve current page) -- or if the drop changed a folder's
+                // art, since that folder's tile is drawn in this view.
+                const changedArt = (data.uploaded || []).some(u => u.stored === 'cache');
+                if (changedArt || currentPath === targetPath || currentPath === '') {
                     refreshCurrentView(true);
                 }
             } else {

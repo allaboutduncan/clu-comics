@@ -68,6 +68,11 @@ Things that look arbitrary and are not:
   index. Do **not** "fix" that with `COLLATE NOCASE`: these paths are stored
   byte-exact so they join against `file_index.path`.
 
+- **`folder_art.folder_path` is followed too, on the directory branch only,
+  and it takes the exact path as well as the subtree** (art is keyed on the
+  folder itself). It is not in `_PATH_REFERENCE_COLUMNS` for that reason, and
+  not in `clear_path_references` — a trashed folder can be restored;
+  `folder_art.prune_orphans` handles real deletions with positive evidence.
 - **A move within the libraries is `move_indexed_path(old, new, is_dir)`**:
   the index rows and the path references in one transaction. It is shared by
   `app.update_index_on_move` and the file watcher's `on_moved`, which used to

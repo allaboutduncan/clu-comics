@@ -62,27 +62,34 @@ class TestIsValidLibraryPath:
         assert is_valid_library_path(None) is False
 
 
-class TestCheckFolderThumbnail:
+class TestFolderThumbnailUrl:
+    """OPDS covers go through core.folder_art like the web grid (#720)."""
 
-    def test_no_thumbnail(self, tmp_path):
-        from routes.opds import check_folder_thumbnail
-        assert check_folder_thumbnail(str(tmp_path)) is None
+    def test_no_thumbnail(self, app, tmp_path):
+        from routes.opds import folder_thumbnail_url
+        with app.test_request_context():
+            assert folder_thumbnail_url(str(tmp_path)) is None
 
-    def test_png_thumbnail(self, tmp_path):
-        from routes.opds import check_folder_thumbnail
+    @pytest.mark.parametrize("name", ["folder.png", "folder.jpg", "folder.gif", "folder.webp"])
+    def test_legacy_disk_thumbnail(self, app, tmp_path, name):
+        from routes.opds import folder_thumbnail_url
         from PIL import Image
-        thumb = tmp_path / "folder.png"
-        Image.new("RGB", (10, 10), "red").save(str(thumb))
-        result = check_folder_thumbnail(str(tmp_path))
-        assert result == str(thumb)
+        Image.new("RGB", (10, 10), "red").save(str(tmp_path / name))
+        with app.test_request_context():
+            url = folder_thumbnail_url(str(tmp_path))
+        assert url.startswith("http")
+        assert "kind=folder" in url
+        assert name not in url
 
-    def test_jpg_thumbnail(self, tmp_path):
-        from routes.opds import check_folder_thumbnail
+    def test_cached_thumbnail(self, app, tmp_path):
+        from core import folder_art
+        from routes.opds import folder_thumbnail_url
         from PIL import Image
-        thumb = tmp_path / "folder.jpg"
-        Image.new("RGB", (10, 10), "red").save(str(thumb))
-        result = check_folder_thumbnail(str(tmp_path))
-        assert result == str(thumb)
+        assert folder_art.put_art(
+            str(tmp_path), "folder", Image.new("RGB", (10, 10), "red"), ".png", "generated")
+        with app.test_request_context():
+            url = folder_thumbnail_url(str(tmp_path))
+        assert "kind=folder" in url
 
 
 class TestGetDirectoryListingForOpds:
