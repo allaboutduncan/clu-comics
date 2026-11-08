@@ -1110,6 +1110,149 @@ def serve_folder_thumbnail():
 
 
 # =============================================================================
+# Custom Folder Covers (clu-custom-covers)
+# =============================================================================
+#
+# The folder menu's "Choose custom cover…" picker. core/custom_covers.py owns
+# the repository index and the download; these routes gate the folder, proxy
+# previews (the browser never talks to GitHub) and store the pick through
+# core.folder_art as source='custom'.
+
+_COVERS_UNAVAILABLE = "Could not reach the custom covers repository on GitHub. Try again later."
+
+
+def _covers_folder_refusal(folder):
+    """A JSON error response for a folder the picker may not look at, else None."""
+    if not folder:
+        return jsonify({"error": "Missing folder"}), 400
+    if not is_valid_library_path(folder):
+        return jsonify({"error": "Access denied - path not in any library"}), 403
+    return enforce_path_access(folder, mode='browse')
+
+
+@collection_bp.route('/api/custom-covers/match')
+def custom_covers_match():
+    """The publisher a folder is named after, with its covers and headers."""
+    from core import custom_covers
+
+    folder = request.args.get('folder', '')
+    refused = _covers_folder_refusal(folder)
+    if refused:
+        return refused
+
+    index = custom_covers.get_index()
+    if index is None:
+        return jsonify({"available": False, "error": _COVERS_UNAVAILABLE}), 503
+
+    name = os.path.basename(os.path.normpath(folder))
+    return jsonify({
+        "available": True,
+        "folder_name": name,
+        "match": custom_covers.match(name, index),
+    })
+
+
+@collection_bp.route('/api/custom-covers/search')
+def custom_covers_search():
+    """One page of the publishers whose name contains ``q``.
+
+    ``offset``/``limit`` page through the hits; the picker asks for the next
+    page as the user scrolls. ``next_offset`` is null on the last page.
+    """
+    from core import custom_covers
+
+    index = custom_covers.get_index()
+    if index is None:
+        return jsonify({"available": False, "error": _COVERS_UNAVAILABLE}), 503
+    offset = max(0, request.args.get('offset', 0, type=int) or 0)
+    limit = request.args.get('limit', custom_covers.MAX_SEARCH_RESULTS, type=int)
+    limit = min(max(1, limit or 1), custom_covers.MAX_SEARCH_RESULTS)
+    publishers, total = custom_covers.search_page(
+        request.args.get('q', ''), index, offset, limit)
+    end = offset + len(publishers)
+    return jsonify({
+        "available": True,
+        "publishers": publishers,
+        "total": total,
+        "next_offset": end if end < total else None,
+    })
+
+
+@collection_bp.route('/api/custom-covers/preview')
+def custom_covers_preview():
+    """Proxy one repository image. Only paths the index lists are fetched."""
+    from core import custom_covers
+
+    path = request.args.get('path', '')
+    index = custom_covers.get_index()
+    if not custom_covers.is_known_path(path, index):
+        return jsonify({"error": "Unknown image"}), 404
+    try:
+        data, ext = custom_covers.download(path, index)
+    except custom_covers.CustomCoverError as e:
+        return jsonify({"error": str(e)}), 502
+
+    resp = send_file(BytesIO(data), mimetype=folder_art.MIME_TYPES.get(ext, 'application/octet-stream'))
+    # The repository changes rarely; a re-opened picker should not re-download.
+    resp.headers['Cache-Control'] = 'private, max-age=86400'
+    return resp
+
+
+@collection_bp.route('/api/custom-covers/apply', methods=['POST'])
+def custom_covers_apply():
+    """Use a repository image as a folder's cover or header banner.
+
+    The kind comes from the index (a ``header`` file is a banner), never from
+    the client. Replaces the folder's current art of that kind: picking one is
+    an explicit choice, like an upload.
+    """
+    from core import custom_covers
+    from core.auth import file_op_refusal
+    from core.database import set_directory_has_thumbnail
+
+    data = request.get_json(silent=True) or {}
+    folder = data.get('folder') or ''
+    path = data.get('path') or ''
+
+    refused = _covers_folder_refusal(folder)
+    if refused:
+        return refused
+    refusal = file_op_refusal(folder)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    if not os.path.isdir(folder):
+        return jsonify({"error": "Folder not found"}), 404
+
+    index = custom_covers.get_index()
+    if index is None:
+        return jsonify({"error": _COVERS_UNAVAILABLE}), 503
+    kind = custom_covers.kind_of(path, index)
+    if not kind:
+        return jsonify({"error": "That image is not in the custom covers repository"}), 400
+
+    try:
+        image, ext = custom_covers.download(path, index)
+    except custom_covers.CustomCoverError as e:
+        return jsonify({"error": str(e)}), 502
+
+    if ext not in folder_art.KIND_EXTENSIONS[kind]:
+        return jsonify({"error": f"A {kind} image cannot be {ext}"}), 400
+
+    rec = folder_art.put_art(folder, kind, image, ext, 'custom')
+    if not rec:
+        return jsonify({"error": "Could not write to the cache volume"}), 500
+    if kind == 'folder':
+        set_directory_has_thumbnail(folder, True)
+
+    app_logger.info(f"Applied custom {kind} art {path} to {folder}")
+    return jsonify({
+        "success": True,
+        "kind": kind,
+        "url": folder_art.art_url(folder, kind, record=rec),
+    })
+
+
+# =============================================================================
 # Directory Listing
 # =============================================================================
 
