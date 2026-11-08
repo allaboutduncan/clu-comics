@@ -169,8 +169,8 @@ class TestMetronImportFieldMapping:
              patch("routes.reading_lists.create_reading_list", return_value=7), \
              patch("routes.reading_lists.update_reading_list_description"), \
              patch("routes.reading_lists.update_reading_list_source_version"), \
-             patch("routes.reading_lists.add_reading_list_entry",
-                   side_effect=lambda lid, data: added.append(data) or 1), \
+             patch("routes.reading_lists.add_reading_list_entries",
+                   side_effect=lambda lid, entries: added.extend(entries) or len(entries)), \
              patch("models.cbl.CBLLoader.prefetch_metron_ids"), \
              patch("models.cbl.CBLLoader.match_file", return_value=None) as match:
             import_tasks["m1"] = {}

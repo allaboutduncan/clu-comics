@@ -33,15 +33,27 @@ DATABASE_PY = os.path.join(
 )
 
 # Leak-shaped writers on the day this test was written. Only ever lower it.
-BASELINE = 107
+BASELINE = 99
 
 # Converted for #723 -- they are on the TARGET -> library path, which runs once
 # per completed download, and must never regress.
+# #722 added the index rebuilds (save_file_index_to_db could raise UNIQUE
+# after committing its DELETE) and the reading-list import/sync writers, which
+# five concurrent imports drive.
 MUST_BE_LEAK_FREE = {
     "update_file_index_entry",
     "add_file_index_entry",
     "delete_file_index_entry",
     "set_directory_has_thumbnail",
+    "save_file_index_to_db",
+    "sync_file_index_incremental",
+    "create_reading_list",
+    "add_reading_list_entry",
+    "add_reading_list_entries",
+    "update_reading_list_description",
+    "update_reading_list_source_version",
+    "sync_reading_list_entries",
+    "update_reading_list_entry_match",
 }
 
 
