@@ -991,8 +991,17 @@ def process_incoming_wanted_issues():
             )
             continue
 
-        # Move file with original name first
-        temp_dest = os.path.join(dest_dir, filename)
+        # Move file with original name first -- but never onto a comic already
+        # in the series folder. move_file is os.replace underneath, which
+        # replaces an existing destination without a word (#723).
+        from cbz_ops.rename import free_destination
+
+        temp_dest = free_destination(src, os.path.join(dest_dir, filename))
+        if os.path.basename(temp_dest) != filename:
+            app_logger.warning(
+                f"{filename} already exists in {dest_dir}; filing this copy as "
+                f"{os.path.basename(temp_dest)} so neither is overwritten"
+            )
 
         try:
             # move_file, not shutil.move: shutil.move's cross-device fallback
@@ -1027,7 +1036,7 @@ def process_incoming_wanted_issues():
             try:
                 file_stat = os.stat(temp_dest)
                 add_file_index_entry(
-                    name=filename,
+                    name=os.path.basename(temp_dest),
                     path=temp_dest,
                     entry_type="file",
                     size=file_stat.st_size,
@@ -1047,12 +1056,26 @@ def process_incoming_wanted_issues():
 
                 new_filename = get_renamed_filename(filename, file_path=temp_dest)
                 if new_filename and new_filename != filename:
-                    final_path = os.path.join(dest_dir, new_filename)
+                    # Two different issues can render to one name; a bare
+                    # os.rename onto it destroyed the first one (#723).
+                    final_path = free_destination(
+                        temp_dest, os.path.join(dest_dir, new_filename)
+                    )
+                    if os.path.basename(final_path) != new_filename:
+                        app_logger.warning(
+                            f"Rename target {new_filename} already exists in "
+                            f"{dest_dir}; using {os.path.basename(final_path)} "
+                            f"so neither comic is overwritten"
+                        )
+                if final_path != temp_dest:
                     os.rename(temp_dest, final_path)
-                    app_logger.info(f"Renamed: {filename} -> {new_filename}")
+                    app_logger.info(
+                        f"Renamed: {os.path.basename(temp_dest)} -> "
+                        f"{os.path.basename(final_path)}"
+                    )
                     update_file_index_entry(
                         temp_dest,
-                        name=new_filename,
+                        name=os.path.basename(final_path),
                         new_path=final_path,
                         parent=dest_dir,
                     )

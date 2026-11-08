@@ -981,6 +981,15 @@ class TestGetRenamedFilename:
             "Mister Miracle 1990-09-18 ( 21) (digital) (Glorith-Novus-HD).cbz",
             "Mister Miracle 021 (1990).cbz",
         ),
+        # ... with the scene "_NN" issue spelling (#723)
+        (
+            "Supergirl 2000-01-00 (_42) (digital) (OkC.O.M.P.U.T.O.-Novus-HD).cbz",
+            "Supergirl 042 (2000).cbz",
+        ),
+        (
+            "Supergirl 2001-04-00 (_57) (digital) (OkC.O.M.P.U.T.O.-Novus-HD).cbz",
+            "Supergirl 057 (2001).cbz",
+        ),
     ])
     def test_pre_clean_patterns(self, filename, expected):
         from cbz_ops.rename import get_renamed_filename
@@ -1075,6 +1084,25 @@ class TestGetRenamedFilenameCustomPattern:
         path = self._make_cbz(tmp_path, "Civil War - Unmasked 002.cbz", xml)
         result = get_renamed_filename("Civil War - Unmasked 002.cbz", file_path=path)
         assert result == "Civil War - Unmasked - 002 (2026).cbz"
+
+    @patch("cbz_ops.rename.load_custom_rename_config",
+           return_value=(True, "{series_name} ({volume_year}) Issue {issue_number} ({issue_year})"))
+    def test_scene_date_names_keep_their_issue_numbers(self, mock_config, tmp_path):
+        """#723: a pack of "Series YYYY-MM-DD (_NN)" files all rendered to
+        "Supergirl 2 Issue (2000) Issue 000 (2000)", and each library rename
+        overwrote the last."""
+        from cbz_ops.rename import get_renamed_filename
+        names = {
+            n: get_renamed_filename(n, file_path=self._make_cbz(tmp_path, n))
+            for n in (
+                "Supergirl 2000-01-00 (_42) (digital) (OkC.O.M.P.U.T.O.-Novus-HD).cbz",
+                "Supergirl 2000-02-00 (_43) (digital) (OkC.O.M.P.U.T.O.-Novus-HD).cbz",
+            )
+        }
+        assert sorted(names.values()) == [
+            "Supergirl (2000) Issue 042 (2000).cbz",
+            "Supergirl (2000) Issue 043 (2000).cbz",
+        ]
 
     @patch("cbz_ops.rename.load_custom_rename_config",
            return_value=(True, "{series_name} - {issue_number} ({issue_year}-{issue_month_m})"))
@@ -1921,3 +1949,44 @@ class TestCleanFinalFilenameWithCleanup:
         )
         # Filenames with no recognizable extension still get cleaned
         assert rename.clean_final_filename("Batman 001") == "Batman_001"
+
+
+class TestFreeDestination:
+    """free_destination: never let a rename replace a different file (#723)."""
+
+    def test_free_name_is_used_as_is(self, tmp_path):
+        from cbz_ops.rename import free_destination
+        src = tmp_path / "a.cbz"
+        src.write_bytes(b"a")
+        dst = tmp_path / "b.cbz"
+        assert free_destination(str(src), str(dst)) == str(dst)
+
+    def test_taken_name_is_uniquified_not_replaced(self, tmp_path):
+        from cbz_ops.rename import free_destination
+        src = tmp_path / "Supergirl 2 Issue 000 (2000) (1).cbz"
+        src.write_bytes(b"issue 43")
+        dst = tmp_path / "Supergirl 2 Issue (2000) Issue 000 (2000).cbz"
+        dst.write_bytes(b"issue 42")
+        got = free_destination(str(src), str(dst))
+        assert got == str(tmp_path / "Supergirl 2 Issue (2000) Issue 000 (2000) (1).cbz")
+        assert dst.read_bytes() == b"issue 42"
+
+    def test_case_only_rename_is_not_a_collision(self, tmp_path):
+        """On a case-insensitive filesystem the re-cased name *is* the source."""
+        from cbz_ops.rename import free_destination
+        src = tmp_path / "avx 001.cbz"
+        src.write_bytes(b"a")
+        dst = str(tmp_path / "AVX 001.cbz")
+        with patch("cbz_ops.rename.os.path.exists", return_value=True), \
+             patch("cbz_ops.rename.os.path.samefile", return_value=True):
+            assert free_destination(str(src), dst) == dst
+
+    def test_rename_files_does_not_overwrite(self, tmp_path):
+        from cbz_ops.rename import rename_files
+        (tmp_path / "Comic 001 (2000).cbz").write_bytes(b"keep me")
+        (tmp_path / "Comic 1 (2000).cbz").write_bytes(b"other")
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")), \
+             patch("cbz_ops.rename.load_issue_pad_width", return_value=3):
+            rename_files(str(tmp_path))
+        contents = sorted(p.read_bytes() for p in tmp_path.iterdir())
+        assert contents == [b"keep me", b"other"]
