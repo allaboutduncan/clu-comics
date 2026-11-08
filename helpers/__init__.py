@@ -388,7 +388,12 @@ FOLDER_THUMBNAIL_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 
 def find_folder_thumbnail(folder_path):
-    """Find a folder thumbnail image in the given directory.
+    """Find a legacy ``folder.*`` image sitting in the given directory.
+
+    Folder art now lives in the cache volume (``core.folder_art``, #720), and
+    nothing in the app asks this directly any more: ``core.folder_art.find_art``
+    checks the cache first and probes the disk itself, with a miss memo. Kept
+    for callers outside the repo.
 
     Stat-based: probes only the lowercase canonical names. Avoids
     os.listdir on huge directories, which is slow on Docker bind mounts

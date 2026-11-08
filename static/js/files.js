@@ -2795,6 +2795,9 @@ function handleExternalFileDrop(fileList, targetPath, panel) {
 
   const formData = new FormData();
   formData.append('target_dir', targetPath);
+  // folder.* / header.* / overlay.png become the folder's art, stored in the
+  // cache volume rather than written into the library (#720).
+  formData.append('folder_art', '1');
   files.forEach(file => {
     formData.append('files', file);
   });

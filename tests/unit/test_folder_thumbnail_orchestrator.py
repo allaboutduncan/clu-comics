@@ -11,10 +11,11 @@ Three of them are load-bearing and easy to break with an innocent-looking edit:
 * The pinned cover is prepended, *then* the list is truncated. Truncating first
   would silently drop the pin on any style that takes fewer covers than the
   folder has -- which is every folder in Single Image mode.
-* Existing art is cleared using the shared FOLDER_THUMBNAIL_EXTENSIONS list.
-  The old inline list omitted ``.webp``, so an uploaded folder.webp survived the
-  write and kept winning find_folder_thumbnail -- the new image was generated
-  and then never shown.
+* The art is stored through ``core.folder_art`` in the cache volume, never
+  saved into the library folder (#720), and legacy art on disk is never
+  deleted -- cached art takes precedence over it, so there is nothing to
+  clear. (The old in-folder write had to sweep every extension first, or a
+  surviving folder.webp kept winning the lookup.)
 * The nested folder-icon overlay is gated on the preference, not applied
   unconditionally.
 """
@@ -94,13 +95,40 @@ class TestPinnedCover:
         assert guard < prepend
 
 
-class TestClearingExistingArt:
+class TestWritesToTheCache:
+    """#720: generated art goes to the cache volume, never into the library."""
 
-    def test_uses_the_shared_extension_list(self, func_node):
-        names = {
-            n.id for n in ast.walk(func_node) if isinstance(n, ast.Name)
-        }
-        assert "FOLDER_THUMBNAIL_EXTENSIONS" in names
+    def test_stores_through_folder_art(self, source_lines):
+        assert any(
+            "folder_art.put_art(" in line for line in source_lines
+        ), "generated art must be stored through core.folder_art"
+
+    def test_never_saves_into_the_folder(self, func_node, source_lines):
+        """No PIL save, no os.path.join(folder_path, "folder...") target."""
+        saves = [
+            n for n in ast.walk(func_node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "save"
+        ]
+        assert not saves, "folder art must not be written with Image.save"
+        body = "\n".join(source_lines)
+        assert '"folder.png"' not in body
+
+    def test_never_deletes_disk_art(self, func_node):
+        """Legacy art on disk is the user's (or another app's); cache wins over it."""
+        removes = [
+            n for n in ast.walk(func_node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr in ("remove", "unlink")
+        ]
+        assert not removes
+
+    def test_a_failed_store_reports_failure(self, source_lines):
+        """Otherwise the flag below is set for art that does not exist."""
+        store = _line_index(source_lines, "folder_art.put_art(")
+        bail = _line_index(source_lines, "if not record:")
+        flag = _line_index(source_lines, "set_directory_has_thumbnail(folder_path, True)")
+        assert store < bail < flag
 
     def test_does_not_reinline_an_extension_list(self, source_lines):
         """A second hardcoded list is how the .webp gap appeared the first time."""
@@ -125,12 +153,6 @@ class TestWriteGuard:
         guard = _line_index(source_lines, "ft.may_write(folder_path, overwrite)")
         compose = _line_index(source_lines, 'spec["compose"](cached_thumbs)')
         assert guard < compose
-
-    def test_permissions_are_normalised_after_writing(self, source_lines):
-        """Otherwise the file lands root:0600 and cannot be served back."""
-        save = _line_index(source_lines, 'final_canvas.save(output_path, "PNG")')
-        perms = _line_index(source_lines, "match_parent_permissions(output_path)")
-        assert save < perms
 
     def test_the_cached_thumbnail_flag_is_updated(self, source_lines):
         """/api/browse serves folder art off this flag, not a stat call."""

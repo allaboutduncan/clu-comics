@@ -5,6 +5,15 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+def _png_bytes(size=(4, 6), color="red"):
+    from io import BytesIO
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class TestFilesPage:
 
     def test_files_page(self, client):
@@ -276,11 +285,12 @@ class TestApiBrowse:
     def test_browse_serves_every_supported_thumbnail_format(
         self, mock_children, client, tmp_path, thumb_name
     ):
-        """Uploaded folder art must resolve whatever extension the user used.
+        """Legacy art on disk must resolve whatever extension the user used.
 
-        The indexer sets has_thumbnail from find_folder_thumbnail, so a narrower
+        The indexer sets has_thumbnail from core.folder_art, so a narrower
         list here would report art the client is never given a URL for -- and
-        the client only re-checks folders reported as having none.
+        the client only re-checks folders reported as having none. The URL
+        names the folder and the kind, never the file (#720).
         """
         data_dir = tmp_path / "data"
         series = data_dir / "Batman"
@@ -296,7 +306,68 @@ class TestApiBrowse:
 
         directory = resp.get_json()["directories"][0]
         assert directory["has_thumbnail"] is True
-        assert thumb_name in directory["thumbnail_url"]
+        url = directory["thumbnail_url"]
+        assert "kind=folder" in url
+        assert "folder=" in url
+        assert thumb_name not in url
+
+    @patch("routes.collection.get_directory_children")
+    def test_browse_uses_cached_art_without_the_index_flag(
+        self, mock_children, client, tmp_path
+    ):
+        """Cached art shows even when the indexed flag has not caught up yet."""
+        from core import folder_art
+
+        data_dir = tmp_path / "data"
+        series = data_dir / "Batman"
+        series.mkdir(parents=True)
+        assert folder_art.put_art(str(series), "folder", _png_bytes(), ".png", "uploaded")
+
+        mock_children.return_value = (
+            [{"name": "Batman", "path": str(series), "has_thumbnail": False}], [],
+        )
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(data_dir))}):
+            resp = client.get(f"/api/browse?path={data_dir}")
+
+        directory = resp.get_json()["directories"][0]
+        assert directory["has_thumbnail"] is True
+        assert "kind=folder" in directory["thumbnail_url"]
+        assert not list(series.iterdir()), "nothing may be written into the folder"
+
+    @patch("routes.collection.get_directory_children")
+    def test_browse_links_cached_header_and_overlay(
+        self, mock_children, client, tmp_path
+    ):
+        from core import folder_art
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        assert folder_art.put_art(str(data_dir), "header", _png_bytes(), ".png", "uploaded")
+        assert folder_art.put_art(str(data_dir), "overlay", _png_bytes(), ".png", "uploaded")
+        mock_children.return_value = ([], [])
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(data_dir))}):
+            body = client.get(f"/api/browse?path={data_dir}").get_json()
+
+        assert "kind=header" in body["header_image_url"]
+        assert "kind=overlay" in body["overlay_image_url"]
+
+    @pytest.mark.parametrize("header_name", [
+        "header.png", "header.jpg", "header.jpeg", "header.gif", "header.webp",
+    ])
+    @patch("routes.collection.get_directory_children")
+    def test_browse_finds_every_legacy_header_format(
+        self, mock_children, client, tmp_path, header_name
+    ):
+        data_dir = tmp_path / "data"
+        data_dir.mkdir(exist_ok=True)
+        (data_dir / header_name).write_bytes(_png_bytes())
+        mock_children.return_value = ([], [])
+
+        with patch.dict("sys.modules", {"app": MagicMock(DATA_DIR=str(data_dir))}):
+            body = client.get(f"/api/browse?path={data_dir}").get_json()
+
+        assert "kind=header" in body["header_image_url"]
 
     @patch("routes.collection.get_directory_children")
     def test_browse_corrects_a_stale_thumbnail_flag(
@@ -673,6 +744,89 @@ class TestFolderThumbnail:
         from routes.collection import FOLDER_THUMBNAIL_MIME_TYPES
 
         assert set(FOLDER_THUMBNAIL_MIME_TYPES) == set(FOLDER_THUMBNAIL_EXTENSIONS)
+
+
+class TestFolderArtServe:
+    """The ``?folder=&kind=`` form serves art from the cache volume (#720).
+
+    The client names a folder and a kind, never a file, so the cache path
+    cannot be asked for -- but the folder is still caller-supplied, so the
+    same confinement applies before anything is looked up.
+    """
+
+    def test_serves_cached_art(self, client, tmp_path):
+        from core import folder_art
+        folder = tmp_path / "Batman"
+        folder.mkdir()
+        assert folder_art.put_art(str(folder), "folder", _png_bytes(), ".png", "generated")
+
+        resp = client.get("/api/folder-thumbnail", query_string={"folder": str(folder)})
+        assert resp.status_code == 200
+        assert resp.content_type == "image/png"
+        assert resp.data == _png_bytes()
+
+    @pytest.mark.parametrize("kind,ext,mime", [
+        ("header", ".jpg", "image/jpeg"),
+        ("header", ".gif", "image/gif"),
+        ("header", ".webp", "image/webp"),
+        ("overlay", ".png", "image/png"),
+    ])
+    def test_serves_each_kind(self, client, tmp_path, kind, ext, mime):
+        from core import folder_art
+        assert folder_art.put_art(str(tmp_path), kind, b"bytes", ext, "uploaded")
+        resp = client.get("/api/folder-thumbnail",
+                          query_string={"folder": str(tmp_path), "kind": kind})
+        assert resp.status_code == 200
+        assert resp.content_type == mime
+
+    def test_legacy_disk_art_is_imported_on_first_serve(self, client, tmp_path):
+        from core import folder_art
+        folder = tmp_path / "Batman"
+        folder.mkdir()
+        disk = folder / "folder.jpg"
+        disk.write_bytes(_png_bytes())
+
+        resp = client.get("/api/folder-thumbnail", query_string={"folder": str(folder)})
+        assert resp.status_code == 200
+        assert resp.content_type == "image/jpeg"
+
+        rec = folder_art.get_art(str(folder), "folder")
+        assert rec and rec["source"] == "imported"
+        assert disk.exists(), "the on-disk original is never deleted"
+
+    def test_cache_wins_over_disk(self, client, tmp_path):
+        from core import folder_art
+        folder = tmp_path / "Batman"
+        folder.mkdir()
+        (folder / "folder.png").write_bytes(b"old disk art")
+        new = _png_bytes(color="blue")
+        assert folder_art.put_art(str(folder), "folder", new, ".png", "generated")
+
+        resp = client.get("/api/folder-thumbnail", query_string={"folder": str(folder)})
+        assert resp.data == new
+
+    def test_folder_outside_every_library_denied(self, client, outside_art):
+        folder = os.path.dirname(outside_art)
+        resp = client.get("/api/folder-thumbnail", query_string={"folder": folder})
+        assert resp.status_code == 403
+        assert b"not-a-real-key" not in resp.data
+
+    def test_unknown_kind_denied(self, client, tmp_path):
+        resp = client.get("/api/folder-thumbnail",
+                          query_string={"folder": str(tmp_path), "kind": "../../config"})
+        assert resp.status_code == 403
+
+    def test_folder_without_art_gets_the_error_tile(self, client, tmp_path):
+        resp = client.get("/api/folder-thumbnail", query_string={"folder": str(tmp_path)})
+        assert resp.status_code == 200
+        assert resp.content_type.startswith("image/svg+xml")
+
+    def test_store_files_cannot_be_fetched_by_path(self, client, tmp_path):
+        """A cache file's name is not folder art, so the legacy form refuses it."""
+        from core import folder_art
+        rec = folder_art.put_art(str(tmp_path), "folder", _png_bytes(), ".png", "generated")
+        resp = client.get("/api/folder-thumbnail", query_string={"path": rec["path"]})
+        assert resp.status_code == 403
 
 
 class TestCbzPreview:

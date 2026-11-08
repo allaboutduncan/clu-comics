@@ -1423,6 +1423,12 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
         from core.database import prune_vanished_index_dirs
 
         result["pruned_dirs"] = prune_vanished_index_dirs()
+        # Same evidence rule, for folder art cached for folders that no longer
+        # exist (core/folder_art.py is not hooked to deletion; a trashed folder
+        # can come back).
+        from core import folder_art
+
+        folder_art.prune_orphans()
         stats = run_batch(limit, recheck_days, time_budget=time_budget, op_id=op_id)
         stats["pruned"] = prune_health_rows()
         state["last_batch"] = stats

@@ -2,6 +2,8 @@
 paths:
   - "core/thumbnail_cache.py"
   - "core/folder_thumbnails.py"
+  - "core/folder_art.py"
+  - "routes/opds.py"
   - "cbz_ops/**"
   - "app.py"
   - "routes/collection.py"
@@ -123,20 +125,57 @@ Things that look arbitrary and are not:
 
 ### Folder Thumbnails
 
-Folder cover art is **a real `folder.png` written into the comic folder** — there
-is no separate cache. That single fact drives most of the design.
-
-The work is split in two:
+Folder art (the cover, the `header.*` banner, the `overlay.png`) lives in the
+**cache volume**, never in the library folder: `core/folder_art.py` owns it,
+as `CACHE_DIR/folder_art/<shard>/<uuid>.<ext>` plus one `folder_art` row per
+`(folder_path, kind)`. It used to be a real `folder.png` written beside the
+comics, so on a library kept on spinning disks every generated cover was a
+write to the array and every grid page a read from it (#720).
 
 | Where | What |
 |-------|------|
+| `core/folder_art.py` | The store: `put_art`/`get_art`/`find_art(_batch)`/`delete_art`, the legacy disk lookup and import, `art_url`, `prune_orphans` |
 | `core/folder_thumbnails.py` | Pure PIL. `select_cover_files()` picks which comics contribute covers; the `STYLES` registry maps the site-wide `folder_thumbnail_style` preference to one of four composers (`fanned`, `single`, `cascade`, `mosaic`) |
-| `app.generate_folder_thumbnail_internal` | The I/O around it — reads preferences and the pin, resolves covers through the per-comic thumbnail cache, clears old art, writes `folder.png` |
+| `app.generate_folder_thumbnail_internal` | The I/O around it — reads preferences and the pin, resolves covers through the per-comic thumbnail cache, hands the canvas to `folder_art.put_art` |
 
 The split exists so the composers are testable: `app.py` cannot be imported in
 tests, so anything left there is only reachable through AST assertions
 (`tests/unit/test_folder_thumbnail_orchestrator.py`). **Put new logic in
 `core/`, not in the orchestrator.**
+
+The store's own rules (`tests/unit/test_folder_art.py`):
+
+- **The cache file name is random, not md5(folder path).** A comic thumbnail
+  can be keyed on its path because it can always be regenerated; an uploaded
+  folder image exists nowhere else. A folder rename is a row update —
+  `move_path_references` follows `folder_art.folder_path` on its directory
+  branch, **including the exact path** (the generic loop only rewrites
+  descendants) and escaped (`X_Men` ≠ `X-Men`).
+- **CLU never writes or deletes art in a library folder.** A legacy
+  `folder.*`/`header.*`/`overlay.png` already there is still found
+  (`find_art`: cache first, then disk), and is **copied in on its first
+  serve** (`import_disk_art`, `source='imported'`) so later views read the
+  cache. The original stays: it may be there for another app, and a generated
+  one cannot be told from a chosen one. Cached art wins over disk art, which is
+  why regenerating no longer has to clear anything.
+- **A disk miss is memoised** (`DISK_MISS_TTL_SECONDS`). A folder with no art
+  is the common case, and without the memo every page view stats five names
+  on the data disk. Any `put_art`/`delete_art` for the folder clears it.
+- **Not hooked to deletion.** A trashed folder can be restored, so its rows
+  stay; `prune_orphans` drops rows whose folder `is_path_provably_gone` (an
+  unmounted root is not proof) and store files no row references once they are
+  an hour old (a write in progress creates the file before the row). The
+  library health scan and both recursive sweeps call it.
+- **URLs name the folder and the kind, never a file**
+  (`art_url` → `/api/folder-thumbnail?folder=&kind=&v=`). The route resolves
+  the image server-side, so a cache path is never sent or accepted; `v` is the
+  row's `updated_at`, so a regenerated cover is not hidden by the browser cache.
+- **Drag-and-drop uploads opt in with `folder_art=1`.** `collection.js` and
+  `files.js` send it; then a `folder.*`/`header.*`/`overlay.png` is verified
+  with PIL and stored (replacing that kind) instead of being saved into the
+  folder. `clu-cbz-edit.js` posts extracted *pages* to the same route and must
+  not send it: a page called `folder.png` is a page.
+- Shards sit at depth 2 under `/cache`, inside the bounded chown walk below.
 
 Rules that are easy to break:
 
@@ -154,16 +193,18 @@ Rules that are easy to break:
   and the nested, borrowed-cover branch never did, so a publisher folder could
   take an AppleDouble sidecar out of a child series folder — and `._` sorts
   before letters, so it won.
-- **Clearing old art must sweep `helpers.FOLDER_THUMBNAIL_EXTENSIONS`**, never a
-  local list. A missed extension survives the write and keeps winning
-  `find_folder_thumbnail`, so the new image is generated and then never shown.
-  This is exactly how a `.webp` gap existed in two places before.
-- **`may_write()` is what protects uploaded art**, and only for auto-generation
+- **Every extension list comes from `folder_art.KIND_EXTENSIONS`** (the folder
+  entry is `helpers.FOLDER_THUMBNAIL_EXTENSIONS`), and the serve route's
+  mimetypes from `folder_art.MIME_TYPES`. A second list is how a `.webp` gap
+  once existed in two places, and how OPDS missed `.gif`/`.webp`.
+- **`may_write()` is what protects uploaded art** (cached or legacy on disk), and only for auto-generation
   (`overwrite=False`). The explicit menu actions and the "Regenerate All
   Thumbnails" sweep pass `overwrite=True` and *will* destroy an uploaded image —
   deliberately, and behind a confirm modal.
 - **`/api/folder-thumbnail` confines before it opens anything, and the order is
-  load-bearing.** It takes the path from the query string, so `os.path.normpath`
+  load-bearing.** Both forms do: `?folder=&kind=` (what the app emits) checks
+  the folder's realpath and grant, then the kind, before any lookup. The legacy
+  `?path=` form (kept for old OPDS URLs) takes a file path from the query string, so `os.path.normpath`
   is not a guard — it normalises a path, it does not confine one, and that alone
   is what the route once had: any logged-in user could read any file the process
   could read, `/config` and the provider credentials included
@@ -191,7 +232,7 @@ gunicorn's 120s timeout.
 
 > **A sweep never touches the folder it was invoked on.** `_walk_folders()`
 > excludes its own roots, so "Regenerate All Thumbnails" on `/data/DC Comics`
-> restyles every series inside it and leaves `/data/DC Comics/folder.png` alone
+> restyles every series inside it and leaves `/data/DC Comics`' own art alone
 > — a publisher image is usually hand-picked, and it is not what the user is
 > replacing. The all-libraries sweep from /config excludes the library roots the
 > same way. This is a promise the confirmation modal makes in so many words, so

@@ -27,6 +27,7 @@ from helpers.library import (is_critical_path, get_critical_path_error_message, 
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
+from core import folder_art
 from core.database import add_file_index_entry
 from core.download_utils import is_reapable_temp_file, ORPHAN_MIN_AGE_SECONDS
 from core.memory_utils import memory_context
@@ -397,6 +398,57 @@ def folder_size():
 # Upload
 # =============================================================================
 
+# Uploaded folder art is decoded before it is stored, so this bounds what one
+# file may cost. Far above any real cover or banner.
+MAX_FOLDER_ART_BYTES = 20 * 1024 * 1024
+
+
+def _store_uploaded_folder_art(file, filename, file_ext, kind, target_dir):
+    """Store one uploaded ``folder.*`` / ``header.*`` / ``overlay.png`` in the cache.
+
+    Returns the ``uploaded`` entry for the response, or ``{'error': ...}``.
+    It replaces the folder's art of that kind -- there is no ``folder_1.png``
+    to fall back to, which is what the on-disk upload used to produce (and
+    then never show). Nothing is written into ``target_dir``.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    from core.database import set_directory_has_thumbnail
+
+    data = file.read(MAX_FOLDER_ART_BYTES + 1)
+    if len(data) > MAX_FOLDER_ART_BYTES:
+        return {'error': 'Image is too large'}
+    try:
+        with Image.open(BytesIO(data)) as img:
+            img.verify()
+    except Exception:
+        return {'error': 'Not a readable image'}
+
+    rec = folder_art.put_art(target_dir, kind, data, file_ext, 'uploaded')
+    if not rec:
+        return {'error': 'Could not write to the cache volume'}
+
+    if kind == 'folder':
+        set_directory_has_thumbnail(target_dir, True)
+    try:
+        from app import invalidate_cache_for_path
+
+        invalidate_cache_for_path(target_dir)
+    except Exception:
+        pass
+
+    app_logger.info(f"Stored uploaded {kind} art for {target_dir} in the cache")
+    return {
+        'name': filename,
+        'path': target_dir,
+        'size': len(data),
+        'stored': 'cache',
+        'kind': kind,
+    }
+
+
 @files_bp.route('/upload-to-folder', methods=['POST'])
 def upload_to_folder():
     """
@@ -449,6 +501,8 @@ def upload_to_folder():
         # Allowed file extensions
         allowed_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.cbz', '.cbr', '.pdf'}
 
+        store_folder_art = request.form.get('folder_art') == '1'
+
         uploaded_files = []
         skipped_files = []
         errors = []
@@ -474,6 +528,20 @@ def upload_to_folder():
                     'name': filename,
                     'reason': f'File type not allowed ({file_ext})'
                 })
+                continue
+
+            # Folder art (folder.*, header.*, overlay.png) dropped onto a
+            # folder goes to the cache volume, not into the library (#720).
+            # Opt-in per request: the CBZ page editor posts extracted pages
+            # here too, and a page that happens to be called folder.png is a
+            # page, not a cover.
+            art_kind = folder_art.kind_for_filename(filename) if store_folder_art else None
+            if art_kind:
+                stored = _store_uploaded_folder_art(file, filename, file_ext, art_kind, target_dir)
+                if stored.get('error'):
+                    errors.append({'name': filename, 'error': stored['error']})
+                else:
+                    uploaded_files.append(stored)
                 continue
 
             # Construct full path

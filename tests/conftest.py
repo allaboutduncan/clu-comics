@@ -275,3 +275,25 @@ def _suppress_app_logging():
         app_logger.handlers = original_handlers
     except ImportError:
         yield
+
+
+# ---------------------------------------------------------------------------
+# Fixture: Folder art store (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _folder_art_in_tmp(tmp_path, monkeypatch):
+    """Keep core.folder_art's store inside the test's tmp dir.
+
+    Its default root is the fixed /cache volume; a test that generates or
+    uploads folder art must never write there. Also clears the in-memory
+    disk-miss memo so one test's miss cannot hide another's art.
+    """
+    try:
+        from core import folder_art
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(folder_art, "get_cache_dir", lambda: str(tmp_path / "cache"))
+    folder_art.reset_state()
+    yield
+    folder_art.reset_state()

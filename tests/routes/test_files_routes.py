@@ -1100,6 +1100,103 @@ class TestUploadToFolderOpsIntegration:
         assert after.issubset(before), "validation failure must not register a new op"
 
 
+def _real_png(color="red"):
+    from io import BytesIO
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGB", (4, 6), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+class TestUploadFolderArt:
+    """folder.* / header.* / overlay.png dropped on a folder go to the cache (#720)."""
+
+    def _post(self, client, target, files, folder_art_flag=True):
+        from io import BytesIO
+
+        data = {
+            "target_dir": str(target),
+            "files": [(BytesIO(b), name) for name, b in files],
+        }
+        if folder_art_flag:
+            data["folder_art"] = "1"
+        return client.post("/upload-to-folder", data=data,
+                           content_type="multipart/form-data")
+
+    @pytest.mark.parametrize("name,kind", [
+        ("folder.png", "folder"), ("folder.jpg", "folder"),
+        ("header.png", "header"), ("header.gif", "header"), ("header.jpg", "header"),
+        ("overlay.png", "overlay"),
+    ])
+    def test_lands_in_the_cache_not_the_folder(self, client, tmp_path, name, kind):
+        from core import folder_art
+
+        target = tmp_path / "Batman"
+        target.mkdir()
+        body = self._post(client, target, [(name, _real_png())]).get_json()
+
+        assert body["success"] is True
+        assert body["total_uploaded"] == 1
+        assert body["uploaded"][0]["stored"] == "cache"
+        assert body["uploaded"][0]["kind"] == kind
+        assert list(target.iterdir()) == [], "nothing may be written into the library"
+        rec = folder_art.get_art(str(target), kind)
+        assert rec and rec["source"] == "uploaded"
+
+    def test_a_second_upload_replaces_the_first(self, client, tmp_path):
+        from core import folder_art
+
+        target = tmp_path / "Batman"
+        target.mkdir()
+        self._post(client, target, [("folder.png", _real_png("red"))])
+        first = folder_art.get_art(str(target), "folder")["path"]
+        self._post(client, target, [("folder.png", _real_png("blue"))])
+
+        rec = folder_art.get_art(str(target), "folder")
+        assert rec["path"] != first
+        with open(rec["path"], "rb") as fh:
+            assert fh.read() == _real_png("blue")
+
+    def test_an_unreadable_image_is_refused(self, client, tmp_path):
+        from core import folder_art
+
+        target = tmp_path / "Batman"
+        target.mkdir()
+        body = self._post(client, target, [("folder.png", b"not an image")]).get_json()
+
+        assert body["total_errors"] == 1
+        assert folder_art.get_art(str(target), "folder") is None
+
+    def test_other_images_still_go_into_the_folder(self, client, tmp_path):
+        target = tmp_path / "Batman"
+        target.mkdir()
+        body = self._post(client, target, [("page01.png", _real_png())]).get_json()
+        assert body["total_uploaded"] == 1
+        assert (target / "page01.png").exists()
+
+    def test_without_the_flag_folder_png_is_an_ordinary_file(self, client, tmp_path):
+        """The CBZ page editor posts pages here; a page named folder.png is a page."""
+        from core import folder_art
+
+        target = tmp_path / "extracted"
+        target.mkdir()
+        self._post(client, target, [("folder.png", _real_png())], folder_art_flag=False)
+        assert (target / "folder.png").exists()
+        assert folder_art.get_art(str(target), "folder") is None
+
+    def test_page_scripts_send_the_flag_and_the_editor_does_not(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+        def read(rel):
+            with open(os.path.join(root, rel), encoding="utf-8") as fh:
+                return fh.read()
+
+        assert "formData.append('folder_art', '1')" in read("static/js/collection.js")
+        assert "formData.append('folder_art', '1')" in read("static/js/files.js")
+        assert "folder_art" not in read("static/js/clu-cbz-edit.js")
+
+
 class TestCropCover:
 
     def test_missing_target(self, client):

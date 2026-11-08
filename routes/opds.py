@@ -145,13 +145,17 @@ def get_directory_listing_for_opds(path):
     return directories, files
 
 
-def check_folder_thumbnail(folder_path):
-    """Check if a folder has a thumbnail image (folder.png, folder.jpg, etc.)."""
-    for ext in ['.png', '.jpg', '.jpeg']:
-        thumb_path = os.path.join(folder_path, f'folder{ext}')
-        if os.path.exists(thumb_path):
-            return thumb_path
-    return None
+def folder_thumbnail_url(folder_path):
+    """Absolute URL for a folder's cover art, or None when it has none.
+
+    Goes through ``core.folder_art`` like the web grid: cached art first
+    (#720), a legacy ``folder.*`` on disk otherwise, and every extension the
+    grid accepts -- this used to probe its own narrower list and missed
+    ``.gif`` and ``.webp``.
+    """
+    from core import folder_art
+
+    return folder_art.art_url(folder_path, 'folder', external=True)
 
 
 @opds_bp.route('/')
@@ -209,10 +213,7 @@ def browse():
             if allowed is not None and lib['id'] not in allowed:
                 continue  # library not granted to this user
             if os.path.exists(lib['path']):
-                thumb_path = check_folder_thumbnail(lib['path'])
-                thumbnail_url = None
-                if thumb_path:
-                    thumbnail_url = url_for('collection.serve_folder_thumbnail', path=thumb_path, _external=True)
+                thumbnail_url = folder_thumbnail_url(lib['path'])
 
                 entries.append({
                     'id': generate_feed_id(lib['path']),
@@ -259,11 +260,7 @@ def browse():
 
     # Add directories as navigation entries
     for dir_info in directories:
-        # Check for folder thumbnail
-        thumb_path = check_folder_thumbnail(dir_info['path'])
-        thumbnail_url = None
-        if thumb_path:
-            thumbnail_url = url_for('collection.serve_folder_thumbnail', path=thumb_path, _external=True)
+        thumbnail_url = folder_thumbnail_url(dir_info['path'])
 
         entries.append({
             'id': generate_feed_id(dir_info['path']),

@@ -1,10 +1,11 @@
 {# Confirmation for the destructive library-wide thumbnail rebuild.
 
    Included by both config.html and collection.html. Regenerating rebuilds
-   every folder's art from scratch, which means deleting whatever image is
-   there now -- including art the user uploaded by hand, since nothing on disk
-   distinguishes a generated folder.png from an uploaded one. That is why this
-   is a modal and not a toast, and why it never uses confirm(). #}
+   every folder's art from scratch, replacing whatever image it shows now --
+   including art the user uploaded by hand. Files in the library folders are
+   never deleted (core/folder_art.py), but the new cached image takes
+   precedence over them, so they stop being shown. That is why this is a modal
+   and not a toast, and why it never uses confirm(). #}
 <div class="modal fade" id="regenerateThumbnailsModal" tabindex="-1"
     aria-labelledby="regenerateThumbnailsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -23,12 +24,12 @@
                 </p>
                 <div class="alert alert-danger mb-2">
                     <i class="bi bi-exclamation-triangle me-2"></i>
-                    <strong>Existing folder images will be deleted.</strong>
-                    Every <code>folder.png</code>, <code>folder.jpg</code>,
-                    <code>folder.jpeg</code>, <code>folder.gif</code> and
-                    <code>folder.webp</code> inside it is removed and replaced &mdash;
+                    <strong>Existing folder images will be replaced.</strong>
+                    Every folder's cover art inside it is rebuilt &mdash;
                     <strong>including cover art you uploaded yourself</strong>.
-                    This cannot be undone.
+                    A <code>folder.png</code> (or <code>.jpg</code>, <code>.gif</code>,
+                    <code>.webp</code>) in your library folders is not deleted, but it
+                    is no longer shown. This cannot be undone.
                 </div>
                 {# The one thing this action does NOT touch. Worth its own callout:
                    a publisher folder's image is usually hand-picked, and without
