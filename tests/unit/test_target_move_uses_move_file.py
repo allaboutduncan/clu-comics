@@ -146,3 +146,29 @@ class TestConvertedSiblingsAreSkipped:
         assert sorted(n for n, _ in files) == [
             "Batman 001.cbz", "Batman 002.cbr", "Batman 003.cbz"
         ]
+
+
+def test_never_moves_or_renames_onto_an_existing_comic(func_node):
+    """#723: twelve Supergirl issues rendered to one name through the rename
+    pattern, and a bare ``os.rename`` onto it replaced each one with the next
+    -- eleven comics destroyed. ``move_file`` is ``os.replace`` underneath and
+    does the same to a download that shares a filed comic's name. Both
+    destinations go through ``free_destination``."""
+    assert len(_bare_calls(func_node, "free_destination")) >= 2, (
+        "the TARGET -> library move and the rename after it must both pick "
+        "their destination with cbz_ops.rename.free_destination"
+    )
+    renames = _calls(func_node, "os", "rename")
+    assert len(renames) == 1
+    dest = renames[0].args[1]
+    assert isinstance(dest, ast.Name) and dest.id == "final_path"
+    assigned = [
+        n for n in ast.walk(func_node)
+        if isinstance(n, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "final_path" for t in n.targets)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+    ]
+    assert any(n.value.func.id == "free_destination" for n in assigned), (
+        "final_path must come from free_destination before it is renamed onto"
+    )

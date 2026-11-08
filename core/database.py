@@ -3781,71 +3781,87 @@ def update_file_index_entry(path, name=None, new_path=None, parent=None, size=No
         size: New size (optional)
         modified_at: New modification timestamp (optional)
     """
+    # Build UPDATE query dynamically based on provided fields
+    ALLOWED_COLUMNS = {"name", "path", "parent", "size", "modified_at"}
+    updates = []
+    params = []
+
+    if name is not None:
+        updates.append("name")
+        params.append(name)
+
+    if new_path is not None:
+        updates.append("path")
+        params.append(new_path)
+
+    if parent is not None:
+        updates.append("parent")
+        params.append(parent)
+
+    if size is not None:
+        updates.append("size")
+        params.append(size)
+
+    if modified_at is not None:
+        updates.append("modified_at")
+        params.append(modified_at)
+
+    if not updates:
+        return True  # Nothing to update
+
+    if not all(col in ALLOWED_COLUMNS for col in updates):
+        app_logger.error("Invalid column in file index update")
+        return False
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    set_clause += ", last_updated = CURRENT_TIMESTAMP"
+    params.append(path)  # WHERE clause parameter
+
+    # db_conn(), never get_db_connection() with close() inside the try. An
+    # exception here used to abandon the connection with its implicit write
+    # transaction still open, and the abandoned connection outlives this frame
+    # in a reference cycle -- holding the WAL write lock until the cyclic GC
+    # happens to run. Every other writer then burned its 30s busy_timeout and
+    # failed with "database is locked" (#723: 93 failures in 12 minutes).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Build UPDATE query dynamically based on provided fields
-        ALLOWED_COLUMNS = {"name", "path", "parent", "size", "modified_at"}
-        updates = []
-        params = []
+            # A rename onto a path that is already indexed: the file has
+            # already been renamed on disk, so the row at the destination
+            # describes a file that is no longer there. Drop it -- only when a
+            # source row exists to take its place -- or UNIQUE(path) aborts the
+            # rename and the index keeps the stale row. Same rule as
+            # move_indexed_path.
+            if new_path is not None and new_path != path:
+                c.execute(
+                    "DELETE FROM file_index WHERE path = ? AND EXISTS "
+                    "(SELECT 1 FROM file_index WHERE path = ?)",
+                    (new_path, path),
+                )
 
-        if name is not None:
-            updates.append("name")
-            params.append(name)
+            c.execute("UPDATE file_index SET " + set_clause + " WHERE path = ?", params)
+            # Capture immediately: this is the result being reported, and every
+            # follow-up statement below overwrites cursor.rowcount.
+            rows_affected = c.rowcount
 
-        if new_path is not None:
-            updates.append("path")
-            params.append(new_path)
+            # Follow the rename everywhere else the old path is stored as a bare
+            # string -- tags, per-user reading data, reading-list mappings. This is
+            # the choke point for renames from routes/files.py, routes/metadata.py,
+            # cbz_ops/smart_rename.py and bulk metadata. Directory moves and
+            # CBR->CBZ conversion bypass it and call move_path_references()
+            # themselves.
+            #
+            # Our own connection is passed in on purpose: opening a second one here
+            # would block on the WAL writer lock this transaction is already
+            # holding, for the full busy_timeout, and then fail -- on every rename.
+            if new_path is not None and new_path != path:
+                move_path_references(path, new_path, conn=conn)
 
-        if parent is not None:
-            updates.append("parent")
-            params.append(parent)
-
-        if size is not None:
-            updates.append("size")
-            params.append(size)
-
-        if modified_at is not None:
-            updates.append("modified_at")
-            params.append(modified_at)
-
-        if not updates:
-            conn.close()
-            return True  # Nothing to update
-
-        if not all(col in ALLOWED_COLUMNS for col in updates):
-            app_logger.error("Invalid column in file index update")
-            conn.close()
-            return False
-
-        set_clause = ", ".join(f"{col} = ?" for col in updates)
-        set_clause += ", last_updated = CURRENT_TIMESTAMP"
-        params.append(path)  # WHERE clause parameter
-
-        c.execute("UPDATE file_index SET " + set_clause + " WHERE path = ?", params)
-        # Capture immediately: this is the result being reported, and every
-        # follow-up statement below overwrites cursor.rowcount.
-        rows_affected = c.rowcount
-
-        # Follow the rename everywhere else the old path is stored as a bare
-        # string -- tags, per-user reading data, reading-list mappings. This is
-        # the choke point for renames from routes/files.py, routes/metadata.py,
-        # cbz_ops/smart_rename.py and bulk metadata. Directory moves and
-        # CBR->CBZ conversion bypass it and call move_path_references()
-        # themselves.
-        #
-        # Our own connection is passed in on purpose: opening a second one here
-        # would block on the WAL writer lock this transaction is already
-        # holding, for the full busy_timeout, and then fail -- on every rename.
-        if new_path is not None and new_path != path:
-            move_path_references(path, new_path, conn=conn)
-
-        conn.commit()
-        conn.close()
+            conn.commit()
         invalidate_metadata_browser_cache()
 
         if rows_affected > 0:
@@ -3872,20 +3888,19 @@ def set_directory_has_thumbnail(path, has_thumbnail=True):
     indexed yet — harmless, the next scan will pick it up).
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        c = conn.cursor()
-        c.execute(
-            "UPDATE file_index SET has_thumbnail = ?, "
-            "last_updated = CURRENT_TIMESTAMP "
-            "WHERE path = ? AND type = 'directory'",
-            (1 if has_thumbnail else 0, path),
-        )
-        rows_affected = c.rowcount
-        conn.commit()
-        conn.close()
+            c = conn.cursor()
+            c.execute(
+                "UPDATE file_index SET has_thumbnail = ?, "
+                "last_updated = CURRENT_TIMESTAMP "
+                "WHERE path = ? AND type = 'directory'",
+                (1 if has_thumbnail else 0, path),
+            )
+            rows_affected = c.rowcount
+            conn.commit()
         return rows_affected > 0
 
     except Exception as e:
@@ -3911,42 +3926,41 @@ def add_file_index_entry(
     Returns:
         True if successful, False otherwise
     """
+    import time
+
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        import time
+            c = conn.cursor()
 
-        c = conn.cursor()
+            # Use ON CONFLICT to preserve first_indexed_at for existing entries
+            c.execute(
+                """
+                INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    name = excluded.name,
+                    type = excluded.type,
+                    size = excluded.size,
+                    parent = excluded.parent,
+                    has_thumbnail = excluded.has_thumbnail,
+                    modified_at = excluded.modified_at
+            """,
+                (
+                    name,
+                    path,
+                    entry_type,
+                    size,
+                    parent,
+                    has_thumbnail,
+                    modified_at,
+                    time.time(),
+                ),
+            )
 
-        # Use ON CONFLICT to preserve first_indexed_at for existing entries
-        c.execute(
-            """
-            INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(path) DO UPDATE SET
-                name = excluded.name,
-                type = excluded.type,
-                size = excluded.size,
-                parent = excluded.parent,
-                has_thumbnail = excluded.has_thumbnail,
-                modified_at = excluded.modified_at
-        """,
-            (
-                name,
-                path,
-                entry_type,
-                size,
-                parent,
-                has_thumbnail,
-                modified_at,
-                time.time(),
-            ),
-        )
-
-        conn.commit()
-        conn.close()
+            conn.commit()
         invalidate_metadata_browser_cache()
 
         app_logger.debug(f"Added file index entry: {path}")
@@ -3968,31 +3982,30 @@ def delete_file_index_entry(path):
         True if successful, False otherwise
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Delete the entry
-        c.execute("DELETE FROM file_index WHERE path = ?", (path,))
+            # Delete the entry
+            c.execute("DELETE FROM file_index WHERE path = ?", (path,))
 
-        # Also delete any children (for directories)
-        c.execute(
-            "DELETE FROM file_index WHERE parent = ? OR path LIKE ?",
-            (path, f"{path}/%"),
-        )
+            # Also delete any children (for directories)
+            c.execute(
+                "DELETE FROM file_index WHERE parent = ? OR path LIKE ?",
+                (path, f"{path}/%"),
+            )
 
-        # Drop normalised tag rows for this path + its descendants.
-        c.execute("DELETE FROM file_metadata_tags WHERE file_path = ?", (path,))
-        c.execute(
-            "DELETE FROM file_metadata_tags WHERE file_path LIKE ?",
-            (f"{path}/%",),
-        )
+            # Drop normalised tag rows for this path + its descendants.
+            c.execute("DELETE FROM file_metadata_tags WHERE file_path = ?", (path,))
+            c.execute(
+                "DELETE FROM file_metadata_tags WHERE file_path LIKE ?",
+                (f"{path}/%",),
+            )
 
-        conn.commit()
-        rows_affected = c.rowcount
-        conn.close()
+            conn.commit()
+            rows_affected = c.rowcount
         invalidate_metadata_browser_cache()
 
         if rows_affected > 0:

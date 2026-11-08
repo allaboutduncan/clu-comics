@@ -251,6 +251,16 @@ corruption episode *every* call throws, so every call leaks — a feedback loop.
 `db_conn()` exists so new code cannot add to it. The ~290 existing sites are
 being converted where they are hot, not all at once.
 
+A leaked *write* connection is worse: if the exception lands after Python's
+sqlite3 opened its implicit transaction (a UNIQUE violation, say), the
+abandoned connection survives the function in a reference cycle **holding the
+WAL write lock** until the cyclic GC happens to run. Every other writer burns
+its 30s `busy_timeout` and fails. One `UNIQUE constraint failed:
+file_index.path` in `update_file_index_entry` produced 93 "database is locked"
+failures in twelve minutes (#723). `tests/unit/test_db_write_connection_leaks.py`
+is a ratchet on writers in `core/database.py` that commit without closing in a
+`finally`/`db_conn()`; lower its `BASELINE` when you convert one.
+
 ## Subsystem notes (`.claude/rules/`)
 
 Detailed design notes for each subsystem live in path-scoped rule files that load automatically when you work on matching files. If a change touches a subsystem below without opening one of its listed files, read its rule file first.

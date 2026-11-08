@@ -174,14 +174,19 @@ SERIES_YEAR_MONTH_ISSUE_PATTERN = re.compile(
 # -------------------------------------------------------------------
 # Pattern for Series Name YYYY-MM-DD ( NN) (digital) format, e.g.:
 #   "Mister Miracle 1990-09-18 ( 21) (digital) (Glorith-Novus-HD).cbz"
+#   "Supergirl 2000-01-00 (_42) (digital) (OkC.O.M.P.U.T.O.-Novus-HD).cbz"
 #   Group(1) => "Mister Miracle" (series name)
 #   Group(2) => "1990" (year from YYYY-MM-DD)
-#   Group(3) => "21" (issue number)
+#   Group(3) => "21" or "_42" (issue number; callers strip the "_")
 #   Group(4) => " (digital) (Glorith-Novus-HD)" (extra info)
 #   Group(5) => ".cbz" (extension)
+# The "_" form is the same scene convention TITLE_COMMA_YEAR_ISSUE_PATTERN
+# accepts. Without it this pattern missed, and the fallback read "2000-01-00"
+# as series "Supergirl 2" issue 000 -- so every issue of a pack got one name
+# and the library rename overwrote eleven of them (#723).
 # -------------------------------------------------------------------
 SERIES_YEAR_MONTH_DAY_ISSUE_PATTERN = re.compile(
-    r"^(.*?)\s+(\d{4})-\d{2}-\d{2}\s*\(\s*(\d{1,3})\s*\)(.*)(\.\w+)$", re.IGNORECASE
+    r"^(.*?),?\s+(\d{4})-\d{2}-\d{2}\s*\(\s*(_?\d{1,4})\s*\)(.*)(\.\w+)$", re.IGNORECASE
 )
 
 # Pattern: "Series (YYYY-MM) ### (...)" → extract series, year, issue
@@ -1387,7 +1392,7 @@ def extract_comic_values(filename, width=3):
 
         values["series_name"] = smart_title_case(series_name.replace("_", " ").strip())
         values["year"] = year
-        values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
+        values["issue_number"] = _pad_issue_number(issue_num.lstrip("_"), width)
         return values
 
     # Try to match the Series (YYYY-MM) ### format
@@ -1969,6 +1974,28 @@ def get_unique_filepath(file_path):
         counter += 1
 
 
+def free_destination(src, dst):
+    """The path to move or rename *src* to: *dst*, unless that would replace a different file.
+
+    ``os.rename`` and ``os.replace`` silently overwrite an existing destination
+    on Linux. Twelve different Supergirl issues once rendered to the same name
+    through the rename pattern, and each one replaced the last in the library
+    -- eleven comics destroyed, with nothing in the trash (#723).
+
+    A case-only rename is not a collision: on a case-insensitive filesystem
+    *dst* resolves to *src* itself, so ``os.path.exists`` alone would report one
+    and push a re-cased name to ``" (1)"``.
+    """
+    if not os.path.exists(dst):
+        return dst
+    try:
+        if os.path.samefile(src, dst):
+            return dst
+    except OSError:
+        pass
+    return get_unique_filepath(dst)
+
+
 def get_renamed_filename(filename, file_path=None):
     """
     Given a single filename (no directory path):
@@ -2296,8 +2323,8 @@ def get_renamed_filename(filename, file_path=None):
         # Clean the series name: underscores -> spaces, then strip, then title case
         clean_series = smart_title_case(series_name.replace("_", " ").strip())
 
-        # Zero-pad the issue number
-        final_issue = norm_issue(issue_num, pad_width)
+        # Zero-pad the issue number ("_42" is the scene spelling of 42)
+        final_issue = norm_issue(issue_num.lstrip("_"), pad_width)
 
         new_filename = f"{clean_series} {final_issue} ({year}){extension}"
         return clean_final_filename(new_filename)
@@ -2558,7 +2585,7 @@ def rename_files(directory):
 
                 # Check if target file already exists and generate unique filename if needed
                 original_new_path = new_path
-                new_path = get_unique_filepath(new_path)
+                new_path = free_destination(old_path, new_path)
 
                 if new_path != original_new_path:
                     app_logger.warning(
@@ -2624,7 +2651,7 @@ def rename_file(file_path):
 
         # Check if target file already exists and generate unique filename if needed
         original_new_path = new_path
-        new_path = get_unique_filepath(new_path)
+        new_path = free_destination(file_path, new_path)
 
         if new_path != original_new_path:
             app_logger.warning(
