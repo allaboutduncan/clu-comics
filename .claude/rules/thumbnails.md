@@ -3,6 +3,7 @@ paths:
   - "core/thumbnail_cache.py"
   - "core/folder_thumbnails.py"
   - "core/folder_art.py"
+  - "core/custom_covers.py"
   - "routes/opds.py"
   - "cbz_ops/**"
   - "app.py"
@@ -223,6 +224,40 @@ Rules that are easy to break:
   `tools/make_thumb_style_samples.py` must be re-run to produce
   `static/images/thumb-style-<id>.png` (a test asserts every style has one).
   Re-run it after changing any composer, or the previews drift from reality.
+
+#### Custom covers (clu-custom-covers)
+
+The folder menu's **Choose Custom Cover…** (both the root-level and the folder
+menu: publisher folders are usually listed at the library root) opens a picker
+over `allaboutduncan/clu-custom-covers`. `core/custom_covers.py` owns the
+index; `/api/custom-covers/{match,search,preview,apply}` live in
+`routes/collection.py`. A pick is stored through `folder_art.put_art` as
+`source='custom'`, replacing that kind (it is an explicit choice, like an
+upload). Things that look arbitrary and are not:
+
+- **One recursive git-tree request builds the whole index**, cached in memory
+  and in `CACHE_DIR/custom_covers_index.json` for a day. Unauthenticated GitHub
+  allows 60 API calls an hour.
+- **No index is `None`, never `{}`**; a failed refresh serves the stale copy.
+  The routes answer 503, so the picker says "could not reach GitHub" instead of
+  "no covers for this publisher".
+- **Only an indexed path is ever fetched**, and the server builds the raw URL
+  (`is_known_path` is the SSRF guard). Previews are proxied, so the browser
+  never talks to GitHub. Downloads are capped and PIL-verified.
+- **The kind comes from the index** (a file named `*header*` is a banner), never
+  from the client. Cover candidates are ordered `folder.*`, `<Publisher>.*`,
+  `.codex-cover.*`, and identical blobs are listed once.
+- **Names match punctuation-blind** (`normalize_name`): the repo spells
+  `Devil's Due` as `Devil_s Due`.
+- **The picker is one flat grid (across, then down) that pages by publisher.**
+  `/api/custom-covers/search` takes `offset`/`limit` (capped at
+  `MAX_SEARCH_RESULTS`) and returns `total`/`next_offset`; an
+  `IntersectionObserver` on the modal body loads the next page, and a page that
+  does not fill the view loads another. A match is shown first, then every
+  other publisher, so a wrong guess never hides the rest. A search token drops
+  pages that arrive after the user typed something else.
+
+Tests: `tests/unit/test_custom_covers.py`, `tests/routes/test_custom_covers_routes.py`.
 
 Both recursive sweeps (`/api/generate-all-missing-thumbnails` and
 `/api/regenerate-all-thumbnails`, in `routes/collection.py`) run on a background

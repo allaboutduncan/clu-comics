@@ -1871,6 +1871,7 @@ function renderGrid(items) {
                     // If at root level, show Missing File Check, Scan Files, and Generate All Missing Thumbnails
                     if (isRootLevel) {
                         dropdownMenu.innerHTML = `
+                            <li><a class="dropdown-item folder-action-custom-cover" href="#"><i class="bi bi-palette"></i> Choose Custom Cover…</a></li>
                             <li><a class="dropdown-item folder-action-gen-all-thumbs" href="#"><i class="bi bi-images"></i> Generate All Missing Thumbnails</a></li>
                             <li><a class="dropdown-item folder-action-regen-all-thumbs text-danger" href="#"><i class="bi bi-arrow-repeat"></i> Regenerate All Thumbnails</a></li>
                             <li><a class="dropdown-item folder-action-scan" href="#"><i class="bi bi-arrow-clockwise"></i> Scan Files</a></li>
@@ -1881,6 +1882,7 @@ function renderGrid(items) {
                         // For folders with files, show full menu
                         dropdownMenu.innerHTML = `
                         <li><a class="dropdown-item folder-action-thumbnail" href="#"><i class="bi bi-image"></i> Generate Thumbnail</a></li>
+                        <li><a class="dropdown-item folder-action-custom-cover" href="#"><i class="bi bi-palette"></i> Choose Custom Cover…</a></li>
                         <li><a class="dropdown-item folder-action-scan" href="#"><i class="bi bi-arrow-clockwise"></i> Scan Files</a></li>
                         <li><a class="dropdown-item folder-action-fetch-metadata" href="#"><i class="bi bi-cloud-download"></i> Fetch All Metadata</a></li>
                         <li><a class="dropdown-item folder-action-missing" href="#"><i class="bi bi-file-earmark-text"></i> Missing File Check</a></li>
@@ -1940,6 +1942,17 @@ function renderGrid(items) {
                                 CLU.addFolderToPullList(item.path, item.name);
                             };
                         }
+                    }
+
+                    // Bind Choose Custom Cover (both menus: publisher folders are
+                    // usually the ones listed at the library root).
+                    const customCoverAction = dropdownMenu.querySelector('.folder-action-custom-cover');
+                    if (customCoverAction) {
+                        customCoverAction.onclick = (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openCustomCoverModal(item.path, item.name);
+                        };
                     }
 
                     // Bind Missing File Check action (available for both root and folders with files)
@@ -5250,26 +5263,7 @@ function generateFolderThumbnail(folderPath, folderName) {
                 CLU.showSuccess('Folder thumbnail generated successfully');
 
                 // Update just this folder's thumbnail without full page reload
-                const gridItem = document.querySelector(`[data-path="${CSS.escape(folderPath)}"]`);
-                if (gridItem) {
-                    const container = gridItem.querySelector('.thumbnail-container');
-                    const img = gridItem.querySelector('.thumbnail');
-                    const iconOverlay = gridItem.querySelector('.icon-overlay');
-
-                    if (img && container && data.thumbnail_url) {
-                        // The server names the art (it lives in the cache
-                        // volume, not the folder -- #720); its v= changes with
-                        // every regeneration, so the browser cannot show the
-                        // old image.
-                        img.src = data.thumbnail_url;
-                        img.style.display = 'block';
-                        gridItem.classList.add('has-thumbnail');
-                        container.classList.add('has-thumbnail');
-                        if (iconOverlay) {
-                            iconOverlay.style.display = 'none';
-                        }
-                    }
-                }
+                setFolderTileImage(folderPath, data.thumbnail_url);
             } else {
                 CLU.showError('Error generating thumbnail: ' + (data.error || 'Unknown error'));
             }
@@ -5278,6 +5272,253 @@ function generateFolderThumbnail(folderPath, folderName) {
             console.error('Error:', error);
             CLU.hideProgressIndicator();
             CLU.showError('An error occurred while generating the thumbnail.');
+        });
+}
+
+/**
+ * Point a folder's grid tile at new art, without reloading the page.
+ * The server names the art (it lives in the cache volume, not the folder --
+ * #720), and its v= changes with every write, so the browser cannot keep
+ * showing the old image.
+ * @param {string} folderPath - Path to the folder
+ * @param {string} url - The art URL the server returned
+ */
+function setFolderTileImage(folderPath, url) {
+    if (!url) return;
+    const gridItem = document.querySelector(`[data-path="${CSS.escape(folderPath)}"]`);
+    if (!gridItem) return;
+    const container = gridItem.querySelector('.thumbnail-container');
+    const img = gridItem.querySelector('.thumbnail');
+    const iconOverlay = gridItem.querySelector('.icon-overlay');
+    if (img && container) {
+        img.src = url;
+        img.style.display = 'block';
+        gridItem.classList.add('has-thumbnail');
+        container.classList.add('has-thumbnail');
+        if (iconOverlay) {
+            iconOverlay.style.display = 'none';
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Custom cover picker (clu-custom-covers). Routes: /api/custom-covers/*.
+// Previews are proxied by the server; the browser never talks to GitHub.
+// ---------------------------------------------------------------------------
+
+let customCoverFolder = null;
+let customCoverSearchTimer = null;
+// Paging state for the grid. `token` is bumped by every new search, so a page
+// that arrives after the user has typed something else is dropped.
+const CUSTOM_COVER_PAGE_SIZE = 12;  // publishers per page (1-3 images each)
+let customCoverPaging = { token: 0, query: '', nextOffset: null, loading: false, skip: null };
+let customCoverObserver = null;
+
+/**
+ * Open the picker for one folder, showing the publisher it is named after.
+ * @param {string} folderPath - Path to the folder
+ * @param {string} folderName - Name of the folder
+ */
+function openCustomCoverModal(folderPath, folderName) {
+    const modalEl = document.getElementById('customCoverModal');
+    if (!modalEl) return;
+    customCoverFolder = { path: folderPath, name: folderName };
+
+    document.getElementById('customCoverFolderName').textContent = folderName ? `— ${folderName}` : '';
+    const search = document.getElementById('customCoverSearch');
+    search.value = '';
+    search.oninput = () => {
+        clearTimeout(customCoverSearchTimer);
+        customCoverSearchTimer = setTimeout(() => searchCustomCovers(search.value), 300);
+    };
+
+    customCoverPaging.token++;
+    renderCustomCoverMessage('Loading custom covers…', 'bi-hourglass-split');
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+
+    const token = customCoverPaging.token;
+    fetch(`/api/custom-covers/match?folder=${encodeURIComponent(folderPath)}`)
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (token !== customCoverPaging.token) return;
+            if (!ok || !data.available) {
+                renderCustomCoverMessage(data.error || 'Custom covers are unavailable.', 'bi-cloud-slash');
+                return;
+            }
+            if (data.match) {
+                // The named publisher first, then every other one below it.
+                searchCustomCovers('', null, data.match);
+            } else {
+                searchCustomCovers('', `No publisher named “${data.folder_name}” in the repository. Pick any cover below, or search.`);
+            }
+        })
+        .catch(() => renderCustomCoverMessage('Custom covers are unavailable.', 'bi-cloud-slash'));
+}
+
+/**
+ * Start a new grid for a search; further pages load as the user scrolls.
+ * @param {string} query - Search text ('' lists every publisher)
+ * @param {string} [note] - Optional line shown above the grid
+ * @param {Object} [first] - A publisher to show first (the folder's match)
+ */
+function searchCustomCovers(query, note, first) {
+    customCoverPaging = {
+        token: customCoverPaging.token + 1,
+        query: query || '',
+        nextOffset: 0,
+        loading: false,
+        skip: first ? first.name : null,
+    };
+
+    const results = document.getElementById('customCoverResults');
+    results.innerHTML = `
+        ${note ? `<p class="text-muted small">${CLU.escapeHtml(note)}</p>` : ''}
+        <div class="row row-cols-3 row-cols-sm-4 row-cols-md-6 g-2" id="customCoverGrid"></div>
+        <div id="customCoverSentinel" class="text-center text-muted small py-3"></div>`;
+
+    if (first) appendCustomCoverPublishers([first]);
+    observeCustomCoverSentinel();
+    loadMoreCustomCovers();
+}
+
+/** Watch the end of the grid; when it scrolls into view, load the next page. */
+function observeCustomCoverSentinel() {
+    if (customCoverObserver) customCoverObserver.disconnect();
+    const sentinel = document.getElementById('customCoverSentinel');
+    if (!sentinel) return;
+    customCoverObserver = new IntersectionObserver(entries => {
+        if (entries.some(e => e.isIntersecting)) loadMoreCustomCovers();
+    }, {
+        // The modal body is what scrolls (modal-dialog-scrollable).
+        root: document.querySelector('#customCoverModal .modal-body'),
+        rootMargin: '0px 0px 300px 0px',
+    });
+    customCoverObserver.observe(sentinel);
+}
+
+/** Fetch and append the next page of the current search, if there is one. */
+function loadMoreCustomCovers() {
+    const paging = customCoverPaging;
+    if (paging.loading || paging.nextOffset === null) return;
+    paging.loading = true;
+    const token = paging.token;
+    const sentinel = document.getElementById('customCoverSentinel');
+    if (sentinel) sentinel.textContent = 'Loading…';
+
+    const params = new URLSearchParams({
+        q: paging.query, offset: paging.nextOffset, limit: CUSTOM_COVER_PAGE_SIZE,
+    });
+    fetch(`/api/custom-covers/search?${params}`)
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            if (token !== customCoverPaging.token) return;  // superseded
+            paging.loading = false;
+            if (!ok || !data.available) {
+                renderCustomCoverMessage(data.error || 'Custom covers are unavailable.', 'bi-cloud-slash');
+                return;
+            }
+            paging.nextOffset = data.next_offset;
+            const grid = document.getElementById('customCoverGrid');
+            if (data.total === 0 && grid && !grid.children.length) {
+                renderCustomCoverMessage(`No publishers match “${paging.query}”.`, 'bi-search');
+                return;
+            }
+            appendCustomCoverPublishers(data.publishers.filter(p => p.name !== paging.skip));
+            const s = document.getElementById('customCoverSentinel');
+            if (s) s.textContent = '';
+            // A page that does not fill the view never scrolls the sentinel
+            // in again, so keep loading until it does (or the list ends).
+            if (paging.nextOffset !== null && s && customCoverSentinelVisible(s)) {
+                loadMoreCustomCovers();
+            }
+        })
+        .catch(() => {
+            if (token !== customCoverPaging.token) return;
+            paging.loading = false;
+            const s = document.getElementById('customCoverSentinel');
+            if (s) s.textContent = 'Could not load more covers.';
+        });
+}
+
+function customCoverSentinelVisible(sentinel) {
+    const body = document.querySelector('#customCoverModal .modal-body');
+    if (!body) return false;
+    return sentinel.getBoundingClientRect().top < body.getBoundingClientRect().bottom + 300;
+}
+
+function renderCustomCoverMessage(message, icon) {
+    if (customCoverObserver) customCoverObserver.disconnect();
+    const results = document.getElementById('customCoverResults');
+    results.replaceChildren(CLU.emptyState({ icon: icon, title: message, compact: true }));
+}
+
+/**
+ * Append each publisher's images to the grid as tiles, across then down.
+ * Clicking a tile applies it.
+ * @param {Array} publishers - [{name, covers: [path], headers: [path]}]
+ */
+function appendCustomCoverPublishers(publishers) {
+    const grid = document.getElementById('customCoverGrid');
+    if (!grid) return;
+    const tile = (pub, path, kind) => `
+        <div class="col">
+            <button type="button" class="btn btn-outline-secondary p-1 w-100 h-100 custom-cover-pick"
+                data-path="${CLU.escapeHtml(path)}"
+                title="${CLU.escapeHtml(pub.name)}: use as ${kind === 'header' ? 'header banner' : 'cover'}">
+                <img src="/api/custom-covers/preview?path=${encodeURIComponent(path)}" loading="lazy"
+                    alt="${CLU.escapeHtml(path.split('/').pop())}" class="w-100 rounded"
+                    style="aspect-ratio:2/3;object-fit:${kind === 'header' ? 'contain' : 'cover'}">
+                <small class="d-block text-truncate mt-1">${CLU.escapeHtml(pub.name)}</small>
+                ${kind === 'header' ? '<span class="badge text-bg-secondary">Header</span>' : ''}
+            </button>
+        </div>`;
+
+    const html = publishers.map(pub =>
+        pub.covers.map(p => tile(pub, p, 'folder')).join('')
+        + pub.headers.map(p => tile(pub, p, 'header')).join('')
+    ).join('');
+    grid.insertAdjacentHTML('beforeend', html);
+    grid.querySelectorAll('.custom-cover-pick:not([data-bound])').forEach(btn => {
+        btn.setAttribute('data-bound', '1');
+        btn.onclick = () => applyCustomCover(btn.getAttribute('data-path'), btn);
+    });
+}
+
+/**
+ * Store one repository image as the folder's cover or header.
+ * @param {string} path - Repository path of the image
+ * @param {HTMLElement} btn - The card that was clicked
+ */
+function applyCustomCover(path, btn) {
+    if (!customCoverFolder) return;
+    const folder = customCoverFolder;
+    btn.disabled = true;
+
+    fetch('/api/custom-covers/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: folder.path, path: path })
+    })
+        .then(r => r.json().then(data => ({ ok: r.ok, data })))
+        .then(({ ok, data }) => {
+            btn.disabled = false;
+            if (!ok || !data.success) {
+                CLU.showError('Could not apply the cover: ' + (data.error || 'Unknown error'));
+                return;
+            }
+            const modalEl = document.getElementById('customCoverModal');
+            bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+            if (data.kind === 'header') {
+                CLU.showSuccess(`Header banner set for ${folder.name}`);
+                if (currentPath === folder.path) refreshCurrentView(true);
+            } else {
+                CLU.showSuccess(`Custom cover set for ${folder.name}`);
+                setFolderTileImage(folder.path, data.url);
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            CLU.showError('Could not apply the cover.');
         });
 }
 

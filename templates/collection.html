@@ -396,6 +396,38 @@
     </div>
 </div>
 {% include 'partials/modal_cbz_info.html' %}
+<!-- Custom Cover Picker Modal (clu-custom-covers; static/js/collection.js openCustomCoverModal) -->
+<div class="modal fade" id="customCoverModal" tabindex="-1" aria-labelledby="customCoverModalLabel"
+    aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="customCoverModalLabel">
+                    <i class="bi bi-palette me-2"></i>Choose Custom Cover
+                    <small class="text-muted ms-1" id="customCoverFolderName"></small>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-2">
+                    Publisher art from the
+                    <a href="https://github.com/allaboutduncan/clu-custom-covers" target="_blank"
+                        rel="noopener noreferrer">clu-custom-covers</a> repository. Picking one replaces
+                    this folder's current cover (or header banner).
+                </p>
+                <div class="input-group input-group-sm mb-3">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="search" class="form-control" id="customCoverSearch"
+                        placeholder="Search publishers…" aria-label="Search publishers" autocomplete="off">
+                </div>
+                <div id="customCoverResults"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 <!-- Missing File Check Results Modal -->
 <div class="modal fade" id="missingFileCheckModal" tabindex="-1" aria-labelledby="missingFileCheckModalLabel"
     aria-hidden="true">
