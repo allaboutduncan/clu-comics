@@ -12,6 +12,7 @@ from helpers.paging import DEFAULT_PER_PAGE, PAGE_SIZES, per_page_from
 from core.database import (
     create_reading_list,
     add_reading_list_entry,
+    add_reading_list_entries,
     get_reading_lists,
     get_reading_lists_page,
     get_reading_list_matching_ids,
@@ -83,6 +84,19 @@ _github_tree_lock = threading.Lock()
 
 # Semaphore to limit concurrent batch imports
 _import_semaphore = threading.Semaphore(5)
+
+
+def _save_import_entries(list_id, entries):
+    """Write an import's matched entries in one transaction.
+
+    Every importer matches first and writes once (#722): a connection per
+    issue, five imports at a time, turned one held write lock into a wait of
+    30s per issue. Raises on failure so the importer's own handler marks the
+    task failed and the change token is never stamped on a list with no
+    entries.
+    """
+    if add_reading_list_entries(list_id, entries) is None:
+        raise RuntimeError("Failed to save reading list entries")
 
 
 # The app's one set of page sizes (helpers/paging.py): each fills whole rows
@@ -221,10 +235,6 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
 
         # Create reading list
         list_id = create_reading_list(loader.name, source=source, source_hash=content_hash)
-        if list_id:
-            # The change token a later sync compares against. Same value as
-            # source_hash for a CBL, but it is source_version that gets read.
-            update_reading_list_source_version(list_id, content_hash)
         if not list_id:
             app_logger.error(f"[Import {task_id[:8]}] Failed to create reading list")
             import_tasks[task_id]['status'] = 'error'
@@ -235,15 +245,12 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
 
         app_logger.info(f"[Import {task_id[:8]}] Created reading list: {loader.name} (id={list_id})")
 
-        # Match and add entries one by one (this is the slow part)
+        # Match each entry (this is the slow part), then write them all at once
         for i, entry in enumerate(entries):
-            # Match file for this entry
             entry['matched_file_path'] = loader.match_file(
                 entry['series'], entry['issue_number'], entry['volume'], entry['year'],
                 **loader.entry_ids(entry)
             )
-            # Add to database
-            add_reading_list_entry(list_id, entry)
 
             # Update progress
             import_tasks[task_id]['processed'] = i + 1
@@ -253,6 +260,13 @@ def process_cbl_import(task_id, content, filename, source, rename_pattern=None):
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        _save_import_entries(list_id, entries)
+
+        # The change token a later sync compares against. Same value as
+        # source_hash for a CBL, but it is source_version that gets read.
+        # Stamped only once the entries are in, like every other importer.
+        update_reading_list_source_version(list_id, content_hash)
 
         import_tasks[task_id]['status'] = 'complete'
         import_tasks[task_id]['message'] = f'Imported {total} issues'
@@ -1267,12 +1281,12 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
             (item.get('issue') or {}).get('id') for item in items
         ])
 
-        # Match and add entries
+        # Match each entry, then write them all at once
+        new_entries = []
         for i, item in enumerate(items):
             issue = item.get('issue', {}) or {}
             entry_data = metron_issue_to_entry(issue, loader)
-
-            add_reading_list_entry(db_list_id, entry_data)
+            new_entries.append(entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
@@ -1281,6 +1295,8 @@ def process_metron_import(task_id, api, list_id, rename_pattern):
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Metron import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        _save_import_entries(db_list_id, new_entries)
 
         # Baseline for the next sync: without it the first check would report
         # every list as changed.
@@ -1438,11 +1454,11 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
         # One batched id lookup for the whole arc (see process_metron_import).
         loader.prefetch_metron_ids([issue.get('id') for issue in issues])
 
-        # Match and add entries — arc issues are BaseIssue objects directly
+        # Match each entry — arc issues are BaseIssue objects directly
+        new_entries = []
         for i, issue in enumerate(issues):
             entry_data = metron_issue_to_entry(issue, loader)
-
-            add_reading_list_entry(db_list_id, entry_data)
+            new_entries.append(entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
@@ -1451,6 +1467,8 @@ def process_metron_arc_import(task_id, api, arc_id, rename_pattern):
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[Metron arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        _save_import_entries(db_list_id, new_entries)
 
         # An arc's own `modified` does not move when an issue joins it, so the
         # baseline is a fingerprint of the membership instead.
@@ -1605,11 +1623,11 @@ def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
         # One batched id lookup for the whole arc.
         loader.prefetch_cv_ids([issue.get('issue_id') for issue in issues])
 
-        # Match and add entries
+        # Match each entry, then write them all at once
+        new_entries = []
         for i, issue in enumerate(issues):
             entry_data = comicvine_issue_to_entry(issue, loader)
-
-            add_reading_list_entry(db_list_id, entry_data)
+            new_entries.append(entry_data)
 
             import_tasks[task_id]['processed'] = i + 1
             app_state.update_operation(
@@ -1618,6 +1636,8 @@ def process_cv_arc_import(task_id, api_key, arc_id, rename_pattern):
             )
             if (i + 1) % 10 == 0:
                 app_logger.info(f"[CV arc import {task_id[:8]}] Progress: {i + 1}/{total} issues")
+
+        _save_import_entries(db_list_id, new_entries)
 
         # Baseline from the one call that already knows the arc membership; a
         # later sync re-reads it without paying per issue again.

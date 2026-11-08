@@ -3607,54 +3607,74 @@ def save_file_index_to_db(file_index):
     Returns:
         True if successful, False otherwise
     """
+    import time
+
+    current_time = time.time()
+
+    # One row per path. A walk can yield a path twice -- nested or
+    # overlapping library roots -- and a plain INSERT then raised
+    # ``UNIQUE constraint failed: file_index.path`` *after* the DELETE below
+    # had committed: the index was left empty and, with the old close()
+    # inside the try, the connection was abandoned holding the write lock
+    # (#722, the #723 shape). First occurrence wins.
+    records = []
+    seen = set()
+    duplicates = 0
+    for entry in file_index:
+        try:
+            path = entry["path"]
+            if path in seen:
+                duplicates += 1
+                continue
+            records.append((
+                entry["name"],
+                path,
+                entry["type"],
+                entry.get("size"),
+                entry["parent"],
+                entry.get("has_thumbnail", 0),
+                entry.get("modified_at"),
+                current_time,
+            ))
+            seen.add(path)
+        except Exception:
+            continue
+    if duplicates:
+        app_logger.debug(
+            f"File index save: skipped {duplicates} duplicate path(s) from the walk"
+        )
+
     try:
-        conn = get_db_connection()
-        if not conn:
-            app_logger.error("Could not get database connection to save file index")
-            return False
+        with db_conn() as conn:
+            if not conn:
+                app_logger.error("Could not get database connection to save file index")
+                return False
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Clear existing index
-        c.execute("DELETE FROM file_index")
-        conn.commit()
-
-        import time
-
-        current_time = time.time()
-        CHUNK_SIZE = 5000
-        total_saved = 0
-
-        for i in range(0, len(file_index), CHUNK_SIZE):
-            chunk = file_index[i:i + CHUNK_SIZE]
-            records = []
-            for entry in chunk:
-                try:
-                    records.append((
-                        entry["name"],
-                        entry["path"],
-                        entry["type"],
-                        entry.get("size"),
-                        entry["parent"],
-                        entry.get("has_thumbnail", 0),
-                        entry.get("modified_at"),
-                        current_time,
-                    ))
-                except Exception:
-                    continue
-
-            c.executemany(
-                """INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                records,
-            )
+            # Clear existing index
+            c.execute("DELETE FROM file_index")
             conn.commit()
-            total_saved += len(records)
 
-        # Full rewrite wipes tag rows; metadata scan repopulates on next pass.
-        c.execute("DELETE FROM file_metadata_tags")
-        conn.commit()
-        conn.close()
+            CHUNK_SIZE = 5000
+            total_saved = 0
+
+            for i in range(0, len(records), CHUNK_SIZE):
+                chunk = records[i:i + CHUNK_SIZE]
+                # DO NOTHING as well as the de-dup above: a watcher event
+                # can add a path between the DELETE and this chunk.
+                c.executemany(
+                    """INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(path) DO NOTHING""",
+                    chunk,
+                )
+                conn.commit()
+                total_saved += len(chunk)
+
+            # Full rewrite wipes tag rows; metadata scan repopulates on next pass.
+            c.execute("DELETE FROM file_metadata_tags")
+            conn.commit()
         invalidate_metadata_browser_cache()
 
         app_logger.info(f"Saved {total_saved} entries to file index database")
@@ -4291,74 +4311,73 @@ def sync_file_index_incremental(filesystem_entries, walked_roots=None):
         Dict with counts: {'added': N, 'removed': N, 'unchanged': N, 'new_paths': [...]}
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return {"added": 0, "removed": 0, "unchanged": 0, "new_paths": []}
+        with db_conn() as conn:
+            if not conn:
+                return {"added": 0, "removed": 0, "unchanged": 0, "new_paths": []}
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Get all current paths in DB
-        c.execute("SELECT path FROM file_index")
-        db_paths = set(row[0] for row in c.fetchall())
+            # Get all current paths in DB
+            c.execute("SELECT path FROM file_index")
+            db_paths = set(row[0] for row in c.fetchall())
 
-        # Get all paths from filesystem scan
-        fs_paths = set(entry["path"] for entry in filesystem_entries)
+            # Get all paths from filesystem scan
+            fs_paths = set(entry["path"] for entry in filesystem_entries)
 
-        # Find differences
-        new_paths = fs_paths - db_paths  # In filesystem, not in DB -> ADD
-        removed_paths = db_paths - fs_paths  # In DB, not in filesystem -> REMOVE
-        existing_paths = fs_paths & db_paths  # In both -> KEEP (preserve metadata)
+            # Find differences
+            new_paths = fs_paths - db_paths  # In filesystem, not in DB -> ADD
+            removed_paths = db_paths - fs_paths  # In DB, not in filesystem -> REMOVE
+            existing_paths = fs_paths & db_paths  # In both -> KEEP (preserve metadata)
 
-        if walked_roots is not None:
-            # Trailing "/" so /data/Batman never claims /data/Batman Beyond.
-            prefixes = tuple(r.rstrip("/") + "/" for r in walked_roots)
-            removed_paths = {p for p in removed_paths if p.startswith(prefixes)}
+            if walked_roots is not None:
+                # Trailing "/" so /data/Batman never claims /data/Batman Beyond.
+                prefixes = tuple(r.rstrip("/") + "/" for r in walked_roots)
+                removed_paths = {p for p in removed_paths if p.startswith(prefixes)}
 
-        # Remove orphaned entries
-        if removed_paths:
-            for path in removed_paths:
-                c.execute("DELETE FROM file_index WHERE path = ?", (path,))
-                c.execute(
-                    "DELETE FROM file_metadata_tags WHERE file_path = ?",
-                    (path,),
+            # Remove orphaned entries
+            if removed_paths:
+                for path in removed_paths:
+                    c.execute("DELETE FROM file_index WHERE path = ?", (path,))
+                    c.execute(
+                        "DELETE FROM file_metadata_tags WHERE file_path = ?",
+                        (path,),
+                    )
+                app_logger.info(
+                    f"Removed {len(removed_paths)} orphaned entries from file_index"
                 )
-            app_logger.info(
-                f"Removed {len(removed_paths)} orphaned entries from file_index"
-            )
 
-        # Add new entries
-        import time
+            # Add new entries
+            import time
 
-        current_time = time.time()
-        new_entries = [e for e in filesystem_entries if e["path"] in new_paths]
-        for entry in new_entries:
-            # Use ON CONFLICT to preserve first_indexed_at for existing entries
-            c.execute(
-                """
-                INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    name = excluded.name,
-                    type = excluded.type,
-                    size = excluded.size,
-                    parent = excluded.parent,
-                    has_thumbnail = excluded.has_thumbnail,
-                    modified_at = excluded.modified_at
-            """,
-                (
-                    entry["name"],
-                    entry["path"],
-                    entry["type"],
-                    entry.get("size"),
-                    entry.get("parent"),
-                    entry.get("has_thumbnail", 0),
-                    entry.get("modified_at"),
-                    current_time,
-                ),
-            )
+            current_time = time.time()
+            new_entries = [e for e in filesystem_entries if e["path"] in new_paths]
+            for entry in new_entries:
+                # Use ON CONFLICT to preserve first_indexed_at for existing entries
+                c.execute(
+                    """
+                    INSERT INTO file_index (name, path, type, size, parent, has_thumbnail, modified_at, first_indexed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(path) DO UPDATE SET
+                        name = excluded.name,
+                        type = excluded.type,
+                        size = excluded.size,
+                        parent = excluded.parent,
+                        has_thumbnail = excluded.has_thumbnail,
+                        modified_at = excluded.modified_at
+                """,
+                    (
+                        entry["name"],
+                        entry["path"],
+                        entry["type"],
+                        entry.get("size"),
+                        entry.get("parent"),
+                        entry.get("has_thumbnail", 0),
+                        entry.get("modified_at"),
+                        current_time,
+                    ),
+                )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         if new_paths or removed_paths:
             invalidate_metadata_browser_cache()
@@ -11631,68 +11650,122 @@ def create_reading_list(name, source=None, source_hash=None, user_id=None):
     """
     try:
         uid = _resolve_user_id(user_id)
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO reading_lists (name, source, source_hash, last_synced, user_id) VALUES (?, ?, ?, ?, ?)",
-            (name, source, source_hash, datetime.now() if source_hash else None, uid),
-        )
-        list_id = c.lastrowid
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO reading_lists (name, source, source_hash, last_synced, user_id) VALUES (?, ?, ?, ?, ?)",
+                (name, source, source_hash, datetime.now() if source_hash else None, uid),
+            )
+            list_id = c.lastrowid
+            conn.commit()
         return list_id
     except Exception as e:
         app_logger.error(f"Error creating reading list: {str(e)}")
         return None
 
 
+_READING_LIST_ENTRY_INSERT = """
+    INSERT INTO reading_list_entries
+    (reading_list_id, series, issue_number, volume, year, issue_year,
+     metron_id, cv_issue_id, cv_volume_id, matched_file_path, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+def _reading_list_entry_row(list_id, data, sort_order):
+    return (
+        list_id,
+        data.get("series"),
+        data.get("issue_number"),
+        data.get("volume"),
+        data.get("year"),
+        data.get("issue_year"),
+        data.get("metron_id"),
+        data.get("cv_issue_id"),
+        data.get("cv_volume_id"),
+        data.get("matched_file_path"),
+        sort_order,
+    )
+
+
+def _next_reading_list_sort_order(c, list_id):
+    c.execute(
+        "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM reading_list_entries WHERE reading_list_id = ?",
+        (list_id,),
+    )
+    return c.fetchone()[0]
+
+
 def add_reading_list_entry(list_id, data):
     """
     Add an entry to a reading list.
+
+    Importers use ``add_reading_list_entries``: one transaction per list, not
+    one connection per issue.
 
     Args:
         list_id: ID of the reading list
         data: Dictionary containing entry data (series, issue_number, etc.)
 
     Returns:
-        True if successful, False otherwise
+        The new entry's id, or None on error
     """
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        # Get next sort_order for this list
-        c.execute(
-            "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM reading_list_entries WHERE reading_list_id = ?",
-            (list_id,),
-        )
-        next_sort = c.fetchone()[0]
-        c.execute(
-            """
-            INSERT INTO reading_list_entries
-            (reading_list_id, series, issue_number, volume, year, issue_year,
-             metron_id, cv_issue_id, cv_volume_id, matched_file_path, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                list_id,
-                data.get("series"),
-                data.get("issue_number"),
-                data.get("volume"),
-                data.get("year"),
-                data.get("issue_year"),
-                data.get("metron_id"),
-                data.get("cv_issue_id"),
-                data.get("cv_volume_id"),
-                data.get("matched_file_path"),
-                next_sort,
-            ),
-        )
-        entry_id = c.lastrowid
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            next_sort = _next_reading_list_sort_order(c, list_id)
+            c.execute(
+                _READING_LIST_ENTRY_INSERT,
+                _reading_list_entry_row(list_id, data, next_sort),
+            )
+            entry_id = c.lastrowid
+            conn.commit()
         return entry_id
     except Exception as e:
         app_logger.error(f"Error adding reading list entry: {str(e)}")
+        return None
+
+
+def add_reading_list_entries(list_id, entries):
+    """
+    Append many entries to a reading list in one transaction, in order.
+
+    An import used to open a connection per issue. Five imports running at
+    once against a held write lock then each burned a 30s busy timeout per
+    issue (#722). One write per list also means a failure leaves no entries
+    rather than some.
+
+    Args:
+        list_id: ID of the reading list
+        entries: Iterable of entry dicts, as for ``add_reading_list_entry``
+
+    Returns:
+        Number of entries written, or None on error
+    """
+    entries = list(entries)
+    if not entries:
+        return 0
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            c = conn.cursor()
+            first = _next_reading_list_sort_order(c, list_id)
+            c.executemany(
+                _READING_LIST_ENTRY_INSERT,
+                [
+                    _reading_list_entry_row(list_id, data, first + i)
+                    for i, data in enumerate(entries)
+                ],
+            )
+            conn.commit()
+        return len(entries)
+    except Exception as e:
+        app_logger.error(f"Error adding reading list entries to list {list_id}: {str(e)}")
         return None
 
 
@@ -11987,22 +12060,23 @@ def update_reading_list_entry_match(entry_id, file_path):
         True if successful, False otherwise
     """
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        if file_path is None:
-            # Clear both manual override and auto-matched path
-            c.execute(
-                "UPDATE reading_list_entries SET manual_override_path = NULL, matched_file_path = NULL WHERE id = ?",
-                (entry_id,),
-            )
-        else:
-            # Set manual override
-            c.execute(
-                "UPDATE reading_list_entries SET manual_override_path = ? WHERE id = ?",
-                (file_path, entry_id),
-            )
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            c = conn.cursor()
+            if file_path is None:
+                # Clear both manual override and auto-matched path
+                c.execute(
+                    "UPDATE reading_list_entries SET manual_override_path = NULL, matched_file_path = NULL WHERE id = ?",
+                    (entry_id,),
+                )
+            else:
+                # Set manual override
+                c.execute(
+                    "UPDATE reading_list_entries SET manual_override_path = ? WHERE id = ?",
+                    (file_path, entry_id),
+                )
+            conn.commit()
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list entry {entry_id}: {str(e)}")
@@ -12271,11 +12345,13 @@ def update_reading_list_description(list_id, description):
         True if successful, False otherwise
     """
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("UPDATE reading_lists SET description = ? WHERE id = ?", (description, list_id))
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.cursor().execute(
+                "UPDATE reading_lists SET description = ? WHERE id = ?", (description, list_id)
+            )
+            conn.commit()
         return True
     except Exception as e:
         app_logger.error(f"Error updating reading list description {list_id}: {str(e)}")
@@ -16365,14 +16441,14 @@ def update_reading_list_source_version(list_id, source_version):
     provider puts in it.
     """
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute(
-            "UPDATE reading_lists SET source_version = ?, last_synced = ? WHERE id = ?",
-            (source_version, datetime.now(), list_id),
-        )
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.cursor().execute(
+                "UPDATE reading_lists SET source_version = ?, last_synced = ? WHERE id = ?",
+                (source_version, datetime.now(), list_id),
+            )
+            conn.commit()
         return True
     except Exception as e:
         app_logger.error(f"Error updating source version for list {list_id}: {e}")
@@ -16443,6 +16519,7 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
     Returns:
         Dict with added, removed counts or None on error
     """
+    conn = None
     try:
         conn = get_db_connection()
         conn.row_factory = sqlite3.Row
@@ -16574,11 +16651,18 @@ def sync_reading_list_entries(list_id, new_entries, preserve_manual=True):
                 max_sort += 1
 
         conn.commit()
-        conn.close()
         return {"added": added_count, "removed": removed_count}
     except Exception as e:
         app_logger.error(f"Error syncing reading list entries for {list_id}: {e}")
         return None
+    finally:
+        # A failed statement mid-diff leaves the implicit transaction open;
+        # an abandoned connection would hold the WAL write lock (#722/#723).
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 # =============================================================================
