@@ -77,6 +77,12 @@ SETTINGS_SCHEMA = {
     "DOWNLOAD_PROVIDER_PRIORITY": _s("download_provider_priority", _S, "pixeldrain,download_now,mega", "downloads"),
     "PIXELDRAIN_API_KEY": _s("pixeldrain_api_key", _S, "", "downloads"),
     "HEADERS": _s("custom_headers", _S, "", "downloads"),
+    # Bundled FlareSolverr (core/flaresolverr.py). On by default: it ships in
+    # the image and only starts when a download meets a Cloudflare challenge.
+    # Never in an ini.
+    "FLARESOLVERR_ENABLED": _s("flaresolverr_enabled", _B, True, "downloads"),
+    "FLARESOLVERR_IDLE_MINUTES": _s("flaresolverr_idle_minutes", _I, 10, "downloads"),
+    "FLARESOLVERR_TIMEOUT": _s("flaresolverr_timeout", _I, 60, "downloads"),
     "GCD_METADATA_LANGUAGES": _s("gcd_metadata_languages", _S, "en", "metadata"),
     # getcomics scoring vocabularies
     "PUBLICATION_TYPES": _s("publication_types", _S, "annual,quarterly", "downloads"),

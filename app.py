@@ -6512,6 +6512,14 @@ def restart_app():
         monitor_supervisor.stop()
     except Exception as e:
         app_logger.warning(f"Could not stop the folder monitor before restart: {e}")
+    # The bundled FlareSolverr would survive execv the same way, still holding
+    # its port and a browser.
+    try:
+        from core import flaresolverr_supervisor
+
+        flaresolverr_supervisor.stop()
+    except Exception as e:
+        app_logger.warning(f"Could not stop FlareSolverr before restart: {e}")
     os.execv(sys.executable, ["python"] + sys.argv)
 
 
@@ -6883,6 +6891,10 @@ def save_download_api_config():
             bool(data.get("downloadPacks", False)),
             category="downloads",
         )
+        # Written only when sent, like the variant fields above, so an older
+        # page cannot switch the bundled solver off.
+        if "flaresolverrEnabled" in data:
+            set_setting("FLARESOLVERR_ENABLED", bool(data.get("flaresolverrEnabled")))
 
         # Save API credentials to DB (provider_credentials)
         try:
@@ -7159,6 +7171,7 @@ def config_page():
         variantTypes=st["VARIANT_TYPES"],
         oneshotFolders=st["ONESHOT_FOLDERS"],
         downloadPacks=is_download_packs_enabled(),
+        flaresolverrEnabled=st["FLARESOLVERR_ENABLED"],
         enableDebugLogging=st["ENABLE_DEBUG_LOGGING"],
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         pageWidth=st["PAGE_WIDTH"],
@@ -7614,6 +7627,12 @@ def shutdown_server():
         monitor_supervisor.stop()
     except Exception as e:
         app_logger.warning(f"Monitor cleanup failed during shutdown: {e}")
+    try:
+        from core import flaresolverr_supervisor
+
+        flaresolverr_supervisor.stop()
+    except Exception as e:
+        app_logger.warning(f"FlareSolverr cleanup failed during shutdown: {e}")
     try:
         from core.db_maintenance import shutdown_checkpoint
 

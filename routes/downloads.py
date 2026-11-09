@@ -1217,3 +1217,20 @@ def api_check_weekly_pack_status():
     except Exception as e:
         app_logger.error(f"Failed to check weekly pack status: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+
+@downloads_bp.route('/api/config/flaresolverr/test', methods=['POST'])
+def test_flaresolverr():
+    """Start the bundled FlareSolverr (if needed) and report whether it answers.
+
+    Under /api/config/, so owner-only (core/auth.py). It can take up to a
+    minute on a cold start -- Chromium is launched once to check the install --
+    which is inside gunicorn's 120s budget.
+    """
+    from core import flaresolverr
+    try:
+        ok, message = flaresolverr.test_solver()
+    except Exception as e:
+        app_logger.warning(f"FlareSolverr test failed: {e}")
+        ok, message = False, str(e)
+    return jsonify({"success": ok, "message": message}), 200

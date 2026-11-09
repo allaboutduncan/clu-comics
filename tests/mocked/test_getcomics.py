@@ -529,6 +529,82 @@ def _cloudflare_challenge():
     return resp
 
 
+class TestFlareSolverrClearance:
+    """A challenge is first cleared by the bundled FlareSolverr on the session
+    in hand. A fresh scraper is the fallback only when that fails."""
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_page_fetch_retries_on_the_cleared_shared_scraper(self, mock_scraper, mock_make):
+        mock_scraper.get.side_effect = [_cloudflare_challenge(),
+                                        _mock_response(DOWNLOAD_LINKS_BY_TITLE_HTML)]
+        with patch("models.getcomics.flaresolverr.clear_challenge", return_value=True) as clear:
+            from models.getcomics import get_download_links
+            links = get_download_links("https://getcomics.org/blocked")
+        assert links["pixeldrain"] == "https://pixeldrain.com/u/abc123"
+        clear.assert_called_once_with("https://getcomics.org/blocked", mock_scraper, context="page")
+        mock_make.assert_not_called()  # no fresh scraper needed
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_page_fetch_solves_once_then_falls_back(self, mock_scraper, mock_make):
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        fresh = MagicMock()
+        fresh.get.return_value = _cloudflare_challenge()
+        mock_make.return_value = fresh
+        with patch("models.getcomics.flaresolverr.clear_challenge", return_value=True) as clear, \
+                patch("models.getcomics.flaresolverr.note_still_challenged") as still:
+            from models.getcomics import get_download_links
+            get_download_links("https://getcomics.org/always-blocked", max_attempts=3)
+        assert clear.call_count == 1
+        still.assert_called_once_with("https://getcomics.org/always-blocked", "page")
+        mock_make.assert_called()
+
+    @patch("models.getcomics._make_scraper")
+    @patch("models.getcomics.scraper")
+    def test_failed_solve_keeps_the_fresh_scraper_path(self, mock_scraper, mock_make):
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        fresh = MagicMock()
+        fresh.get.return_value = _mock_response(DOWNLOAD_LINKS_BY_TITLE_HTML)
+        mock_make.return_value = fresh
+        with patch("models.getcomics.flaresolverr.clear_challenge", return_value=False):
+            from models.getcomics import get_download_links
+            links = get_download_links("https://getcomics.org/blocked")
+        assert links["pixeldrain"] == "https://pixeldrain.com/u/abc123"
+        mock_make.assert_called()
+
+    @patch("models.getcomics.scraper")
+    def test_challenged_search_is_retried_after_clearance(self, mock_scraper):
+        mock_scraper.get.side_effect = [_cloudflare_challenge(),
+                                        _mock_response(SEARCH_RESULTS_HTML)]
+        with patch("models.getcomics.flaresolverr.clear_challenge", return_value=True) as clear, \
+                patch("models.getcomics.flaresolverr.note_still_challenged") as still:
+            from models.getcomics import search_getcomics
+            results = search_getcomics("batman", max_pages=1)
+        assert len(results) == 2
+        assert mock_scraper.get.call_count == 2
+        assert clear.call_args.kwargs == {"context": "search"}
+        still.assert_not_called()  # the retry got through
+
+    @patch("models.getcomics.scraper")
+    def test_search_still_challenged_after_clearance_is_reported(self, mock_scraper):
+        mock_scraper.get.return_value = _cloudflare_challenge()
+        with patch("models.getcomics.flaresolverr.clear_challenge", return_value=True), \
+                patch("models.getcomics.flaresolverr.note_still_challenged") as still:
+            from models.getcomics import search_getcomics
+            search_getcomics("batman", max_pages=1)
+        still.assert_called_once()
+        assert still.call_args.args[1] == "search"
+
+    @patch("models.getcomics.scraper")
+    def test_search_without_solver_is_unchanged(self, mock_scraper):
+        mock_scraper.get.return_value = _mock_response(SEARCH_RESULTS_HTML)
+        with patch("models.getcomics.flaresolverr.clear_challenge") as clear:
+            from models.getcomics import search_getcomics
+            search_getcomics("batman", max_pages=1)
+        clear.assert_not_called()  # no challenge, no solve
+
+
 # ===================================================================
 # _extract_content_li_entries (variant-3 <li> scraping)
 # ===================================================================
