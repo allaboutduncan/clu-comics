@@ -54,10 +54,11 @@ def issue_number_to_int(issue_num) -> int | None:
 def is_cloudflare_challenge(response) -> bool:
     """Detect a Cloudflare managed / JS "Just a moment..." challenge response.
 
-    These challenges cannot be solved by any automated HTTP client (requests,
-    cloudscraper, curl_cffi) or even headless/scripted browsers — only a real,
-    manually-driven browser passes them. When we see one there is no point
-    retrying; the caller surfaces a clear "download manually" error instead.
+    No plain HTTP client (requests, cloudscraper, curl_cffi) passes these. When
+    we see one, the caller first asks the bundled FlareSolverr for clearance
+    (``core.flaresolverr.clear_challenge``), which drives a real Chromium. If
+    that is off or fails, retrying is pointless, and the caller surfaces a
+    clear "download manually" error instead.
 
     Accepts anything with ``.headers`` (mapping) and ``.content`` (bytes),
     e.g. a ``requests.Response``.

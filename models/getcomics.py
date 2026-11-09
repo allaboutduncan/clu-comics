@@ -89,6 +89,7 @@ from core.download_utils import (
     close_quietly,
     replace_session,
 )
+from core import flaresolverr
 
 logger = logging.getLogger(__name__)
 
@@ -723,6 +724,15 @@ def search_getcomics(query: str, max_pages: int = 3) -> list:
 
             logger.info(f"Searching getcomics.org page {page}: {query}")
             resp = scraper.get(url, params=params, timeout=30)
+            # A challenged search used to end the whole search in the except
+            # below. Clear it once with the bundled FlareSolverr (the shared
+            # scraper keeps the clearance for later pages and searches).
+            if (_is_cloudflare_challenge(resp)
+                    and flaresolverr.clear_challenge(url, scraper, context="search")):
+                logger.info(f"Cloudflare challenge on search page {page}; retrying with FlareSolverr clearance")
+                resp = scraper.get(url, params=params, timeout=30)
+                if _is_cloudflare_challenge(resp):
+                    flaresolverr.note_still_challenged(url, "search")
             resp.raise_for_status()
 
             soup = BeautifulSoup(resp.text, 'html.parser')
@@ -1274,6 +1284,8 @@ def get_download_parts(page_url: str, max_attempts: int = 3,
     # after a Cloudflare challenge, since that's the case where a poisoned
     # clearance token would otherwise block every remaining attempt.
     s = scraper
+    flaresolverr_tried = False
+    flaresolverr_cleared = False
     try:
         for attempt in range(1, max_attempts + 1):
             try:
@@ -1289,6 +1301,19 @@ def get_download_parts(page_url: str, max_attempts: int = 3,
                         f"Cloudflare challenge fetching {page_url} "
                         f"(attempt {attempt}/{max_attempts})"
                     )
+                    # First choice: real clearance from the bundled FlareSolverr,
+                    # applied to the session in hand (the shared scraper keeps it
+                    # for the rest of the sweep). Once per call -- a clearance
+                    # that is still challenged falls back to a fresh scraper.
+                    if flaresolverr_cleared:
+                        flaresolverr.note_still_challenged(fetch_url, "page")
+                        flaresolverr_cleared = False
+                    if not flaresolverr_tried:
+                        flaresolverr_tried = True
+                        if flaresolverr.clear_challenge(fetch_url, s, context="page"):
+                            flaresolverr_cleared = True
+                            logger.info(f"Retrying {page_url} with FlareSolverr clearance")
+                            continue
                     # A dropped fresh scraper is not reclaimed: even after
                     # gc.collect() its adapter, pool and SSL context (with its
                     # CA store) stay alive, holding one TLS connection open —

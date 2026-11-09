@@ -780,3 +780,28 @@ class TestCheckWeeklyPackStatus:
         assert data["links_available"] is True
         assert "start_date" not in data
         mock_latest.assert_called_once()
+
+
+class TestFlareSolverrTest:
+    """POST /api/config/flaresolverr/test -- the Settings "Test" button."""
+
+    def test_reports_ready(self, client):
+        with patch("core.flaresolverr.test_solver", return_value=(True, "FlareSolverr 3.5.2 is ready.")):
+            resp = client.post("/api/config/flaresolverr/test")
+        assert resp.status_code == 200
+        assert resp.get_json() == {"success": True, "message": "FlareSolverr 3.5.2 is ready."}
+
+    def test_reports_failure_as_a_message(self, client):
+        with patch("core.flaresolverr.test_solver", return_value=(False, "FlareSolverr did not start.")):
+            data = client.post("/api/config/flaresolverr/test").get_json()
+        assert data["success"] is False
+        assert "did not start" in data["message"]
+
+    def test_unexpected_error_is_not_a_500(self, client):
+        with patch("core.flaresolverr.test_solver", side_effect=RuntimeError("boom")):
+            resp = client.post("/api/config/flaresolverr/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["success"] is False
+
+    def test_get_is_not_allowed(self, client):
+        assert client.get("/api/config/flaresolverr/test").status_code == 405
