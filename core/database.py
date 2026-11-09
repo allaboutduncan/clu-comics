@@ -11339,12 +11339,15 @@ _PULL_LIST_ROW_STATUS_SQL = """
 
 PULL_LIST_STATUSES = ("complete", "missing", "upcoming", "unmonitored")
 
-# Sort keys the page offers -> ORDER BY expression. Every order ends on name
-# and id, so a page boundary never splits ties differently between requests.
+# Sort keys the page offers -> ORDER BY expression. Every order ends on name,
+# start year and id, so a page boundary never splits ties differently between
+# requests, and same-named volumes (Avengers 1998 / 2018) list oldest first.
 _PULL_LIST_SORTS = {
     "name": "s.name COLLATE NOCASE",
     "status": "LOWER(COALESCE(s.status, ''))",
     "publisher": "LOWER(COALESCE(p.name, ''))",
+    # A series with no known start year sorts as 0: first ascending, last descending.
+    "year": "COALESCE(s.volume_year, 0)",
     "issues": "COALESCE(s.issue_count, 0)",
     "collection": "COALESCE(c.missing_past, 0) + COALESCE(c.missing_future, 0)",
     "synced": "COALESCE(s.last_synced_at, '')",
@@ -11444,7 +11447,10 @@ def _pull_list_where(q="", publisher_id=None, letter="", status=""):
     q = (q or "").strip()
     if q:
         # instr, not LIKE: no wildcards to escape, and no ASCII-only folding.
-        clauses.append("instr(clu_casefold(s.name), ?) > 0")
+        # The start year is searched too, so "avengers 2018" (or just "2018")
+        # picks one volume out of several that share a name.
+        clauses.append(
+            "instr(clu_casefold(s.name || COALESCE(' ' || s.volume_year, '')), ?) > 0")
         params.append(q.casefold())
 
     if publisher_id is not None:
@@ -11496,7 +11502,8 @@ def get_pull_list_page(today, q="", publisher_id=None, letter="", status="",
     if sort == "collection":
         needs_counts = True
     direction = "DESC" if descending else "ASC"
-    order = (f"{sort_sql} {direction}, " if sort_sql else "") + "s.name COLLATE NOCASE, s.id"
+    order = ((f"{sort_sql} {direction}, " if sort_sql else "")
+             + "s.name COLLATE NOCASE, COALESCE(s.volume_year, 0), s.id")
 
     counts_join, counts_params = "", []
     if needs_counts:
@@ -11537,7 +11544,7 @@ def get_pull_list_page(today, q="", publisher_id=None, letter="", status="",
                 page_counts_sql, page_counts_params = _pull_list_counts_sql(today, ids)
                 cur.execute(
                     f"""
-                    SELECT s.id, s.name, s.volume, s.status, s.issue_count,
+                    SELECT s.id, s.name, s.volume, s.volume_year, s.status, s.issue_count,
                            s.last_synced_at, s.monitored, s.publisher_id,
                            p.name AS publisher_name,
                            COALESCE(c.missing_past, 0) AS missing_past,
