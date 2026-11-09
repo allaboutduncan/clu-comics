@@ -4,6 +4,7 @@ The child is a fake process and the readiness probe a flag, so these tests
 never launch a browser. ``threaded=False`` runs the start inline. One test
 drives the real thread to check that concurrent callers share one spawn.
 """
+import os
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -253,6 +254,30 @@ class TestInstall:
         assert env["PORT"] == str(sup.PORT)
         assert env["HEADLESS"] == "true"
         assert "VIRTUAL_ENV" not in env
+
+    def test_home_is_a_private_mkdtemp_dir_reused_per_process(self):
+        # A fixed /tmp name could be pre-created or symlinked by another user
+        # (Bandit B108). mkdtemp is unique and 0700.
+        with patch.object(sup, "_home_dir", None):
+            first = sup._solver_home()
+            assert os.path.isdir(first)
+            assert os.path.basename(first).startswith("clu-flaresolverr-")
+            assert os.path.basename(first) != "clu-flaresolverr"
+            assert sup._solver_home() == first
+            if os.name == "posix":
+                assert (os.stat(first).st_mode & 0o777) == 0o700
+        os.rmdir(first)
+
+    def test_probe_reads_the_ready_message(self):
+        resp = MagicMock()
+        resp.json.return_value = {"msg": "FlareSolverr is ready!", "version": "3.5.2"}
+        with patch.object(sup.requests, "get", return_value=resp) as get:
+            assert sup.probe_ready("http://127.0.0.1:8191") is True
+        assert get.call_args.args[0] == "http://127.0.0.1:8191/"
+
+    def test_probe_failure_is_false(self):
+        with patch.object(sup.requests, "get", side_effect=OSError("refused")):
+            assert sup.probe_ready() is False
 
     def test_spawn_uses_the_pdeathsig_launcher_in_its_own_session(self):
         with patch.object(sup.subprocess, "Popen") as popen:

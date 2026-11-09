@@ -31,14 +31,15 @@ Things that look arbitrary and are not:
 
 Single-worker gunicorn is load-bearing here, as for the monitor supervisor.
 """
-import json
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
-import urllib.request
+
+import requests
 
 from core.app_logging import app_logger
 
@@ -72,10 +73,14 @@ def is_installed():
 
 
 def probe_ready(base_url=BASE_URL, timeout=2.0):
-    """True when a FlareSolverr on *base_url* answers its index as ready."""
+    """True when a FlareSolverr on *base_url* answers its index as ready.
+
+    ``requests``, not ``urllib.request.urlopen``: urlopen also honours
+    ``file:`` and custom schemes (Bandit B310). The URL is our own constant,
+    but there is no reason to keep the wider surface.
+    """
     try:
-        with urllib.request.urlopen(base_url + "/", timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace") or "{}")
+        data = requests.get(base_url + "/", timeout=timeout).json()
         return READY_MESSAGE.lower() in str(data.get("msg", "")).lower()
     except Exception:
         return False
@@ -90,17 +95,29 @@ def _idle_seconds():
     return max(1, minutes) * 60.0
 
 
+_home_dir = None
+_home_lock = threading.Lock()
+
+
+def _solver_home():
+    """A private HOME for the solver, created once per process.
+
+    Chromium and undetected-chromedriver write a profile and a data dir under
+    HOME, and as PUID there may be no writable home at all. ``mkdtemp`` gives a
+    unique 0700 directory: a fixed name in the shared temp dir (Bandit B108)
+    could be pre-created or symlinked by another user before we use it.
+    """
+    global _home_dir
+    with _home_lock:
+        if _home_dir is None or not os.path.isdir(_home_dir):
+            _home_dir = tempfile.mkdtemp(prefix="clu-flaresolverr-")
+        return _home_dir
+
+
 def _child_env():
     env = dict(os.environ)
-    # Chromium and undetected-chromedriver write a profile and a data dir under
-    # HOME. As PUID there may be no writable home at all; /tmp always is.
-    home = os.path.join("/tmp", "clu-flaresolverr")
-    try:
-        os.makedirs(home, exist_ok=True)
-    except OSError:
-        pass
     env.update({
-        "HOME": home,
+        "HOME": _solver_home(),
         "HOST": HOST,
         "PORT": str(PORT),
         "HEADLESS": "true",
