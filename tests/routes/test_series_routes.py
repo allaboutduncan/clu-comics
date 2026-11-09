@@ -1205,6 +1205,68 @@ class TestPullListPaging:
         assert (data["page"], data["total"], data["total_pages"]) == (2, 32, 2)
         assert data["html"].count("data-series-id=") == 8
 
+    def test_year_column_and_sort(self, app, client_with_data):
+        """Same-named volumes are told apart by a sortable Year column."""
+        from tests.factories.db_factories import create_series
+        TestPullListPage._register_slug_global(app)
+        create_series(series_id=6001, name="Avengers", publisher_id=10, year_began=2018)
+        create_series(series_id=6002, name="Avengers", publisher_id=10, year_began=1998)
+        html = client_with_data.get("/pull-list?sort=year&dir=desc").get_data(as_text=True)
+        assert 'data-col="year" data-sort="year"' in html
+        assert html.index('data-series-id="6001"') < html.index('data-series-id="6002"')
+        data = client_with_data.get("/api/pull-list/rows?q=avengers 1998").get_json()
+        assert data["total"] == 1
+        assert '<small class="text-muted">1998</small>' in data["html"]
+
+    def test_optional_columns_default_to_shown(self, app, client_with_data):
+        TestPullListPage._register_slug_global(app)
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        assert 'id="plColumnsMenu"' in html
+        for key in ("year", "status", "publisher", "collection", "synced"):
+            assert f'id="plCol-{key}"' in html
+            assert f"pl-hide-{key} [data-col=\"{key}\"]" in html
+        table_tag = html[html.index("<table"):html.index('id="seriesTable"')]
+        assert "pl-hide-" not in table_tag
+        assert html.count('class="form-check-input pl-col-toggle"') == 5
+        # Every optional cell in every row carries its column key.
+        rows = html.count("data-series-id=")
+        for key in ("year", "status", "publisher", "collection", "synced"):
+            cells = (html.count(f'<td class="text-center" data-col="{key}">')
+                     + html.count(f'<td data-col="{key}">'))
+            assert cells == rows, key
+
+    def test_save_columns_hides_them_on_the_next_render(self, app, client_with_data):
+        TestPullListPage._register_slug_global(app)
+        resp = client_with_data.post("/api/pull-list/columns",
+                                     json={"hidden": ["synced", "year", "bogus", "year", 7]})
+        assert resp.status_code == 200
+        # Unknown keys and duplicates dropped; kept in table order.
+        assert resp.get_json() == {"success": True, "hidden": ["year", "synced"]}
+
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        table_tag = html[html.index("<table"):html.index('id="seriesTable"')]
+        assert "pl-hide-year" in table_tag and "pl-hide-synced" in table_tag
+        assert "pl-hide-status" not in table_tag
+        menu = html[html.index('id="plColumnsMenu"'):html.index('id="plPerPage"')]
+        assert 'value="year" >' in menu and 'value="synced" >' in menu
+        assert 'value="status" checked>' in menu
+
+        # Showing everything again clears it.
+        client_with_data.post("/api/pull-list/columns", json={"hidden": []})
+        html = client_with_data.get("/pull-list").get_data(as_text=True)
+        assert "pl-hide-year" not in html[html.index("<table"):html.index('id="seriesTable"')]
+
+    @pytest.mark.parametrize("body", [None, {}, {"hidden": "year"}, ["year"]])
+    def test_save_columns_rejects_a_malformed_body(self, client_with_data, body):
+        resp = client_with_data.post("/api/pull-list/columns", json=body)
+        assert resp.status_code == 400
+        assert resp.get_json()["success"] is False
+
+    def test_save_columns_reports_a_failed_write(self, client_with_data):
+        with patch("core.database.set_user_setting", return_value=False):
+            resp = client_with_data.post("/api/pull-list/columns", json={"hidden": ["year"]})
+        assert resp.status_code == 500
+
     def test_rows_endpoint_no_match(self, app, client_with_data):
         TestPullListPage._register_slug_global(app)
         data = client_with_data.get("/api/pull-list/rows?q=nothing").get_json()

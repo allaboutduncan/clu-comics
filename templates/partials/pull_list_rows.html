@@ -17,14 +17,21 @@
             {% endif %}
         </a>
     </td>
-    <td>
+    <td class="text-center" data-col="year">
+        {% if series.volume_year %}
+        <small class="text-muted">{{ series.volume_year }}</small>
+        {% else %}
+        <span class="text-muted">-</span>
+        {% endif %}
+    </td>
+    <td data-col="status">
         {% if series.status %}
         <small class="text-muted">{{ series.status }}</small>
         {% else %}
         <span class="text-muted">-</span>
         {% endif %}
     </td>
-    <td>
+    <td data-col="publisher">
         {% if series.publisher_name %}
         <span class="badge bg-secondary">{{ series.publisher_name }}</span>
         {% else %}
@@ -38,7 +45,7 @@
         <span class="text-muted">-</span>
         {% endif %}
     </td>
-    <td>
+    <td data-col="collection">
         {% if series.row_status == 'unmonitored' %}
         <span class="badge bg-secondary"><i class="bi bi-slash-circle me-1"></i>Not monitored</span>
         {% elif series.row_status == 'complete' %}
@@ -51,7 +58,7 @@
         <span class="text-muted">-</span>
         {% endif %}
     </td>
-    <td>
+    <td data-col="synced">
         {% if series.last_synced_at %}
         <small class="text-muted">
             <i class="bi bi-clock me-1"></i>{{ series.last_synced_at[:16] }}
@@ -72,9 +79,9 @@
 {% else %}
 <tr class="pl-no-match">
     {% if load_error %}
-    <td colspan="8" class="text-center text-danger py-4">{{ load_error }}</td>
+    <td colspan="9" class="text-center text-danger py-4">{{ load_error }}</td>
     {% else %}
-    <td colspan="8" class="border-0">
+    <td colspan="9" class="border-0">
         {{ no_matches('series', query=filters.q if filters else '',
                       filtered=filters and (filters.publisher_id or filters.letter or filters.status),
                       clear_id='plClear') }}

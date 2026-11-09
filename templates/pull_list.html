@@ -5,6 +5,16 @@
 
 {% block title %}Pull List{% endblock %}
 
+{% block extra_css %}
+<style>
+    /* Optional columns: the table carries pl-hide-<key> for each hidden one,
+       so rows swapped in by the pager are hidden with no extra work. */
+    {% for key, _ in optional_columns %}
+    #seriesTable.pl-hide-{{ key }} [data-col="{{ key }}"] { display: none; }
+    {% endfor %}
+</style>
+{% endblock %}
+
 {% block content %}
 <div>
     {% call(slot) page_header('Pull List', 'bi-list-check',
@@ -76,6 +86,22 @@
                 {%- else %}
                 {{ result_count('resultCount', pager.total, 'series', one='series', first=_start + 1, last=_start + series_list|length) }}
                 {%- endif %}
+                <div class="dropdown">
+                    <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" id="plColumnsBtn"
+                        data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false"
+                        title="Show or hide columns">
+                        <i class="bi bi-layout-three-columns me-1" aria-hidden="true"></i>Columns
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end p-2" id="plColumnsMenu" aria-labelledby="plColumnsBtn">
+                        {% for key, label in optional_columns %}
+                        <div class="form-check dropdown-item-text py-1">
+                            <input class="form-check-input pl-col-toggle" type="checkbox" id="plCol-{{ key }}"
+                                value="{{ key }}" {% if key not in hidden_columns %}checked{% endif %}>
+                            <label class="form-check-label" for="plCol-{{ key }}">{{ label }}</label>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
                 {{ per_page_select('plPerPage', pager.per_page, sizes=page_sizes, default=default_per_page) }}
             </div>
         </div>
@@ -120,7 +146,8 @@
                 bi bi-chevron-expand text-muted ms-1
                 {%- endif -%}
                 {%- endmacro %}
-                <table class="table table-hover align-middle mb-0" id="seriesTable">
+                <table class="table table-hover align-middle mb-0{% for key in hidden_columns %} pl-hide-{{ key }}{% endfor %}" id="seriesTable"
+                    data-columns-endpoint="{{ url_for('series.save_pull_list_columns') }}">
                     <thead class="table-light">
                         <tr>
                             <th scope="col" class="ps-4" style="width:2.5rem;">
@@ -130,19 +157,23 @@
                             <th scope="col" class="sortable" data-sort="name" style="cursor: pointer;">
                                 Series <i class="{{ sort_icon('name') }}"></i>
                             </th>
-                            <th scope="col" class="sortable" data-sort="status" style="cursor: pointer;">
+                            <th scope="col" class="text-center sortable" data-col="year" data-sort="year" style="cursor: pointer;"
+                                title="Year the volume started">
+                                Year <i class="{{ sort_icon('year') }}"></i>
+                            </th>
+                            <th scope="col" class="sortable" data-col="status" data-sort="status" style="cursor: pointer;">
                                 Status <i class="{{ sort_icon('status') }}"></i>
                             </th>
-                            <th scope="col" class="sortable" data-sort="publisher" style="cursor: pointer;">
+                            <th scope="col" class="sortable" data-col="publisher" data-sort="publisher" style="cursor: pointer;">
                                 Publisher <i class="{{ sort_icon('publisher') }}"></i>
                             </th>
                             <th scope="col" class="text-center sortable" data-sort="issues" style="cursor: pointer;">
                                 Issues <i class="{{ sort_icon('issues') }}"></i>
                             </th>
-                            <th scope="col" class="sortable" data-sort="collection" style="cursor: pointer;">
+                            <th scope="col" class="sortable" data-col="collection" data-sort="collection" style="cursor: pointer;">
                                 Collection <i class="{{ sort_icon('collection') }}"></i>
                             </th>
-                            <th scope="col" class="sortable" data-sort="synced" style="cursor: pointer;">
+                            <th scope="col" class="sortable" data-col="synced" data-sort="synced" style="cursor: pointer;">
                                 Last Synced <i class="{{ sort_icon('synced') }}"></i>
                             </th>
                             <th scope="col" class="text-end pe-4">Actions</th>
@@ -892,6 +923,41 @@
         if (bulkUnmonitorBtn) {
             bulkUnmonitorBtn.addEventListener('click', () => bulkSetMonitored(false, bulkUnmonitorBtn));
         }
+
+        // ── Column visibility: a class on the table per hidden column, saved
+        // per user. Rows from the pager need nothing: the CSS hides them.
+        const columnToggles = Array.from(document.querySelectorAll('.pl-col-toggle'));
+        let columnsSaveSeq = 0;
+        function saveColumns() {
+            const hidden = columnToggles.filter(cb => !cb.checked).map(cb => cb.value);
+            const seq = ++columnsSaveSeq;
+            fetch(table.dataset.columnsEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ hidden: hidden }),
+            })
+                .then(r => r.json().catch(() => ({})).then(data => {
+                    if (!r.ok || !data.success) {
+                        // The server's message already says what failed; only a
+                        // response with no message needs one built here.
+                        const e = new Error(data.error || ('HTTP ' + r.status));
+                        e.fromServer = !!data.error;
+                        throw e;
+                    }
+                }))
+                .catch(err => {
+                    // A later toggle supersedes this save; only the last one reports.
+                    if (seq !== columnsSaveSeq) return;
+                    if (err && err.fromServer) CLU.showError(err.message);
+                    else notifyError('Could not save the column layout', err);
+                });
+        }
+        columnToggles.forEach(cb => {
+            cb.addEventListener('change', () => {
+                table.classList.toggle('pl-hide-' + cb.value, !cb.checked);
+                saveColumns();
+            });
+        });
 
         updateBulkUI();
     });

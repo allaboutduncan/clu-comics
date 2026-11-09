@@ -140,6 +140,45 @@ class TestFiltersAndSort:
     def test_sort_descending_by_name(self, library):
         assert _names(_page(sort="name", descending=True))[0] == "X-Men"
 
+    def test_row_carries_volume_year(self, library):
+        create_series(series_id=8, name="Avengers", year_began=2018)
+        rows = {r["id"]: r for r in _page()["rows"]}
+        assert rows[8]["volume_year"] == 2018
+
+    def test_same_named_volumes_list_oldest_first(self, library):
+        """Several volumes of one name: the tie-break is the start year, not
+        the id the provider happened to assign."""
+        create_series(series_id=81, name="Avengers", year_began=2018)
+        create_series(series_id=82, name="Avengers", year_began=1963)
+        create_series(series_id=83, name="Avengers", year_began=1998)
+        rows = _page(q="avengers")["rows"]
+        assert [r["volume_year"] for r in rows] == [1963, 1998, 2018]
+
+    def test_sort_by_year(self, library):
+        # The fixture's five series all started in 2020 (the factory default).
+        create_series(series_id=81, name="Avengers", year_began=2030)
+        create_series(series_id=82, name="Zorro", year_began=1963)
+        years = [r["volume_year"] for r in _page(sort="year", descending=True)["rows"]]
+        assert years[0] == 2030 and years[-1] == 1963
+        assert [r["volume_year"] for r in _page(sort="year")["rows"]][0] == 1963
+
+    def test_unknown_year_sorts_first_ascending(self, library):
+        from core.database import db_conn
+        with db_conn() as conn:
+            conn.execute("UPDATE series SET volume_year = NULL WHERE id = 5")
+            conn.commit()
+        rows = _page(sort="year")["rows"]
+        assert rows[0]["id"] == 5 and rows[0]["volume_year"] is None
+        assert _page(sort="year", descending=True)["rows"][-1]["id"] == 5
+
+    def test_search_matches_the_start_year(self, library):
+        create_series(series_id=81, name="Avengers", year_began=2018)
+        create_series(series_id=82, name="Avengers", year_began=1998)
+        assert [r["id"] for r in _page(q="Avengers 2018")["rows"]] == [81]
+        assert [r["id"] for r in _page(q="1998")["rows"]] == [82]
+        # A series with no year still matches on its name alone.
+        assert _names(_page(q="batman")) == ["Batman"]
+
     def test_filters_combine(self, library):
         r = _page(publisher_id=library["marvel"], q="men")
         assert _names(r) == ["X-Men"]

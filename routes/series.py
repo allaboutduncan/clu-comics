@@ -483,7 +483,37 @@ PULL_LIST_PAGE_SIZES = PAGE_SIZES
 PULL_LIST_DEFAULT_PER_PAGE = DEFAULT_PER_PAGE
 # The size last picked in the select; used when the URL does not say.
 PULL_LIST_PER_PAGE_COOKIE = "clu_per_page_pull_list"
-_PULL_LIST_SORT_KEYS = ("name", "status", "publisher", "issues", "collection", "synced")
+_PULL_LIST_SORT_KEYS = ("name", "year", "status", "publisher", "issues", "collection", "synced")
+# Columns a user may hide, in table order, with their header labels. Series,
+# Issues and Actions always show. Stored per user (user_settings), so one
+# Clerk's layout is not everyone's.
+PULL_LIST_OPTIONAL_COLUMNS = (
+    ("year", "Year"),
+    ("status", "Status"),
+    ("publisher", "Publisher"),
+    ("collection", "Collection"),
+    ("synced", "Last Synced"),
+)
+PULL_LIST_HIDDEN_COLUMNS_KEY = "pull_list_hidden_columns"
+
+
+def _sanitize_hidden_columns(value):
+    """Keep only known optional column keys, once each, in table order.
+
+    Anything else (a stale key from an older release, a hand-made payload)
+    is dropped rather than stored, so it can never hide a column the page
+    cannot show again.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    wanted = {v for v in value if isinstance(v, str)}
+    return [key for key, _ in PULL_LIST_OPTIONAL_COLUMNS if key in wanted]
+
+
+def _pull_list_hidden_columns():
+    from core.database import get_user_setting
+    return _sanitize_hidden_columns(
+        get_user_setting(PULL_LIST_HIDDEN_COLUMNS_KEY, default=[]))
 
 
 def _pull_list_args():
@@ -556,6 +586,8 @@ def pull_list():
         publishers=facets["publishers"],
         letters=facets["letters"],
         filters=a,
+        hidden_columns=_pull_list_hidden_columns(),
+        optional_columns=PULL_LIST_OPTIONAL_COLUMNS,
         page_sizes=PULL_LIST_PAGE_SIZES,
         default_per_page=PULL_LIST_DEFAULT_PER_PAGE,
         per_page_cookie=PULL_LIST_PER_PAGE_COOKIE,
@@ -585,6 +617,24 @@ def pull_list_rows():
         "per_page": result["per_page"],
         "total_pages": result["total_pages"],
     })
+
+
+@series_bp.route("/api/pull-list/columns", methods=["POST"])
+def save_pull_list_columns():
+    """Save which optional Pull List columns the current user hides.
+
+    Body: {"hidden": ["year", "synced", ...]}. Unknown keys are dropped.
+    The page hides and shows the columns itself; this only remembers it.
+    """
+    from core.database import set_user_setting
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("hidden"), list):
+        return jsonify({"success": False, "error": "Expected {\"hidden\": [...]}"}), 400
+    hidden = _sanitize_hidden_columns(body["hidden"])
+    if not set_user_setting(PULL_LIST_HIDDEN_COLUMNS_KEY, hidden):
+        return jsonify({"success": False, "error": "Could not save the column layout"}), 500
+    return jsonify({"success": True, "hidden": hidden})
 
 
 @series_bp.route("/api/pull-list/ids")
