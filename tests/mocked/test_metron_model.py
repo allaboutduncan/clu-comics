@@ -1174,6 +1174,24 @@ class TestPerSendPacing:
         limiter.release(status)
         assert time.monotonic() - start >= 0.09
 
+    def test_a_slot_is_held_past_metrons_window(self):
+        """Metron frees a slot 60s after a request arrives, mokkari 60s after
+        it was sent. Without slack a busy client reuses each slot a moment
+        early and draws about one 429 per window."""
+        from mokkari.rate_limit import DEFAULT_BURST_PERIOD
+        from models.metron import _BURST_SLACK_S, _CluRateLimiter
+
+        assert _BURST_SLACK_S > 0
+        limiter = _CluRateLimiter()
+        assert limiter._burst.period == DEFAULT_BURST_PERIOD + _BURST_SLACK_S
+
+        # Window full of sends at t=0: nothing fits until the slack has passed.
+        limiter._burst.limit = 2
+        limiter._burst.record(0.0)
+        limiter._burst.record(0.0)
+        assert limiter._burst.wait_seconds(DEFAULT_BURST_PERIOD) == pytest.approx(_BURST_SLACK_S)
+        assert limiter._burst.wait_seconds(DEFAULT_BURST_PERIOD + _BURST_SLACK_S) == 0.0
+
     def test_the_seed_is_the_limit_settings_shows(self):
         from models.metron import _DEFAULT_BURST_LIMIT
         from models.providers.metron_provider import MetronProvider

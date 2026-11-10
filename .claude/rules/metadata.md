@@ -99,7 +99,10 @@ only 429 and 5xx are worth retrying. So:
 > 20/min that Settings shows until Metron reports its real limit), and mokkari
 > calls it on **every send** — each page of a paginated list included. CLU used
 > to take one slot per call while mokkari followed every `next` link inside
-> it, so a long series sent dozens of unpaced pages. A 429 Metron returns
+> it, so a long series sent dozens of unpaced pages. The limiter's window is
+> 62s, not 60 (`_BURST_SLACK_S`): Metron frees a slot 60s after a request
+> *arrives*, mokkari 60s after it was *sent*, so without slack a busy client
+> reused each slot a moment early and drew about one 429 per window. A 429 Metron returns
 > blocks every thread inside the limiter for `Retry-After`, so the policy
 > retries it without sleeping; a plain `RateLimitError` (the limiter refusing a
 > request it never sent) means the daily window is spent and latches it.
