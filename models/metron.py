@@ -18,7 +18,9 @@ import requests.exceptions as requests_exceptions
 from core.provider_client import (
     AuthLockout, GuardedClient, LibraryClient, QuotaLatch, Verdict,
 )
-from mokkari.rate_limit import HeaderPacedRateLimiter, RateLimitStatus, RateLimitWindow
+from mokkari.rate_limit import (
+    DEFAULT_BURST_PERIOD, HeaderPacedRateLimiter, RateLimitStatus, RateLimitWindow,
+)
 from mokkari.session import Session as MokkariSession
 from mokkari.sqlite_cache import SqliteCache
 from mokkari.exceptions import ApiError, AuthenticationError, RateLimitError
@@ -99,6 +101,13 @@ def _metron_cache() -> Optional[SqliteCache]:
 # the first response reports the real one.
 _DEFAULT_BURST_LIMIT = 20
 
+# Metron frees a burst slot 60s after a request *arrives*; mokkari's limiter
+# frees it 60s after the request was *sent*, so a busy client spends each
+# freed slot just before the server has freed it: about one 429 per window,
+# enough for Metron to flag the account as a repeat offender. Hold every slot
+# this much longer (comicbox's _SLACK_S does the same).
+_BURST_SLACK_S = 2.0
+
 
 class _CluRateLimiter(HeaderPacedRateLimiter):
     """mokkari's header-paced limiter, paced from the first request.
@@ -108,7 +117,14 @@ class _CluRateLimiter(HeaderPacedRateLimiter):
     every thread that starts at once -- a scheduled sweep, a bulk job and a
     page load after a restart -- goes out together. Until Metron says
     otherwise, assume its documented minimum.
+
+    The default window is Metron's 60s plus ``_BURST_SLACK_S``, so a slot is
+    never reused before the server has freed it. An explicit ``burst_period``
+    is taken as given.
     """
+
+    def __init__(self, burst_period=DEFAULT_BURST_PERIOD + _BURST_SLACK_S):
+        super().__init__(burst_period=burst_period)
 
     @staticmethod
     def _seeded(status):
