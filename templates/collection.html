@@ -5,8 +5,8 @@
 {% block title %}Browse Library{% endblock %}
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ asset('css/collection.css') }}">
+<link rel="stylesheet" href="{{ asset('css/reader.css') }}">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 
 <script>
@@ -641,20 +641,20 @@
 {% block scripts %}
 {{ super() }}
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-metadata.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-update-xml.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/reading_list_picker.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/pull_list_add.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/collection.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/bulk-metadata-review.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/clu-streaming.js') }}"></script>
+<script src="{{ asset('js/clu-metadata.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-crop.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-edit.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-info.js') }}"></script>
+<script src="{{ asset('js/clu-update-xml.js') }}"></script>
+<script src="{{ asset('js/clu-series-json.js') }}"></script>
+<script src="{{ asset('js/clu-delete.js') }}"></script>
+<script src="{{ asset('js/reader.js') }}"></script>
+<script src="{{ asset('js/reading_list_picker.js') }}"></script>
+<script src="{{ asset('js/pull_list_add.js') }}"></script>
+<script src="{{ asset('js/collection.js') }}"></script>
+<script src="{{ asset('js/bulk-metadata-review.js') }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         // Initialize Dashboard Swipers

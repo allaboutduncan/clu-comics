@@ -167,6 +167,36 @@ class TestAnUnreadableCacheFileHeals:
         )
 
 
+class TestCoverCacheHeaders:
+    """A cache hit is ``private, max-age=300`` (core.thumbnail_cache); nothing
+    else on this route may be cacheable. A redirect to loading.svg that a
+    browser stored would freeze a card on the spinner."""
+
+    def test_the_cache_hit_gets_the_private_short_max_age(self, tree):
+        calls = _calls(_func(tree, "_serve_cached_thumbnail"))
+        assert "apply_cache_hit_headers" in calls
+        assert "send_from_directory" in calls
+
+    def test_the_headers_are_applied_inside_the_oserror_guard(self, tree):
+        node = _func(tree, "_serve_cached_thumbnail")
+        trys = [n for n in ast.walk(node) if isinstance(n, ast.Try)]
+        assert trys, "_serve_cached_thumbnail lost its try/except OSError"
+        body_calls = [
+            n.func.id for t in trys for stmt in t.body for n in ast.walk(stmt)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        ]
+        assert "apply_cache_hit_headers" in body_calls
+
+    def test_redirects_carry_no_max_age(self, tree):
+        node = _func(tree, "get_thumbnail")
+        assert "is_thumbnail_stale" in _calls(node)
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) \
+                    and call.func.id == "redirect":
+                assert not any(k.arg == "max_age" for k in call.keywords)
+        assert "max_age" not in _src(tree, "get_thumbnail")
+
+
 class TestStartupScan:
 
     def test_retries_errored_jobs(self, tree):

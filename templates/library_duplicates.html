@@ -72,8 +72,8 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-dupe.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-merge.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/library_duplicates.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-dupe.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-merge.js') }}"></script>
+<script src="{{ asset('js/library_duplicates.js') }}"></script>
 {% endblock %}

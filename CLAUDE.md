@@ -99,6 +99,18 @@ overrides the *text* side of each colour separately from the *fill* side:
 Bootstrap drives `.bg-x` and `.text-x` from one variable, and templates put
 white text on fills and coloured text on the dark page.
 
+#### Static asset URLs — `asset()`, never a hand-made `?v=`
+JS and CSS in templates are referenced as `{{ asset('js/files.js') }}`
+(`routes/auth.py`, token from `core/static_assets.py`: a content hash, memoised
+on mtime+size). Never `url_for('static', …)` with a `?v=` of your own: the old
+`| random` suffix re-downloaded every script on every render. Only a URL whose
+`v` matches the file's current hash is served `public, max-age=31536000,
+immutable` (an `after_app_request` hook on `auth_bp`); everything else keeps
+werkzeug's `no-cache`. Do not set `SEND_FILE_MAX_AGE_DEFAULT` — it is the
+default for every `send_file` in the app (covers, downloads, page images).
+`tests/unit/test_static_asset_urls.py` is the ratchet. Images under
+`static/images/` stay unversioned.
+
 #### Control characters in static assets — always escapes, never raw bytes
 
 Write a control character in JS/CSS/HTML as an escape (`'\0'`), never as a

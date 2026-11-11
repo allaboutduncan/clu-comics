@@ -2170,23 +2170,15 @@ function renderGrid(items) {
                 // Set placeholder initially, real source in data-src for lazy loading
                 img.src = '/static/images/loading.svg';
                 img.dataset.src = item.thumbnailUrl;
-                img.dataset.thumbnailPath = item.thumbnailUrl; // Store for polling
+                img.dataset.thumbnailPath = item.thumbnailUrl; // loadThumbnail's probe URL
                 img.classList.add('lazy');
-                img.classList.add('polling'); // Always poll thumbnails until confirmed loaded
+                img.classList.add('polling'); // not resolved yet; loadThumbnail clears it
 
                 // Handle error loading thumbnail
                 img.onerror = function () {
                     this.src = '/static/images/error.svg';
                     this.classList.remove('lazy');
                     this.classList.remove('polling'); // Stop polling on error
-                };
-
-                // Handle successful load
-                img.onload = function () {
-                    // If we are polling, check status
-                    if (this.classList.contains('polling')) {
-                        pollThumbnail(this);
-                    }
                 };
             } else {
                 // Generic file icon
@@ -3226,64 +3218,94 @@ function filterItems(letter) {
     syncNavUrl();
 }
 
+// Covers refreshed in this page view (thumbnail URLs). The document's image
+// cache can still hold the old bytes under the same URL for max-age, so any
+// later card for one of these keeps fetching with cache: 'reload'.
+const _refreshedCovers = new Set();
+
+/** True when a fetch was redirected to /static/images/<name>. */
+function _redirectedTo(response, name) {
+    if (!response.redirected) return false;
+    try {
+        return new URL(response.url).pathname.endsWith('/images/' + name);
+    } catch (e) {
+        return false;
+    }
+}
+
 /**
- * Poll a thumbnail URL to check if it's ready.
- * @param {HTMLImageElement} imgElement - The image element to update
+ * Load a cover with one cacheable request, polling only while it is generated.
+ *
+ * The probe *is* the load: a plain fetch of /api/thumbnail, which the server
+ * answers with the cover (private, max-age=300), a redirect to loading.svg
+ * (still generating: ask again in 2s) or a redirect to error.svg (terminal for
+ * this page view: stop). An <img> cannot see whether its request was
+ * redirected, which is why this goes through fetch. Never add a timestamp to
+ * the URL: the cover would then never come from the HTTP cache.
+ *
+ * A reload supersedes a probe already in flight: each call takes a generation
+ * number, and a continuation from an older generation does nothing.
+ * @param {HTMLImageElement} img - Image with data-thumbnail-path and class 'polling'
+ * @param {{reload?: boolean}} [opts] - reload: bypass and overwrite the HTTP cache
  */
-function pollThumbnail(imgElement) {
-    if (!imgElement.classList.contains('polling')) {
-        return; // Stop if polling was cancelled
-    }
+function loadThumbnail(img, opts) {
+    const url = img.dataset.thumbnailPath;
+    if (!url || !img.classList.contains('polling')) return;
+    const reload = !!(opts && opts.reload) || _refreshedCovers.has(url);
+    // one in-flight probe per image, unless this one is a reload
+    if (img.dataset.isPolling === 'true' && !(opts && opts.reload)) return;
+    if (opts && opts.reload) _refreshedCovers.add(url);
+    const gen = String((parseInt(img.dataset.loadGen || '0', 10) || 0) + 1);
+    img.dataset.loadGen = gen;
+    img.dataset.isPolling = 'true';
+    const current = () => img.dataset.loadGen === gen;
+    const retry = (delay) => {
+        img.dataset.isPolling = 'false';
+        // a card removed by a re-render stops here; its replacement probes itself
+        if (img.isConnected && img.classList.contains('polling')) {
+            setTimeout(() => loadThumbnail(img, opts), delay);
+        }
+    };
 
-    // Avoid multiple concurrent polls for the same image
-    if (imgElement.dataset.isPolling === 'true') return;
-    imgElement.dataset.isPolling = 'true';
-
-    const thumbnailUrl = imgElement.dataset.thumbnailPath;
-    if (!thumbnailUrl) {
-        imgElement.dataset.isPolling = 'false';
-        return;
-    }
-
-    // Add a cache-busting parameter to force a fresh check
-    const checkUrl = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_check=' + Date.now();
-
-    fetch(checkUrl, { method: 'HEAD' })
+    fetch(url, { credentials: 'same-origin', cache: reload ? 'reload' : 'default' })
         .then(response => {
-            imgElement.dataset.isPolling = 'false';
-
-            // Check if we were redirected to the loading image or error image
-            const isRedirectedToLoading = response.url.includes('loading.svg');
-            const isRedirectedToError = response.url.includes('error.svg');
-
-            // If we get a 200 AND it's not the loading/error image
-            if (response.ok && response.status === 200 && !isRedirectedToLoading && !isRedirectedToError) {
-                // Thumbnail is ready! 
-                const newSrc = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
-
-                // We found it's ready. Stop polling.
-                imgElement.classList.remove('polling');
-
-                // Update the image to the new version
-                imgElement.src = newSrc;
-
-            } else if (imgElement.classList.contains('polling')) {
-                // Still generating, poll again in 2 seconds
-                setTimeout(() => pollThumbnail(imgElement), 2000);
+            if (!current()) return;
+            if (_redirectedTo(response, 'loading.svg')) {
+                // Still generating
+                retry(2000);
+                return;
             }
+            if (!response.ok || _redirectedTo(response, 'error.svg')) {
+                // Terminal for this page view
+                img.dataset.isPolling = 'false';
+                img.classList.remove('polling', 'lazy');
+                img.src = '/static/images/error.svg';
+                return;
+            }
+            // Drain the body so the HTTP cache entry is complete
+            return response.blob().then(blob => {
+                if (!current()) return;
+                img.dataset.isPolling = 'false';
+                img.classList.remove('polling');
+                if (reload) {
+                    // The old cover may sit in the document's image cache under
+                    // the same URL, so show the bytes we just fetched.
+                    const objectUrl = URL.createObjectURL(blob);
+                    img.addEventListener('load', () => URL.revokeObjectURL(objectUrl), { once: true });
+                    img.addEventListener('error', () => URL.revokeObjectURL(objectUrl), { once: true });
+                    img.src = objectUrl;
+                } else {
+                    img.src = url; // served from the HTTP cache
+                }
+            });
         })
-        .catch(error => {
-            console.error('Error polling thumbnail:', error);
-            imgElement.dataset.isPolling = 'false';
-            // Retry after a longer delay on error
-            if (imgElement.classList.contains('polling')) {
-                setTimeout(() => pollThumbnail(imgElement), 5000);
-            }
+        .catch(() => {
+            if (current()) retry(5000);
         });
 }
 
 /**
- * Wire up poll-based thumbnail loading for dashboard swiper cards.
+ * Wire up cover loading for dashboard swiper cards.
  *
  * Swiper cards are rendered via innerHTML strings, so (unlike the main grid)
  * they don't get the polling behaviour automatically. Without it, a newly added
@@ -3292,7 +3314,7 @@ function pollThumbnail(imgElement) {
  * nothing re-checks until a full page refresh.
  *
  * Each target img is rendered with src=loading.svg and data-thumbnail holding
- * the real /api/thumbnail URL; this attaches the same polling used by the grid.
+ * the real /api/thumbnail URL; this loads it the same way as the grid.
  * @param {HTMLElement} container - Element containing img.thumbnail[data-thumbnail] nodes
  */
 function initSwiperThumbnails(container) {
@@ -3307,18 +3329,7 @@ function initSwiperThumbnails(container) {
             this.src = '/static/images/error.svg';
             this.classList.remove('polling');
         };
-        img.onload = function () {
-            if (this.classList.contains('polling')) {
-                pollThumbnail(this);
-            }
-        };
-
-        // The loading.svg placeholder may already be cached/complete before these
-        // handlers were attached (in which case onload won't fire again), so kick
-        // off polling immediately to be safe.
-        if (img.complete) {
-            pollThumbnail(img);
-        }
+        loadThumbnail(img);
     });
 }
 
@@ -3471,7 +3482,11 @@ function initLazyLoading() {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     const img = entry.target;
-                    if (img.dataset.src) {
+                    if (img.dataset.thumbnailPath) {
+                        img.classList.remove('lazy');
+                        observer.unobserve(img);
+                        loadThumbnail(img);
+                    } else if (img.dataset.src) {
                         img.src = img.dataset.src;
                         img.classList.remove('lazy');
                         observer.unobserve(img);
@@ -3488,8 +3503,12 @@ function initLazyLoading() {
         // Fallback for older browsers
         const lazyImages = document.querySelectorAll('img.lazy');
         lazyImages.forEach(img => {
-            img.src = img.dataset.src;
             img.classList.remove('lazy');
+            if (img.dataset.thumbnailPath) {
+                loadThumbnail(img);
+            } else {
+                img.src = img.dataset.src;
+            }
         });
     }
 }
@@ -3748,11 +3767,11 @@ function refreshThumbnail(filePath) {
         if (nameEl && nameEl.textContent === filePath.split('/').pop()) {
             const img = item.querySelector('.thumbnail');
             if (img && img.dataset.thumbnailPath) {
-                // Force reload with cache busting
-                const thumbnailUrl = img.dataset.thumbnailPath;
-                const newSrc = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_refresh=' + Date.now();
-                img.src = newSrc;
-                console.log('Refreshed thumbnail for:', filePath);
+                // cache: 'reload' bypasses the cached cover and overwrites it,
+                // so the next page view gets the new one too.
+                img.classList.add('polling');
+                img.src = '/static/images/loading.svg';
+                loadThumbnail(img, { reload: true });
             }
         }
     });

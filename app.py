@@ -111,6 +111,7 @@ from core.download_utils import issue_number_to_int, monitor_enabled
 from core.thumbnail_cache import (
     thumbnail_cache_path,
     is_thumbnail_stale,
+    apply_cache_hit_headers,
     file_changed_since,
     regenerate_thumbnail,
     set_job_status,
@@ -6176,7 +6177,7 @@ def _serve_cached_thumbnail(shard_dir, filename):
     permission on the shard *directory* and never on the file it replaces.
     """
     try:
-        return send_from_directory(shard_dir, filename)
+        return apply_cache_hit_headers(send_from_directory(shard_dir, filename))
     except OSError:
         app_logger.warning(
             f"Cached thumbnail {filename} is not readable; regenerating over it"
@@ -6246,7 +6247,8 @@ def get_thumbnail():
         # (CBR/RAR) -- and a type cannot change without the path changing,
         # which makes a new row. Left to fall through, this request re-inserts
         # 'processing' and submits another doomed job; the grid re-polls every
-        # 2s, so one such card is a permanent load on a two-worker executor.
+        # 2s while it is answered loading.svg, so one such card would be a
+        # permanent load on a two-worker executor.
         return redirect(url_for("static", filename="images/error.svg"))
 
     # Insert 'processing' status synchronously to prevent race conditions
@@ -6476,11 +6478,6 @@ def read_text_file():
 #########################
 STATIC_DIR = "static"
 os.makedirs(STATIC_DIR, exist_ok=True)
-
-
-@app.route("/static/<path:filename>")
-def serve_static(filename):
-    return send_from_directory(STATIC_DIR, filename)
 
 
 @app.route("/manifest.json")

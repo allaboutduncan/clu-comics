@@ -111,6 +111,28 @@ def thumbnail_cache_path(file_path, cache_dir=None):
     return os.path.join(thumbnails_root(cache_dir), path_hash[:2], f"{path_hash}.jpg")
 
 
+# How long a browser may reuse a cover cache hit without asking again. Short
+# and private on purpose: the cache is keyed on the comic's *path*, so while a
+# browser holds a response it never reaches is_thumbnail_stale -- a rewritten
+# comic whose op forgot regenerate_thumbnail shows its old cover for at most
+# this long. Private because covers are access-checked per user.
+THUMBNAIL_MAX_AGE = 300
+
+
+def apply_cache_hit_headers(response):
+    """Make a cover cache-hit response ``private, max-age=THUMBNAIL_MAX_AGE``.
+
+    Not ``send_from_directory(..., max_age=...)``: werkzeug marks that public.
+    ETag/Last-Modified and conditional 304s stay as werkzeug sets them.
+    """
+    cc = response.cache_control
+    cc.no_cache = None
+    cc.public = None
+    cc.private = True
+    cc.max_age = THUMBNAIL_MAX_AGE
+    return response
+
+
 def is_thumbnail_stale(file_path, cache_path=None):
     """True when the comic has been rewritten since its thumbnail was made.
 

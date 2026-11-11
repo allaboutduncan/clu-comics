@@ -311,3 +311,42 @@ class TestInvalidate:
 
     def test_tolerates_a_path_with_no_cached_thumbnail(self, cache_dir, tmp_path):
         thumbnail_cache.invalidate_thumbnail(str(tmp_path / "never-cached.cbz"))
+
+
+class TestCacheHitHeaders:
+    """A cover cache hit may be reused by the browser for five minutes, by
+    that browser only. Public would let a shared proxy hand one user's
+    access-checked cover to another; a long max-age would hide a rewritten
+    comic from is_thumbnail_stale for that long."""
+
+    @pytest.fixture
+    def served(self, tmp_path):
+        from flask import Flask, send_from_directory
+        Image.new("RGB", (4, 4)).save(tmp_path / "abc.jpg", "JPEG")
+        app = Flask(__name__)
+
+        def serve(headers=None):
+            with app.test_request_context(headers=headers or {}):
+                resp = thumbnail_cache.apply_cache_hit_headers(
+                    send_from_directory(str(tmp_path), "abc.jpg"))
+                resp.direct_passthrough = False
+                return resp
+        return serve
+
+    def test_private_five_minutes(self, served):
+        resp = served()
+        cc = resp.headers["Cache-Control"]
+        assert "private" in cc
+        assert f"max-age={thumbnail_cache.THUMBNAIL_MAX_AGE}" in cc
+        assert thumbnail_cache.THUMBNAIL_MAX_AGE == 300
+        assert "public" not in cc
+        assert "no-cache" not in cc
+        assert resp.headers.get("ETag")
+
+    def test_revalidation_keeps_the_headers(self, served):
+        etag = served().headers["ETag"]
+        resp = served({"If-None-Match": etag})
+        assert resp.status_code == 304
+        cc = resp.headers["Cache-Control"]
+        assert "private" in cc and "max-age=300" in cc
+        assert "public" not in cc and "no-cache" not in cc
