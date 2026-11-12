@@ -92,9 +92,9 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-rename-preview.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-personalization.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/clu-rename-preview.js') }}"></script>
+<script src="{{ asset('js/clu-personalization.js') }}"></script>
 <script>
   window.SETUP_CONFIG = {{ {
     'state': setup_state,
@@ -153,5 +153,5 @@
     }
   } | tojson }};
 </script>
-<script src="{{ url_for('static', filename='js/setup-wizard.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ asset('js/setup-wizard.js') }}"></script>
 {% endblock %}

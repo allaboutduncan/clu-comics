@@ -96,8 +96,8 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-info.js') }}"></script>
 <script>
 (function () {
   const tbody = document.getElementById('auditTbody');

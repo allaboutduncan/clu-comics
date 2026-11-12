@@ -2,8 +2,8 @@
 {% from 'partials/page_header.html' import page_header %}
 {% block title %}{{ reading_list.name }}{% endblock %}
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}?v={{ range(1, 10000) | random }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/reader.css') }}?v={{ range(1, 10000) | random }}">
+<link rel="stylesheet" href="{{ asset('css/collection.css') }}">
+<link rel="stylesheet" href="{{ asset('css/reader.css') }}">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 <style>
     /* Bookmarked state for the header's Want to Read toggle — the outline
@@ -523,10 +523,10 @@
 {{ super() }}
 <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
-<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
+<script src="{{ asset('js/clu-source-search.js') }}"></script>
 {# reader.js is the shared comic reader; it must load before reading_list.js,
    which only publishes the host bridge (_readerAllItems / _readerOnMarkedRead). #}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/reader.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/reader.js') }}"></script>
+<script src="{{ asset('js/reading_list.js') }}"></script>
 {% endblock %}

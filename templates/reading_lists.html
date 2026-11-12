@@ -5,7 +5,7 @@
 {% block title %}Reading Lists{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/reading_lists.css') }}">
+<link rel="stylesheet" href="{{ asset('css/reading_lists.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -515,8 +515,8 @@ owner, so everything shows exactly as before. #}
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/reading_list.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/reading_list.js') }}"></script>
 <script>
     // Load Metron data on tab shown
     document.addEventListener('DOMContentLoaded', function () {

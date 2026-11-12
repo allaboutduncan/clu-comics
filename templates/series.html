@@ -5,7 +5,7 @@
 {% block title %}{{ series.name }} - Series{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/files.css') }}">
+<link rel="stylesheet" href="{{ asset('css/files.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -929,7 +929,7 @@
 {% block scripts %}
 {{ super() }}
 {% include 'partials/modal_series_json.html' %}
-<script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-series-json.js') }}"></script>
 <script>
     // Refresh the series.json badge once the file has been written.
     window._cluSeriesJson = { onComplete: function () { setTimeout(function () { window.location.reload(); }, 1200); } };
@@ -1454,13 +1454,13 @@
     // Load aliases on page load
     document.addEventListener('DOMContentLoaded', loadAliases);
 </script>
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/files.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>
-<script src="{{ url_for('static', filename='js/series.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
+<script src="{{ asset('js/clu-source-search.js') }}"></script>
+<script src="{{ asset('js/clu-streaming.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-crop.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-edit.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-info.js') }}"></script>
+<script src="{{ asset('js/clu-delete.js') }}"></script>
+<script src="{{ asset('js/files.js') }}"></script>
+<script src="{{ asset('js/series.js') }}"></script>
 {% endblock %}

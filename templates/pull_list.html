@@ -319,7 +319,7 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-utils.js') }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         // ── Auto-Map Library ──

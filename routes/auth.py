@@ -13,6 +13,8 @@ owner account at startup, so they continue to work through this same path.
 OPDS, static, and /api/v1 routes are exempt from the browser gate (OPDS and the
 token API carry their own identity).
 """
+from datetime import datetime, timedelta, timezone
+
 from flask import (
     Blueprint,
     current_app,
@@ -51,6 +53,8 @@ from core.page_width import (
     shell_classes,
 )
 from core.settings import get_setting, set_setting
+from core.static_assets import STATIC_MAX_AGE, asset_version
+from core.version import __version__
 from core.themes import (
     BOOTSWATCH_THEMES,
     is_dark_theme,
@@ -158,6 +162,45 @@ def _inject_theme_assets():
 @auth_bp.app_template_global("clu_page_sizes")
 def _clu_page_sizes():
     return PAGE_SIZES
+
+
+# JS/CSS URL with a content-hash token: ``{{ asset('js/clu-toast.js') }}``.
+# Never ``url_for('static', ...)`` plus a hand-made ``?v=`` -- a random suffix
+# defeats the cache and a manual one goes stale (tests/unit/test_static_asset_urls.py).
+# A file that cannot be found still renders (it 404s, as a typo did before),
+# versioned with the app release instead.
+@auth_bp.app_template_global("asset")
+def _asset(filename):
+    token = asset_version(current_app.static_folder, filename) or __version__
+    return url_for("static", filename=filename, v=token)
+
+
+# Only a static URL carrying the file's *current* token may be cached for a
+# year: its bytes can never change under that URL. Anything else (no token, a
+# stale token from an old page, a 404) keeps werkzeug's no-cache + ETag.
+# Deliberately not SEND_FILE_MAX_AGE_DEFAULT, which is the default for every
+# send_file in the app -- covers, downloads, page images.
+@auth_bp.after_app_request
+def _cache_versioned_static(response):
+    try:
+        if (
+            request.endpoint == "static"
+            and response.status_code in (200, 304)
+            and request.args.get("v")
+            and request.args.get("v") == asset_version(
+                current_app.static_folder, (request.view_args or {}).get("filename")
+            )
+        ):
+            cc = response.cache_control
+            cc.no_cache = None
+            cc.public = True
+            cc.max_age = STATIC_MAX_AGE
+            cc.immutable = True
+            response.expires = datetime.now(timezone.utc) + timedelta(
+                seconds=STATIC_MAX_AGE)
+    except Exception:
+        pass
+    return response
 
 
 # The size a list starts on (helpers/paging.py). per_page_select writes it onto

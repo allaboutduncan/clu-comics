@@ -93,14 +93,14 @@
     .ops-item-completed { opacity: 0.6; }
     .ops-item-error { border-left: 3px solid #dc3545; }
   </style>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/clu-page.css') }}">
+  <link rel="stylesheet" href="{{ asset('css/clu-page.css') }}">
   {% block extra_css %}{% endblock %}
   {# The list toolbar helpers (partials/filters.html's script twins and the
      page bar) load in the head, not the footer: several pages run inline
      scripts inside their content block that call them while the page parses.
      Neither touches the DOM when it loads. #}
-  <script src="{{ url_for('static', filename='js/clu-filters.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/clu-pager.js') }}"></script>
+  <script src="{{ asset('js/clu-filters.js') }}"></script>
+  <script src="{{ asset('js/clu-pager.js') }}"></script>
 </head>
 
 <body class="d-flex flex-column min-vh-100">
@@ -150,8 +150,8 @@
 
   <!-- Bootstrap JS (Required for Modal functionality) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
-  <script src="{{ url_for('static', filename='js/clu-toast.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/clu-page.js') }}"></script>
+  <script src="{{ asset('js/clu-toast.js') }}"></script>
+  <script src="{{ asset('js/clu-page.js') }}"></script>
 
   <!-- Environment-based console logging -->
   <script>

@@ -88,7 +88,8 @@ Things that look arbitrary and are not:
   the path does not. So `get_thumbnail` answers it **without** a
   `file_changed_since` gate and without re-queuing. It had no branch at all
   once, so such a request fell through to the `processing` upsert and submitted
-  another doomed job on every poll — and the grid re-polls every 2s.
+  another doomed job on every poll — and the grid re-polls every 2s while the
+  server answers `loading.svg`, which without this branch it would forever.
 - **Job rows are written only through `set_job_status`**, because that is what
   stamps `file_mtime`. A raw `INSERT OR REPLACE (path, status)` leaves it NULL
   *and* wipes any value already there, and `scan_library_task` reads NULL as
@@ -115,6 +116,29 @@ Things that look arbitrary and are not:
   `submit_thumbnail_job`, and both the route and the scan trust a `processing`
   row only while `is_in_flight(path)` says so. This relies on gunicorn's single
   worker (`-w 1`).
+- **A cache hit is `private, max-age=300`, and must stay short and private.**
+  `_serve_cached_thumbnail` wraps `send_from_directory` in
+  `apply_cache_hit_headers` (inside its `try`, so the `OSError` fall-through is
+  unchanged); ETag/304 come from werkzeug. Short because the cache is keyed on
+  the path: while a browser reuses a response, the request never reaches
+  `is_thumbnail_stale`, so a rewritten comic whose op forgot
+  `regenerate_thumbnail` shows its old cover for at most that long. Private
+  because covers are access-checked per user (`enforce_path_access`). Not
+  `send_from_directory(..., max_age=...)`, which werkzeug marks `public`. The
+  `loading.svg`/`error.svg` redirects carry no max-age and must not: a stored
+  one would freeze a card. Do not put a `?v=` on `thumbnail_url` either —
+  `file_index.modified_at` lags rewrites, and an immutable URL never reaches
+  the staleness check at all.
+- **The grid loads a cover with one plain `fetch`** (`loadThumbnail` in
+  `static/js/collection.js`). It re-polls every 2s only while the response was
+  redirected to `loading.svg`, stops on `error.svg` (one probe per page view,
+  where it used to poll forever), and otherwise sets `img.src` to the same URL,
+  which the browser then serves from its HTTP cache. `refreshThumbnail` passes
+  `{ reload: true }` (`cache: 'reload'`), which both bypasses and overwrites
+  the cached entry. **Never reintroduce a timestamp query parameter**
+  (`_check=`, `_t=`, `_refresh=`): it made every cover unique per page view —
+  GET + HEAD + GET per card, nothing ever reused.
+  `tests/unit/test_thumbnail_loader_js.py` pins the loader.
 - **In `cbz_ops/rebuild.py` the refresh goes through `_refresh_thumbnail`**,
   which swallows. The call sites sit inside the big `try/except` that decides
   the rebuild's success, and by then the CBZ is already written: an unwritable
