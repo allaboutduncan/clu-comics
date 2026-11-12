@@ -3223,6 +3223,9 @@ function filterItems(letter) {
 // later card for one of these keeps fetching with cache: 'reload'.
 const _refreshedCovers = new Set();
 
+/** 5xx answers a cover may get before it is shown as an error (~1 min at 5s). */
+const THUMBNAIL_5XX_RETRIES = 12;
+
 /** True when a fetch was redirected to /static/images/<name>. */
 function _redirectedTo(response, name) {
     if (!response.redirected) return false;
@@ -3275,13 +3278,23 @@ function loadThumbnail(img, opts) {
                 retry(2000);
                 return;
             }
+            if (response.status >= 500
+                    && (parseInt(img.dataset.serverErrors || '0', 10) || 0) < THUMBNAIL_5XX_RETRIES) {
+                // Transient: "database is locked", or a proxy 502/503 while the
+                // worker restarts. Retry like a network error, but not forever.
+                img.dataset.serverErrors = String((parseInt(img.dataset.serverErrors || '0', 10) || 0) + 1);
+                retry(5000);
+                return;
+            }
             if (!response.ok || _redirectedTo(response, 'error.svg')) {
-                // Terminal for this page view
+                // Terminal for this page view (a 4xx such as a 403, error.svg,
+                // or a 5xx that outlasted its retries)
                 img.dataset.isPolling = 'false';
                 img.classList.remove('polling', 'lazy');
                 img.src = '/static/images/error.svg';
                 return;
             }
+            img.dataset.serverErrors = '0';
             // Drain the body so the HTTP cache entry is complete
             return response.blob().then(blob => {
                 if (!current()) return;

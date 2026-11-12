@@ -91,3 +91,25 @@ def test_a_reload_supersedes_a_probe_in_flight():
 
 def test_removed_cards_stop_polling():
     assert "isConnected" in _body("loadThumbnail")
+
+
+def test_server_errors_retry_before_they_are_final():
+    """A transient 5xx ("database is locked", a proxy 502/503 while the
+    worker restarts) must not leave the cover broken for the page view, so it
+    goes through retry() -- and is checked before the !response.ok branch
+    that makes everything else final."""
+    body = _body("loadThumbnail")
+    start = body.index("response.status >= 500")
+    assert start < body.index("!response.ok")
+    branch = body[start: body.index("return;", start)]
+    assert "retry(5000)" in branch
+
+
+def test_server_error_retries_are_bounded():
+    """A cover whose request always 500s must stop polling eventually."""
+    body = _body("loadThumbnail")
+    branch = body[body.index("response.status >= 500"):]
+    branch = branch[: branch.index("retry(5000)")]
+    assert "THUMBNAIL_5XX_RETRIES" in branch
+    m = re.search(r"const THUMBNAIL_5XX_RETRIES = (\d+);", JS)
+    assert m and 0 < int(m.group(1)) <= 30
