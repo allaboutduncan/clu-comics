@@ -22,7 +22,24 @@ PUBLIC_V6 = "2606:2800:220:1:248:1893:25c8:1946"
 
 
 @pytest.fixture
-def dns(monkeypatch):
+def allow_private(monkeypatch):
+    """The owner's DOWNLOAD_ALLOW_PRIVATE_HOSTS, read through core.settings.get_bool."""
+    import core.settings as settings
+
+    state = {"on": False}
+    real_get_bool = settings.get_bool
+
+    def fake_get_bool(key, *a, **kw):
+        if key == "DOWNLOAD_ALLOW_PRIVATE_HOSTS":
+            return state["on"]
+        return real_get_bool(key, *a, **kw)
+
+    monkeypatch.setattr(settings, "get_bool", fake_get_bool)
+    return state
+
+
+@pytest.fixture
+def dns(monkeypatch, allow_private):
     """Map hostname -> list of addresses; anything unmapped fails to resolve."""
     table = {}
     calls = []
@@ -124,6 +141,93 @@ class TestCheckUrl:
     def test_public_ip_literal_passes_without_dns(self, dns):
         assert check_url(f"http://{PUBLIC_V4}:8080/x") == PUBLIC_V4
         assert dns["calls"] == []
+
+
+class TestAllowPrivateHostsSetting:
+    def test_schema_entry(self):
+        from core.settings import SETTINGS_SCHEMA
+        s = SETTINGS_SCHEMA["DOWNLOAD_ALLOW_PRIVATE_HOSTS"]
+        assert (s.pref, s.type, s.default, s.category) == (
+            "download_allow_private_hosts", "bool", False, "downloads")
+
+    def test_off_by_default_refuses_and_names_the_remedy(self, dns):
+        dns["nas.lan"] = ["192.168.1.20"]
+        with pytest.raises(BlockedURLError) as exc:
+            check_url("http://nas.lan/x.cbz")
+        assert "Settings" in str(exc.value)
+
+    def test_read_per_call(self, dns, allow_private):
+        dns["nas.lan"] = ["192.168.1.20"]
+        with pytest.raises(BlockedURLError):
+            check_url("http://nas.lan/x.cbz")
+        allow_private["on"] = True
+        assert check_url("http://nas.lan/x.cbz") == "nas.lan"
+        allow_private["on"] = False
+        with pytest.raises(BlockedURLError):
+            check_url("http://nas.lan/x.cbz")
+
+    def test_on_allows_private_literals_and_unresolvable_names(self, dns, allow_private):
+        allow_private["on"] = True
+        assert check_url("http://127.0.0.1:8080/x") == "127.0.0.1"
+        assert check_url("http://198.18.0.5/x") == "198.18.0.5"
+        assert check_url("https://split-dns.example/x") == "split-dns.example"
+        assert dns["calls"] == []
+
+    @pytest.mark.parametrize("url", ["ftp://nas.lan/x", "file:///etc/passwd", "nas.lan/x",
+                                     "http:///nohost", ""])
+    def test_on_still_refuses_bad_schemes_and_shapes(self, dns, allow_private, url):
+        allow_private["on"] = True
+        with pytest.raises(BlockedURLError):
+            check_url(url)
+
+    def test_on_still_strips_custom_headers_for_unknown_hosts(self, dns, allow_private):
+        allow_private["on"] = True
+        assert url_guard.scope_headers(FULL, "http://192.168.1.20/x", BASIC) == BASIC
+        s, adapter = _session({"http://nas.lan/x": (200, {})}, FULL, BASIC)
+        s.get("http://nas.lan/x")
+        assert "CF-Access-Client-Id" not in adapter.seen[0][1]
+
+    def test_a_failed_settings_read_keeps_the_check_on(self, dns, monkeypatch):
+        import core.settings as settings
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(settings, "get_bool", boom)
+        with pytest.raises(BlockedURLError):
+            check_url("http://127.0.0.1/")
+
+    def test_not_frozen_into_a_module_constant(self):
+        src = (ROOT / "core" / "url_guard.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in tree.body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                assert "get_bool" not in ast.unparse(node)
+
+
+class TestDownloadApiSaveWiring:
+    """The switch is saved by the owner-only /api/config/download-api route."""
+
+    def test_route_writes_the_setting_only_when_sent(self):
+        tree = ast.parse((ROOT / "app.py").read_text(encoding="utf-8"))
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "save_download_api_config")
+        src = ast.unparse(fn)
+        assert "'downloadAllowPrivateHosts' in data" in src
+        assert "set_setting('DOWNLOAD_ALLOW_PRIVATE_HOSTS'" in src
+
+    def test_route_is_owner_only(self, monkeypatch):
+        from flask import Flask
+        from core.auth import required_role_for_request
+        app = Flask(__name__)
+        with app.test_request_context("/api/config/download-api", method="POST"):
+            assert required_role_for_request() == "owner"
+
+    def test_config_page_has_the_switch_and_sends_it(self):
+        html = (ROOT / "templates" / "config.html").read_text(encoding="utf-8")
+        assert 'id="downloadAllowPrivateHosts"' in html
+        assert "Allow downloads from private network addresses" in html
+        assert "downloadAllowPrivateHosts: document.getElementById('downloadAllowPrivateHosts')?.checked" in html
 
 
 # ---------------------------------------------------------------------------

@@ -116,10 +116,28 @@ def _resolve(host, port):
     return [info[4][0] for info in infos]
 
 
+REMEDY = "The owner can allow private network addresses in Settings > Download and API."
+
+
+def private_hosts_allowed():
+    """The owner's opt-out (``DOWNLOAD_ALLOW_PRIVATE_HOSTS``), read per call.
+
+    A failed read counts as off, so the check stays on.
+    """
+    try:
+        from core.settings import get_bool
+        return bool(get_bool("DOWNLOAD_ALLOW_PRIVATE_HOSTS"))
+    except Exception:
+        return False
+
+
 def check_url(url):
     """Raise :class:`BlockedURLError` unless *url* is safe for CLU to fetch.
 
-    Returns the URL's lower-cased hostname when it is.
+    Returns the URL's lower-cased hostname when it is. With the owner's
+    ``DOWNLOAD_ALLOW_PRIVATE_HOSTS`` on, only the scheme and shape are checked:
+    the address check (and the refusal of a host that will not resolve) is
+    skipped. Header scoping does not depend on that setting.
     """
     if not isinstance(url, str) or not url.strip():
         raise BlockedURLError("empty URL")
@@ -136,6 +154,8 @@ def check_url(url):
         raise BlockedURLError("URL has no host")
     if port is None:
         port = 443 if scheme == "https" else 80
+    if private_hosts_allowed():
+        return host
 
     try:
         literal = ipaddress.ip_address(host.split("%", 1)[0])
@@ -147,15 +167,16 @@ def check_url(url):
         try:
             addresses = _resolve(host, port)
         except (OSError, UnicodeError) as e:
-            raise BlockedURLError(f"could not resolve host '{host}': {e}") from None
+            raise BlockedURLError(
+                f"could not resolve host '{host}': {e}. {REMEDY}") from None
         if not addresses:
-            raise BlockedURLError(f"could not resolve host '{host}'")
+            raise BlockedURLError(f"could not resolve host '{host}'. {REMEDY}")
 
     for address in addresses:
         reason = blocked_reason(address)
         if reason:
             raise BlockedURLError(
-                f"refusing to fetch from '{host}': it resolves to a {reason}"
+                f"refusing to fetch from '{host}': it resolves to a {reason}. {REMEDY}"
             )
     return host
 

@@ -6892,6 +6892,8 @@ def save_download_api_config():
         # page cannot switch the bundled solver off.
         if "flaresolverrEnabled" in data:
             set_setting("FLARESOLVERR_ENABLED", bool(data.get("flaresolverrEnabled")))
+        if "downloadAllowPrivateHosts" in data:
+            set_setting("DOWNLOAD_ALLOW_PRIVATE_HOSTS", bool(data.get("downloadAllowPrivateHosts")))
 
         # Save API credentials to DB (provider_credentials)
         try:
@@ -7186,6 +7188,7 @@ def config_page():
         oneshotFolders=st["ONESHOT_FOLDERS"],
         downloadPacks=is_download_packs_enabled(),
         flaresolverrEnabled=st["FLARESOLVERR_ENABLED"],
+        downloadAllowPrivateHosts=st["DOWNLOAD_ALLOW_PRIVATE_HOSTS"],
         enableDebugLogging=st["ENABLE_DEBUG_LOGGING"],
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         pageWidth=st["PAGE_WIDTH"],
