@@ -86,7 +86,9 @@ def sanitize_description_filter(value):
     """
     from markupsafe import Markup
     from core.description_html import sanitize_description_html
-    return Markup(sanitize_description_html(value))
+    # The argument is the allow-list sanitizer's own output (rebuilt tag by
+    # tag, all text escaped), never the stored value itself.
+    return Markup(sanitize_description_html(value))  # nosec B704
 
 # In-memory store for background import tasks
 import_tasks = {}
