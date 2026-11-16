@@ -6069,7 +6069,11 @@ function openEditModal(filePath) {
   document.getElementById('editCBZModalText').textContent = `Editing ${filename}`;
 
   // Load CBZ contents
-  fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
+  fetch('/edit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath })
+  })
     .then(response => {
       if (!response.ok) {
         throw new Error("Failed to load edit content.");

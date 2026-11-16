@@ -79,7 +79,7 @@ from core.settings import all_settings, get_bool, get_int, get_list, get_setting
 from core.auth import enforce_path_access, current_user, filter_paths_for_user, file_op_refusal
 from helpers.library import is_allowed_path
 from cbz_ops.edit import (
-    get_edit_modal,
+    edit_cbz,
     save_cbz,
 )
 from core.memory_utils import (
@@ -7565,30 +7565,12 @@ def logs_tail():
 
 
 #########################
-#    Edit CBZ Route     #
+#    Edit CBZ Routes    #
 #########################
-@app.route("/edit", methods=["GET"])
-def edit_cbz():
-    """
-    Processes the provided CBZ file (via 'file_path' query parameter) and returns a JSON
-    object containing:
-      - modal_body: HTML snippet for inline editing,
-      - folder_name, zip_file_path, original_file_path for the hidden form fields.
-    """
-    file_path = request.args.get("file_path")
-    if not file_path:
-        return jsonify({"error": "Missing file path parameter"}), 400
-    try:
-        result = get_edit_modal(
-            file_path
-        )  # Reuse existing logic for generating modal content
-        return jsonify(result)
-    except Exception as e:
-        app_logger.error(f"Error in /edit route: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# Register the save route using the imported save_cbz function.
+# Opening renames and extracts the archive, so /edit is a POST (a write, Clerk
+# under core.auth's policy) and validates its path in cbz_ops.edit.edit_cbz
+# before touching anything -- the same containment /save applies.
+app.add_url_rule("/edit", view_func=edit_cbz, methods=["POST"])
 app.add_url_rule("/save", view_func=save_cbz, methods=["POST"])
 
 #########################
