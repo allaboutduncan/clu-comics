@@ -2233,7 +2233,7 @@ function renderMetronLists(lists) {
         let ratingHtml = '';
         if (rating !== null && rating !== undefined) {
             const stars = Math.round(rating);
-            ratingHtml = `<span class="text-warning ms-2" title="Rating: ${rating}">`;
+            ratingHtml = `<span class="text-warning ms-2" title="Rating: ${Number(rating) || 0}">`;
             for (let i = 0; i < 5; i++) {
                 ratingHtml += i < stars ? '<i class="bi bi-star-fill"></i>' : '<i class="bi bi-star"></i>';
             }
@@ -2242,10 +2242,10 @@ function renderMetronLists(lists) {
 
         div.innerHTML = `
             <div class="form-check mb-0 flex-grow-1">
-                <input class="form-check-input metron-list-check" type="checkbox" value="${listId}" id="metron-chk-${listId}" onchange="updateMetronSelectedCount()">
-                <label class="form-check-label w-100" for="metron-chk-${listId}">
-                    <strong>${name}</strong>
-                    ${user ? `<span class="text-muted ms-2">by ${user}</span>` : ''}
+                <input class="form-check-input metron-list-check" type="checkbox" value="${parseInt(listId, 10) || 0}" id="metron-chk-${parseInt(listId, 10) || 0}" onchange="updateMetronSelectedCount()">
+                <label class="form-check-label w-100" for="metron-chk-${parseInt(listId, 10) || 0}">
+                    <strong>${CLU.escapeHtml(name)}</strong>
+                    ${user ? `<span class="text-muted ms-2">by ${CLU.escapeHtml(user)}</span>` : ''}
                     ${ratingHtml}
                 </label>
             </div>
@@ -2499,6 +2499,24 @@ function _setupArcScrollObserver() {
     _metronArcsObserver.observe(sentinel);
 }
 
+/**
+ * Plain-text snippet of a provider arc description, for the arc pickers.
+ * The description is provider HTML: it is parsed in an inert document
+ * (DOMParser runs no scripts and loads nothing) and reduced to its text, and
+ * the caller escapes the result. It is never inserted as markup.
+ */
+function arcDescriptionSnippet(desc, maxLen = 80) {
+    if (!desc) return '';
+    let text = String(desc);
+    try {
+        text = new DOMParser().parseFromString(text, 'text/html').body.textContent || '';
+    } catch (e) {
+        text = text.replace(/<[^>]*>?/g, '');
+    }
+    text = text.replace(/\s+/g, ' ').trim();
+    return text.length > maxLen ? text.substring(0, maxLen) + '...' : text;
+}
+
 function renderMetronArcs(arcs, append) {
     const container = document.getElementById('metronArcListContent');
     if (!container) return;
@@ -2515,16 +2533,16 @@ function renderMetronArcs(arcs, append) {
         const arcId = arc.id;
 
         let descHtml = '';
-        if (desc) {
-            const snippet = desc.length > 80 ? desc.substring(0, 80) + '...' : desc;
-            descHtml = `<span class="text-muted ms-2 small">${snippet}</span>`;
+        const snippet = arcDescriptionSnippet(desc);
+        if (snippet) {
+            descHtml = `<span class="text-muted ms-2 small">${CLU.escapeHtml(snippet)}</span>`;
         }
 
         div.innerHTML = `
             <div class="form-check mb-0 flex-grow-1">
-                <input class="form-check-input metron-arc-check" type="checkbox" value="${arcId}" id="metron-arc-chk-${arcId}" onchange="updateMetronArcSelectedCount()">
-                <label class="form-check-label w-100" for="metron-arc-chk-${arcId}">
-                    <strong>${name}</strong>
+                <input class="form-check-input metron-arc-check" type="checkbox" value="${parseInt(arcId, 10) || 0}" id="metron-arc-chk-${parseInt(arcId, 10) || 0}" onchange="updateMetronArcSelectedCount()">
+                <label class="form-check-label w-100" for="metron-arc-chk-${parseInt(arcId, 10) || 0}">
+                    <strong>${CLU.escapeHtml(name)}</strong>
                     ${descHtml}
                 </label>
             </div>
@@ -2699,20 +2717,20 @@ function renderCVArcs(arcs) {
 
         let metaHtml = '';
         if (issueCount) {
-            metaHtml += `<span class="badge bg-secondary ms-2">${issueCount} issues</span>`;
+            metaHtml += `<span class="badge bg-secondary ms-2">${parseInt(issueCount, 10) || 0} issues</span>`;
         }
 
         let descHtml = '';
-        if (desc) {
-            const snippet = desc.length > 80 ? desc.substring(0, 80) + '...' : desc;
-            descHtml = `<span class="text-muted ms-2 small">${snippet}</span>`;
+        const snippet = arcDescriptionSnippet(desc);
+        if (snippet) {
+            descHtml = `<span class="text-muted ms-2 small">${CLU.escapeHtml(snippet)}</span>`;
         }
 
         div.innerHTML = `
             <div class="form-check mb-0 flex-grow-1">
-                <input class="form-check-input cv-arc-check" type="checkbox" value="${arcId}" id="cv-arc-chk-${arcId}" onchange="updateCVArcSelectedCount()">
-                <label class="form-check-label w-100" for="cv-arc-chk-${arcId}">
-                    <strong>${name}</strong>
+                <input class="form-check-input cv-arc-check" type="checkbox" value="${parseInt(arcId, 10) || 0}" id="cv-arc-chk-${parseInt(arcId, 10) || 0}" onchange="updateCVArcSelectedCount()">
+                <label class="form-check-label w-100" for="cv-arc-chk-${parseInt(arcId, 10) || 0}">
+                    <strong>${CLU.escapeHtml(name)}</strong>
                     ${metaHtml}
                     ${descHtml}
                 </label>
