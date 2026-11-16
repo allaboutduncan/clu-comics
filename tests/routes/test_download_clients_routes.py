@@ -36,8 +36,8 @@ class TestListDownloadClients:
         {"client_type": "nzbget", "is_active": 1, "is_valid": 1, "last_tested": None},
     ])
     def test_list_never_returns_secrets(self, mock_status, mock_cfg, client):
-        """The route is clerk-level; only the owner's settings form needs the
-        rest, and a blank secret field keeps the stored value on save."""
+        """Secrets never leave the server; a blank secret field keeps the
+        stored value on save."""
         resp = client.get("/api/download-clients")
         assert "SECRET" not in resp.get_data(as_text=True)
         assert "PASS" not in resp.get_data(as_text=True)
@@ -181,6 +181,217 @@ class TestDownloadClientTest:
                                json={"host": "newhost", "api_key": "k"})
         assert resp.status_code == 200
         assert mock_get.call_args[0][1].host == "newhost"
+
+
+class TestDownloadClientTestStoredSecrets:
+    """A stored secret is only reused for the stored destination.
+
+    The settings form leaves a secret field out to mean "keep the saved one",
+    so the route merges the request over the stored config. That merge must
+    not carry the saved password or API key to any other scheme/host/port, or
+    to another username.
+    """
+
+    URL_SAB = "/api/download-clients/sabnzbd/test"
+    URL_NZBGET = "/api/download-clients/nzbget/test"
+
+    SAB_STORED = {"host": "nas.local", "port": 8080, "use_ssl": False,
+                  "api_key": "stored-test-key", "category": "comics"}
+    NZBGET_STORED = {"host": "nas.local", "port": 6789, "use_ssl": False,
+                     "username": "nzbuser", "password": "stored-test-pass"}
+
+    def _post(self, client, url, stored, body):
+        with patch("core.database.get_download_client_config", return_value=stored), \
+                patch("core.database.update_download_client_validity") as validity, \
+                patch("models.download_clients.get_download_client_by_name") as factory:
+            factory.return_value = MagicMock(
+                test_connection=MagicMock(return_value=True), last_error=None)
+            resp = client.post(url, json=body)
+        return resp, factory, validity
+
+    # -- allowed ---------------------------------------------------------
+
+    def test_unsaved_full_config_is_tested(self, client):
+        resp, factory, _ = self._post(client, self.URL_SAB, None, {
+            "host": "other.local", "port": 9090, "api_key": "typed-test-key"})
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is True
+        cfg = factory.call_args[0][1]
+        assert cfg.host == "other.local" and cfg.api_key == "typed-test-key"
+
+    def test_typed_secret_may_go_to_a_new_host(self, client):
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, {
+            "host": "other.local", "port": 9090, "use_ssl": True,
+            "api_key": "typed-test-key"})
+        assert resp.status_code == 200
+        assert factory.call_args[0][1].api_key == "typed-test-key"
+
+    def test_stored_secret_with_same_destination(self, client):
+        # What the form sends when only a non-connection field was edited.
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, {
+            "host": "nas.local", "port": 8080, "use_ssl": False,
+            "category": "manga"})
+        assert resp.status_code == 200
+        cfg = factory.call_args[0][1]
+        assert cfg.api_key == "stored-test-key"
+        assert cfg.category == "manga"
+
+    def test_bodyless_test_uses_stored_secret(self, client):
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, None)
+        assert resp.status_code == 200
+        assert factory.call_args[0][1].api_key == "stored-test-key"
+
+    @pytest.mark.parametrize("body", [
+        {"host": "NAS.LOCAL"},                       # host case
+        {"host": "nas.local:8080", "port": None},    # port moved into the host
+        {"host": "http://nas.local"},                # scheme spelled out
+        {"url_base": "sabnzbd"},                     # path only, same server
+    ])
+    def test_equivalent_destination_is_the_same(self, client, body):
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, body)
+        assert resp.status_code == 200, resp.get_json()
+        assert factory.call_args[0][1].api_key == "stored-test-key"
+
+    def test_stored_password_same_host_and_user(self, client):
+        resp, factory, _ = self._post(client, self.URL_NZBGET, self.NZBGET_STORED, {
+            "host": "nas.local", "port": 6789, "username": "nzbuser",
+            "use_ssl": False})
+        assert resp.status_code == 200
+        assert factory.call_args[0][1].password == "stored-test-pass"
+
+    # -- refused ---------------------------------------------------------
+
+    @pytest.mark.parametrize("body", [
+        {"host": "other.local"},                     # host
+        {"port": 9090},                              # port
+        {"use_ssl": True},                           # scheme
+        {"host": "https://nas.local"},               # scheme via the host field
+        {"host": "nas.local:9090", "port": None},    # port via the host field
+        {"host": "nas.local@other.local"},           # userinfo trick
+        {"host": "nas.local\\@other.local"},         # parser-differential trick
+        {"port": "8080@other.local"},                # authority smuggled in the port
+    ])
+    def test_changed_destination_refused_without_new_secret(self, client, body):
+        resp, factory, validity = self._post(client, self.URL_SAB, self.SAB_STORED, body)
+        assert resp.status_code == 400
+        data = resp.get_json()
+        assert data["success"] is False
+        assert "Re-enter the API key" in data["error"]
+        assert "stored-test-key" not in resp.get_data(as_text=True)
+        factory.assert_not_called()       # no client, so no outbound request
+        validity.assert_not_called()
+
+    def test_changed_username_refused_without_new_password(self, client):
+        resp, factory, _ = self._post(client, self.URL_NZBGET, self.NZBGET_STORED, {
+            "username": "someone-else"})
+        assert resp.status_code == 400
+        assert "Re-enter the password" in resp.get_json()["error"]
+        factory.assert_not_called()
+
+    def test_changed_host_refused_for_password_client(self, client):
+        resp, factory, _ = self._post(client, self.URL_NZBGET, self.NZBGET_STORED, {
+            "host": "other.local", "port": 6789, "username": "nzbuser"})
+        assert resp.status_code == 400
+        assert "password" in resp.get_json()["error"]
+        factory.assert_not_called()
+
+    def test_airdcpp_changed_host_refused(self, client):
+        stored = {"host": "dc.local", "port": 5600, "username": "dcuser",
+                  "password": "stored-test-pass"}
+        resp, factory, _ = self._post(
+            client, "/api/download-clients/airdcpp/test", stored, {"host": "other.local"})
+        assert resp.status_code == 400
+        factory.assert_not_called()
+
+    def test_explicitly_blank_secret_is_not_a_reuse(self, client):
+        # A field sent empty replaces the stored value; nothing saved goes out.
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, {
+            "host": "other.local", "api_key": ""})
+        assert resp.status_code == 200
+        assert not factory.call_args[0][1].api_key
+
+    def test_non_object_body_refused(self, client):
+        resp, factory, _ = self._post(client, self.URL_SAB, self.SAB_STORED, ["x"])
+        assert resp.status_code == 400
+        factory.assert_not_called()
+
+
+class TestDownloadClientRoles:
+    """Client and indexer configuration is owner-only, like the pages that
+    manage it; the two routes Clerk pages use stay Clerk-level."""
+
+    @pytest.fixture(autouse=True)
+    def _users(self, db_connection, monkeypatch):
+        from core.database import create_user
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        create_user("owner", password="ownerpass", role="owner")
+        create_user("clerk", password="clerkpass", role="clerk")
+        yield
+
+    @staticmethod
+    def _login(client, username, password):
+        client.post("/login", data={"username": username, "password": password})
+
+    @pytest.mark.parametrize("method,path", [
+        ("GET", "/api/download-clients"),
+        ("GET", "/api/download-clients/sabnzbd/config"),
+        ("POST", "/api/download-clients/sabnzbd/config"),
+        ("DELETE", "/api/download-clients/sabnzbd/config"),
+        ("POST", "/api/download-clients/sabnzbd/test"),
+        ("POST", "/api/download-clients/sabnzbd/activate"),
+        ("GET", "/api/indexers"),
+        ("POST", "/api/indexers"),
+        ("GET", "/api/indexers/1"),
+        ("PUT", "/api/indexers/1"),
+        ("DELETE", "/api/indexers/1"),
+        ("POST", "/api/indexers/reorder"),
+        ("POST", "/api/indexers/test"),
+        ("POST", "/api/indexers/1/test"),
+    ])
+    def test_clerk_denied_configuration(self, client, method, path):
+        self._login(client, "clerk", "clerkpass")
+        with patch("models.download_clients.get_download_client_by_name") as factory, \
+                patch("models.indexers.get_indexer_impl") as impl:
+            resp = client.open(path, method=method, json={"host": "other.local"})
+        assert resp.status_code == 403
+        factory.assert_not_called()
+        impl.assert_not_called()
+
+    def test_owner_can_test(self, client):
+        self._login(client, "owner", "ownerpass")
+        with patch("core.database.get_download_client_config",
+                   return_value={"host": "nas.local", "api_key": "stored-test-key"}), \
+                patch("core.database.update_download_client_validity"), \
+                patch("models.download_clients.get_download_client_by_name") as factory:
+            factory.return_value = MagicMock(test_connection=MagicMock(return_value=True))
+            resp = client.post("/api/download-clients/sabnzbd/test")
+        assert resp.status_code == 200
+        assert resp.get_json()["valid"] is True
+
+    @patch("models.dcpp.dcpp_enabled_and_configured", return_value=False)
+    @patch("models.usenet.usenet_enabled_and_configured", return_value=False)
+    def test_clerk_keeps_source_order(self, mock_un, mock_dc, client):
+        self._login(client, "clerk", "clerkpass")
+        assert client.get("/api/download-clients/sources").status_code == 200
+
+    @patch("models.dcpp.clear_dcpp_jobs", return_value=0)
+    @patch("models.usenet.clear_usenet_jobs", return_value=0)
+    def test_clerk_keeps_clear_downloads(self, mock_usenet, mock_dcpp, client):
+        self._login(client, "clerk", "clerkpass")
+        resp = client.post("/api/download-clients/downloads/clear",
+                           json={"bucket": "completed"})
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize("method,path", [
+        ("GET", "/api/usenet/downloads"),
+        ("GET", "/api/dcpp/downloads"),
+    ])
+    def test_clerk_keeps_download_status(self, client, method, path):
+        self._login(client, "clerk", "clerkpass")
+        with patch("models.usenet.get_usenet_downloads", return_value=[]), \
+                patch("models.dcpp.get_dcpp_downloads", return_value=[]):
+            assert client.open(path, method=method).status_code == 200
 
 
 class TestDownloadClientActivate:
