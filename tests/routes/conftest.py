@@ -390,6 +390,49 @@ def data_dir_library(app, db_connection):
 
 
 @pytest.fixture
+def no_host_data_library(db_connection):
+    """Drop the ``/data`` library ``init_db`` seeds when ``/data`` exists here.
+
+    ``init_db`` adds an enabled library at ``/data`` whenever that folder
+    exists on the host (``core/database.py``). On Linux CI it does not, so the
+    table starts empty; on a machine that has one, every test that builds its
+    own ``/data/LibA``-style libraries would also get an extra library that
+    contains them. Removing exactly that seeded row gives both hosts the same
+    starting state.
+    """
+    from core.database import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM libraries WHERE path = '/data'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@pytest.fixture
+def tmp_path_library(app, db_connection, tmp_path):
+    """Make ``tmp_path`` itself the one enabled library.
+
+    For tests that build comics anywhere under ``tmp_path`` and call a route
+    that writes metadata: those routes refuse a path outside every library
+    root (core.path_access.write_paths_refusal). Like ``data_dir_library`` it
+    first removes the ``/data`` library ``init_db`` seeds when that folder
+    exists on the host, so the result does not depend on the machine.
+    """
+    from core.database import get_db_connection, add_library
+
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM libraries")
+        conn.commit()
+    finally:
+        conn.close()
+    assert add_library("Test Library", str(tmp_path))
+    return str(tmp_path)
+
+
+@pytest.fixture
 def client_with_data(app, db_connection):
     """Flask test client backed by a populated database."""
     from tests.factories.db_factories import (

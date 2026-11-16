@@ -111,6 +111,9 @@ class TestBackfillJob:
         assert bulk_client.post('/api/bulk-metadata/backfill', json={'paths': [1]}).status_code == 400
 
     def test_outside_library_forbidden(self, bulk_client, tmp_path):
-        with patch('routes.bulk_metadata.is_valid_library_path', return_value=False):
-            r = bulk_client.post('/api/bulk-metadata/backfill', json={'paths': [str(tmp_path)]})
+        # bulk_client makes tmp_path the library; a sibling whose name merely
+        # starts with it is outside (separator-bounded containment).
+        outside = tmp_path.parent / (tmp_path.name + '-outside')
+        outside.mkdir()
+        r = bulk_client.post('/api/bulk-metadata/backfill', json={'paths': [str(outside)]})
         assert r.status_code == 403

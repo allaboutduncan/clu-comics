@@ -522,11 +522,45 @@ def _remove_comicinfo_from_cbz(file_path):
         return {"success": False, "error": str(e)}
 
 
+def _staging_for(*which):
+    from core.path_access import STAGING_TARGET, STAGING_WATCH
+    names = {'watch': STAGING_WATCH, 'target': STAGING_TARGET}
+    return tuple(names[w] for w in which)
+
+
+# The File Manager browses WATCH and TARGET as well as the libraries, and the
+# metadata actions it offers (CBZ Info, Fetch Metadata, Remove XML...) run on
+# whatever it is showing. Staging folders are served to Clerks and up only.
+FILE_MANAGER_STAGING = ('watch', 'target')
+
+
+def metadata_write_refusal(*paths, staging=FILE_MANAGER_STAGING):
+    """A JSON refusal if the current user may not write metadata to every one
+    of ``paths``, else None.
+
+    Containment in a library root (or the named staging folders) on the
+    realpath, then a ``'full'`` folder grant for library paths
+    (core.path_access.write_paths_refusal). Checked before anything is opened,
+    written or queued, so a denied path reads the same as a missing one.
+    Owners and single-user installs skip the grant step.
+    """
+    from core.path_access import write_paths_refusal
+
+    refusal = write_paths_refusal(paths, staging=_staging_for(*staging))
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+    return None
+
+
 @metadata_bp.route('/cbz-clear-comicinfo', methods=['POST'])
 def cbz_clear_comicinfo():
     """Delete ComicInfo.xml from a CBZ file"""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     file_path = data.get('path')
+
+    denied = metadata_write_refusal(file_path)
+    if denied:
+        return denied
 
     result = _remove_comicinfo_from_cbz(file_path)
 
@@ -556,22 +590,6 @@ EDITABLE_COMICINFO_FIELDS = frozenset({
 })
 
 
-def _is_editable_comic_path(file_path):
-    """Library paths, or files staged under TARGET (as /api/update-xml allows)."""
-    normalized = os.path.normpath(file_path)
-    if is_valid_library_path(normalized):
-        return True
-    try:
-        from app import get_target_dir_live
-        target = get_target_dir_live()
-    except Exception:
-        return False
-    if not isinstance(target, str) or not target:
-        return False
-    target = os.path.normpath(target)
-    return normalized == target or normalized.startswith(target + os.sep)
-
-
 @metadata_bp.route('/cbz-update-comicinfo', methods=['POST'])
 def cbz_update_comicinfo():
     """Hand-edit ComicInfo.xml tags in one CBZ (the CBZ Info modal).
@@ -582,7 +600,6 @@ def cbz_update_comicinfo():
     staged edits land in a single archive rebuild. If the file ends up with no
     Notes, a manual-edit stamp is added (core.comicinfo.manual_edit_notes).
     """
-    from core.auth import enforce_path_access
     from core.comicinfo import (
         update_comicinfo_in_zip, find_comicinfo_in_zip, read_comicinfo_xml,
         manual_edit_notes,
@@ -593,7 +610,13 @@ def cbz_update_comicinfo():
     file_path = data.get('path')
     updates = data.get('updates')
 
-    if not isinstance(file_path, str) or not file_path or not os.path.isfile(file_path):
+    if not isinstance(file_path, str) or not file_path:
+        return jsonify({"success": False, "error": "File not found"}), 400
+    # Library paths, or files staged under TARGET (as /api/update-xml allows).
+    denied = metadata_write_refusal(file_path, staging=('target',))
+    if denied:
+        return denied
+    if not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found"}), 400
     if not file_path.lower().endswith(('.cbz', '.zip')):
         return jsonify({"success": False, "error": "File is not a CBZ"}), 400
@@ -603,12 +626,6 @@ def cbz_update_comicinfo():
     bad = sorted(k for k in updates if k not in EDITABLE_COMICINFO_FIELDS)
     if bad:
         return jsonify({"success": False, "error": f"Invalid field: {', '.join(bad)}"}), 400
-
-    if not _is_editable_comic_path(file_path):
-        return jsonify({"success": False, "error": "Access denied"}), 403
-    denied = enforce_path_access(file_path)
-    if denied:
-        return denied
 
     clean = {
         key: ('' if value is None else str(value).strip())
@@ -672,9 +689,20 @@ def cbz_update_comicinfo():
 @metadata_bp.route('/cbz-bulk-clear-comicinfo', methods=['POST'])
 def cbz_bulk_clear_comicinfo():
     """Remove ComicInfo.xml from multiple CBZ files in bulk."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     paths = data.get('paths', [])
     directory = data.get('directory')
+
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        return jsonify({"success": False, "error": "paths must be a list"}), 400
+
+    # Every named path (or the directory) is checked before anything is listed
+    # or queued; one refusal refuses the whole batch. The queued job then acts
+    # only on these files -- a directory is expanded here, one level deep, so
+    # every file it yields sits inside the folder just authorised.
+    denied = metadata_write_refusal(*([directory] if directory else paths))
+    if denied:
+        return denied
 
     if directory:
         if not os.path.isdir(directory):
@@ -684,6 +712,9 @@ def cbz_bulk_clear_comicinfo():
             for f in os.listdir(directory)
             if f.lower().endswith('.cbz')
         ]
+        # A symlinked entry is judged by where it really points.
+        from core.path_access import keep_writable
+        paths = keep_writable(directory, paths)
 
     # Filter to valid existing CBZ files
     cbz_files = [
@@ -760,21 +791,17 @@ def api_rescan_missing_xml():
 @metadata_bp.route('/api/save-cvinfo', methods=['POST'])
 def save_cvinfo():
     """Save a cvinfo file in the specified directory."""
-    from app import get_target_dir_live
-    TARGET_DIR = get_target_dir_live()
-
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     directory = data.get('directory')
     content = data.get('content') or data.get('url')  # Support both content and legacy url
 
     if not directory or not content:
         return jsonify({"error": "Missing directory or content parameter"}), 400
 
-    # Security: Ensure the directory path is within allowed directories
-    normalized_path = os.path.normpath(directory)
-    if not (is_valid_library_path(normalized_path) or
-            normalized_path.startswith(os.path.normpath(TARGET_DIR))):
-        return jsonify({"error": "Access denied"}), 403
+    # A library folder (with a full grant) or a folder under TARGET.
+    denied = metadata_write_refusal(directory, staging=('target',))
+    if denied:
+        return denied
 
     if not os.path.exists(directory) or not os.path.isdir(directory):
         return jsonify({"error": "Directory not found"}), 404
@@ -1423,11 +1450,9 @@ def _sync_file_index_after_xml_update(directory, xml_field, value, result):
 def update_xml():
     """Update a field in ComicInfo.xml for all CBZ files in a directory."""
     from models.update_xml import update_field_in_cbz_files
-    from app import get_target_dir_live
-    TARGET_DIR = get_target_dir_live()
 
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         directory = data.get('directory')
         field = data.get('field')
         value = data.get('value')
@@ -1435,11 +1460,10 @@ def update_xml():
         if not directory or not field or not value:
             return jsonify({"error": "Missing required parameters"}), 400
 
-        # Security check - ensure path is within allowed directories
-        normalized_path = os.path.normpath(directory)
-        if not (is_valid_library_path(normalized_path) or
-                normalized_path.startswith(os.path.normpath(TARGET_DIR))):
-            return jsonify({"error": "Access denied"}), 403
+        # A library folder (with a full grant) or a folder under TARGET.
+        denied = metadata_write_refusal(directory, staging=('target',))
+        if denied:
+            return denied
 
         if not os.path.exists(directory) or not os.path.isdir(directory):
             return jsonify({"error": "Directory not found"}), 404
@@ -1519,8 +1543,6 @@ def batch_metadata():
        - Try Metron first, then ComicVine, then GCD
     """
     from core.comicinfo import read_comicinfo_from_zip, has_trusted_notes
-    from app import get_target_dir_live
-    TARGET_DIR = get_target_dir_live()
 
     try:
         from core.database import get_library_providers
@@ -1536,13 +1558,13 @@ def batch_metadata():
         if not directory:
             return jsonify({"error": "Missing directory parameter"}), 400
 
-        library_id = resolve_provider_library_id(library_id, directory)
+        # A library folder (with a full grant) or a folder under TARGET,
+        # checked before any provider is asked or anything is written.
+        denied = metadata_write_refusal(directory, staging=('target',))
+        if denied:
+            return denied
 
-        # Security: Ensure the directory path is within allowed directories
-        normalized_path = os.path.normpath(directory)
-        if not (is_valid_library_path(normalized_path) or
-                normalized_path.startswith(os.path.normpath(TARGET_DIR))):
-            return jsonify({"error": "Access denied"}), 403
+        library_id = resolve_provider_library_id(library_id, directory)
 
         if not os.path.exists(directory) or not os.path.isdir(directory):
             return jsonify({"error": "Directory not found"}), 404
@@ -1625,6 +1647,10 @@ def batch_metadata():
             item_path = os.path.join(directory, item)
             if os.path.isfile(item_path) and item.lower().endswith(('.cbz', '.cbr')):
                 comic_files.append(item_path)
+        # Decided here, in the request: the streamed loop below writes only
+        # these files, so a symlinked entry into an ungranted folder is dropped.
+        from core.path_access import keep_writable
+        comic_files = keep_writable(directory, comic_files)
 
         app_logger.info(f"Found {len(comic_files)} comic files to process")
 
@@ -2524,6 +2550,10 @@ def search_gcd_metadata():
                 "error": "Missing file_path or file_name"
             }), 400
 
+        denied = metadata_write_refusal(file_path)
+        if denied:
+            return denied
+
         # For directory search, prefer directory name parsing, fallback to file name
         if is_directory_search and directory_name:
             name_without_ext = directory_name
@@ -3422,6 +3452,10 @@ def search_gcd_metadata_with_selection():
                 "success": False,
                 "error": "Missing required parameters"
             }), 400
+
+        denied = metadata_write_refusal(file_path)
+        if denied:
+            return denied
 
         # Connect to the GCD SQLite database
         try:
@@ -4494,6 +4528,11 @@ def refresh_series_json_route():
         return jsonify({"success": False, "error": refusal[0]}), refusal[1]
     if not is_valid_library_path(path):
         return jsonify({"success": False, "error": "Path is not inside a library"}), 400
+    # The same checks on the realpath: a symlinked folder is judged by where
+    # it really points, library-only (series.json is never written in staging).
+    denied = metadata_write_refusal(path, staging=())
+    if denied:
+        return denied
     if not os.path.isdir(path):
         return jsonify({"success": False, "error": "Folder not found"}), 404
     if _is_oneshot_folder_safe(path):
@@ -4830,19 +4869,20 @@ def force_metadata_match():
     from app import log_file_if_in_data, invalidate_cache_for_path, update_index_on_move
     from core.comicinfo import is_zip_container
     from core.database import update_file_index_from_comicinfo
-    from helpers.library import is_allowed_path
 
     data = request.get_json(silent=True) or {}
     file_path = data.get('file_path')
-    file_name = data.get('file_name') or (os.path.basename(file_path) if file_path else '')
+    file_name = data.get('file_name') or (
+        os.path.basename(file_path) if isinstance(file_path, str) else '')
     provider = (data.get('provider') or '').strip().lower()
 
     if not file_path:
         return jsonify({"success": False, "error": "Missing file_path"}), 400
     if provider not in FORCE_MATCH_PROVIDERS:
         return jsonify({"success": False, "error": "Provider must be Metron, ComicVine or GCD"}), 400
-    if not is_allowed_path(file_path):
-        return jsonify({"success": False, "error": "Access denied"}), 403
+    denied = metadata_write_refusal(file_path)
+    if denied:
+        return denied
     if not os.path.isfile(file_path):
         return jsonify({"success": False, "error": "File not found"}), 404
     if not is_zip_container(file_path):
@@ -4973,6 +5013,12 @@ def search_metadata():
 
         if not file_path or not file_name:
             return jsonify({"success": False, "error": "Missing file_path or file_name"}), 400
+
+        # Checked before any provider is asked: the cascade writes ComicInfo.xml
+        # (and may rename or move the file) as soon as it finds a match.
+        denied = metadata_write_refusal(file_path)
+        if denied:
+            return denied
 
         # Callers outside the File Manager send no library_id; without this the
         # cascade below ignored the library's provider priority and enabled flags.
@@ -5573,6 +5619,10 @@ def search_comicvine_metadata():
                 "error": "Missing file_path or file_name"
             }), 400
 
+        denied = metadata_write_refusal(file_path)
+        if denied:
+            return denied
+
         # Check if ComicVine API key is configured
         api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
         app_logger.debug(f"DEBUG: ComicVine API key configured: {bool(api_key)}")
@@ -5889,6 +5939,10 @@ def search_comicvine_metadata_with_selection():
                 "success": False,
                 "error": "Missing required parameters"
             }), 400
+
+        denied = metadata_write_refusal(file_path)
+        if denied:
+            return denied
 
         # Check if ComicVine API key is configured
         api_key = current_app.config.get("COMICVINE_API_KEY", "").strip()
