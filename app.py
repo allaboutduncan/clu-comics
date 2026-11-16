@@ -6912,8 +6912,16 @@ def save_download_api_config():
 
 @app.route("/api/preferences/<key>", methods=["GET"])
 def api_get_preference(key):
-    """Get a user preference value."""
+    """Get a preference value, if it is on the read allow-list for this role."""
+    from core.auth import current_user
     from core.database import get_user_preference
+    from core.settings import preference_read_status
+
+    status = preference_read_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
 
     value = get_user_preference(key)
     return jsonify({"success": True, "value": value})

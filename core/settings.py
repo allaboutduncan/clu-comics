@@ -134,6 +134,57 @@ NON_SCHEMA_INI_KEYS = frozenset({
     "METRON_USERNAME", "METRON_PASSWORD",
 })
 
+# The generic ``/api/preferences/<key>`` route (app.py) is deny-by-default: it
+# serves a preference only if it is listed here, and only to a user holding at
+# least the role next to it. Anything else is a 404, so a preference added
+# later (to SETTINGS_SCHEMA or anywhere else) is unreadable through that route
+# until someone decides it should not be. The keys are the ones the frontend
+# fetches; ``tests/unit/test_preference_access.py`` keeps the two in step.
+#
+#   smart_rename_preview_enabled  static/js/files.js, which also loads on
+#                                 series.html (a Reader page) -- a UI toggle
+#   series_json_provider,
+#   gcd_metadata_languages,
+#   inducks_countries             templates/config.html (owner page)
+#   credit_backfill_enabled       templates/schedules.html (owner page)
+#
+# A write allow-list for the same route belongs beside this one.
+PREFERENCE_READ_ROLES = {
+    "smart_rename_preview_enabled": "reader",
+    "series_json_provider": "owner",
+    "gcd_metadata_languages": "owner",
+    "inducks_countries": "owner",
+    "credit_backfill_enabled": "owner",
+}
+
+# Preferences that hold credentials or key material. They are never served by
+# the generic route whatever the role asking; a test asserts no entry above is
+# one of these, and that every schema pref that looks like a credential is.
+SECRET_PREFERENCES = frozenset({
+    "secret_key",
+    "api_token",
+    "rec_api_key",
+    "pixeldrain_api_key",
+    "custom_headers",
+})
+
+
+def preference_read_status(key, user):
+    """HTTP status for serving preference ``key`` to ``user`` via the generic route.
+
+    200 when it may be returned, 403 when the key is readable but not at this
+    user's role, 404 for every key that is not on ``PREFERENCE_READ_ROLES`` (or
+    is a secret). ``user`` is the request's user dict, as ``core.auth`` returns it.
+    """
+    if key in SECRET_PREFERENCES:
+        return 404
+    minimum = PREFERENCE_READ_ROLES.get(key)
+    if minimum is None:
+        return 404
+    from core.auth import role_at_least
+    return 200 if role_at_least(user, minimum) else 403
+
+
 _snapshot = None  # (monotonic time, {pref: raw stored value})
 _cache_lock = threading.Lock()
 
