@@ -92,7 +92,7 @@ class TestBlockedAddresses:
 
 class TestCheckUrl:
     @pytest.mark.parametrize("url", [
-        "ftp://example.com/x.cbz", "file:///etc/passwd", "gopher://x/",
+        "ftp://example.com/x.cbz", "file:///tmp/x.cbz", "gopher://x/",
         "javascript:alert(1)", "example.com/x.cbz", "", None, 42,
         "http:///nohost", "http://example.com:99999/",
     ])
@@ -173,7 +173,7 @@ class TestAllowPrivateHostsSetting:
         assert check_url("https://split-dns.example/x") == "split-dns.example"
         assert dns["calls"] == []
 
-    @pytest.mark.parametrize("url", ["ftp://nas.lan/x", "file:///etc/passwd", "nas.lan/x",
+    @pytest.mark.parametrize("url", ["ftp://nas.lan/x", "file:///tmp/x.cbz", "nas.lan/x",
                                      "http:///nohost", ""])
     def test_on_still_refuses_bad_schemes_and_shapes(self, dns, allow_private, url):
         allow_private["on"] = True
