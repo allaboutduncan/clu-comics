@@ -33,6 +33,7 @@ from core.auth import (
     is_login_required,
     load_current_user,
 )
+from helpers.redirects import login_next_target, safe_redirect_target
 from helpers.paging import PAGE_SIZES, DEFAULT_PER_PAGE, COLLECTION_DEFAULT_PER_PAGE
 from core.database import (
     create_api_token,
@@ -244,7 +245,7 @@ def require_login():
         # API namespaces get a JSON 401; browser routes redirect to login.
         if request.path.startswith(("/api/", "/opds")):
             return jsonify({"error": "unauthorized"}), 401
-        return redirect(url_for("auth.login", next=request.path))
+        return redirect(url_for("auth.login", next=login_next_target()))
 
     # Multi-user mode: enforce role-based access for the resolved user.
     return check_request_permitted(user)
@@ -288,7 +289,11 @@ def login():
             session["user_id"] = user["id"]
             session["authenticated"] = True  # legacy flag, kept for compatibility
             update_last_login(user["id"])
-            next_url = request.args.get("next") or url_for("index")
+            # Only a same-site path is followed; anything else (an absolute
+            # URL, //host, a backslash variant...) lands on the index.
+            next_url = safe_redirect_target(
+                request.args.get("next"), request.script_root
+            ) or url_for("index")
             return redirect(next_url)
 
         error = "Invalid username or password."

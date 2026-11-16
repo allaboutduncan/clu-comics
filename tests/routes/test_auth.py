@@ -6,6 +6,8 @@ Auth is now opt-in and DB-user based (see routes/auth.py + core/auth.py):
 - Login required once >1 account exists (or the CLU_USERNAME/CLU_PASSWORD env
   gate is set), validated against the users table.
 """
+from urllib.parse import parse_qs, urlsplit
+
 import pytest
 
 from core.database import create_user, seed_owner_if_needed
@@ -67,6 +69,61 @@ class TestLoginRequiredMultiUser:
         )
         assert r.status_code == 302
         assert r.headers["Location"].endswith("/config")
+
+    def _login_location(self, client, next_value, **kw):
+        r = client.post(
+            "/login",
+            query_string={"next": next_value},
+            data={"username": "owner", "password": "ownerpass"},
+            follow_redirects=False,
+            **kw,
+        )
+        assert r.status_code == 302
+        return r.headers["Location"]
+
+    def test_next_keeps_query_string(self, client):
+        loc = self._login_location(client, "/collection?page=2")
+        assert loc == "/collection?page=2"
+
+    @pytest.mark.parametrize("next_value", [
+        "http://evil.example/",
+        "https://evil.example/config",
+        "//evil.example",
+        "///evil.example",
+        "/\\evil.example",
+        "\\\\evil.example",
+        "\\/evil.example",
+        "/\t/evil.example",
+        "/\n/evil.example",
+        "\t//evil.example",
+        " //evil.example",
+        "/\x00/evil.example",
+        "javascript:alert(1)",
+        "config",
+    ])
+    def test_unsafe_next_falls_back_to_index(self, client, next_value):
+        loc = self._login_location(client, next_value)
+        assert "evil.example" not in loc
+        assert "javascript" not in loc
+        assert loc in ("/", "http://localhost/")
+
+    def test_next_under_script_root_is_followed(self, client):
+        loc = self._login_location(
+            client, "/clu/config", base_url="http://localhost/clu/")
+        assert loc == "/clu/config"
+
+    def test_next_outside_script_root_falls_back(self, client):
+        loc = self._login_location(
+            client, "/config", base_url="http://localhost/clu/")
+        assert loc in ("/clu/", "http://localhost/clu/")
+
+    def test_gate_puts_script_root_and_query_in_next(self, client):
+        r = client.get("/config?tab=x", base_url="http://localhost/clu/")
+        assert r.status_code == 302
+        loc = r.headers["Location"]
+        parts = urlsplit(loc)
+        assert parts.path == "/clu/login"
+        assert parse_qs(parts.query)["next"] == ["/clu/config?tab=x"]
 
     def test_logout_clears_session(self, client):
         client.post("/login", data={"username": "owner", "password": "ownerpass"})
