@@ -35,7 +35,7 @@ HIDDEN_FILE = "/data/LibA/DC/Batman_001.cbz"
 
 class TestFolderAccessMultiUser:
     @pytest.fixture(autouse=True)
-    def _setup(self, db_connection, monkeypatch):
+    def _setup(self, db_connection, no_host_data_library, monkeypatch):
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         create_user("owner", password="ownerpass", role="owner")
@@ -204,7 +204,7 @@ class TestFolderAccessImplicitOwner:
     """Single-user install: folder scope is a no-op."""
 
     @pytest.fixture(autouse=True)
-    def _libs(self, db_connection, monkeypatch):
+    def _libs(self, db_connection, no_host_data_library, monkeypatch):
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         create_library(name="Library A", path=LIB_A)
