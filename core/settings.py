@@ -148,7 +148,7 @@ NON_SCHEMA_INI_KEYS = frozenset({
 #   inducks_countries             templates/config.html (owner page)
 #   credit_backfill_enabled       templates/schedules.html (owner page)
 #
-# A write allow-list for the same route belongs beside this one.
+# The route's POST side has its own list, PREFERENCE_WRITE_ROLES, below.
 PREFERENCE_READ_ROLES = {
     "smart_rename_preview_enabled": "reader",
     "series_json_provider": "owner",
@@ -183,6 +183,122 @@ def preference_read_status(key, user):
         return 404
     from core.auth import role_at_least
     return 200 if role_at_least(user, minimum) else 403
+
+
+# The same route's POST side, deny-by-default in the same way: it writes a
+# preference only if it is listed here, and only for a user holding at least
+# the role next to it. A secret is never writable through it, whatever the
+# role. The keys are the ones the frontend saves this way, each at the role of
+# the page that saves it; ``tests/unit/test_preference_access.py`` keeps the
+# two in step. Every other setting has a dedicated save route.
+#
+#   series_json_provider,
+#   gcd_metadata_languages,
+#   inducks_countries,
+#   download_source_priority      templates/config.html (owner page)
+#   credit_backfill_enabled       templates/schedules.html (owner page)
+PREFERENCE_WRITE_ROLES = {
+    "series_json_provider": "owner",
+    "gcd_metadata_languages": "owner",
+    "inducks_countries": "owner",
+    "download_source_priority": "owner",
+    "credit_backfill_enabled": "owner",
+}
+
+
+def preference_write_status(key, user):
+    """HTTP status for writing preference ``key`` as ``user`` via the generic route.
+
+    200 when the write may go ahead, 403 when the key is writable but not at
+    this user's role, 404 for every key that is not on ``PREFERENCE_WRITE_ROLES``
+    (or is a secret).
+    """
+    if key in SECRET_PREFERENCES:
+        return 404
+    minimum = PREFERENCE_WRITE_ROLES.get(key)
+    if minimum is None:
+        return 404
+    from core.auth import role_at_least
+    return 200 if role_at_least(user, minimum) else 403
+
+
+def _check_source_priority(value):
+    # Stored as a JSON-encoded list of source names, as the Settings page and
+    # models.download_sources.get_source_priority agree.
+    import json
+    if not isinstance(value, str):
+        return "must be a JSON list"
+    try:
+        order = json.loads(value)
+    except ValueError:
+        return "must be a JSON list"
+    if not isinstance(order, list) or not all(isinstance(s, str) for s in order):
+        return "must be a JSON list of source names"
+    return None
+
+
+def _check_series_json_provider(value):
+    from core.series_json_builder import PROVIDER_CHOICES
+    if value not in PROVIDER_CHOICES:
+        return f"must be one of {', '.join(PROVIDER_CHOICES)}"
+    return None
+
+
+# Writable keys that are not in SETTINGS_SCHEMA: (type, category, extra check).
+# A schema key takes its type and category from the schema instead. The
+# categories are the ones the pages have always stored them under.
+_WRITE_SPECS = {
+    "series_json_provider": (_S, "metadata", _check_series_json_provider),
+    "inducks_countries": (_S, "metadata", None),
+    "download_source_priority": (_S, "downloads", _check_source_priority),
+    "credit_backfill_enabled": (_B, "metadata", None),
+}
+
+
+def _schema_key_for_pref(pref):
+    for key, spec in SETTINGS_SCHEMA.items():
+        if spec.pref == pref:
+            return key
+    return None
+
+
+def _type_error(value, typ):
+    if typ == _B:
+        return None if isinstance(value, bool) else "must be true or false"
+    if typ == _I:
+        ok = isinstance(value, int) and not isinstance(value, bool)
+        return None if ok else "must be a whole number"
+    return None if isinstance(value, str) else "must be a string"
+
+
+def save_preference(key, value):
+    """Validate and store ``value`` for a key on ``PREFERENCE_WRITE_ROLES``.
+
+    Returns ``(status, error)``: ``(200, None)`` once stored, 400 when the value
+    is refused, 404 for an unlisted key, 500 when the store fails. Nothing is
+    written unless the status is 200. A key in ``SETTINGS_SCHEMA`` must carry the
+    schema's type and is stored through ``set_setting``; any other listed key
+    must match its ``_WRITE_SPECS`` entry. Access is the caller's job
+    (``preference_write_status``); this refuses unlisted keys regardless.
+    """
+    if key not in PREFERENCE_WRITE_ROLES or key in SECRET_PREFERENCES:
+        return 404, "Unknown preference"
+    schema_key = _schema_key_for_pref(key)
+    if schema_key is not None:
+        error = _type_error(value, SETTINGS_SCHEMA[schema_key].type)
+        if error:
+            return 400, f"{key} {error}"
+        if not set_setting(schema_key, value):
+            return 500, "Could not save preference"
+        return 200, None
+    typ, category, check = _WRITE_SPECS[key]
+    error = _type_error(value, typ) or (check(value) if check else None)
+    if error:
+        return 400, f"{key} {error}"
+    from core.database import set_user_preference
+    if not set_user_preference(key, value, category=category):
+        return 500, "Could not save preference"
+    return 200, None
 
 
 _snapshot = None  # (monotonic time, {pref: raw stored value})

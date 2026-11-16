@@ -6929,13 +6929,22 @@ def api_get_preference(key):
 
 @app.route("/api/preferences/<key>", methods=["POST"])
 def api_save_preference(key):
-    """Save a user preference value."""
-    from core.database import set_user_preference
+    """Save a preference value, if it is on the write allow-list for this role."""
+    from core.auth import current_user
+    from core.settings import preference_write_status, save_preference
 
-    data = request.get_json()
-    if not data or "value" not in data:
+    status = preference_write_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "value" not in data:
         return jsonify({"success": False, "error": "No value provided"}), 400
-    set_user_preference(key, data["value"], category=data.get("category", "general"))
+    status, error = save_preference(key, data["value"])
+    if status != 200:
+        return jsonify({"success": False, "error": error}), status
     return jsonify({"success": True})
 
 
