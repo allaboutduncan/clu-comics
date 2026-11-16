@@ -204,6 +204,18 @@ No — that is the point. Every operation runs through the web UI, so you can ma
 
 CBZ, CBR, PDF, and the plain ZIP and RAR archives that comics are often distributed in. CBZ is the working format everything converts to.
 
+### My log says "the inotify queue overflowed". What should I do?
+
+Usually nothing. It means files changed in your library faster than Linux could report them — a large import or an rsync, typically. CLU logs it once and runs a file index sync about a minute later to pick up whatever was missed.
+
+If it happens often on a very large library, raise the kernel's queue size on the **host** (it is not a container setting) and restart the CLU container, because the value is read when the watcher starts:
+
+```bash
+sudo sysctl fs.inotify.max_queued_events=262144
+```
+
+Add `fs.inotify.max_queued_events=262144` to `/etc/sysctl.conf` (or a file in `/etc/sysctl.d/`) to keep it across reboots.
+
 ### Where is the full documentation?
 
 At **[clucomics.org](https://clucomics.org)**, including a [setup walkthrough](https://clucomics.org/getting-started/setup-walkthrough/) and a page for every feature.
