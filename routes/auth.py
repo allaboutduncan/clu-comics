@@ -33,6 +33,8 @@ from core.auth import (
     is_login_required,
     load_current_user,
 )
+from core.config import apply_session_cookie_policy
+from core.request_origin import check_current_request
 from helpers.redirects import login_next_target, safe_redirect_target
 from helpers.paging import PAGE_SIZES, DEFAULT_PER_PAGE, COLLECTION_DEFAULT_PER_PAGE
 from core.database import (
@@ -212,6 +214,24 @@ def _clu_default_per_page(kind=None):
     return COLLECTION_DEFAULT_PER_PAGE if kind == "collection" else DEFAULT_PER_PAGE
 
 
+@auth_bp.record_once
+def _apply_session_cookie_policy(state):
+    """SameSite/HttpOnly session cookie on whichever app registers auth_bp
+    (the real app also sets it in core.config.load_flask_config)."""
+    apply_session_cookie_policy(state.app)
+
+
+# Cross-site request forgery: every POST/PUT/PATCH/DELETE must come from
+# CLU's own pages or a non-browser client (core/request_origin.py). An app-wide
+# hook on the first blueprint app.py and the test app register, defined above
+# require_login so it runs before anything else: no state may change first.
+@auth_bp.before_app_request
+def require_same_origin():
+    return check_current_request()
+
+
+# /logout stays exempt from the login gate and the role check: anyone may end
+# their own session, and as a POST it would otherwise default to Clerk.
 _EXEMPT_PREFIXES = (
     "/login", "/logout", "/static/", "/opds", "/api/insights", "/api/v1/",
 )
@@ -303,8 +323,13 @@ def login():
     return render_template("login.html", error=error)
 
 
-@auth_bp.route("/logout")
+@auth_bp.route("/logout", methods=["GET", "POST"])
 def logout():
+    """End the session. POST only: a link or an image on another page must not
+    be able to log anyone out. A GET (an old bookmark) changes nothing and
+    lands on the index, which sends an anonymous visitor on to /login."""
+    if request.method != "POST":
+        return redirect(url_for("index"))
     session.clear()
     return redirect(url_for("auth.login"))
 

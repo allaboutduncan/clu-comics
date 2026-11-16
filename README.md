@@ -98,6 +98,9 @@ services:
             ## File creation mask. 000 -> world-writable folders (drwxrwsrwx) and files
             ## (-rw-rw-rw-). Use 002 for group-writable (775/664) or 022 for owner-only writes.
             - UMASK=000
+            ## Only if a reverse proxy rewrites the Host header and changes in the UI fail
+            ## with "Cross-site request refused" (see "Running behind a reverse proxy").
+            # - CLU_TRUSTED_ORIGINS=https://comics.example.com
 volumes:
   config-volume: # Now required for Database Storage and Backups
 ```
@@ -114,6 +117,19 @@ Windows and WSL users hitting file permission errors should read **[docs/WINDOWS
 ### Mapping your library volumes
 
 Map your main library to `/data`, the default library path on a new install. Any other path works too (for example `/comics`): map it, then add it or point the default library at it under Settings → Libraries. Additional libraries are mapped and added the same way. Full install walkthrough: **[clucomics.org quickstart](https://clucomics.org/getting-started/quickstart/)**.
+
+### Running behind a reverse proxy
+
+CLU honours `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-Prefix` (one proxy hop), so it works on its own hostname or on a subpath such as `https://example.com/clu/`.
+
+To protect against cross-site request forgery, CLU refuses any POST, PUT, PATCH or DELETE that a browser reports as coming from another site. It accepts a request when the browser says it is same-origin, or when the `Origin` (or `Referer`) host matches the `Host` header or an `X-Forwarded-Host` value. Clients that send none of these headers (scripts, curl, OPDS readers, API tokens) are not affected. Most proxies (Nginx Proxy Manager, Traefik, Caddy, SWAG, and Nginx with `proxy_set_header Host $host;`) need nothing extra.
+
+If a proxy rewrites `Host` to the container's address and sends no `X-Forwarded-Host`, saving or changing anything in the UI fails with *"Cross-site request refused"*. Fix the proxy to pass the original host, or list your public address in `CLU_TRUSTED_ORIGINS` (comma-separated origins or `host:port`) and restart the container:
+
+```yaml
+        environment:
+            - CLU_TRUSTED_ORIGINS=https://comics.example.com
+```
 
 ## Integrations
 

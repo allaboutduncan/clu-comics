@@ -158,7 +158,7 @@ class TestRenderedWidth:
 
         _login(client, "reader", "readerpass")
         mine = client.get("/reading-lists").get_data(as_text=True)
-        client.get("/logout")
+        client.post("/logout")
         _login(client, "reader2", "reader2pass")
         theirs = client.get("/reading-lists").get_data(as_text=True)
 
