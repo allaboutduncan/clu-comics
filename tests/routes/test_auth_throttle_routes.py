@@ -115,6 +115,26 @@ class TestLoginThrottle:
         r = _login(client, "owner", "owner-test-pass", environ_base=OTHER_ADDRESS)
         assert r.status_code == 302
 
+    def test_valid_login_from_a_shared_address_works_while_a_device_is_stuck(
+            self, client, multi_user, clock):
+        """Every client behind one Docker gateway / proxy shares remote_addr."""
+        statuses = set()
+        for _ in range(100):
+            statuses.add(_login(client, "kid", "stale-pass").status_code)
+            clock.advance(60)
+        assert statuses == {200, 429}  # the device is throttled on and off...
+        # ...and everyone else at the address signs in.
+        assert _login(client, "owner", "owner-test-pass").status_code == 302
+
+    def test_spraying_usernames_throttles_the_address(self, client, multi_user, clock):
+        from core.auth_throttle import ADDRESS_FAILURE_THRESHOLD
+
+        for i in range(ADDRESS_FAILURE_THRESHOLD):
+            _login(client, f"guess{i}", "wrong-pass")
+        assert _login(client, "owner", "owner-test-pass").status_code == 429
+        assert _login(client, "owner", "owner-test-pass",
+                      environ_base=OTHER_ADDRESS).status_code == 302
+
     def test_unknown_user_is_throttled_the_same_way(self, client, multi_user, clock):
         for _ in range(FAILURE_THRESHOLD):
             _login(client, "nobody", "wrong-pass")
@@ -255,6 +275,15 @@ class TestOpdsThrottle:
             assert r.status_code == 401
         assert len(throttle) == 0
 
+    def test_stale_reader_does_not_block_another_account_at_the_address(
+            self, client, multi_user, clock):
+        statuses = set()
+        for _ in range(100):
+            statuses.add(client.get("/opds/", headers=_basic("kid", "stale-pass")).status_code)
+            clock.advance(60)
+        assert statuses == {401, 429}
+        assert client.get("/opds/", headers=_basic("owner", "owner-test-pass")).status_code == 200
+
     def test_opds_failures_do_not_block_web_login(self, client, multi_user, clock):
         for _ in range(FAILURE_THRESHOLD):
             client.get("/opds/", headers=_basic("owner", "wrong-pass"))
@@ -277,25 +306,36 @@ class TestApiV1Throttle:
         assert r.headers["Retry-After"] == str(BASE_DELAY_SECONDS)
         assert r.get_json()["error"] == "too_many_attempts"
 
-    def test_valid_token_refused_in_window_then_recovers(self, client, token, clock):
-        for _ in range(FAILURE_THRESHOLD):
-            client.get("/api/v1/auth/ping", headers=_bearer("wrong-token"))
-        assert client.get("/api/v1/auth/ping", headers=_bearer(token)).status_code == 429
+    def test_stale_token_throttles_only_itself(self, client, token, clock):
+        """A dashboard polling a revoked token every 30s from the shared
+        address must not lock out a valid client at that address."""
+        statuses = set()
+        for _ in range(100):
+            statuses.add(client.get("/api/v1/auth/ping",
+                                    headers=_bearer("revoked-token")).status_code)
+            clock.advance(30)
+        assert statuses == {401, 429}
+        assert client.get("/api/v1/auth/ping", headers=_bearer(token)).status_code == 200
+
+    def test_spraying_tokens_refuses_a_valid_one_then_recovers(self, client, token, clock):
+        from core.auth_throttle import ADDRESS_FAILURE_THRESHOLD
+
+        for i in range(ADDRESS_FAILURE_THRESHOLD):
+            client.get("/api/v1/auth/ping", headers=_bearer(f"guess-{i}"))
+        with patch("core.auth.user_for_bearer_token") as check:
+            r = client.get("/api/v1/auth/ping", headers=_bearer(token))
+        assert r.status_code == 429
+        check.assert_not_called()  # the token is not even checked
         clock.advance(BASE_DELAY_SECONDS)
         assert client.get("/api/v1/auth/ping", headers=_bearer(token)).status_code == 200
 
     def test_other_address_unaffected(self, client, token, clock):
-        for _ in range(FAILURE_THRESHOLD):
-            client.get("/api/v1/auth/ping", headers=_bearer("wrong-token"))
+        from core.auth_throttle import ADDRESS_FAILURE_THRESHOLD
+
+        for i in range(ADDRESS_FAILURE_THRESHOLD):
+            client.get("/api/v1/auth/ping", headers=_bearer(f"guess-{i}"))
         r = client.get("/api/v1/auth/ping", headers=_bearer(token), environ_base=OTHER_ADDRESS)
         assert r.status_code == 200
-
-    def test_success_resets(self, client, token, clock):
-        for _ in range(FAILURE_THRESHOLD - 1):
-            client.get("/api/v1/auth/ping", headers=_bearer("wrong-token"))
-        assert client.get("/api/v1/auth/ping", headers=_bearer(token)).status_code == 200
-        for _ in range(FAILURE_THRESHOLD - 1):
-            assert client.get("/api/v1/auth/ping", headers=_bearer("wrong-token")).status_code == 401
 
     def test_no_credential_does_not_count(self, client, token, clock):
         for _ in range(FAILURE_THRESHOLD * 3):
@@ -307,17 +347,19 @@ class TestApiV1Throttle:
         assert len(throttle) == 0
         assert client.get("/api/v1/auth/ping", headers=_bearer(token)).status_code == 200
 
-    def test_legacy_token_counts_and_non_ascii_is_a_plain_401(self, client, db_connection, clock):
+    def test_legacy_token_and_non_ascii_is_a_plain_401(self, client, db_connection, clock):
         from core.database import set_user_preference
 
         set_user_preference("api_token", "legacy-test-value", category="security")
         r = client.get("/api/v1/auth/ping",
                        headers={"Authorization": "Bearer café-wrong"})
         assert r.status_code == 401
-        for _ in range(FAILURE_THRESHOLD - 1):
+        for _ in range(FAILURE_THRESHOLD):
             client.get("/api/v1/auth/ping", headers=_bearer("wrong-token"))
         assert client.get("/api/v1/auth/ping",
-                          headers=_bearer("legacy-test-value")).status_code == 429
+                          headers=_bearer("wrong-token")).status_code == 429
+        assert client.get("/api/v1/auth/ping",
+                          headers=_bearer("legacy-test-value")).status_code == 200
 
 
 class TestInsightsThrottle:

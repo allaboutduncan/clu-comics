@@ -10,11 +10,14 @@ from core.auth_throttle import (
     FAILURE_THRESHOLD,
     FORGET_AFTER_SECONDS,
     MAX_DELAY_SECONDS,
+    MAX_TRACKED_ACCOUNTS,
     SCOPE_LOGIN,
     SCOPE_OPDS,
     SCOPE_TOKEN,
+    SPRAY_WINDOW_SECONDS,
     AuthThrottle,
     retry_after_text,
+    token_account_key,
 )
 
 
@@ -141,13 +144,118 @@ class TestIsolation:
         assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
 
     def test_token_scope_is_per_address(self, throttle):
-        _fail(throttle, FAILURE_THRESHOLD, account=None, scope=SCOPE_TOKEN)
-        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.1") > 0
-        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.2") == 0
+        key = token_account_key("stale-test-token")
+        _fail(throttle, FAILURE_THRESHOLD, account=key, scope=SCOPE_TOKEN)
+        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.1", key) > 0
+        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.2", key) == 0
 
     def test_loopback_is_not_exempt(self, throttle):
         _fail(throttle, FAILURE_THRESHOLD, address="127.0.0.1")
         assert throttle.retry_after(SCOPE_LOGIN, "127.0.0.1", "owner") > 0
+
+
+class TestAddressKeyMeasuresSpraying:
+    """The address key counts distinct failing accounts, never repetition."""
+
+    def test_one_pair_failing_100_times_does_not_throttle_another_username(
+            self, throttle, clock):
+        for _ in range(100):
+            if throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "stale-reader") == 0:
+                _fail(throttle, 1, account="stale-reader")
+            clock.advance(60)
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "stale-reader") > 0
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
+
+    def test_one_pair_failing_100_times_without_waiting(self, throttle):
+        _fail(throttle, 100, account="stale-reader")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
+
+    def test_one_stale_token_does_not_throttle_another_token(self, throttle, clock):
+        stale = token_account_key("revoked-test-token")
+        good = token_account_key("valid-test-token")
+        for _ in range(100):
+            if throttle.retry_after(SCOPE_TOKEN, "10.0.0.1", stale) == 0:
+                throttle.record_failure(SCOPE_TOKEN, "10.0.0.1", stale)
+            clock.advance(30)
+        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.1", stale) > 0
+        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.1", good) == 0
+
+    def test_n_distinct_usernames_throttle_the_address(self, throttle):
+        for i in range(ADDRESS_FAILURE_THRESHOLD - 1):
+            _fail(throttle, 1, account=f"user{i}")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
+        _fail(throttle, 1, account="one-more")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == BASE_DELAY_SECONDS
+
+    def test_n_distinct_tokens_throttle_the_address(self, throttle):
+        for i in range(ADDRESS_FAILURE_THRESHOLD):
+            throttle.record_failure(SCOPE_TOKEN, "10.0.0.1",
+                                    token_account_key(f"guess-{i}"))
+        assert throttle.retry_after(SCOPE_TOKEN, "10.0.0.1",
+                                    token_account_key("valid-test-token")) > 0
+
+    def test_repeats_of_known_accounts_do_not_advance_it(self, throttle):
+        for i in range(ADDRESS_FAILURE_THRESHOLD - 1):
+            _fail(throttle, 3, account=f"user{i}")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
+
+    def test_each_new_account_past_the_threshold_doubles_the_window(self, throttle, clock):
+        for i in range(ADDRESS_FAILURE_THRESHOLD):
+            _fail(throttle, 1, account=f"user{i}")
+        clock.advance(BASE_DELAY_SECONDS)
+        _fail(throttle, 1, account="another")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == BASE_DELAY_SECONDS * 2
+
+    def test_success_does_not_clear_spray_state(self, throttle):
+        for i in range(ADDRESS_FAILURE_THRESHOLD - 1):
+            _fail(throttle, 1, account=f"user{i}")
+        throttle.record_success(SCOPE_LOGIN, "10.0.0.1", "my-own-account")
+        throttle.record_success(SCOPE_LOGIN, "10.0.0.1", "user0")
+        _fail(throttle, 1, account="one-more")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") > 0
+
+    def test_spray_state_ages_out(self, throttle, clock):
+        for i in range(ADDRESS_FAILURE_THRESHOLD - 1):
+            _fail(throttle, 1, account=f"user{i}")
+        clock.advance(SPRAY_WINDOW_SECONDS)
+        _fail(throttle, 1, account="one-more")
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == 0
+
+    def test_tracked_accounts_per_address_are_capped(self, throttle):
+        for i in range(500):
+            _fail(throttle, 1, account=f"user{i}")
+        addr_entry = throttle._entries[("addr", SCOPE_LOGIN, "10.0.0.1")]
+        assert len(addr_entry.accounts) == MAX_TRACKED_ACCOUNTS
+        assert throttle.retry_after(SCOPE_LOGIN, "10.0.0.1", "owner") == MAX_DELAY_SECONDS
+
+
+class TestTokenAccountKey:
+    def test_digest_never_contains_the_token(self):
+        token = "Zx9-very-distinctive-test-token-value"
+        key = token_account_key(token)
+        assert token not in key
+        assert "distinctive" not in key
+        assert key.startswith("token:") and len(key) == len("token:") + 16
+
+    def test_distinct_tokens_get_distinct_keys(self):
+        assert token_account_key("a-test-token") != token_account_key("b-test-token")
+        assert token_account_key("a-test-token") == token_account_key("a-test-token")
+
+    def test_stored_keys_never_contain_the_token(self, throttle):
+        token = "Zx9-very-distinctive-test-token-value"
+        for _ in range(FAILURE_THRESHOLD):
+            throttle.record_failure(SCOPE_TOKEN, "10.0.0.1", token_account_key(token))
+        assert not any(token in repr(k) for k in throttle.keys())
+
+    def test_log_line_never_contains_the_token(self, clock, caplog):
+        logger = logging.getLogger("test.auth_throttle.tok")
+        t = AuthThrottle(clock=clock, logger=logger)
+        token = "Zx9-very-distinctive-test-token-value"
+        with caplog.at_level(logging.INFO, logger=logger.name):
+            for _ in range(FAILURE_THRESHOLD):
+                t.record_failure(SCOPE_TOKEN, "10.0.0.1", token_account_key(token))
+        assert caplog.records
+        assert all(token not in r.getMessage() for r in caplog.records)
 
 
 class TestSizeBound:

@@ -157,23 +157,26 @@ def resolve_optional_bearer_user(auth_header):
     anonymous state, not an error. The per-user tokens are the same ones minted
     in Settings → Users and used by ``/api/v1``.
     """
-    from core.auth_throttle import SCOPE_TOKEN, client_address, throttle
+    from core.auth_throttle import (
+        SCOPE_TOKEN, client_address, throttle, token_account_key,
+    )
 
     presented = bearer_token_from_header(auth_header)
     if presented is None:
         return "anonymous", None
 
     address = client_address()
-    wait = throttle.retry_after(SCOPE_TOKEN, address)
+    token_key = token_account_key(presented)
+    wait = throttle.retry_after(SCOPE_TOKEN, address, token_key)
     if wait:
         return "throttled", wait
 
     matched, user = user_for_bearer_token(presented)
     if matched:
-        throttle.record_success(SCOPE_TOKEN, address)
+        throttle.record_success(SCOPE_TOKEN, address, token_key)
         return "ok", user
 
-    throttle.record_failure(SCOPE_TOKEN, address)
+    throttle.record_failure(SCOPE_TOKEN, address, token_key)
     return "invalid", None
 
 

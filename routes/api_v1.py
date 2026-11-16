@@ -68,7 +68,8 @@ def _require_api_token():
     from flask import g
     from core.auth import bearer_token_from_header, user_for_bearer_token
     from core.auth_throttle import (
-        SCOPE_TOKEN, client_address, throttle, too_many_attempts_json,
+        SCOPE_TOKEN, client_address, throttle, token_account_key,
+        too_many_attempts_json,
     )
 
     legacy_token = get_api_token()
@@ -90,19 +91,21 @@ def _require_api_token():
 
     # Refused before the token is checked (core/auth_throttle.py), so a
     # guess made inside the window teaches nothing.
+    # Keyed on a digest of the token, so a stale token throttles only itself.
     address = client_address()
-    wait = throttle.retry_after(SCOPE_TOKEN, address)
+    token_key = token_account_key(presented)
+    wait = throttle.retry_after(SCOPE_TOKEN, address, token_key)
     if wait:
         return too_many_attempts_json(wait)
 
     # Per-user token → its user; legacy global token → Store Owner.
     matched, user = user_for_bearer_token(presented, legacy_token=legacy_token)
     if matched:
-        throttle.record_success(SCOPE_TOKEN, address)
+        throttle.record_success(SCOPE_TOKEN, address, token_key)
         g.current_user = user
         return None
 
-    throttle.record_failure(SCOPE_TOKEN, address)
+    throttle.record_failure(SCOPE_TOKEN, address, token_key)
     return jsonify({"error": "unauthorized"}), 401
 
 
