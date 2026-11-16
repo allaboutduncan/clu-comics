@@ -442,8 +442,8 @@ def check_owner_account():
     if not login_required:
         return _check(
             "owner_account", label, "ok",
-            "Single-user and login-free. Set an owner password before adding "
-            "other users.",
+            "Single-user and unauthenticated: no owner password is set. "
+            "Setting one turns on login.",
             docs=DOCS_USERS, details=details,
         )
     return _check(

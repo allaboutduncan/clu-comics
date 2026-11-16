@@ -260,6 +260,23 @@ def _reset_provider_latches():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: the login gate's last-known answer doesn't outlive a test (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_login_gate_fallback():
+    """``core.database.accounts_require_login`` answers a failed read with the
+    last value this process read. A test whose database had a password would
+    otherwise make a later test with an unreadable database require login.
+    Only touched when the module is already imported."""
+    yield
+    import sys
+
+    database = sys.modules.get("core.database")
+    if database is not None and hasattr(database, "_accounts_require_login_last"):
+        database._accounts_require_login_last = False
+
+
+# ---------------------------------------------------------------------------
 # Fixture: Logging suppression (autouse)
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
