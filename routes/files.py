@@ -1867,15 +1867,99 @@ def api_delete_file():
 # Trash
 # =============================================================================
 
+_TRASH_ITEM_NOT_FOUND = "Item not found in trash"
+
+
+def _trash_visibility():
+    """Which trashed items the current user may see and act on.
+
+    Returns None when unrestricted -- the owner, and single-user installs --
+    otherwise a ``visible(manifest_entry)`` predicate. The trash is one folder
+    shared by every user, so for anyone else an item is theirs to see only if:
+
+    - its original location is recorded, and the user may still act there the
+      way the File Manager judges a path (``file_op_refusal``): a ``'full'``
+      folder grant inside a library, or WATCH/TARGET outside every library
+      for a Clerk; or
+    - no original location is recorded and the user trashed it themselves.
+
+    An item with neither (trashed before ``trashed_by`` was recorded and with
+    no manifest entry) is the owner's alone. The scope is loaded once, so a
+    whole listing costs one set of queries.
+    """
+    from core.auth import (
+        _level_for, _load_scope, current_user, is_login_required, role_at_least,
+    )
+    from core.config import get_target_dir, get_watch_dir
+
+    if not is_login_required():
+        return None
+    user = current_user()
+    if user is None:
+        return lambda _entry: False
+    if user.get("role") == "owner":
+        return None
+
+    libraries, granted, grants = _load_scope(user)
+    lib_roots = [os.path.normpath(lib["path"]) for lib in libraries]
+    staging = [os.path.normpath(d) for d in (get_watch_dir(), get_target_dir()) if d]
+    may_stage = role_at_least(user, "clerk")
+    uid = user.get("id")
+
+    def _under(norm, roots):
+        return any(norm == r or norm.startswith(r + os.sep) for r in roots)
+
+    def visible(entry):
+        if not entry:
+            return False
+        original = entry.get("original_path")
+        if not original or not isinstance(original, str):
+            return uid is not None and entry.get("trashed_by") == uid
+        norm = os.path.normpath(original)
+        if _under(norm, lib_roots):
+            return _level_for(norm, libraries, granted, grants) == "full"
+        return may_stage and _under(norm, staging)
+
+    return visible
+
+
+def _visible_trash_item(name):
+    """True if the current user may see the trashed item called ``name``."""
+    visible = _trash_visibility()
+    if visible is None:
+        return True
+    return visible(get_trash_manifest().get(name))
+
+
+def _visible_trash_contents():
+    """Trash contents (oldest first) the current user may see, each with its
+    recorded original path."""
+    contents = get_trash_contents()
+    manifest = get_trash_manifest()
+    visible = _trash_visibility()
+    out = []
+    for item in contents:
+        entry = manifest.get(item["name"])
+        if visible is not None and not visible(entry):
+            continue
+        item["original_path"] = entry.get("original_path") if entry else None
+        out.append(item)
+    return out
+
+
 @files_bp.route('/api/trash/info', methods=['GET'])
 def trash_info():
-    """Return trash status information."""
+    """Return trash status information.
+
+    ``item_count`` counts what the caller can see in the trash; ``size`` and
+    ``max_size`` describe the shared trash folder's capacity.
+    """
     from flask import current_app
     enabled = current_app.config.get("TRASH_ENABLED", True)
     trash_dir = get_trash_dir()
     size = get_trash_size() if trash_dir else 0
     max_size = get_trash_max_size_bytes()
-    contents = get_trash_contents() if trash_dir else []
+    contents = _visible_trash_contents() if trash_dir else []
 
     return jsonify({
         "enabled": enabled,
@@ -1888,30 +1972,37 @@ def trash_info():
 
 @files_bp.route('/api/trash/list', methods=['GET'])
 def trash_list():
-    """Return trash contents sorted newest first."""
+    """Return the trash contents the caller may see, newest first."""
     from flask import current_app
     enabled = current_app.config.get("TRASH_ENABLED", True)
 
     if not enabled:
         return jsonify({"enabled": False, "items": []})
 
-    contents = get_trash_contents()
+    contents = _visible_trash_contents()
     # Reverse to newest first for display
     contents.reverse()
-
-    # Enrich with original path from manifest
-    manifest = get_trash_manifest()
-    for item in contents:
-        entry = manifest.get(item["name"])
-        item["original_path"] = entry["original_path"] if entry else None
 
     return jsonify({"enabled": True, "items": contents})
 
 
 @files_bp.route('/api/trash/empty', methods=['POST'])
 def trash_empty():
-    """Empty the trash permanently."""
-    result = do_empty_trash()
+    """Permanently delete everything in the trash the caller can see.
+
+    For the owner (and single-user installs) that is the whole trash. For
+    anyone else it is only the items the trash list shows them: emptying the
+    trash must never purge another user's items they could not see.
+    """
+    if _trash_visibility() is None:
+        result = do_empty_trash()
+    else:
+        result = {"count": 0, "size_freed": 0}
+        for item in _visible_trash_contents():
+            removed = permanently_delete_from_trash(item["name"])
+            if removed.get("success"):
+                result["count"] += 1
+                result["size_freed"] += removed.get("size_freed", 0)
     return jsonify({
         "success": True,
         "count": result["count"],
@@ -1922,10 +2013,12 @@ def trash_empty():
 @files_bp.route('/api/trash/delete', methods=['POST'])
 def trash_delete_item():
     """Permanently delete a specific item from trash."""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     item_name = data.get("name")
     if not item_name:
         return jsonify({"success": False, "error": "Missing item name"}), 400
+    if not _visible_trash_item(item_name):
+        return jsonify({"success": False, "size_freed": 0, "error": _TRASH_ITEM_NOT_FOUND}), 404
 
     result = permanently_delete_from_trash(item_name)
     if not result["success"]:
@@ -1938,10 +2031,21 @@ def trash_restore_item():
     """Restore a trashed item to its original location."""
     from app import update_index_on_create
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     item_name = data.get("name")
     if not item_name:
         return jsonify({"success": False, "error": "Missing item name"}), 400
+    if not _visible_trash_item(item_name):
+        return jsonify({"success": False, "error": _TRASH_ITEM_NOT_FOUND}), 404
+
+    # The destination is a file operation like any other: the caller must be
+    # allowed to write there now, not merely have been when it was trashed.
+    entry = get_trash_manifest().get(item_name)
+    original_path = entry.get("original_path") if entry else None
+    if original_path:
+        refusal = file_op_refusal(original_path)
+        if refusal:
+            return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     result = restore_from_trash(item_name)
     if not result["success"]:

@@ -34,7 +34,13 @@ ENDPOINTS = [
         "section": "Library",
         "method": "GET",
         "path": "/api/v1/library/publishers",
-        "summary": "List publishers. Either ComicInfo metadata facet or top-level filesystem dirs.",
+        "summary": (
+            "List publishers. Either ComicInfo metadata facet or top-level "
+            "filesystem dirs. Both modes apply the token user's folder grants: "
+            "in filesystem mode a restricted user starts at every library root "
+            "they can see, and folders they hold no grant in (or on the way "
+            "to) are omitted."
+        ),
         "auth": True,
         "params": [
             {"name": "page", "type": "int", "default": "1", "desc": "1-indexed page number."},
@@ -61,7 +67,11 @@ ENDPOINTS = [
         "summary": (
             "List series under a publisher. Multi-volume series include a "
             "`volumes` array of subfolder names; single-volume series omit "
-            "it. `count` is the recursive total across all volumes."
+            "it. `count` is the recursive total across all volumes. In "
+            "filesystem mode the publisher folder must lie inside a library "
+            "(400 `invalid_path` otherwise) and be visible to the token user "
+            "(404 `not_found` otherwise); child folders they cannot see are "
+            "omitted and counts include only comics they may open."
         ),
         "auth": True,
         "params": [
@@ -94,7 +104,13 @@ ENDPOINTS = [
         "section": "Library",
         "method": "GET",
         "path": "/api/v1/library/issues",
-        "summary": "List issues under a series. Items are progress-enriched.",
+        "summary": (
+            "List issues under a series. Items are progress-enriched. In "
+            "filesystem mode the series folder must lie inside a library "
+            "(400 `invalid_path`) and be visible to the token user (404 "
+            "`not_found`); a folder they can only pass through to a granted "
+            "subfolder lists no issues."
+        ),
         "auth": True,
         "params": [
             {"name": "series", "type": "str", "default": "—", "desc": "Required."},
@@ -176,7 +192,10 @@ ENDPOINTS = [
         "section": "Library — Dashboard",
         "method": "GET",
         "path": "/api/v1/library/recent",
-        "summary": "CBZ/CBR files indexed in the last 30 days, inside enabled libraries.",
+        "summary": (
+            "CBZ/CBR files indexed in the last 30 days, inside enabled "
+            "libraries and the token user's folder grants."
+        ),
         "auth": True,
         "params": [
             {"name": "page", "type": "int", "default": "1", "desc": "1-indexed."},
