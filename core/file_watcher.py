@@ -2,7 +2,16 @@ import os
 import time
 import threading
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from core.database import (
     add_file_index_entry,
     forget_deleted_path,
@@ -16,6 +25,26 @@ from helpers.library import is_valid_library_path
 
 
 COMIC_EXTENSIONS = ('.cbz', '.cbr')
+
+# The only events DebouncedFileHandler acts on, passed to schedule() as the
+# event_filter. Without a filter watchdog subscribes to every inotify event,
+# IN_OPEN and IN_CLOSE_NOWRITE included, so every *read* of a comic queues
+# events. On a large library a read-only pass (thumbnails, metadata scan)
+# overflows the kernel queue, and watchdog >= 7.1 recovers from an overflow by
+# re-walking the tree -- which opens every directory, overflows the queue again
+# and never stops: 100% CPU with nothing touching the library (#732).
+# Keep this in step with the handler's on_* methods; never add the opened or
+# closed-without-write events. tests/unit/test_file_watcher_event_filter.py
+# is the ratchet.
+WATCHED_EVENTS = [
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileDeletedEvent,
+    DirCreatedEvent,
+    DirMovedEvent,
+    DirDeletedEvent,
+]
 
 
 def _in_trash(path):
@@ -265,7 +294,12 @@ class FileWatcher:
                 app_logger.error(f"Watch path does not exist: {self.watch_path}")
                 return False
 
-            self.observer.schedule(self.event_handler, self.watch_path, recursive=True)
+            self.observer.schedule(
+                self.event_handler,
+                self.watch_path,
+                recursive=True,
+                event_filter=WATCHED_EVENTS,
+            )
             self.observer.start()
             app_logger.info(f"File watcher started for: {self.watch_path}")
             return True
