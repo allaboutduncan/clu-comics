@@ -970,6 +970,20 @@
                             </div>
                         </div>
                     </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="downloadAllowPrivateHosts" name="downloadAllowPrivateHosts"
+                                    {% if downloadAllowPrivateHosts %}checked{% endif %}>
+                                <label class="form-check-label" for="downloadAllowPrivateHosts">Allow downloads from private network addresses</label>
+                                <small class="form-text text-muted">
+                                    <br />Off by default. Only needed when your download hosts resolve to private
+                                    addresses: a host on your LAN, or fake-ip / split DNS.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- GetComics Wanted Issues Simulation -->
@@ -2578,7 +2592,8 @@
             oneshotFolders: document.getElementById('oneshotFolders')?.value,
             downloadPacks: document.getElementById('downloadPacks')?.checked ?? false,
             // Left out when the switch is absent, so the server keeps the stored value.
-            flaresolverrEnabled: document.getElementById('flaresolverrEnabled')?.checked
+            flaresolverrEnabled: document.getElementById('flaresolverrEnabled')?.checked,
+            downloadAllowPrivateHosts: document.getElementById('downloadAllowPrivateHosts')?.checked
         };
 
         await runTabSave('saveDownloadApiBtn', [

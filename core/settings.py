@@ -77,6 +77,9 @@ SETTINGS_SCHEMA = {
     "DOWNLOAD_PROVIDER_PRIORITY": _s("download_provider_priority", _S, "pixeldrain,download_now,mega", "downloads"),
     "PIXELDRAIN_API_KEY": _s("pixeldrain_api_key", _S, "", "downloads"),
     "HEADERS": _s("custom_headers", _S, "", "downloads"),
+    # Owner opt-out for core.url_guard's address check (LAN download hosts,
+    # fake-ip / split-horizon DNS). Off by default. Never in an ini.
+    "DOWNLOAD_ALLOW_PRIVATE_HOSTS": _s("download_allow_private_hosts", _B, False, "downloads"),
     # Bundled FlareSolverr (core/flaresolverr.py). On by default: it ships in
     # the image and only starts when a download meets a Cloudflare challenge.
     # Never in an ini.
