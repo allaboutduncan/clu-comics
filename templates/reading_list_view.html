@@ -251,7 +251,7 @@
     {% if reading_list.description %}
     <div class="card mb-4">
         <div class="card-body">
-            <div class="mb-0 text-muted reading-list-description">{{ reading_list.description|safe }}</div>
+            <div class="mb-0 text-muted reading-list-description">{{ reading_list.description|sanitize_description }}</div>
         </div>
     </div>
     {% endif %}
