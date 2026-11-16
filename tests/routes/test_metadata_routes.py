@@ -441,40 +441,46 @@ def _png(width, height):
 class TestCbzMetadataDimensions:
     """/cbz-metadata?dimensions=1 -- image resolution for the duplicate compare."""
 
-    def _make(self, tmp_path, pages):
-        path = str(tmp_path / "Dims 001.cbz")
+    @pytest.fixture
+    def lib_dir(self, data_dir_library):
+        # /cbz-metadata serves library files only, so build the CBZs inside
+        # the test's one library rather than a bare tmp dir.
+        return data_dir_library
+
+    def _make(self, lib_dir, pages):
+        path = os.path.join(lib_dir, "Dims 001.cbz")
         with zipfile.ZipFile(path, "w") as zf:
             for name, data in pages:
                 zf.writestr(name, data)
         return path
 
-    def test_omitted_unless_requested(self, client, tmp_path):
-        path = self._make(tmp_path, [("p01.png", _png(10, 20))])
+    def test_omitted_unless_requested(self, client, lib_dir):
+        path = self._make(lib_dir, [("p01.png", _png(10, 20))])
         resp = client.get("/cbz-metadata", query_string={"path": path})
         assert resp.status_code == 200
         assert "image_dimensions" not in resp.get_json()
 
-    def test_cover_reported_apart_from_interior_median(self, client, tmp_path):
+    def test_cover_reported_apart_from_interior_median(self, client, lib_dir):
         pages = [("p01.png", _png(400, 600))]          # cover, a different size
         pages += [(f"p{n:02d}.png", _png(100, 150)) for n in range(2, 8)]
         pages.append(("p08.png", _png(300, 450)))      # one odd page out
-        path = self._make(tmp_path, pages)
+        path = self._make(lib_dir, pages)
         resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
         dims = resp.get_json()["image_dimensions"]
         assert dims["cover"] == [400, 600]
         assert dims["pages"] == [100, 150]
         assert dims["sampled"] == 5
 
-    def test_natural_order_picks_the_real_cover(self, client, tmp_path):
+    def test_natural_order_picks_the_real_cover(self, client, lib_dir):
         # "p10" sorts before "p2" lexically; the reader's natural order does not.
-        path = self._make(tmp_path, [
+        path = self._make(lib_dir, [
             ("p10.png", _png(50, 50)), ("p2.png", _png(50, 50)), ("p1.png", _png(80, 120)),
         ])
         resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
         assert resp.get_json()["image_dimensions"]["cover"] == [80, 120]
 
-    def test_unreadable_images_and_single_page(self, client, tmp_path):
-        path = self._make(tmp_path, [
+    def test_unreadable_images_and_single_page(self, client, lib_dir):
+        path = self._make(lib_dir, [
             ("p1.png", _png(80, 120)), ("p2.jpg", b"not an image"),
             ("__MACOSX/._p3.png", b"junk"),
         ])

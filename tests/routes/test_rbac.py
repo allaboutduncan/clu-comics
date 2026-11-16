@@ -70,6 +70,8 @@ class TestRolePolicy:
         ("GET", "/logs/tail", "clerk"),
         ("GET", "/app-logs", "clerk"),
         ("GET", "/mon-logs", "clerk"),
+        # The File Manager's Downloads listing (WATCH/TARGET) backs a Clerk page.
+        ("GET", "/list-downloads", "clerk"),
         # Self-service API tokens: a user manages their OWN tokens at any role.
         ("GET", "/account", "reader"),
         ("GET", "/api/account/tokens", "reader"),
