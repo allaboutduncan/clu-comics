@@ -249,6 +249,13 @@
     }));
   }
 
+  function _htmlToText(html) {
+    if (html === null || html === undefined || html === '') return '';
+    // DOMParser documents are inert: no script runs and no image loads.
+    var doc = new DOMParser().parseFromString(String(html), 'text/html');
+    return (doc.body && doc.body.textContent || '').replace(/\s+/g, ' ').trim();
+  }
+
   function _renderCVVolumeList(volumes) {
     var volumeList = document.getElementById('cvVolumeList');
     volumeList.innerHTML = '';
@@ -258,17 +265,22 @@
       volumeItem.className = 'list-group-item list-group-item-action d-flex align-items-start';
       volumeItem.style.cursor = 'pointer';
 
-      var yearDisplay = volume.start_year || 'Unknown';
-      var issueCount = volume.count_of_issues || 'Unknown';
-      var descriptionPreview = volume.description ?
-        '<small class="text-muted d-block mt-1">' + volume.description + '</small>' : '';
+      var yearDisplay = CLU.escapeHtml(volume.start_year || 'Unknown');
+      var issueCount = CLU.escapeHtml(volume.count_of_issues || 'Unknown');
+      // A provider description can be HTML (ComicVine's is). It is shown as
+      // text: parsed in an inert document, read back with textContent, then
+      // escaped like every other provider field.
+      var descriptionText = _htmlToText(volume.description);
+      var descriptionPreview = descriptionText ?
+        '<small class="text-muted d-block mt-1">' + CLU.escapeHtml(descriptionText) + '</small>' : '';
 
       // GCD (comics.org API) series results carry no cover — show a loading
       // placeholder and fetch it lazily (see below). Other providers already
       // include image_url, and non-GCD misses fall back to "No Cover".
       var thumbnailHtml;
-      if (volume.image_url) {
-        thumbnailHtml = '<img src="' + volume.image_url + '" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="' + CLU.escapeHtml(volume.name) + ' cover">';
+      var imageUrl = CLU.safeUrl(volume.image_url, '');
+      if (imageUrl) {
+        thumbnailHtml = '<img src="' + CLU.escapeHtml(imageUrl) + '" class="img-thumbnail me-3" style="width: 80px; height: 120px; object-fit: cover;" alt="' + CLU.escapeHtml(volume.name) + ' cover">';
       } else if (volume._gcdApi && volume.id) {
         thumbnailHtml = '<div class="img-thumbnail me-3 d-flex align-items-center justify-content-center text-muted" data-gcd-cover="' + CLU.escapeHtml(String(volume.id)) + '" style="width: 80px; height: 120px;"><span class="spinner-border spinner-border-sm"></span></div>';
       } else {
@@ -305,10 +317,12 @@
         if (ph) {
           CLU.lazyLoadGcdCover(ph, volume.id, volume._gcdIssue, function (url) {
             volume.image_url = url;
+            var safe = CLU.safeUrl(url, '');
+            if (!safe) return;
             var nodes = volumeList.querySelectorAll('[data-gcd-cover="' + CSS.escape(String(volume.id)) + '"]');
             nodes.forEach(function (node) {
               var img = document.createElement('img');
-              img.src = url;
+              img.src = safe;
               img.className = 'img-thumbnail me-3';
               img.style.cssText = 'width: 80px; height: 120px; object-fit: cover;';
               img.alt = (volume.name || '') + ' cover';
@@ -586,9 +600,9 @@
       item.style.cursor = 'pointer';
 
       var thumbnailHtml;
-      if (issue.cover_url) {
-        // src is assigned as a property below — CLU.escapeHtml leaves quotes
-        // intact, so a URL is not safe to interpolate into an attribute.
+      var coverUrl = CLU.safeUrl(issue.cover_url, '');
+      if (coverUrl) {
+        // src is assigned as a property below, after the scheme check.
         thumbnailHtml = '<img data-issue-cover loading="lazy" ' +
           'class="img-thumbnail me-3" style="width: 60px; height: 90px; object-fit: cover;" ' +
           'alt="Issue ' + CLU.escapeHtml(issue.issue_number) + ' cover">';
@@ -613,7 +627,7 @@
         '</div>';
 
       var cover = item.querySelector('[data-issue-cover]');
-      if (cover) cover.src = issue.cover_url;
+      if (cover) cover.src = coverUrl;
 
       item.addEventListener('click', function () {
         _cvClickHandler(issue);
@@ -781,7 +795,10 @@
         selectEl.style.width = '120px';
         selectEl.innerHTML = '<option value="">All languages</option>';
         Object.keys(langSet).sort().forEach(function (key) {
-          selectEl.innerHTML += '<option value="' + key + '">' + key + ' (' + langSet[key] + ')</option>';
+          var opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = key + ' (' + langSet[key] + ')';
+          selectEl.appendChild(opt);
         });
         filterContainer.parentNode.insertBefore(selectEl, filterContainer);
 

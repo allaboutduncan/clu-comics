@@ -19,13 +19,6 @@
 
     var state = { groups: [], includeDismissed: false, pending: null, reloadOnClose: false };
 
-    function escapeHtml(str) {
-        return String(str === null || str === undefined ? '' : str)
-            .replace(/[&<>"']/g, function (c) {
-                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-            });
-    }
-
     function formatSize(bytes) {
         var n = Number(bytes || 0);
         var units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -67,7 +60,7 @@
         out += m.has_comicinfo
             ? ' <span class="badge bg-success">Tagged</span>'
             : ' <span class="badge bg-secondary">No ComicInfo</span>';
-        if (m.provider) out += ' <span class="badge bg-light text-dark border">' + escapeHtml(m.provider) + '</span>';
+        if (m.provider) out += ' <span class="badge bg-light text-dark border">' + CLU.escapeHtml(m.provider) + '</span>';
         return out;
     }
 
@@ -90,9 +83,9 @@
                     '<input class="form-check-input" type="radio" name="keep-' + gi + '"' +
                     ' data-group="' + gi + '" data-member="' + mi + '"' + checked +
                     ' title="Keep this copy"></td>' +
-                '<td><div class="text-break"><strong>' + escapeHtml(m.name) + '</strong>' +
+                '<td><div class="text-break"><strong>' + CLU.escapeHtml(m.name) + '</strong>' +
                     badges(m) + '</div>' +
-                    '<div class="small text-muted text-break">' + escapeHtml(m.folder) + '</div></td>' +
+                    '<div class="small text-muted text-break">' + CLU.escapeHtml(m.folder) + '</div></td>' +
                 '<td class="text-nowrap text-end">' + formatSize(m.size) + '</td>' +
                 '<td class="text-nowrap">' + formatDate(m.modified_at) + '</td>' +
                 '<td class="text-nowrap">' + infoButton(gi, mi, m, pair) + '</td>' +
@@ -111,7 +104,7 @@
             '<div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">' +
                 '<span><span class="badge ' + (g.kind === 'exact' ? 'bg-danger' : 'bg-warning text-dark') + ' me-2">' +
                     (g.kind === 'exact' ? 'Exact' : 'Likely') + '</span>' +
-                    escapeHtml(g.reason) + dismissedBadge + '</span>' +
+                    CLU.escapeHtml(g.reason) + dismissedBadge + '</span>' +
                 '<span class="small text-muted">' + formatSize(g.wasted_bytes) + ' reclaimable</span>' +
             '</div>' +
             '<div class="table-responsive"><table class="table table-sm align-middle mb-0">' +
@@ -237,7 +230,7 @@
         }
         document.getElementById('dup-confirm-keep').textContent = keep;
         var list = document.getElementById('dup-confirm-trash');
-        list.innerHTML = trash.map(function (p) { return '<li>' + escapeHtml(p) + '</li>'; }).join('');
+        list.innerHTML = trash.map(function (p) { return '<li>' + CLU.escapeHtml(p) + '</li>'; }).join('');
         showModal('dup-confirm-modal');
     }
 

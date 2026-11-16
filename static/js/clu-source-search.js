@@ -34,19 +34,13 @@
 
     const CLU = window.CLU = window.CLU || {};
 
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = (text === null || text === undefined) ? '' : text;
-        return div.innerHTML;
-    }
-
     function fmtSize(bytes) {
         return bytes ? (bytes / (1024 * 1024)).toFixed(0) + ' MB' : '';
     }
 
     function sectionHeader(label, icon) {
         return `<div class="text-muted small fw-bold text-uppercase mb-2 mt-1">
-                    <i class="bi bi-${icon} me-1"></i>${escapeHtml(label)}</div>`;
+                    <i class="bi bi-${icon} me-1"></i>${CLU.escapeHtml(label)}</div>`;
     }
 
     function alertBox(cssClass, icon, message) {
@@ -121,7 +115,7 @@
     function grabButtons(sourceKey, idleIcon, attrs, key, enabled) {
         // data-idle is per button, not per source: the two carry different
         // icons, so restoring a failed grab has to know which one it is.
-        const common = `data-source="${sourceKey}" data-key="${escapeHtml(key)}" ` +
+        const common = `data-source="${sourceKey}" data-key="${CLU.escapeHtml(key)}" ` +
             `${attrs} ${enabled ? '' : 'disabled'}`;
         return `
         <div class="btn-group btn-group-sm flex-shrink-0" role="group">
@@ -148,9 +142,9 @@
         return `
         <div class="card mb-2">
             <div class="card-body d-flex align-items-center gap-3 py-2">
-                ${thumb ? `<img src="${escapeHtml(thumb)}" style="width:50px;height:75px;object-fit:cover;" class="rounded flex-shrink-0" onerror="this.style.display='none'">` : ''}
+                ${CLU.safeUrl(thumb, '') ? `<img src="${CLU.escapeHtml(CLU.safeUrl(thumb, ''))}" style="width:50px;height:75px;object-fit:cover;" class="rounded flex-shrink-0" onerror="this.style.display='none'">` : ''}
                 <div class="flex-grow-1 overflow-hidden">
-                    <div class="fw-bold text-truncate" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}${decisionBadge(r.decision)}</div>
+                    <div class="fw-bold text-truncate" title="${CLU.escapeHtml(r.title)}">${CLU.escapeHtml(r.title)}${decisionBadge(r.decision)}</div>
                     <small class="text-muted text-truncate d-block">${subtitle}</small>
                 </div>
                 ${buttons}
@@ -186,7 +180,7 @@
                 const resp = await fetch(`/api/getcomics/search?${params.toString()}`);
                 const data = await resp.json();
                 if (!data.success) {
-                    return alertBox('alert-danger', 'exclamation-octagon', escapeHtml(data.error));
+                    return alertBox('alert-danger', 'exclamation-octagon', CLU.escapeHtml(data.error));
                 }
                 if (!data.results || !data.results.length) return '';
 
@@ -195,12 +189,12 @@
                 // downloads then queues just the part holding it. A retyped
                 // query leaves that context stale.
                 const issueAttrs = data.scored
-                    ? ` data-series="${escapeHtml(ctx.series)}" data-issue="${escapeHtml(ctx.issue)}"`
+                    ? ` data-series="${CLU.escapeHtml(ctx.series)}" data-issue="${CLU.escapeHtml(ctx.issue)}"`
                     : '';
                 const card = (r) => scoredCard(
-                    r, escapeHtml(r.link),
+                    r, CLU.escapeHtml(r.link),
                     grabButtons('getcomics', 'bi-download',
-                        `data-link="${escapeHtml(r.link)}" data-title="${escapeHtml(r.title)}"${issueAttrs}`,
+                        `data-link="${CLU.escapeHtml(r.link)}" data-title="${CLU.escapeHtml(r.title)}"${issueAttrs}`,
                         r.link, true),
                     r.image);
 
@@ -274,7 +268,7 @@
                 );
                 const errNote = (data.errors && data.errors.length)
                     ? alertBox('alert-danger', 'exclamation-octagon',
-                        data.errors.map(escapeHtml).join('<br>')) : '';
+                        data.errors.map(CLU.escapeHtml).join('<br>')) : '';
 
                 if (!data.results || !data.results.length) {
                     return header + clientNote + errNote +
@@ -283,9 +277,9 @@
 
                 const card = (r) => scoredCard(
                     r,
-                    `${escapeHtml(r.indexer_name || '')} ${fmtSize(r.size)} · score ${r.score}`,
+                    `${CLU.escapeHtml(r.indexer_name || '')} ${fmtSize(r.size)} · score ${r.score}`,
                     grabButtons('usenet', 'bi-cloud-download',
-                        `data-nzb-url="${escapeHtml(r.nzb_url)}"`,
+                        `data-nzb-url="${CLU.escapeHtml(r.nzb_url)}"`,
                         r.nzb_url, data.has_client)
                 );
                 return header + clientNote + errNote +
@@ -333,7 +327,7 @@
                 const header = sectionHeader('DC++ (Hubs)', 'diagram-3');
                 const errNote = (data.errors && data.errors.length)
                     ? alertBox('alert-danger', 'exclamation-octagon',
-                        data.errors.map(escapeHtml).join('<br>')) : '';
+                        data.errors.map(CLU.escapeHtml).join('<br>')) : '';
 
                 if (!data.results || !data.results.length) {
                     return header + errNote +
@@ -346,7 +340,7 @@
                         r,
                         `${users}${fmtSize(r.size)} · score ${r.score}`,
                         grabButtons('dcpp', 'bi-cloud-download',
-                            `data-token="${escapeHtml(r.result_token)}"`,
+                            `data-token="${CLU.escapeHtml(r.result_token)}"`,
                             r.result_token, true)
                     );
                 };
@@ -530,7 +524,7 @@
                     return await SOURCES[key].build(ctx);
                 } catch (e) {
                     return alertBox('alert-danger', 'exclamation-octagon',
-                        `${escapeHtml(SOURCES[key].label)} error: ${escapeHtml(e.message)}`);
+                        `${CLU.escapeHtml(SOURCES[key].label)} error: ${CLU.escapeHtml(e.message)}`);
                 }
             }));
 

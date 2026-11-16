@@ -98,7 +98,11 @@
   {# The list toolbar helpers (partials/filters.html's script twins and the
      page bar) load in the head, not the footer: several pages run inline
      scripts inside their content block that call them while the page parses.
-     Neither touches the DOM when it loads. #}
+     Neither touches the DOM when it loads.
+     clu-utils.js (CLU.escapeHtml, CLU.safeUrl...) loads here too, once, for
+     every page: inline scripts and page scripts all escape through it, and a
+     second copy would install its document listeners twice. #}
+  <script src="{{ asset('js/clu-utils.js') }}"></script>
   <script src="{{ asset('js/clu-filters.js') }}"></script>
   <script src="{{ asset('js/clu-pager.js') }}"></script>
 </head>
@@ -282,8 +286,7 @@
             return ra === 1 ? a.started_at - b.started_at : b.started_at - a.started_at;
           });
           // Labels and details carry file names; never inject them as HTML.
-          const esc = t => String(t ?? '').replace(/[&<>"']/g,
-            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+          const esc = CLU.escapeHtml;
 
           const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search', index: 'bi-card-list' };
           let html = '';

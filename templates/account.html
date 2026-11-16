@@ -199,16 +199,9 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ asset('js/clu-utils.js') }}"></script>
 <script src="{{ asset('js/clu-personalization.js') }}"></script>
 <script>
   const SITE_THEME = {{ site_theme | tojson }};
-
-  function esc(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-    }[c]));
-  }
 
   function setBadge(id, isOverride) {
     const badge = document.getElementById(id);
@@ -319,7 +312,7 @@
 
   function alertMsg(msg) {
     document.getElementById("account-alert").innerHTML =
-      `<div class="alert alert-danger">${esc(msg)}</div>`;
+      `<div class="alert alert-danger">${CLU.escapeHtml(msg)}</div>`;
   }
 
   async function loadTokens() {
@@ -334,11 +327,12 @@
       }
       box.innerHTML = tokens.map(t => `
         <div class="d-flex justify-content-between align-items-center py-1">
-          <span>${esc(t.name || "(unnamed)")}
-            <span class="text-muted">· ${t.last_used_at ? "last used " + esc(t.last_used_at) : "never used"}</span>
+          <span>${CLU.escapeHtml(t.name || "(unnamed)")}
+            <span class="text-muted">· ${t.last_used_at ? "last used " + CLU.escapeHtml(t.last_used_at) : "never used"}</span>
           </span>
           <button class="btn btn-sm btn-outline-danger py-0"
-                  onclick="askRevokeToken(${t.id}, '${esc(t.name || "(unnamed)")}')">Revoke</button>
+                  data-token-id="${Number(t.id)}" data-token-name="${CLU.escapeHtml(t.name || "(unnamed)")}"
+                  onclick="askRevokeToken(Number(this.dataset.tokenId), this.dataset.tokenName)">Revoke</button>
         </div>`).join("");
     } catch (e) {
       box.innerHTML = "<span class='text-danger'>Failed to load tokens.</span>";

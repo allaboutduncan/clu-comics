@@ -28,12 +28,6 @@
   // ── Per-session state ───────────────────────────────────────────────────
   CLU._splitState = null;
 
-  function _escapeHtml(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
   CLU.renderSplitGroups = function (data) {
     CLU._splitState = {
       folderName: data.folder_name || '',
@@ -71,7 +65,7 @@
       html += '  <div class="card-header d-flex align-items-center gap-2 flex-wrap">';
       html += '    <span class="badge bg-primary">Issue ' + (gi + 1) + '</span>';
       html += '    <input type="text" class="form-control form-control-sm split-group-name" ' +
-              'style="max-width: 360px;" value="' + _escapeHtml(g.name) + '" ' +
+              'style="max-width: 360px;" value="' + CLU.escapeHtml(g.name) + '" ' +
               'onchange="CLU.updateGroupName(' + gi + ', this.value)">';
       html += '    <span class="text-muted small">' + g.pages.length + ' page' +
               (g.pages.length === 1 ? '' : 's') + '</span>';
@@ -83,15 +77,15 @@
       html += '  </div>';
       html += '  <div class="card-body"><div class="row row-cols-2 row-cols-sm-3 row-cols-md-5 g-2">';
       g.pages.forEach(function (p, pi) {
-        html += '<div class="col" data-rel-path="' + _escapeHtml(p.rel_path) + '">';
+        html += '<div class="col" data-rel-path="' + CLU.escapeHtml(p.rel_path) + '">';
         html += '  <div class="card h-100 split-page-card">';
         html += '    <div class="split-thumb-wrap">';
         html += p.img_data
-          ? '<img src="' + p.img_data + '" class="split-thumb" alt="' + _escapeHtml(p.filename) + '">'
+          ? '<img src="' + p.img_data + '" class="split-thumb" alt="' + CLU.escapeHtml(p.filename) + '">'
           : '<span class="text-muted small p-2">no preview</span>';
         html += '    </div>';
         html += '    <div class="card-body p-1">';
-        html += '      <p class="small text-break mb-1">' + _escapeHtml(p.filename) + '</p>';
+        html += '      <p class="small text-break mb-1">' + CLU.escapeHtml(p.filename) + '</p>';
         if (pi > 0) {
           html += '      <button type="button" class="btn btn-sm btn-outline-primary w-100" ' +
                   'onclick="CLU.splitAt(' + gi + ',' + pi + ')" title="Start a new issue here">' +
