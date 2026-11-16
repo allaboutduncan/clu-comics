@@ -364,6 +364,7 @@ _CLERK_PREFIXES = (
     "/api/getcomics",
     "/api/download-clients",
     "/api/download-runs",      # automatic download run reports (Status page)
+    "/download_status",        # download queue rows (Status page): /download_status/<id>, /download_status_all
     "/api/indexers",
     "/api/usenet",
     "/api/dcpp",

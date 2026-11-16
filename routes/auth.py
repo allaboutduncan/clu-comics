@@ -212,16 +212,16 @@ def _clu_default_per_page(kind=None):
     return COLLECTION_DEFAULT_PER_PAGE if kind == "collection" else DEFAULT_PER_PAGE
 
 
-# Download endpoints (api.py) are auth-free by design so the browser extension
-# — which sends no Flask session cookie — can queue downloads. "/download"
-# prefix-matches /download, /download_status, /download_status_all and
-# /download_summary; the management endpoints are listed explicitly.
 _EXEMPT_PREFIXES = (
     "/login", "/logout", "/static/", "/opds", "/api/insights", "/api/v1/",
-    "/download",
-    "/cancel_download", "/retry_download", "/dismiss_download",
-    "/clear_downloads", "/clear_failed_downloads",
 )
+
+# POST /download (api.py) is auth-free by design so the browser extension —
+# which sends no Flask session cookie — can queue downloads; the GET on the same
+# path is its help page. Matched exactly: the queue's status, cancel, retry,
+# dismiss and clear endpoints are used by the logged-in Status page and go
+# through the normal login and role check (core.auth.required_role_for_request).
+_EXEMPT_PATHS = frozenset({"/download"})
 
 
 @auth_bp.before_app_request
@@ -232,6 +232,8 @@ def require_login():
     Redirects to /login only when login is required and no user is
     authenticated.
     """
+    if request.path in _EXEMPT_PATHS:
+        return None
     if any(request.path.startswith(p) for p in _EXEMPT_PREFIXES):
         return None
 

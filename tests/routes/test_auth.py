@@ -157,9 +157,12 @@ class TestLoginRequiredMultiUser:
         assert r.status_code != 302
         assert "/login" not in r.headers.get("Location", "")
 
-    def test_download_status_exempt_from_auth(self, client):
+    def test_download_status_requires_login(self, client):
+        # Only POST /download is exempt; the queue's status endpoints are used
+        # by the logged-in Status page (tests/routes/test_download_queue_auth.py).
         r = client.get("/download_status_all", follow_redirects=False)
-        assert r.status_code != 302
+        assert r.status_code == 302
+        assert "/login" in r.headers["Location"]
 
 
 class TestEnvGateBackwardCompat:
