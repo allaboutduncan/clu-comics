@@ -270,7 +270,11 @@ function runScript(scriptType) {
                                         Unpacking CBZ File ...
                                     </button>
                                 </div>`;
-        fetch(`/edit?file_path=${encodeURIComponent(directoryInput)}`)
+        fetch('/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: directoryInput })
+        })
             .then(response => {
                 if (!response.ok) {
                     throw new Error("Failed to load edit content.");

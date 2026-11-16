@@ -81,6 +81,10 @@ class TestRolePolicy:
         ("POST", "/api/account/appearance", "reader"),
         ("POST", "/api/account/dashboard", "reader"),
         ("POST", "/api/account/page-width", "reader"),
+        # The CBZ editor: opening renames and extracts the archive, so /edit
+        # is a POST and needs the same Clerk write role as /save.
+        ("POST", "/edit", "clerk"),
+        ("POST", "/save", "clerk"),
         ("GET", "/config", "owner"),
         # The site-default page width is in routes/auth.py, but its path is
         # what makes it owner-only.

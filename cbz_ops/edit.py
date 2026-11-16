@@ -12,7 +12,7 @@ from core.thumbnail_cache import regenerate_thumbnail
 from core.settings import get_ext_list
 from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
 from cbz_ops.salvage import decodes, first_undecodable_page, is_crc_error, is_page, read_entry_lenient
-from cbz_ops.edit_paths import validate_save_paths
+from cbz_ops.edit_paths import editor_archive_refusal, validate_save_paths
 import gc
 
 
@@ -240,6 +240,39 @@ def get_edit_modal(file_path):
         "zip_file_path": zip_file_path,
         "original_file_path": file_path
     }
+
+
+def edit_cbz():
+    """``POST /edit``: open an archive in the CBZ editor.
+
+    Takes ``file_path`` from a JSON body (or a form). Opening renames the
+    archive to ``.zip`` and extracts it beside itself, so the path is checked
+    with :func:`editor_archive_refusal` -- the same rule ``/save`` applies --
+    before anything on disk is touched. Responds with the
+    :func:`get_edit_modal` dict, or ``{"error": ...}`` and a 4xx/5xx status.
+    """
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        file_path = payload.get("file_path")
+    else:
+        file_path = request.form.get("file_path")
+    if not file_path:
+        return jsonify({"error": "Missing file path parameter"}), 400
+
+    refusal = editor_archive_refusal(file_path)
+    if refusal:
+        message, status = refusal
+        app_logger.warning(f"Refused to open {file_path!r} in the editor: {message}")
+        return jsonify({"error": message}), status
+    if not os.path.isfile(file_path):
+        return jsonify({"error": "File not found"}), 404
+
+    try:
+        return jsonify(get_edit_modal(file_path))
+    except Exception as e:
+        app_logger.error(f"Error in /edit route: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 def _recheck_listed_problems(path):
     """After a save, re-check a comic that is on the Library Health page.

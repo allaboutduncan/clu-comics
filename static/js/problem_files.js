@@ -902,7 +902,11 @@
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
         if (typeof CLU.setupEditModalDropZone === 'function') CLU.setupEditModalDropZone();
 
-        fetch('/edit?file_path=' + encodeURIComponent(row.path))
+        fetch('/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: row.path })
+        })
             .then(function (res) {
                 return res.json().catch(function () { return {}; }).then(function (data) {
                     if (!res.ok) throw new Error(data.error || 'Could not open the file for editing.');
