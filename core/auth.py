@@ -208,23 +208,44 @@ def _load_scope(user):
     return libraries, granted, grants
 
 
+def _under_root(norm, root):
+    """Separator-bounded: ``/data/X`` is under ``/data`` but not ``/data/X-Men``."""
+    if norm == root:
+        return True
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return norm.startswith(prefix)
+
+
+def _containing_library(norm, libraries):
+    """``(root, id)`` of the MOST SPECIFIC library containing ``norm``, or None.
+
+    Libraries can nest (a library root inside another). The innermost one owns
+    the path: its grants decide access, whichever order the libraries are
+    listed in. Taking the first match instead let an outer library listed first
+    shadow every grant on the inner one.
+    """
+    best = None
+    for lib in libraries:
+        root = os.path.normpath(lib["path"])
+        if _under_root(norm, root) and (best is None or len(root) > len(best[0])):
+            best = (root, lib["id"])
+    return best
+
+
 def _level_for(path, libraries, granted, grants):
     """Pure access-level computation against pre-loaded scope (see _load_scope)."""
     if not path:
         return "none"
     norm = os.path.normpath(path)
 
-    lib_root = None
-    lib_id = None
-    for lib in libraries:
-        root = os.path.normpath(lib["path"])
-        if norm == root or norm.startswith(root + os.sep):
-            lib_root, lib_id = root, lib["id"]
-            break
-    if lib_root is None or lib_id not in granted:
+    found = _containing_library(norm, libraries)
+    if found is None:
+        return "none"
+    lib_root, lib_id = found
+    if lib_id not in granted:
         return "none"
 
-    in_lib = [g for g in grants if g == lib_root or g.startswith(lib_root + os.sep)]
+    in_lib = [g for g in grants if _under_root(g, lib_root)]
     if not in_lib:
         return "none"  # granted library, no folder picks -> nothing
 
@@ -266,13 +287,13 @@ def accessible_folder_prefixes(user):
     if not user:
         return []
     libraries, granted, grants = _load_scope(user)
-    lib_roots = [(os.path.normpath(l["path"]), l["id"]) for l in libraries]
     out = []
     for g in grants:
-        for root, lid in lib_roots:
-            if (g == root or g.startswith(root + os.sep)) and lid in granted:
-                out.append(g)
-                break
+        # The grant belongs to the most specific library containing it, the
+        # same rule _level_for applies to the paths it is compared against.
+        found = _containing_library(g, libraries)
+        if found and found[1] in granted:
+            out.append(g)
     return out
 
 
