@@ -599,7 +599,7 @@ class TestFirstAdditionalUser:
         assert other.get("/api/admin/users").status_code == 200
 
         assert other.post("/api/admin/setup-owner", json={
-            "username": "boss", "password": "hunter3",
+            "username": "boss", "password": ENV_OWNER_KEY,
         }).status_code == 200
 
         # Login is on again; without the stamp this browser is now anonymous.

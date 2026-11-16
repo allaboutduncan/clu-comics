@@ -320,7 +320,7 @@ class TestAccountsRequireLogin:
         _clear_owner_password()                          # recovery clears it
         assert is_login_required() is False
 
-        kid = create_user("kid", password="kid-pass-for-tests", role="reader")
+        kid = create_user("kid", password=OWNER_PASS, role="reader")
         assert is_login_required() is True               # create
         delete_user(kid)
         assert is_login_required() is False              # delete
