@@ -12,6 +12,7 @@ from core.thumbnail_cache import regenerate_thumbnail
 from core.settings import get_ext_list
 from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
 from cbz_ops.salvage import decodes, first_undecodable_page, is_crc_error, is_page, read_entry_lenient
+from cbz_ops.edit_paths import validate_save_paths
 import gc
 
 
@@ -290,6 +291,16 @@ def save_cbz():
 
     if not folder_name or not zip_file_path or not original_file_path:
         return "Missing required data", 400
+
+    # Every path below is renamed, written, removed or rmtree'd, and all three
+    # come from the browser. Prove they are the paths the /edit step produced,
+    # inside a library or staging root the user holds a grant for, before
+    # anything on disk is touched.
+    refusal = validate_save_paths(folder_name, zip_file_path, original_file_path)
+    if refusal:
+        message, status = refusal
+        app_logger.warning(f"Refused CBZ editor save ({status}): {message}")
+        return jsonify({"success": False, "error": message}), status
 
     # Parse + validate pending operations BEFORE touching disk.
     try:
