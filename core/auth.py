@@ -144,7 +144,8 @@ def _deny(status=403):
     if _wants_json():
         return jsonify({"error": "forbidden" if status == 403 else "unauthorized"}), status
     if status == 401:
-        return redirect(url_for("auth.login", next=request.path))
+        from helpers.redirects import login_next_target
+        return redirect(url_for("auth.login", next=login_next_target()))
     flash("You don't have permission to do that.")
     # index is the app-level landing route; fall back to root if unavailable.
     try:
