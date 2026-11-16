@@ -428,11 +428,74 @@ class TestRemoteNamesCannotLeaveTheDirectory:
         assert os.path.basename(final).startswith("download_")
         release_download_claim(claim)
 
-    def test_ordinary_comic_names_are_untouched(self):
+    @pytest.mark.parametrize("name", [
+        "Batman 001 (2024).cbz",
+        "Hokum & Hex #1 - Title - Sub.cbr",
+        "Devil's Due 001 (2005).cbz",
+        "Tom & Jerry #1 (1949).cbz",
+        "100% Marvel #2.cbz",
+        "Élektra – Assassin 東京 [Digital] (1986).cbr",
+        "Archie's Pal Jughead #12 {fan edit}.cbz",
+        "Series_Name.v2.001.cbz",
+    ])
+    def test_ordinary_comic_names_are_untouched(self, name, monkeypatch):
+        import core.filename_chars as fc
         from core.download_utils import safe_download_filename
 
-        for name in ("Batman 001 (2024).cbz", "Hokum & Hex #1 - Title: Sub.cbr"):
-            assert safe_download_filename(name) == name
+        monkeypatch.setattr(fc, "load_char_map", lambda: dict(fc.DEFAULT_CHAR_MAP))
+        assert safe_download_filename(name) == name
+
+
+class TestRemoteNamesGoThroughTheCharMap:
+    """A download's name is a name CLU writes to disk, so it goes through
+    ``core.filename_chars`` like every other one (.claude/rules/filename-chars.md).
+    ``<``, ``>``, ``"``, ``|``... are hostile on Windows/SMB and are what would
+    let a name carry markup into the File Manager."""
+
+    @pytest.fixture(autouse=True)
+    def _default_map(self, monkeypatch):
+        import core.filename_chars as fc
+        monkeypatch.setattr(fc, "load_char_map", lambda: dict(fc.DEFAULT_CHAR_MAP))
+
+    @pytest.mark.parametrize("raw, expected", [
+        ('<img src=x onerror=alert(1)>.cbz', "img src=x onerror=alert(1).cbz"),
+        ('<svg onload=x> 001.cbz', "svg onload=x 001.cbz"),
+        ('Tom & Jerry "Special" #1.cbz', "Tom & Jerry Special #1.cbz"),
+        ("What If?|Annual 1.cbz", "What IfAnnual 1.cbz"),
+        ("Batman: Year One 001.cbz", "Batman - Year One 001.cbz"),
+    ])
+    def test_hostile_characters_are_removed_or_mapped(self, raw, expected):
+        from core.download_utils import safe_download_filename
+
+        out = safe_download_filename(raw)
+        assert out == expected
+        assert not set(out) & set("<>\"|?*:")
+
+    def test_the_users_map_applies(self, monkeypatch):
+        import core.filename_chars as fc
+        from core.download_utils import safe_download_filename
+
+        monkeypatch.setattr(fc, "load_char_map", lambda: {":": "_", "<": "(", ">": ")"})
+        assert safe_download_filename("Saga: <B>.cbz") == "Saga_ (B).cbz"
+
+    def test_the_segment_is_cut_before_the_map(self):
+        """The map removes separators; mapping first would fuse the path."""
+        from core.download_utils import safe_download_filename
+
+        assert safe_download_filename("../../app/<x>.py") == "x.py"
+        assert safe_download_filename("..\\..\\a\\b.cbz") == "b.cbz"
+
+    @pytest.mark.parametrize("raw", ['<>', '"|"', "<..>", "<.>"])
+    def test_a_name_that_maps_to_nothing_gets_a_generated_one(self, raw):
+        from core.download_utils import safe_download_filename
+
+        assert safe_download_filename(raw).startswith("download_")
+
+    def test_claim_uses_the_mapped_name(self, tmp_path):
+        final, claim = claim_download_path(str(tmp_path), '<i>Tom & Jerry #1.cbz')
+        assert os.path.basename(final) == "iTom & Jerry #1.cbz"
+        assert os.path.dirname(final) == str(tmp_path)
+        release_download_claim(claim)
 
     def test_control_characters_are_dropped(self):
         from core.download_utils import safe_download_filename
