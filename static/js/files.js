@@ -6047,16 +6047,6 @@ async function applySmartRenamePlan(plan, panel) {
   }
 }
 
-function escapeHtml(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
 /**
  * Execute a script operation on a directory
  * Contract setup wrapper for CLU.executeDirectoryOp

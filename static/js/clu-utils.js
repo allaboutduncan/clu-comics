@@ -2,7 +2,7 @@
  * CLU Shared Utilities  –  clu-utils.js
  *
  * Foundation module for Comic Library Utilities shared modules.
- * Provides: CLU.escapeHtml, CLU.formatFileSize, CLU.applyCharMap,
+ * Provides: CLU.escapeHtml, CLU.safeUrl, CLU.formatFileSize, CLU.applyCharMap,
  *           CLU.applyFilenameCleanup, CLU.showProgressIndicator,
  *           CLU.hideProgressIndicator, CLU.updateProgress
  * (Toasts are in clu-toast.js, loaded by base.html on every page.)
@@ -23,10 +23,39 @@
 
   // ── escapeHtml ──────────────────────────────────────────────────────────
 
+  // The one HTML escaper. Safe in element text and in a quoted attribute
+  // value: it escapes both quote characters (and the backtick), which the
+  // old div.textContent trick never did. null/undefined become ''.
+  //
+  // It is NOT enough for a value inside an inline event handler's JS string
+  // (onclick="f('...')"): the HTML parser decodes the entities back before the
+  // script runs. Put such values in a data-* attribute and read them from a
+  // listener instead.
+  var _HTML_ESCAPES = {
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;'
+  };
+
   CLU.escapeHtml = function (text) {
-    var div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+    if (text === null || text === undefined) return '';
+    return String(text).replace(/[&<>"'`]/g, function (ch) { return _HTML_ESCAPES[ch]; });
+  };
+
+  // A URL for an href/src that came from remote data. Escaping does not stop a
+  // javascript: (or data:, vbscript:...) URL, so only http(s) and same-site
+  // relative paths pass; anything else becomes `fallback` ('#' by default).
+  // Escape the result as well when it goes into an attribute.
+  CLU.safeUrl = function (url, fallback) {
+    var bad = fallback === undefined ? '#' : fallback;
+    if (url === null || url === undefined) return bad;
+    var s = String(url).trim();
+    if (!s) return bad;
+    // Browsers ignore tabs/newlines and leading control characters inside a
+    // scheme, so test a copy with them removed.
+    var probe = s.replace(/[\u0000- \u007f]+/g, '');
+    if (/^https?:\/\//i.test(probe)) return s;
+    // Same-site relative: "/path" (not "//host" or "/\host") or a bare "?query".
+    if (/^\/(?![\/\\])/.test(probe) || /^\?/.test(probe)) return s;
+    return bad;
   };
 
   // ── applyCharMap ────────────────────────────────────────────────────────

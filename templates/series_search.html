@@ -232,7 +232,7 @@
                 row.innerHTML = `
                 <td class="ps-4">
                     <a href="/series/${slug}" class="text-decoration-none fw-bold">
-                        ${escapeHtml(series.name)}
+                        ${CLU.escapeHtml(series.name)}
                     </a>
                     ${series.volume ? `<span class="text-muted fw-normal ms-1">Vol. ${series.volume}</span>` : ''}
                     ${series.subscribed ? `<span class="badge bg-success ms-2"><i class="bi bi-check-circle me-1"></i>Subscribed</span>` : ''}
@@ -247,12 +247,6 @@
             `;
                 tbody.appendChild(row);
             });
-        }
-
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text || '';
-            return div.innerHTML;
         }
 
         // Generate series slug matching the Python generate_series_slug function

@@ -138,11 +138,6 @@ function alertMsg(msg, type = "danger") {
      <button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>`;
 }
 
-function esc(s) {
-  return (s ?? "").toString().replace(/[&<>"']/g, c =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
 async function loadUsers() {
   const resp = await fetch("/api/admin/users");
   if (!resp.ok) { alertMsg("Failed to load users."); return; }
@@ -154,7 +149,7 @@ async function loadUsers() {
       : (u.library_ids.length
           ? u.library_ids.map(id => {
               const lib = LIBRARIES.find(l => l.id === id);
-              return `<span class="badge bg-light text-dark border me-1">${esc(lib ? lib.name : id)}</span>`;
+              return `<span class="badge bg-light text-dark border me-1">${CLU.escapeHtml(lib ? lib.name : id)}</span>`;
             }).join("")
           : "<span class='text-muted small'>None</span>");
     const status = u.is_active
@@ -165,15 +160,15 @@ async function loadUsers() {
     const setup = u.needs_setup
       ? " <a href='{{ url_for('setup.setup_owner_page') }}' class='badge bg-danger text-decoration-none'>Needs setup</a>" : "";
     return `<tr>
-      <td>${esc(u.username)}${setup}</td>
-      <td>${esc(u.display_name || "")}</td>
+      <td>${CLU.escapeHtml(u.username)}${setup}</td>
+      <td>${CLU.escapeHtml(u.display_name || "")}</td>
       <td><span class="badge ${ROLE_BADGE[u.role]}">${ROLE_LABEL[u.role]}</span></td>
       <td>${status}</td>
       <td>${libs}</td>
       <td class="text-end">
-        <button aria-label="Edit user" title="Edit user" class="btn btn-sm btn-outline-secondary" onclick='openEdit(${JSON.stringify(u)})'>
+        <button aria-label="Edit user" title="Edit user" class="btn btn-sm btn-outline-secondary" data-user="${CLU.escapeHtml(JSON.stringify(u))}" onclick="openEdit(JSON.parse(this.dataset.user))">
           <i class="bi bi-pencil"></i></button>
-        <button aria-label="Delete user" title="Delete user" class="btn btn-sm btn-outline-danger" onclick="deleteUser(${u.id}, '${esc(u.username)}')">
+        <button aria-label="Delete user" title="Delete user" class="btn btn-sm btn-outline-danger" data-user-id="${Number(u.id)}" data-username="${CLU.escapeHtml(u.username)}" onclick="deleteUser(Number(this.dataset.userId), this.dataset.username)">
           <i class="bi bi-trash"></i></button>
       </td></tr>`;
   }).join("");
@@ -188,7 +183,7 @@ function renderLibChecks(selected = []) {
     <div class="form-check">
       <input class="form-check-input lib-check" type="checkbox" value="${l.id}"
              id="lib-${l.id}" ${selected.includes(l.id) ? "checked" : ""}>
-      <label class="form-check-label" for="lib-${l.id}">${esc(l.name)}</label>
+      <label class="form-check-label" for="lib-${l.id}">${CLU.escapeHtml(l.name)}</label>
     </div>`).join("");
   // Re-render the folder trees when library grants change (only granted
   // libraries offer a folder tree). Preserve the current folder selection.
@@ -377,8 +372,8 @@ async function loadTokens(userId) {
   if (!tokens.length) { box.innerHTML = "<span class='text-muted'>No tokens.</span>"; return; }
   box.innerHTML = tokens.map(t => `
     <div class="d-flex justify-content-between align-items-center py-1">
-      <span>${esc(t.name || "(unnamed)")}
-        <span class="text-muted">· ${t.last_used_at ? "last used " + esc(t.last_used_at) : "never used"}</span>
+      <span>${CLU.escapeHtml(t.name || "(unnamed)")}
+        <span class="text-muted">· ${t.last_used_at ? "last used " + CLU.escapeHtml(t.last_used_at) : "never used"}</span>
       </span>
       <button class="btn btn-sm btn-outline-danger py-0" onclick="revokeToken(${t.id})">Revoke</button>
     </div>`).join("");

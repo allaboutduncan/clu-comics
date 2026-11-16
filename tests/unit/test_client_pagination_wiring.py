@@ -232,7 +232,10 @@ def test_pull_list_reports_errors_without_native_dialogs():
     assert not re.search(r"\balert\(", script)
     # The toast container and CLU.toast come from base.html on every page.
     assert "partials/toast_container.html" not in html
-    assert "js/clu-utils.js" in html
+    # CLU.escapeHtml comes from clu-utils.js, which base.html loads in <head>.
+    assert html.lstrip().startswith(("{% extends 'base.html' %}", '{% extends "base.html" %}'))
+    base = _read("templates/base.html")
+    assert "js/clu-utils.js" in base[:base.index("</head>")]
 
 
 def test_body_background_selects_also_take_body_text():

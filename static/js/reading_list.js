@@ -1079,11 +1079,12 @@ function renderSelectedTags() {
         pill.className = 'tag-pill';
         pill.innerHTML = `
             <i class="bi ${TAG_ICONS[tag] || 'bi-tag-fill'}"></i>
-            ${tag}
-            <span class="remove-tag" onclick="removeTag('${tag.replace(/'/g, "\\'")}')">
+            ${CLU.escapeHtml(tag)}
+            <span class="remove-tag">
                 <i class="bi bi-x"></i>
             </span>
         `;
+        pill.querySelector('.remove-tag').addEventListener('click', () => removeTag(tag));
         container.appendChild(pill);
     });
 }

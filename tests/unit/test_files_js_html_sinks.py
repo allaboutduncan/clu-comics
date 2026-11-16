@@ -20,7 +20,8 @@ browser harness.
   interpolated value. A handler attribute is parsed twice (HTML, then JS), and
   no escaping helper in the codebase covers both.
 * ``escapeHtml`` is not used inside an attribute value. ``CLU.escapeHtml``
-  leaves quotes alone, so it is safe in element text only.
+  escapes quotes now (``test_escape_html.py``), but files.js builds every
+  attribute with ``setAttribute`` and has no reason to start interpolating.
 """
 
 import pathlib

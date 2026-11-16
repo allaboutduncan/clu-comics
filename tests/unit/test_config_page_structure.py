@@ -97,7 +97,7 @@ def test_open_tab_is_kept_in_the_url(config_html):
 
 @pytest.mark.parametrize("label", [
     'aria-label="series.json provider"',
-    "aria-label=\"Komga path prefix for ' + escapeHtml(m.library_name)",
+    "aria-label=\"Komga path prefix for ' + CLU.escapeHtml(m.library_name)",
 ])
 def test_controls_without_a_visible_label_carry_one(config_html, label):
     assert label in config_html
