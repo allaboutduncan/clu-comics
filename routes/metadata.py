@@ -393,11 +393,27 @@ def cbz_metadata():
     ``dimensions=1`` also samples page image sizes (``image_dimensions``);
     it is opt-in because only the duplicate compare needs it.
     """
-    file_path = request.args.get('path')
-    if not file_path or not os.path.exists(file_path):
+    from core.path_access import (resolve_served_path, STAGING_TARGET,
+                                  STAGING_WATCH)
+
+    requested = request.args.get('path')
+    if not requested:
         return jsonify({"error": "Invalid file path"}), 400
 
-    if not file_path.lower().endswith(('.cbz', '.zip')):
+    # The CBZ Info modal opens from library pages and from the File Manager,
+    # which also browses WATCH and TARGET (Clerks only). Library files need a
+    # full folder grant, checked before anything is opened.
+    served, refusal = resolve_served_path(
+        requested, staging=(STAGING_TARGET, STAGING_WATCH), mode='full')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    file_path = served.path
+
+    if not os.path.isfile(file_path):
+        return jsonify({"error": "Invalid file path"}), 400
+
+    if not (requested.lower().endswith(('.cbz', '.zip'))
+            and file_path.lower().endswith(('.cbz', '.zip'))):
         return jsonify({"error": "File is not a CBZ"}), 400
 
     try:

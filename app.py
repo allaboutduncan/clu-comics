@@ -6436,26 +6436,23 @@ def download_file():
 
 @app.route("/api/read-text-file")
 def read_text_file():
-    """Read and return the contents of a text file."""
+    """Read and return the contents of a .txt file in a library (or TARGET).
+
+    Containment, the per-user folder grant, the extension and the size cap
+    are all decided by core.path_access.resolve_text_file before the file is
+    opened.
+    """
+    from core.path_access import resolve_text_file
+
     file_path = request.args.get("path")
 
     if not file_path:
-        return "Missing path parameter", 400
+        return jsonify({"error": "Missing path parameter"}), 400
 
-    # Security: Ensure the file path is within allowed directories
-    normalized_path = os.path.normpath(file_path)
-    if not (
-        is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
-    ):
-        return "Access denied", 403
-
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        return "File not found", 404
-
-    # Check if file is a text file
-    if not file_path.lower().endswith(".txt"):
-        return "Only .txt files are supported", 400
+    served, refusal = resolve_text_file(file_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    file_path = served.path
 
     try:
         # Read the file with UTF-8 encoding, falling back to latin-1 if needed

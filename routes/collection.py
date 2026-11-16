@@ -540,6 +540,9 @@ def api_missing_xml():
 
     files = get_files_missing_comicinfo(path)
 
+    # Per-user: drop files outside the user's folder grants.
+    files = filter_paths_for_user(current_user(), files, key='path')
+
     processed = []
     for f in files:
         file_info = {
@@ -1333,11 +1336,20 @@ def list_new_files():
     """List files created in the past N days."""
     import time as time_module
 
-    current_path = request.args.get('path') or get_default_library_root()
+    from core.path_access import resolve_served_path, walk_visible
+
+    requested = request.args.get('path') or get_default_library_root()
     days = int(request.args.get('days', 7))
     max_results = int(request.args.get('max_results', 500))
 
-    if not os.path.exists(current_path):
+    # Libraries only, in browse mode: a traverse-only ancestor may be scanned,
+    # but walk_visible withholds everything outside the user's grants.
+    served, refusal = resolve_served_path(requested, mode='browse')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    current_path = served.path
+
+    if not os.path.isdir(current_path):
         return jsonify({"error": "Directory not found"}), 404
 
     try:
@@ -1355,12 +1367,14 @@ def list_new_files():
         def scan_for_new_files():
             nonlocal files_scanned, dirs_scanned
 
-            for root, dirs, files in os.walk(current_path):
+            def _prune_hidden(dirs):
+                dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
+
+            for root, dirs, files in walk_visible(served, prune=_prune_hidden):
                 if time_module.time() - start_time > max_scan_time:
                     app_logger.warning(f"New files scan timed out after {max_scan_time}s")
                     break
 
-                dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
                 dirs_scanned += 1
 
                 for filename in files:
@@ -1429,18 +1443,38 @@ def list_downloads():
                      cache_stats, MAX_CACHE_SIZE, cleanup_cache, is_cache_valid,
                      get_directory_listing)
 
-    target_dir = get_target_dir_live()
-    current_path = request.args.get('path', target_dir)
+    from core.path_access import (resolve_served_path, staging_root_for,
+                                  STAGING_TARGET, STAGING_WATCH)
 
-    if not os.path.exists(current_path):
+    target_dir = get_target_dir_live()
+    requested = request.args.get('path') or target_dir
+    staging = (STAGING_TARGET, STAGING_WATCH)
+
+    # The File Manager's Downloads view (a Clerk page): WATCH and TARGET only.
+    # A path that is also inside a library -- TARGET configured inside one --
+    # still needs a folder grant to be listed.
+    served, refusal = resolve_served_path(requested, staging=staging, mode='browse')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    stage_root = staging_root_for(served.path, staging)
+    if stage_root is None:
+        return jsonify({"error": "Access denied - not a downloads folder"}), 403
+    current_path = served.path
+
+    if not os.path.isdir(current_path):
         return jsonify({"error": "Directory not found"}), 404
+
+    def _parent(path):
+        if os.path.normpath(path) == os.path.normpath(stage_root):
+            return None
+        return os.path.dirname(path)
 
     try:
         cleanup_cache()
 
         if is_cache_valid(current_path):
             cached_data = directory_cache[current_path]
-            parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
+            parent_dir = _parent(current_path)
 
             return jsonify({
                 "current_path": current_path,
@@ -1460,7 +1494,7 @@ def list_downloads():
             if len(directory_cache) > MAX_CACHE_SIZE:
                 cleanup_cache()
 
-        parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
+        parent_dir = _parent(current_path)
 
         return jsonify({
             "current_path": current_path,
@@ -1543,13 +1577,23 @@ def search_files():
 @collection_bp.route('/count-files', methods=['GET'])
 def count_files():
     """Count the total number of files in a directory (recursive)"""
-    path = request.args.get('path')
-    if not path or not os.path.exists(path):
+    from core.path_access import resolve_served_path, walk_visible
+
+    requested = request.args.get('path')
+    if not requested:
+        return jsonify({"error": "Invalid path"}), 400
+
+    # Libraries only; a traverse-only ancestor counts just the granted files.
+    served, refusal = resolve_served_path(requested, mode='browse')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    path = served.path
+    if not os.path.exists(path):
         return jsonify({"error": "Invalid path"}), 400
 
     try:
         file_count = 0
-        for root, _, files in os.walk(path):
+        for root, _, files in walk_visible(served):
             file_count += len(files)
 
         return jsonify({
