@@ -515,7 +515,8 @@ def _count_unar_failures(stdout_bytes):
 def _try_extract_with_tool(tool_name, rar_path, output_dir):
     """Attempt full extraction with a single tool.
 
-    Returns (has_files, failed_count) or raises FileNotFoundError if tool missing.
+    Returns (returncode, has_files, failed_count, output_tail) or raises
+    FileNotFoundError if the tool is missing.
     """
     if tool_name == "unrar":
         cmd = ["unrar", "x", "-y", "-o+", rar_path, output_dir + "/"]
@@ -528,7 +529,76 @@ def _try_extract_with_tool(tool_name, rar_path, output_dir):
     has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
     failed_count = _count_unar_failures(result.stdout) if tool_name == "unar" and result.stdout else 0
 
-    return result.returncode, has_files, failed_count
+    return result.returncode, has_files, failed_count, _tool_output_tail(result)
+
+
+def _tool_output_tail(result, limit=400):
+    """The end of a tool's stderr (else stdout), on one line, for a log line.
+
+    The tail rather than the head: unrar and 7z print their error summary last.
+    """
+    for stream in (getattr(result, "stderr", None), getattr(result, "stdout", None)):
+        if not stream:
+            continue
+        try:
+            text = " ".join(stream.decode("utf-8", errors="replace").split())
+        except Exception:
+            continue
+        if text:
+            return text[-limit:]
+    return ""
+
+
+def _count_page_images(root):
+    """Number of page images under *root* (recursive)."""
+    from helpers.unwrap import PAGE_IMAGE_EXTS
+
+    count = 0
+    for _dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if os.path.splitext(name)[1].lower() in PAGE_IMAGE_EXTS:
+                count += 1
+    return count
+
+
+def _expected_page_count(rar_path):
+    """Page images the archive says it holds, or ``None`` when it cannot say.
+
+    ``None`` is "unknown" and must never be read as zero: an archive no tool
+    can list is still judged on the extractor's own exit status.
+    """
+    try:
+        from helpers.unwrap import PAGE_IMAGE_EXTS
+
+        names = list_rar_entries(rar_path)
+    except Exception:
+        return None
+    if names is None:
+        return None
+    return sum(
+        1 for name in names
+        if os.path.splitext(name)[1].lower() in PAGE_IMAGE_EXTS
+    )
+
+
+def _reset_dir(path):
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path, exist_ok=True)
+
+
+def _promote_extraction(stage, output_dir):
+    """Move a completed extraction out of its private stage into *output_dir*.
+
+    Overwrites, like the ``-o+``/``-y``/``-f`` the tools are run with.
+    """
+    for entry in os.listdir(stage):
+        src = os.path.join(stage, entry)
+        dst = os.path.join(output_dir, entry)
+        if os.path.isdir(src) and os.path.isdir(dst):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            shutil.rmtree(src, ignore_errors=True)
+        else:
+            os.replace(src, dst)
 
 
 def extract_rar_with_unar(rar_path, output_dir):
@@ -536,12 +606,29 @@ def extract_rar_with_unar(rar_path, output_dir):
     Extract a RAR file, trying tools in order: unrar (proprietary) → 7z → unar.
 
     The proprietary unrar handles all RAR features including solid archives.
-    7z and unar are used as fallbacks if unrar is not installed.
+    7z and unar are tried when unrar is missing **or did not extract
+    everything**.
+
+    All or nothing. An attempt counts only when the tool exited 0, reported no
+    failed member, and left at least as many page images as the archive lists.
+    Anything less is discarded and the next tool is tried; when none extracts
+    the whole archive the result is a failure and *output_dir* gains nothing.
+
+    It used to return ``(True, 0)`` for any non-zero exit that left one file
+    behind, which every caller read as a clean extraction: a CBR that yielded
+    39 of its 104 pages was packed into a CBZ, reported as converted, and the
+    original deleted. A caller must never be handed a partial payload to
+    decide about -- every one of them deletes the source on success.
 
     :param rar_path: Path to the RAR file.
     :param output_dir: Directory to extract the contents into.
-    :return: tuple(bool, int): (success, failed_file_count)
+    :return: tuple(bool, int): ``(True, 0)`` on a complete extraction.
+        ``(False, n)`` otherwise, where ``n`` is how many files the best
+        attempt was short by (at least 1 when it extracted something) and 0
+        means nothing could be extracted at all.
     """
+    stage = None
+    output_dir_real = None
     try:
         # Resolve to real paths to prevent path traversal
         rar_path = os.path.realpath(rar_path)
@@ -560,33 +647,64 @@ def extract_rar_with_unar(rar_path, output_dir):
             raise RuntimeError(f"Input file does not exist: {rar_path}")
 
         os.makedirs(output_dir, exist_ok=True)
+        output_dir_real = output_dir
+
+        # A discarded attempt is wiped before the next tool runs, and only a
+        # directory this call owns may be wiped. A caller's empty scratch dir
+        # is used as-is; anything else (it has been WATCH itself) gets a
+        # hidden stage inside it, so nothing that was already there is touched.
+        if os.listdir(output_dir):
+            stage = tempfile.mkdtemp(prefix=".clu_rar_", dir=output_dir)
+        else:
+            stage = output_dir
+
+        expected_pages = _expected_page_count(rar_path)
 
         # Try each tool in order of capability
         tools = ["unrar", "7z", "unar"]
         last_error = None
+        best_missing = 0    # shortfall of the best partial attempt; 0 = none
 
         for tool_name in tools:
             try:
                 app_logger.info(f"Extracting {rar_path} to {output_dir} using {tool_name}")
-                returncode, has_files, failed_count = _try_extract_with_tool(
-                    tool_name, rar_path, output_dir
+                returncode, has_files, failed_count, output_tail = _try_extract_with_tool(
+                    tool_name, rar_path, stage
                 )
 
-                if returncode == 0 and has_files:
+                if not has_files:
+                    app_logger.warning(
+                        f"{tool_name} produced no files (rc={returncode})"
+                        + (f": {output_tail}" if output_tail else "")
+                    )
+                    _reset_dir(stage)
+                    continue
+
+                extracted_pages = _count_page_images(stage)
+                short_by = (
+                    max(expected_pages - extracted_pages, 0)
+                    if expected_pages is not None else 0
+                )
+                if returncode == 0 and not failed_count and not short_by:
+                    if stage != output_dir:
+                        _promote_extraction(stage, output_dir)
                     app_logger.info(f"Extraction completed with {tool_name}. Output directory: {output_dir}")
                     return True, 0
-                elif returncode != 0 and has_files:
-                    app_logger.warning(
-                        f"{tool_name} partial extraction (rc={returncode}), "
-                        f"continuing with extracted files"
-                    )
-                    return True, failed_count
-                else:
-                    app_logger.warning(f"{tool_name} produced no files (rc={returncode})")
-                    # Clean output_dir for next tool attempt
-                    import shutil
-                    shutil.rmtree(output_dir, ignore_errors=True)
-                    os.makedirs(output_dir, exist_ok=True)
+
+                missing = max(short_by, failed_count, 1)
+                if not best_missing or missing < best_missing:
+                    best_missing = missing
+                of_expected = (
+                    f"{extracted_pages} of {expected_pages} pages"
+                    if expected_pages is not None
+                    else f"{extracted_pages} pages, expected count unknown"
+                )
+                app_logger.warning(
+                    f"{tool_name} did not extract all of {os.path.basename(rar_path)} "
+                    f"(rc={returncode}, {of_expected}); discarding the partial result"
+                    + (f". Tool output: {output_tail}" if output_tail else "")
+                )
+                _reset_dir(stage)
 
             except FileNotFoundError:
                 app_logger.debug(f"{tool_name} not found, trying next tool")
@@ -594,11 +712,16 @@ def extract_rar_with_unar(rar_path, output_dir):
             except Exception as e:
                 last_error = e
                 app_logger.warning(f"{tool_name} failed: {e}, trying next tool")
-                # Clean output_dir for next tool attempt
-                import shutil
-                shutil.rmtree(output_dir, ignore_errors=True)
-                os.makedirs(output_dir, exist_ok=True)
+                _reset_dir(stage)
                 continue
+
+        if best_missing:
+            app_logger.error(
+                f"No extraction tool could extract all of {rar_path} "
+                f"(best attempt was short by {best_missing} file(s)); "
+                f"the archive has been left untouched"
+            )
+            return False, best_missing
 
         # All tools failed
         msg = f"No extraction tool could extract {rar_path}"
@@ -612,6 +735,10 @@ def extract_rar_with_unar(rar_path, output_dir):
     except Exception as e:
         app_logger.error(f"Unexpected error extracting {rar_path}: {str(e)}")
         raise RuntimeError(f"Unexpected error extracting {rar_path}: {str(e)}")
+    finally:
+        # Only ever the private stage; never the caller's directory.
+        if stage and stage != output_dir_real:
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def _parse_rar_listing(tool_name, stdout_bytes):

@@ -389,6 +389,34 @@ def test_process_file_rar_pack_extracts_and_deletes(handler, monkeypatch):
     assert not os.path.exists(rpath), "archive removed once extraction succeeded"
 
 
+def test_partial_rar_extraction_keeps_the_archive_and_leaks_nothing(handler, monkeypatch):
+    """A pack that gives up only some of its comics is not extracted at all.
+
+    The extraction is staged: it used to run straight into WATCH, where a
+    half-extracted pack left comics for the sweep to move on every pass.
+    """
+    import monitor
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Pack.rar")
+    _write(rpath)
+    recorded = []
+
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.PACKED_COMICS)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda *a, **k: recorded.append(k.get("error_class")))
+
+    def _extract(src, out_dir):
+        assert os.path.abspath(out_dir) != os.path.abspath(watch),             "must extract into a private staging dir, never WATCH itself"
+        _write(os.path.join(out_dir, "Batman 003.cbz"))
+        return False, 2
+    monkeypatch.setattr(monitor, "extract_rar_with_unar", _extract)
+
+    h._process_file(rpath)
+
+    assert os.listdir(watch) == ["Pack.rar"]
+    assert recorded == ["RarExtractPartial"]
+
+
 def test_failed_rar_extraction_keeps_the_archive(handler, monkeypatch):
     """A .rar that could not be opened stays put, so nothing is lost."""
     import monitor

@@ -16,6 +16,8 @@ from core.problem_files import (
     CLASS_CACHE_WRITE,
     CLASS_CORRUPT_ENTRIES,
     CLASS_NO_PAGES,
+    CLASS_RAR_FAILED,
+    CLASS_RAR_PARTIAL,
     classify,
 )
 
@@ -103,6 +105,28 @@ class TestNonExceptionClasses:
 
     def test_corrupt_entries_warns_about_blank_pages(self):
         result = classify(CLASS_CORRUPT_ENTRIES, "3 archive entries failed CRC")
+        assert result["action"] == ACTION_REPLACE
+
+
+class TestRarConversion:
+    def test_incomplete_extraction_offers_a_retry_first(self):
+        """The same .cbr gave 39 pages on one run and 80 on the next.
+
+        So the first advice is to try again, and the page must say the
+        original is intact -- the user's fear is that it was deleted.
+        """
+        result = classify(
+            CLASS_RAR_PARTIAL,
+            "65 file(s) could not be extracted, so no CBZ was written and "
+            "the original was kept",
+        )
+        assert result["action"] == ACTION_REBUILD
+        assert result["repairable"] is True
+        assert "untouched" in result["cause"]
+        assert "replace" in result["advice"].lower()
+
+    def test_nothing_extracted_still_says_replace(self):
+        result = classify(CLASS_RAR_FAILED, "Nothing could be extracted from x.cbr")
         assert result["action"] == ACTION_REPLACE
 
 

@@ -60,7 +60,7 @@ class TestConvertSingleRarFile:
             for i in range(2):
                 with open(os.path.join(dest, f"page{i}.jpg"), "w") as f:
                     f.write("fake image")
-            return True
+            return True, 0
 
         mock_extract.side_effect = fake_extract
 
@@ -68,7 +68,7 @@ class TestConvertSingleRarFile:
         assert result is True
         assert os.path.exists(cbz_path)
 
-    @patch("cbz_ops.rebuild.extract_rar_with_unar", return_value=False)
+    @patch("cbz_ops.rebuild.extract_rar_with_unar", return_value=(False, 0))
     def test_extraction_failure(self, mock_extract, tmp_path):
         from cbz_ops.rebuild import convert_single_rar_file
 
@@ -78,6 +78,24 @@ class TestConvertSingleRarFile:
             str(tmp_path / "temp"),
         )
         assert result is False
+        assert not os.path.exists(str(tmp_path / "bad.cbz"))
+
+    @patch("cbz_ops.rebuild.extract_rar_with_unar", return_value=(False, 65))
+    def test_incomplete_extraction_writes_no_cbz(self, mock_extract, tmp_path):
+        """The helper's (ok, missing) tuple used to be tested unpacked-less.
+
+        A bare tuple is always truthy, so every failure passed, an archive of
+        whatever was on disk was written, and the caller deleted the source.
+        """
+        from cbz_ops.rebuild import convert_single_rar_file
+
+        result = convert_single_rar_file(
+            str(tmp_path / "partial.rar"),
+            str(tmp_path / "partial.cbz"),
+            str(tmp_path / "temp"),
+        )
+        assert result is False
+        assert not os.path.exists(str(tmp_path / "partial.cbz"))
 
 
 class TestRebuildSingleCbzFile:
