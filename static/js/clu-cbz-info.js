@@ -294,7 +294,7 @@
         if (data.success) {
           var fn = data.file_name || ('Page ' + (pageNum + 1));
           var fs = data.file_size ? CLU.formatFileSize(data.file_size) : '';
-          el.innerHTML = '<div><strong>' + fn + '</strong></div>' +
+          el.innerHTML = '<div><strong>' + CLU.escapeHtml(fn) + '</strong></div>' +
             '<div>' + width + ' \u00d7 ' + height + (fs ? ' \u2022 ' + fs : '') + '</div>';
         } else {
           el.innerHTML = '<div>' + width + ' \u00d7 ' + height + '</div>';
@@ -925,7 +925,7 @@
                   var w = pData.original_size ? pData.original_size.width : img.naturalWidth;
                   var h = pData.original_size ? pData.original_size.height : img.naturalHeight;
                   var extra = pData.total_images ? ' \u2022 ' + pData.total_images + ' images' : '';
-                  imgInfo.innerHTML = '<div><strong>' + fn + '</strong></div>' +
+                  imgInfo.innerHTML = '<div><strong>' + CLU.escapeHtml(fn) + '</strong></div>' +
                     '<div>' + w + ' \u00d7 ' + h + extra + '</div>';
                 }
               };
@@ -950,7 +950,7 @@
           });
       })
       .catch(function (err) {
-        content.innerHTML = '<div class="alert alert-danger">Error loading CBZ information: ' + err.message + '</div>';
+        content.innerHTML = '<div class="alert alert-danger">Error loading CBZ information: ' + CLU.escapeHtml(err.message) + '</div>';
       });
   };
 
