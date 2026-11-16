@@ -39,6 +39,7 @@ from core.database import (
     metadata_browse,
     save_reading_position,
 )
+from core.path_access import grant_level_filter, resolve_served_path
 from core.version import __version__
 from helpers import create_thumbnail_streaming, serve_comic_file
 
@@ -144,21 +145,36 @@ def _authorized_file_row(file_id):
     row = _file_row_by_id(file_id)
     if not row:
         return None
-    from flask import g
-    from core.auth import user_can_access_path
-
-    user = getattr(g, "current_user", None)
-    if user and user.get("role") in ("reader", "clerk"):
-        if not user_can_access_path(user, row["path"]):
+    if _grants_apply():
+        # Containment on the realpath plus a 'full' grant on both the indexed
+        # path and where it really points, so a symlinked comic inside a
+        # granted folder cannot serve a file from an ungranted one.
+        _served, refusal = resolve_served_path(row["path"], mode="full")
+        if refusal:
             return None
     return row
 
 
+def _grants_apply():
+    """True when folder grants restrict the token user.
+
+    False for the owner, the legacy global token (which maps to the owner) and
+    single-user installs, which see everything as before.
+    """
+    from flask import g
+    from core.auth import is_login_required
+
+    if not is_login_required():
+        return False
+    user = getattr(g, "current_user", None)
+    return not (user and user.get("role") == "owner")
+
+
 def _folder_scope_prefixes():
-    """Per-user folder scope for the token user, applied to metadata-mode browse
-    (file_index reads). Returns None when unrestricted (owner / global token /
-    single-user install). Filesystem-mode browse is a live view and stays
-    unscoped, mirroring the File Manager exemption.
+    """Per-user folder scope for the token user, applied to file_index reads
+    (metadata-mode browse, recent files). Returns None when unrestricted (owner
+    / global token / single-user install). Filesystem-mode browse applies the
+    same grants through ``core.path_access`` instead.
     """
     from flask import g
     from core.auth import accessible_folder_prefixes
@@ -340,6 +356,118 @@ def _resolve_filesystem_path(*parts):
 _safe_join_under_data_dir = _resolve_filesystem_path
 
 
+# Filesystem-mode listings are filtered after the (shared, cached) listing is
+# built, so they are fetched whole and paginated here.
+_WHOLE_LISTING = 10 ** 9
+
+
+def _gate_browse_folder(path):
+    """Decide whether filesystem mode may list ``path`` for the token user.
+
+    Returns ``(level, None)`` on success, where ``level`` is None when the user
+    is unrestricted or a ``level(path)`` callable for filtering the listing, or
+    ``(None, error_response)``. The folder's realpath must lie inside a library
+    root (a symlink is judged by where it points), and a user restricted by
+    folder grants needs at least browse ('traverse') access to it -- the same
+    grants metadata mode applies. A folder they may not see answers 404, as an
+    issue id they may not open does.
+    """
+    served, refusal = resolve_served_path(path, mode="browse", apply_grants=False)
+    if refusal:
+        return None, (jsonify({"error": "invalid_path"}), 400)
+    if not _grants_apply():
+        return None, None
+    _granted, refusal = resolve_served_path(path, mode="browse")
+    if refusal:
+        return None, (jsonify({"error": "not_found"}), 404)
+    return grant_level_filter(served), None
+
+
+def _granted_comic_count(folder):
+    """Comics under ``folder`` that lie inside the user's folder grants.
+
+    For a 'traverse'-only folder the plain recursive count would include the
+    comics of grant siblings the user cannot see.
+    """
+    from core.database import _batch_count_comics_under
+
+    norm = os.path.normpath(folder)
+    under = sorted(
+        os.path.normpath(p) for p in (_folder_scope_prefixes() or [])
+        if os.path.normpath(p).startswith(norm + os.sep)
+    )
+    tops = []
+    for p in under:
+        if not any(p == t or p.startswith(t + os.sep) for t in tops):
+            tops.append(p)
+    if not tops:
+        return 0
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        return sum(_batch_count_comics_under(conn, tops).values())
+    finally:
+        conn.close()
+
+
+def _visible_folders(items, level):
+    """Drop child folders the user has no access to; for 'traverse'-only ones,
+    count only granted comics and list only visible volumes."""
+    out = []
+    for it in items:
+        path = it.get("path")
+        child = level(path)
+        if child == "none":
+            continue
+        if child == "traverse":
+            it = dict(it)
+            it["count"] = _granted_comic_count(path)
+            if it.get("volumes"):
+                vols = [
+                    v for v in it["volumes"]
+                    if level(os.path.join(path, v)) != "none"
+                ]
+                if vols:
+                    it["volumes"] = vols
+                else:
+                    it.pop("volumes")
+        out.append(it)
+    return out
+
+
+def _filtered_page(result, items, page_size, offset):
+    """Re-paginate a listing that was fetched whole and then filtered."""
+    return {
+        "items": items[offset: offset + page_size],
+        "total": len(items),
+        "level": result.get("level"),
+    }
+
+
+def _browse_publishers_filesystem(offset, page_size):
+    """Filesystem-mode publishers: the children of the browse start.
+
+    An unrestricted user starts at the default library root, as before. A user
+    restricted by folder grants starts at every library root they can see, and
+    sees only the children they hold a grant for or on the way to one.
+    """
+    if not _grants_apply():
+        return filesystem_browse_publishers(_data_dir(), offset=offset, limit=page_size)
+    items, seen = [], set()
+    for root in _library_roots():
+        level, err = _gate_browse_folder(root)
+        if err or level is None:
+            continue
+        listing = filesystem_browse_publishers(root, offset=0, limit=_WHOLE_LISTING)
+        for it in _visible_folders(listing.get("items", []), level):
+            if it.get("path") not in seen:
+                seen.add(it.get("path"))
+                items.append(it)
+    items.sort(key=lambda r: (r.get("name") or "").lower())
+    return _filtered_page({"level": "publisher"}, items, page_size, offset)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -362,7 +490,7 @@ def list_publishers():
         return err
 
     if mode == "filesystem":
-        result = filesystem_browse_publishers(_data_dir(), offset=offset, limit=page_size)
+        result = _browse_publishers_filesystem(offset, page_size)
     else:
         sort = request.args.get("sort", "alpha")
         if sort not in ("alpha", "count"):
@@ -415,7 +543,17 @@ def list_series():
                 "received": publisher,
                 "data_dir": _data_dir(),
             }), 400
-        result = filesystem_browse_series(publisher_path, offset=offset, limit=page_size)
+        level, err = _gate_browse_folder(publisher_path)
+        if err:
+            return err
+        if level is None:
+            result = filesystem_browse_series(publisher_path, offset=offset, limit=page_size)
+        else:
+            whole = filesystem_browse_series(publisher_path, offset=0, limit=_WHOLE_LISTING)
+            result = _filtered_page(
+                whole, _visible_folders(whole.get("items", []), level),
+                page_size, offset,
+            )
     else:
         sort = request.args.get("sort", "alpha")
         if sort not in ("alpha", "count", "year", "recent"):
@@ -482,7 +620,17 @@ def list_issues():
                 "received_volume": volume,
                 "data_dir": _data_dir(),
             }), 400
-        result = filesystem_browse_issues(series_path, offset=offset, limit=page_size)
+        level, err = _gate_browse_folder(series_path)
+        if err:
+            return err
+        if level is None:
+            result = filesystem_browse_issues(series_path, offset=offset, limit=page_size)
+        elif resolve_served_path(series_path, mode="full")[1] is None:
+            result = filesystem_browse_issues(series_path, offset=offset, limit=page_size)
+        else:
+            # A 'traverse'-only folder: the user may walk through it to a
+            # granted subfolder, but its own files are not theirs to see.
+            result = {"items": [], "total": 0, "level": "issue"}
 
         # Enrich with progress markers (same shape as metadata mode).
         items = result.get("items", [])
@@ -679,7 +827,9 @@ def list_to_read():
 def list_recent():
     """Most recently indexed CBZ/CBR files inside enabled library paths."""
     page, page_size, offset = _paginate_args()
-    rows, total = get_recent_files_paginated(offset=offset, limit=page_size)
+    rows, total = get_recent_files_paginated(
+        offset=offset, limit=page_size, allowed_prefixes=_folder_scope_prefixes(),
+    )
     paths = [r["file_path"] for r in rows if r.get("file_path")]
     progress_map = _progress_map_for_paths(paths)
     items = []

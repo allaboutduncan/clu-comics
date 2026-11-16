@@ -3386,7 +3386,7 @@ def get_recent_files(limit=100):
 RECENT_FILES_WINDOW_DAYS = 30
 
 
-def get_recent_files_paginated(offset=0, limit=50):
+def get_recent_files_paginated(offset=0, limit=50, allowed_prefixes=None):
     """
     Paginated sibling of get_recent_files — returns (rows, total).
 
@@ -3394,13 +3394,21 @@ def get_recent_files_paginated(offset=0, limit=50):
     days (currently 30). Same library/downloads filter as the unpaginated
     helper. SELECTs `id` too so the API can return file_index.id for
     client drill-through.
+
+    allowed_prefixes applies per-user folder scope, as in metadata_browse
+    (None = unrestricted, [] = nothing).
     """
+    if allowed_prefixes is not None and not allowed_prefixes:
+        return [], 0
     try:
         import time
 
         conn = get_db_connection()
         if not conn:
             return [], 0
+
+        prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+        scope_sql = f" AND {prefix_clause}" if prefix_clause else ""
 
         cutoff = time.time() - (RECENT_FILES_WINDOW_DAYS * 86400)
         c = conn.cursor()
@@ -3416,8 +3424,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 f"AND ({lib_clauses})"
+                f"{scope_sql}"
             )
-            params = [cutoff] + lib_params
+            params = [cutoff] + lib_params + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
@@ -3441,8 +3450,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 "AND parent NOT LIKE ? AND parent NOT LIKE ?"
+                f"{scope_sql}"
             )
-            params = [cutoff, f"{target}%", f"{watch}%"]
+            params = [cutoff, f"{target}%", f"{watch}%"] + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
