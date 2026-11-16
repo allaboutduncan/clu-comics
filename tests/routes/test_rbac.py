@@ -618,7 +618,7 @@ class TestFirstAdditionalUser:
         client.post("/api/admin/users", json={
             "username": "kid", "password": "pw", "role": "reader",
         })
-        client.get("/logout")
+        client.post("/logout")
         assert client.get("/api/admin/users").status_code == 401
         _login(client, "boss", "hunter2")
         assert client.get("/api/admin/users").status_code == 200
