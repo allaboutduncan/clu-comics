@@ -823,34 +823,49 @@ class DownloadCompleteHandler(FileSystemEventHandler):
     def _unrar_file(self, filepath):
         """Extract a ``.rar`` beside itself, deleting it only once that worked.
 
-        Returns True only on a clean extraction. ``unar`` reports partial
-        failures rather than raising, so a rar that yields some members and
-        loses others is a failure here for the same reason a half-extracted zip
-        is: the archive stays in WATCH, and a pass that "half worked" every five
-        minutes is how duplicates accumulate.
+        Returns True only on a complete extraction. A rar that yields some
+        members and loses others is a failure here for the same reason a
+        half-extracted zip is: the archive stays in WATCH, and a pass that
+        "half worked" every five minutes is how duplicates accumulate.
+
+        Staged like ``unzip_file``, and for one more reason: the extractor
+        discards a partial attempt by emptying the directory it was given, and
+        that directory used to be WATCH itself.
         """
         extract_dir = os.path.dirname(filepath) or self.directory
+        staging = os.path.join(
+            extract_dir, f".clu_unrar_{os.path.basename(filepath)}"
+        )
+        shutil.rmtree(staging, ignore_errors=True)
         try:
-            ok, failed = extract_rar_with_unar(filepath, extract_dir)
+            os.makedirs(staging, exist_ok=True)
+            ok, missing = extract_rar_with_unar(filepath, staging)
+            if ok:
+                self._promote_staged(staging, extract_dir)
         except Exception as e:
             monitor_logger.error(f"Error extracting {filepath}: {e}")
             record_problem(filepath, SOURCE_UNPACK, exc=e)
             return False
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         if not ok:
-            monitor_logger.error(f"Could not extract {filepath}; leaving it in place")
-            record_problem(
-                filepath, SOURCE_UNPACK,
-                error_class="RarExtractFailed",
-                error_message="unar could not extract this archive",
-            )
-            return False
-        if failed:
-            monitor_logger.warning(f"{failed} file(s) failed to extract from {filepath}")
-            record_problem(
-                filepath, SOURCE_UNPACK,
-                error_class="RarExtractPartial",
-                error_message=f"{failed} file(s) could not be extracted",
-            )
+            if missing:
+                monitor_logger.error(
+                    f"{missing} file(s) failed to extract from {filepath}; "
+                    f"leaving it in place"
+                )
+                record_problem(
+                    filepath, SOURCE_UNPACK,
+                    error_class="RarExtractPartial",
+                    error_message=f"{missing} file(s) could not be extracted",
+                )
+            else:
+                monitor_logger.error(f"Could not extract {filepath}; leaving it in place")
+                record_problem(
+                    filepath, SOURCE_UNPACK,
+                    error_class="RarExtractFailed",
+                    error_message="No tool could extract this archive",
+                )
             return False
         monitor_logger.info(f"Successfully extracted {filepath} into {extract_dir}")
         clear_problem(filepath, SOURCE_UNPACK)
@@ -1115,7 +1130,11 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                                         f"'{target_path}' has been kept. See the Library Health page."
                                     )
                                 else:
-                                    monitor_logger.error(f"Conversion did not produce expected file: {expected_cbz}")
+                                    monitor_logger.error(
+                                        f"Conversion failed for '{target_path}'; nothing was "
+                                        f"written and the .cbr has been kept. See the "
+                                        f"Library Health page."
+                                    )
                             except Exception as e:
                                 monitor_logger.error(f"Conversion failed for '{target_path}': {e}")
                     else:

@@ -281,6 +281,46 @@ Retry for that source points at **Rebuild**, which is
 already streamed; re-running it inside the request would outlive gunicorn's
 timeout on a 500MB pack.
 
+#### A RAR extraction is all or nothing
+
+`helpers.extract_rar_with_unar` used to return `(True, 0)` for **any** non-zero
+exit that left one file behind (`failed_count` was only ever counted for
+`unar`). Every caller read that as a clean extraction, and every caller deletes
+the source on success: a CBR that gave up 39 of its 104 pages became a 39-page
+CBZ, was logged "Successfully converted", and the original was removed. The same
+file gave 80 pages on the next run, so this is not only about damaged archives.
+
+- **An attempt counts only when** the tool exited 0, reported no failed member,
+  and left at least as many page images as `list_rar_entries` says the archive
+  holds. The page count is checked because an exit status is one tool's opinion;
+  an archive nobody can list is "unknown" and judged on the exit status alone.
+- **A partial attempt is discarded and the next tool is tried** (unrar, 7z,
+  unar). When none extracts everything the result is `(False, n)`: `n` is the
+  best attempt's shortfall (at least 1), and 0 still means nothing came out.
+  The output directory gains nothing either way. Each discarded attempt logs
+  one WARNING with the tool, its exit code, the page counts and the tail of the
+  tool's own output, which was never logged before.
+- **Discarding means emptying a directory, so it must be one the call owns.** An
+  empty directory handed in is used as-is; a directory that already holds
+  something gets a hidden `.clu_rar_*` stage inside it and the result is moved
+  out on success. `monitor._unrar_file` extracted straight into WATCH and
+  `unwrap_release` extracts several parts into one layer dir.
+  `_unrar_file` now stages into `.clu_unrar_<name>` and promotes, like
+  `unzip_file`.
+- **Always unpack the tuple.** `cbz_ops/rebuild.py` tested the bare tuple, which
+  is always truthy, so even a total failure wrote an empty CBZ and removed the
+  source.
+- **No caller is offered the partial payload.** `convert_single_rar_file` (all
+  three copies) returns False before anything is zipped, so there is never an
+  incomplete `.cbz` for the sibling rule below to mistake for the real one.
+  The failure is a `SOURCE_CONVERT` row with `CLASS_RAR_PARTIAL`
+  (`cbz_ops/convert.py`, the folder-level run, records it too), and
+  `cbz_ops.single_file`'s `__main__` exits non-zero so `/stream` does not end in
+  a success toast.
+
+Tests: `tests/unit/test_rar_extract_strict.py`,
+`tests/mocked/test_convert_to_cbz_contract.py`.
+
 `process_incoming_wanted_issues`' TARGET scan **skips an archive that has a
 `.cbz` sibling**. Without it a stuck pair matches the same wanted issue twice
 and both are filed, reproducing the pair inside `/data`. Same rule, same reason,

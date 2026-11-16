@@ -67,11 +67,24 @@
     var eventSource = new EventSource(url);
     _currentEventSource = eventSource;
     var completed = false;
+    // The server ends a failed run with an "An error occurred" line and then
+    // closes the stream, which the browser reports as a connection error.
+    // Remember that it was the operation that failed, and the last reason it
+    // gave, so the toast does not blame the network.
+    var failed = false;
+    var failureReason = '';
 
     eventSource.onmessage = function (event) {
       var line = event.data.trim();
       if (!line) return;
       console.log('Progress:', line);
+
+      var reason = line.match(/Failed to .+/);
+      if (reason) failureReason = reason[0];
+      if (line.indexOf('An error occurred') === 0) {
+        failed = true;
+        return;
+      }
 
       // Heuristic progress from message content
       if (line.includes('Extracting') || line.includes('Unzipping')) {
@@ -116,15 +129,24 @@
 
       setTimeout(function () {
         if (!completed) {
-          CLU.showError('Connection error during operation');
+          var message = 'Connection error during operation';
+          var status = 'Error: Connection lost during operation';
+          if (failed) {
+            message = failureReason || ('The operation failed for ' + fname);
+            if (scriptType === 'single_file') {
+              message += ' — the file was left as it was. See Library Health for details.';
+            }
+            status = 'Error: ' + (failureReason || 'the operation failed');
+          }
+          CLU.showError(message);
           CLU.updateProgress(0);
           CLU.resetProgress('bg-danger');
           var txt = document.getElementById('progress-text');
-          if (txt) txt.textContent = 'Error: Connection lost during operation';
+          if (txt) txt.textContent = status;
 
           var contract = _getContract();
           if (typeof contract.onError === 'function') {
-            contract.onError(scriptType, filePath, 'Connection error');
+            contract.onError(scriptType, filePath, failed ? message : 'Connection error');
           }
         }
       }, 100);
@@ -316,11 +338,12 @@
     var stepMatch = line.match(/Step (\d+)\/(\d+): (.+)/);
     if (stepMatch && txt) txt.textContent = 'Step ' + stepMatch[1] + '/' + stepMatch[2] + ': ' + stepMatch[3];
 
-    // Partial extraction warnings
-    if (line.includes('Partial extraction:')) {
-      var mw = line.match(/Partial extraction: (\d+) file\(s\) skipped in (.+)/);
+    // A file that could not be converted is kept as it was; name it in the
+    // closing toast instead of reporting the whole run as a success.
+    if (line.includes('Not converted:')) {
+      var mw = line.match(/Not converted: (.+)/);
       if (mw) {
-        pd.warnings.push(mw[2] + ': ' + mw[1] + ' file(s) skipped');
+        pd.warnings.push(mw[1]);
       }
     }
 

@@ -80,10 +80,19 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         
         # Step 1: Extract RAR file
         app_logger.info(f"Step 1/3: Extracting {os.path.basename(rar_path)}...")
-        extraction_success = extract_rar_with_unar(rar_path, temp_extraction_dir)
-        
+        # Unpack it: the helper returns (ok, missing), and a bare tuple is
+        # always truthy -- which is how a total failure once passed this test,
+        # produced an empty CBZ and got the source deleted.
+        extraction_success, missing = extract_rar_with_unar(rar_path, temp_extraction_dir)
+
         if not extraction_success:
-            app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
+            if missing:
+                app_logger.error(
+                    f"Failed to convert {os.path.basename(rar_path)}: {missing} file(s) "
+                    f"could not be extracted. The original has been kept."
+                )
+            else:
+                app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
             return False
         
         # Step 2: Count extracted files for progress tracking
