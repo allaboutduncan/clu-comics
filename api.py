@@ -12,7 +12,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from flask_cors import CORS
+from core.cors import configure_cors
 from werkzeug.utils import secure_filename
 from typing import Optional
 from http.client import IncompleteRead
@@ -280,8 +280,8 @@ def _is_cloudflare_challenge(resp) -> bool:
     return 'cloudflare' in server
 
 
-# Allow cross-origin requests.
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Cross-origin access: the browser extension's POST to /download only.
+configure_cors(app)
 
 # -------------------------------
 # URL Resolver
