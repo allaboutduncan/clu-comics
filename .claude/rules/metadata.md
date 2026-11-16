@@ -243,6 +243,38 @@ ComicVine one that had text, and the user could not ask for the other.
 Asserted in `tests/unit/test_series_json_builder.py`,
 `tests/routes/test_series_json_routes.py` and `tests/unit/test_series_json_wiring.py`.
 
+### Which Paths a Metadata Write May Touch
+
+Every route that writes metadata for a path from the request goes through
+`core.path_access` before it writes, asks a provider or queues anything:
+`routes.metadata.metadata_write_refusal` / `resolve_metadata_write_path`
+(single-file and batch routes), `write_paths_refusal` (bulk start/backfill),
+`grant_refusal` (rows read from the database, series map/subscribe — a no-op
+for owners) and `folder_art_write_refusal` (folder thumbnails, including
+app.py's route). Realpath containment in a library (WATCH/TARGET only where
+the File Manager uses the route), then a **full** grant for non-owners; one
+refused path refuses the whole request.
+
+- **Staging per route is deliberate.** The routes reached from the File
+  Manager that never had a check serve WATCH and TARGET; the ones that already
+  allowed TARGET only (`/cbz-update-comicinfo`, `/api/update-xml`,
+  `/api/save-cvinfo`, `/api/batch-metadata`) still do. `series.json` refresh
+  and bulk jobs are library-only.
+- **A background job never widens the request.** Bulk metadata and backfill
+  expand folders in the request and narrow the result with
+  `capture_write_scope()`, taken in the request because the queued runner has
+  no user, via `filter_buckets`. Listings of an authorised folder go through
+  `keep_writable`, which drops a symlinked entry into an ungranted folder.
+- `get_files_missing_comicinfo(root)` is a bare `LIKE 'root%'`, so
+  `_enumerate_folder_recursive` re-bounds its rows on a separator.
+- A route that opens the file itself (`/cbz-update-comicinfo`) works on the
+  realpath of the checked path, re-asserted under its root in the route;
+  database rows keep the byte-exact request path they are keyed on.
+
+Tests: `tests/routes/test_metadata_write_grants.py`. The provider-cascade tests
+in `test_metadata_routes.py` post made-up paths and switch the gate off unless
+they request `real_write_gate`.
+
 ### ComicInfo.xml Writes
 
 `core/comicinfo.py` owns the **single** `generate_comicinfo_xml`.

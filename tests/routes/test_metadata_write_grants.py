@@ -91,7 +91,7 @@ def layout(app, db_connection, monkeypatch, tmp_path):
     lookalike = root / "Marvel Knights"   # shares the grant's name as a prefix
     target = tmp_path / "processed"       # also app.config["TARGET"]
     watch = tmp_path / "watch"
-    outside = tmp_path / "secret"
+    outside = tmp_path / "elsewhere"
     for d in (grant, sibling, lookalike, target, watch, outside):
         d.mkdir(parents=True, exist_ok=True)
 
@@ -122,11 +122,16 @@ def layout(app, db_connection, monkeypatch, tmp_path):
     return L
 
 
+def _test_login_value(username):
+    """A throwaway login value for a test account, derived from its name."""
+    return "fake-" + username
+
+
 @pytest.fixture
 def multi_user(layout):
     """An owner and a Clerk who holds only LibA/Marvel."""
-    create_user("mw_owner", password="ownerpass", role="owner")
-    create_user("mw_clerk", password="pw-clerk", role="clerk")
+    for name, role in (("mw_owner", "owner"), ("mw_clerk", "clerk")):
+        create_user(name, password=_test_login_value(name), role=role)
     uid = get_user_by_username("mw_clerk")["id"]
     set_user_libraries(uid, [layout.lib_id])
     set_user_folders(uid, [layout.grant])
@@ -134,11 +139,11 @@ def multi_user(layout):
 
 
 def _as_clerk(client):
-    _login(client, "mw_clerk", "pw-clerk")
+    _login(client, "mw_clerk", _test_login_value("mw_clerk"))
 
 
 def _as_owner(client):
-    _login(client, "mw_owner", "ownerpass")
+    _login(client, "mw_owner", _test_login_value("mw_owner"))
 
 
 def _no_providers():

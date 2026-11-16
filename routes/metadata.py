@@ -552,6 +552,21 @@ def metadata_write_refusal(*paths, staging=FILE_MANAGER_STAGING):
     return None
 
 
+def resolve_metadata_write_path(path, staging=FILE_MANAGER_STAGING):
+    """:func:`metadata_write_refusal` for one path, returning what was checked.
+
+    ``(ServedPath, None)`` when the path may be written -- ``ServedPath.path``
+    is the path re-expressed under ``ServedPath.root``, the configured root
+    that really contains it -- or ``(None, json_refusal)``.
+    """
+    from core.path_access import resolve_served_path
+
+    served, refusal = resolve_served_path(path, staging=_staging_for(*staging), mode='full')
+    if refusal:
+        return None, (jsonify({"success": False, "error": refusal[0]}), refusal[1])
+    return served, None
+
+
 @metadata_bp.route('/cbz-clear-comicinfo', methods=['POST'])
 def cbz_clear_comicinfo():
     """Delete ComicInfo.xml from a CBZ file"""
@@ -613,12 +628,20 @@ def cbz_update_comicinfo():
     if not isinstance(file_path, str) or not file_path:
         return jsonify({"success": False, "error": "File not found"}), 400
     # Library paths, or files staged under TARGET (as /api/update-xml allows).
-    denied = metadata_write_refusal(file_path, staging=('target',))
+    served, denied = resolve_metadata_write_path(file_path, staging=('target',))
     if denied:
         return denied
-    if not os.path.isfile(file_path):
+    # Every filesystem call below uses ``archive``: the realpath of the checked
+    # path, re-asserted to lie under the root the check placed it in. Database
+    # rows keep the byte-exact ``file_path`` they are keyed on.
+    real_root = os.path.realpath(served.root)
+    archive = os.path.realpath(served.path)
+    if not archive.startswith(real_root + os.sep):
+        return jsonify({"success": False, "error": "Access denied"}), 403
+    if not os.path.isfile(archive):
         return jsonify({"success": False, "error": "File not found"}), 400
-    if not file_path.lower().endswith(('.cbz', '.zip')):
+    if not (file_path.lower().endswith(('.cbz', '.zip'))
+            and archive.lower().endswith(('.cbz', '.zip'))):
         return jsonify({"success": False, "error": "File is not a CBZ"}), 400
     if not isinstance(updates, dict) or not updates:
         return jsonify({"success": False, "error": "No updates provided"}), 400
@@ -639,17 +662,17 @@ def cbz_update_comicinfo():
     if 'Notes' not in clean:
         existing_notes = ''
         try:
-            with zipfile.ZipFile(file_path, 'r') as zf:
+            with zipfile.ZipFile(archive, 'r') as zf:
                 match = find_comicinfo_in_zip(zf)
                 if match:
-                    existing_notes = (read_comicinfo_xml(zf.read(match)) or {}).get('Notes') or ''
+                    existing_notes =(read_comicinfo_xml(zf.read(match)) or {}).get('Notes') or ''
         except Exception as e:
             app_logger.warning(f"Could not read existing Notes from {file_path}: {e}")
         if not existing_notes.strip():
             clean['Notes'] = manual_edit_notes()
 
     try:
-        update_comicinfo_in_zip(file_path, clean, drop_empty=True)
+        update_comicinfo_in_zip(archive, clean, drop_empty=True)
     except Exception as e:
         app_logger.error(f"Error updating ComicInfo.xml in {file_path}: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -660,7 +683,7 @@ def cbz_update_comicinfo():
 
     comicinfo = {}
     try:
-        with zipfile.ZipFile(file_path, 'r') as zf:
+        with zipfile.ZipFile(archive, 'r') as zf:
             match = find_comicinfo_in_zip(zf)
             if match:
                 comicinfo = read_comicinfo_xml(zf.read(match)) or {}

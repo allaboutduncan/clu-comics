@@ -31,6 +31,8 @@ def _write_gate_off_unless_requested(request):
     here that request ``real_write_gate`` and
     tests/routes/test_metadata_write_grants.py -- so it is switched off for
     the rest, which behave exactly as they did before the gate existed.
+    (/cbz-update-comicinfo resolves through ``resolve_metadata_write_path``
+    instead, so its tests always run with the real gate.)
     """
     if "client" not in request.fixturenames or "real_write_gate" in request.fixturenames:
         yield
@@ -295,6 +297,11 @@ class TestRemoveComicInfoBatchJob:
 
 class TestCbzUpdateComicinfo:
     """POST /cbz-update-comicinfo -- hand edits from the CBZ Info modal."""
+
+    @pytest.fixture(autouse=True)
+    def _real_gate(self, real_write_gate):
+        """These build real comics under tmp_path (the library), so the route
+        runs with its real gate: it writes through the path that gate checked."""
 
     def _cbz(self, tmp_path, name="issue.cbz", xml=None, with_comicinfo=True):
         d = tmp_path / "data" / "comics"
