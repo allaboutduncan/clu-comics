@@ -66,6 +66,10 @@
             Without a token, requests get <code>401 unauthorized</code>.
             If no token has been generated yet, the entire blueprint returns
             <code>503 api_disabled</code>.
+            After repeated requests with a wrong token from one address, requests
+            from that address get <code>429 too_many_attempts</code> with a
+            <code>Retry-After</code> header (seconds) until the delay passes;
+            the token is not checked during that time.
         </p>
     </div>
 

@@ -90,12 +90,55 @@ def current_user():
     return user
 
 
+def bearer_token_from_header(auth_header):
+    """The token in an ``Authorization: Bearer <token>`` value, or None.
+
+    None means *no credential was presented* (no header, another scheme, or an
+    empty token), which is an unauthenticated request rather than a failed
+    guess and is never counted by the throttle.
+    """
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    presented = auth_header[len("Bearer "):].strip()
+    return presented or None
+
+
+def user_for_bearer_token(presented, legacy_token=None):
+    """``(matched, user)`` for a presented API token.
+
+    ``matched`` is False when the token is unknown. The legacy global token
+    matches as the Store Owner, which may be None on a database with no owner
+    row; that is still a match, as it always was.
+
+    Per-user tokens are looked up by their sha256 (the table stores only the
+    digest), so no secret is compared directly. The legacy global token is a
+    plaintext preference and is compared with ``hmac.compare_digest`` over
+    bytes: on two ``str`` values it raises ``TypeError`` for any non-ASCII
+    character, and a header can carry one.
+    """
+    import hmac
+    from core.database import _hash_token, get_api_token, get_user_by_token_hash
+
+    if not presented:
+        return False, None
+    user = get_user_by_token_hash(_hash_token(presented))
+    if user:
+        return True, user
+    if legacy_token is None:
+        legacy_token = get_api_token()
+    if legacy_token and hmac.compare_digest(
+        presented.encode("utf-8"), str(legacy_token).encode("utf-8")
+    ):
+        return True, get_owner()
+    return False, None
+
+
 def resolve_optional_bearer_user(auth_header):
     """Resolve an optional ``Authorization: Bearer <token>`` header to a user.
 
     For endpoints that are public by default but can be *personalised* with an
     API token (e.g. ``/api/insights`` for a Homepage widget). Returns a
-    ``(status, user)`` tuple:
+    ``(status, value)`` tuple:
 
         ("anonymous", None)  no Bearer credentials — the caller should fall
                              back to its default identity (the Store Owner).
@@ -105,33 +148,35 @@ def resolve_optional_bearer_user(auth_header):
                              the caller should reject with 401 so a
                              misconfigured token isn't silently served as the
                              owner's data.
+        ("throttled", secs)  this client address failed too many token checks
+                             (core/auth_throttle.py); the token was NOT
+                             checked. The caller answers 429 with
+                             ``Retry-After: secs``.
 
     Unlike the ``/api/v1`` gate this never 503s: a missing token is a valid
     anonymous state, not an error. The per-user tokens are the same ones minted
     in Settings → Users and used by ``/api/v1``.
     """
-    import hmac
-    from core.database import (
-        _hash_token,
-        get_api_token,
-        get_user_by_token_hash,
+    from core.auth_throttle import (
+        SCOPE_TOKEN, client_address, throttle, token_account_key,
     )
 
-    if not auth_header or not auth_header.startswith("Bearer "):
+    presented = bearer_token_from_header(auth_header)
+    if presented is None:
         return "anonymous", None
 
-    presented = auth_header[len("Bearer "):].strip()
-    if not presented:
-        return "anonymous", None
+    address = client_address()
+    token_key = token_account_key(presented)
+    wait = throttle.retry_after(SCOPE_TOKEN, address, token_key)
+    if wait:
+        return "throttled", wait
 
-    user = get_user_by_token_hash(_hash_token(presented))
-    if user:
+    matched, user = user_for_bearer_token(presented)
+    if matched:
+        throttle.record_success(SCOPE_TOKEN, address, token_key)
         return "ok", user
 
-    legacy_token = get_api_token()
-    if legacy_token and hmac.compare_digest(presented, legacy_token):
-        return "ok", get_owner()
-
+    throttle.record_failure(SCOPE_TOKEN, address, token_key)
     return "invalid", None
 
 

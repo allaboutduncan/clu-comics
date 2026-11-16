@@ -9947,19 +9947,52 @@ def current_user_id():
     return _resolve_user_id(None)
 
 
+_DUMMY_PASSWORD_HASH = None
+_DUMMY_PASSWORD_HASH_LOCK = threading.Lock()
+
+
+def _dummy_password_hash():
+    """A hash of a random secret, made once with the same method and cost
+    ``create_user`` / ``set_user_password`` use (werkzeug's default), so
+    checking a password against it costs what checking a real one does.
+
+    Made lazily rather than at import: hashing is deliberately slow, and import
+    time is inside gunicorn's worker boot budget.
+    """
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        import secrets
+        from werkzeug.security import generate_password_hash
+
+        with _DUMMY_PASSWORD_HASH_LOCK:
+            if _DUMMY_PASSWORD_HASH is None:
+                _DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_urlsafe(32))
+    return _DUMMY_PASSWORD_HASH
+
+
 def verify_password(username, password):
     """Return the user dict if the credentials are valid and the account is
-    active, else None. Constant-time via werkzeug's check_password_hash."""
+    active, else None.
+
+    Every path does one password-hash check, so the response time does not
+    say whether the username exists: an unknown user, or an account with no
+    password yet (the first-run placeholder), is checked against a dummy hash.
+    A disabled account is checked against its real hash and then refused, so
+    it looks exactly like a wrong password.
+    """
     from werkzeug.security import check_password_hash
 
+    password = password or ""
     user = get_user_by_username(username)
-    if not user or not user.get("is_active"):
+    stored = user.get("password_hash") if user else None
+    if not stored:
+        check_password_hash(_dummy_password_hash(), password)
         return None
-    if not user.get("password_hash"):
-        return None  # placeholder/needs-setup account can't log in yet
-    if check_password_hash(user["password_hash"], password):
-        return user
-    return None
+    if not check_password_hash(stored, password):
+        return None
+    if not user.get("is_active"):
+        return None
+    return user
 
 
 def set_user_password(user_id, password):

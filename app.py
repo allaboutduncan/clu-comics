@@ -7826,11 +7826,14 @@ def api_insights():
     silently surface the owner's stats.
     """
     from core.auth import resolve_optional_bearer_user
+    from core.auth_throttle import too_many_attempts_json
     from models.stats import get_insights_stats
 
     status, user = resolve_optional_bearer_user(
         request.headers.get("Authorization", "")
     )
+    if status == "throttled":
+        return too_many_attempts_json(user)
     if status == "invalid":
         return jsonify({"error": "unauthorized"}), 401
 
