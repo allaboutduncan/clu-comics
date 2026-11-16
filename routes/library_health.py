@@ -4,8 +4,9 @@ Every URL here sits under ``/library-health``, ``/problem-files`` (the old page
 URL, which redirects) or ``/api/problem-files``, all in
 ``core.auth._OWNER_PREFIXES``, so the surface is owner-only without decorators --
 which is also why the settings endpoint lives here rather than behind the generic
-``/api/preferences/<key>`` route: that one is not owner-gated, and this setting
-decides whether CLU reads every comic in the library.
+``/api/preferences/<key>`` route: that one writes only the keys on
+``core.settings.PREFERENCE_WRITE_ROLES``, and this setting (which decides whether
+CLU reads every comic in the library) is deliberately not one of them.
 
 Heavy imports are done inside the views so the symbols stay patchable in tests.
 """

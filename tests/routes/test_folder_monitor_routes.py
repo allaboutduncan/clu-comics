@@ -24,7 +24,8 @@ def _fresh_settings():
 
 def test_routes_are_owner_only():
     """The setting starts a process that moves files out of WATCH; it must not
-    fall through to the Clerk default the way /api/preferences/ does."""
+    fall through to the Clerk default the way the /api/preferences/ path does
+    (that route gates per key; this setting is not on its write list)."""
     from core.auth import _OWNER_PREFIXES
 
     assert URL.startswith(_OWNER_PREFIXES)

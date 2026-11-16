@@ -2,8 +2,9 @@
 
 Both URLs sit under ``/api/config/``, which is in ``core.auth._OWNER_PREFIXES``,
 so the surface is owner-only without decorators. The generic
-``/api/preferences/<key>`` route is not owner-gated, and this setting decides
-whether a background process moves files out of WATCH.
+``/api/preferences/<key>`` route writes only the keys on
+``core.settings.PREFERENCE_WRITE_ROLES``, and this setting -- which decides
+whether a background process moves files out of WATCH -- is not one of them.
 
 The settings page saves the switch with the rest of the File Processing form;
 these exist for the callers that change *only* this -- the prompt after saving

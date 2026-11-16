@@ -1088,9 +1088,10 @@ def get_gcd_stats():
 #
 # Owner-only with no decorator: core/auth.py gates the whole /api/providers
 # prefix in _OWNER_PREFIXES. These deliberately do NOT go through the generic
-# /api/preferences/<key> route, which is not on that list -- as a POST it falls
-# through to the "clerk" default, and a Clerk must not be able to switch on a
-# site-wide 541 MB download.
+# /api/preferences/<key> route, whose path is not on that list (it gates each
+# key itself, against core.settings.PREFERENCE_WRITE_ROLES): a Clerk must not
+# be able to switch on a site-wide 541 MB download, and a setting with its own
+# route stays off that allow-list.
 #
 # The URL is never in a response body. The page describes the cadence only.
 # ---------------------------------------------------------------------------

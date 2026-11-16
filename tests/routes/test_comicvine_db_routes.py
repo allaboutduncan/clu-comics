@@ -2,8 +2,9 @@
 
 These three sit under ``/api/providers/`` rather than behind the generic
 ``/api/preferences/<key>`` route on purpose: ``core/auth.py`` gates that prefix
-as owner-only, while ``/api/preferences/`` is not on the list and would let a
-Clerk switch on a site-wide 541 MB download. ``tests/routes/test_rbac.py``
+as owner-only, while ``/api/preferences/`` is not on the list (it gates each
+key against ``core.settings.PREFERENCE_WRITE_ROLES`` instead) and a Clerk must
+not switch on a site-wide 541 MB download. ``tests/routes/test_rbac.py``
 pins the gate; these pin the behaviour.
 """
 

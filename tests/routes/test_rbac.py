@@ -90,8 +90,9 @@ class TestRolePolicy:
         ("GET", "/api/database/stats", "owner"),
         # Local ComicVine DB auto-update. These live under /api/providers, not
         # /api/preferences, precisely so the owner prefix covers them: the
-        # generic preference route is not on that list, and a Clerk must not be
-        # able to switch on a site-wide 541 MB download.
+        # generic preference route is not on that list (it gates per key, via
+        # core.settings.PREFERENCE_WRITE_ROLES), and a Clerk must not be able
+        # to switch on a site-wide 541 MB download.
         ("GET", "/api/providers/comicvine_sqlite/update-status", "owner"),
         ("POST", "/api/providers/comicvine_sqlite/auto-update", "owner"),
         ("POST", "/api/providers/comicvine_sqlite/update", "owner"),
