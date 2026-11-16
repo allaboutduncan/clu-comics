@@ -15,6 +15,32 @@ from unittest.mock import patch, MagicMock, call
 # is the same object.
 
 
+@pytest.fixture
+def real_write_gate(tmp_path_library):
+    """Opt in to the real library/grant gate on the metadata write routes,
+    with ``tmp_path`` as the one library."""
+    return tmp_path_library
+
+
+@pytest.fixture(autouse=True)
+def _write_gate_off_unless_requested(request):
+    """Most tests here are about provider cascades and ComicInfo writes, not
+    access, and post made-up paths such as ``/data/Batman 001.cbz`` (which is
+    not even absolute on Windows). The gate in front of every write route
+    (``routes.metadata.metadata_write_refusal``) has its own tests -- the ones
+    here that request ``real_write_gate`` and
+    tests/routes/test_metadata_write_grants.py -- so it is switched off for
+    the rest, which behave exactly as they did before the gate existed.
+    (/cbz-update-comicinfo resolves through ``resolve_metadata_write_path``
+    instead, so its tests always run with the real gate.)
+    """
+    if "client" not in request.fixturenames or "real_write_gate" in request.fixturenames:
+        yield
+        return
+    with patch("routes.metadata.metadata_write_refusal", return_value=None):
+        yield
+
+
 def _make_cbz(path, with_comicinfo=True):
     """Helper to create a minimal CBZ file for testing."""
     with zipfile.ZipFile(path, 'w') as zf:
@@ -272,6 +298,11 @@ class TestRemoveComicInfoBatchJob:
 class TestCbzUpdateComicinfo:
     """POST /cbz-update-comicinfo -- hand edits from the CBZ Info modal."""
 
+    @pytest.fixture(autouse=True)
+    def _real_gate(self, real_write_gate):
+        """These build real comics under tmp_path (the library), so the route
+        runs with its real gate: it writes through the path that gate checked."""
+
     def _cbz(self, tmp_path, name="issue.cbz", xml=None, with_comicinfo=True):
         d = tmp_path / "data" / "comics"
         os.makedirs(str(d), exist_ok=True)
@@ -393,9 +424,17 @@ class TestCbzUpdateComicinfo:
         resp = client.post('/cbz-update-comicinfo', json={"path": path, "updates": {}})
         assert resp.status_code == 400
 
-    @patch("routes.metadata.is_valid_library_path", return_value=False)
-    def test_rejects_path_outside_library(self, _valid, client, tmp_path):
-        path = self._cbz(tmp_path)
+    def test_rejects_path_outside_library(self, client, tmp_path, real_write_gate,
+                                          data_dir_library):
+        # The only library is tmp/data (data_dir_library replaces tmp_path);
+        # the comic sits beside it, outside it and outside TARGET (tmp/processed).
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        path = str(outside / "issue.cbz")
+        with zipfile.ZipFile(path, 'w') as zf:
+            zf.writestr("page_001.png", b"fake image data")
+            zf.writestr("ComicInfo.xml",
+                        "<ComicInfo><Series>Test</Series><Year>1986</Year></ComicInfo>")
         resp = client.post('/cbz-update-comicinfo', json={
             "path": path, "updates": {"Series": "X"},
         })

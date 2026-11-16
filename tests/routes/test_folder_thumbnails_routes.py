@@ -221,6 +221,11 @@ class TestThumbnailConfig:
 
 class TestThumbnailSweeps:
 
+    @pytest.fixture(autouse=True)
+    def _tmp_path_is_the_library(self, tmp_path_library):
+        """A sweep's starting folder must be inside a library (and granted);
+        these tests build their folders under tmp_path."""
+
     def test_generate_missing_skips_folders_that_have_art(self, client, library):
         (library / "Batman" / "folder.png").write_bytes(b"existing")
 
