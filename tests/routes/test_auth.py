@@ -129,7 +129,7 @@ class TestLoginRequiredMultiUser:
         client.post("/login", data={"username": "owner", "password": "ownerpass"})
         assert client.get("/").status_code == 200
 
-        r = client.get("/logout")
+        r = client.post("/logout")
         assert r.status_code == 302
         assert "/login" in r.headers["Location"]
 

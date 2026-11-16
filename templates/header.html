@@ -185,9 +185,12 @@
             </li>
             <li><hr class="dropdown-divider"></li>
             <li>
-              <a href="{{ url_for('auth.logout') }}" class="dropdown-item text-danger">
-                <i class="bi bi-box-arrow-right me-2"></i>Logout
-              </a>
+              {# A POST: a cross-site link or image must not be able to log you out. #}
+              <form method="post" action="{{ url_for('auth.logout') }}" class="m-0">
+                <button type="submit" class="dropdown-item text-danger">
+                  <i class="bi bi-box-arrow-right me-2"></i>Logout
+                </button>
+              </form>
             </li>
           </ul>
         </li>

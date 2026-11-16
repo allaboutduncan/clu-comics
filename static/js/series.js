@@ -49,7 +49,7 @@ function initLibraryRoots() {
     bar.style.display = 'flex';
     bar.classList.add('align-items-center');
     btnGroup.innerHTML = libraries.map(lib =>
-        `<button type="button" class="btn btn-outline-info" onclick="loadDirectories('${lib.path.replace(/'/g, "\\'")}')">${lib.name}</button>`
+        `<button type="button" class="btn btn-outline-info" data-path="${CLU.escapeHtml(lib.path)}" onclick="loadDirectories(this.dataset.path)">${CLU.escapeHtml(lib.name)}</button>`
     ).join('');
 }
 
@@ -442,16 +442,19 @@ function refreshCollectionStatus() {
                             // Update action buttons
                             if (actionCell) {
                                 if (status && status.found && status.file_path) {
-                                    const escapedPath = status.file_path.replace(/\\/g, '/').replace(/'/g, "\\'");
+                                    // The path and number ride in data-* on the group
+                                    // (escaped once, decoded by the parser); the
+                                    // handlers are fixed strings that read them back.
+                                    const issuePath = CLU.escapeHtml(status.file_path.replace(/\\/g, '/'));
                                     actionCell.innerHTML = `
-                                        <div class="btn-group" role="group">
+                                        <div class="btn-group" role="group" data-issue-path="${issuePath}" data-issue-num="${CLU.escapeHtml(issueNum)}">
                                             <button aria-label="View CBZ Info" type="button" class="btn btn-sm btn-outline-info text-info"
-                                                onclick="viewIssueFile('${escapedPath}', '${issueNum}')"
+                                                onclick="const g = this.closest('[data-issue-path]').dataset; viewIssueFile(g.issuePath, g.issueNum)"
                                                 title="View CBZ Info">
                                                 <i class="bi bi-eye"></i>
                                             </button>
                                             <button aria-label="Edit CBZ" type="button" class="btn btn-sm btn-outline-primary"
-                                                onclick="editIssueFile('${escapedPath}')"
+                                                onclick="editIssueFile(this.closest('[data-issue-path]').dataset.issuePath)"
                                                 title="Edit CBZ">
                                                 <i class="bi bi-pencil"></i>
                                             </button>
@@ -462,28 +465,28 @@ function refreshCollectionStatus() {
                                                 </button>
                                                 <ul class="dropdown-menu dropdown-menu-end shadow">
                                                     <li><a class="dropdown-item" href="#"
-                                                            onclick="executeIssueScript('crop', '${escapedPath}'); return false;">
+                                                            onclick="executeIssueScript('crop', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-crop me-2"></i>Crop Cover
                                                         </a></li>
                                                     <li><a class="dropdown-item" href="#"
-                                                            onclick="executeIssueScript('remove', '${escapedPath}'); return false;">
+                                                            onclick="executeIssueScript('remove', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-file-minus me-2"></i>Remove 1st Image
                                                         </a></li>
                                                     <li><a class="dropdown-item" href="#"
-                                                            onclick="executeIssueScript('single_file', '${escapedPath}'); return false;">
+                                                            onclick="executeIssueScript('single_file', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-hammer me-2"></i>Rebuild
                                                         </a></li>
                                                     <li><a class="dropdown-item" href="#"
-                                                            onclick="executeIssueScript('enhance_single', '${escapedPath}'); return false;">
+                                                            onclick="executeIssueScript('enhance_single', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-stars me-2"></i>Enhance
                                                         </a></li>
                                                     <li><a class="dropdown-item" href="#"
-                                                            onclick="executeIssueScript('add', '${escapedPath}'); return false;">
+                                                            onclick="executeIssueScript('add', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-file-plus me-2"></i>Add Blank to End
                                                         </a></li>
                                                     <li><hr class="dropdown-divider"></li>
                                                     <li><a class="dropdown-item text-danger" href="#"
-                                                            onclick="deleteIssueFile('${escapedPath}', '${issueNum}'); return false;">
+                                                            onclick="const g = this.closest('[data-issue-path]').dataset; deleteIssueFile(g.issuePath, g.issueNum); return false;">
                                                             <i class="bi bi-trash me-2"></i>Delete Issue
                                                         </a></li>
                                                 </ul>
@@ -493,23 +496,25 @@ function refreshCollectionStatus() {
                                 } else if (hasManual) {
                                     // Manually marked - show clear button
                                     actionCell.innerHTML = `
-                                        <button aria-label="Clear ${manualStatus.status} status" class="btn btn-sm btn-info"
-                                            onclick="clearManualStatus('${issueNum}')"
-                                            title="Clear ${manualStatus.status} status">
+                                        <button aria-label="Clear ${CLU.escapeHtml(manualStatus.status)} status" class="btn btn-sm btn-info"
+                                            data-issue-num="${CLU.escapeHtml(issueNum)}"
+                                            onclick="clearManualStatus(this.dataset.issueNum)"
+                                            title="Clear ${CLU.escapeHtml(manualStatus.status)} status">
                                             <i class="bi bi-arrow-counterclockwise"></i>
                                         </button>
                                     `;
                                 } else {
                                     // Not found - show search with mark dropdown
-                                    const seriesName = seriesData.name ? seriesData.name.replace(/'/g, "\\'") : '';
+                                    const seriesName = seriesData.name || '';
                                     // Year comes off the row (server-rendered from the
                                     // issue's store/cover date) so the search stays as
                                     // narrow as it is before a refresh.
                                     const issueYear = row.dataset.issueYear || '';
                                     actionCell.innerHTML = `
-                                        <div class="btn-group" role="group">
+                                        <div class="btn-group" role="group" data-issue-num="${CLU.escapeHtml(issueNum)}">
                                             <button aria-label="Search GetComics" class="btn btn-sm btn-outline-primary"
-                                                onclick="searchGetComics('${seriesName}', '${issueNum}', '${issueYear}')"
+                                                data-series="${CLU.escapeHtml(seriesName)}" data-issue="${CLU.escapeHtml(issueNum)}" data-year="${CLU.escapeHtml(issueYear)}"
+                                                onclick="searchGetComics(this.dataset.series, this.dataset.issue, this.dataset.year)"
                                                 title="Search GetComics">
                                                 <i class="bi bi-search"></i>
                                             </button>
@@ -519,11 +524,11 @@ function refreshCollectionStatus() {
                                             </button>
                                             <ul class="dropdown-menu dropdown-menu-end shadow">
                                                 <li><a class="dropdown-item" href="#"
-                                                        onclick="markIssue('${issueNum}', 'owned'); return false;">
+                                                        onclick="markIssue(this.closest('[data-issue-num]').dataset.issueNum, 'owned'); return false;">
                                                         <i class="bi bi-bookmark-check me-2"></i>Mark as Owned
                                                     </a></li>
                                                 <li><a class="dropdown-item" href="#"
-                                                        onclick="markIssue('${issueNum}', 'skipped'); return false;">
+                                                        onclick="markIssue(this.closest('[data-issue-num]').dataset.issueNum, 'skipped'); return false;">
                                                         <i class="bi bi-skip-forward-circle me-2"></i>Mark as Skipped
                                                     </a></li>
                                             </ul>
@@ -810,9 +815,10 @@ function updateIssueRow(issueNumber, status, notes) {
     const actionCell = row.querySelector('td.issue-action-cell');
     if (actionCell) {
         actionCell.innerHTML = `
-            <button aria-label="Clear ${status} status" class="btn btn-sm btn-outline-secondary"
-                onclick="clearManualStatus('${issueNumber}')"
-                title="Clear ${status} status">
+            <button aria-label="Clear ${CLU.escapeHtml(status)} status" class="btn btn-sm btn-outline-secondary"
+                data-issue-num="${CLU.escapeHtml(issueNumber)}"
+                onclick="clearManualStatus(this.dataset.issueNum)"
+                title="Clear ${CLU.escapeHtml(status)} status">
                 <i class="bi bi-arrow-counterclockwise"></i>
             </button>
         `;

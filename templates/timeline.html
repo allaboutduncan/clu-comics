@@ -559,24 +559,17 @@ document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.issue-card').forEach(() => initialCount++);
     currentOffset = initialCount;
 
-    function escapeHtml(text) {
-        if (!text) return '';
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     function createIssueCard(item) {
         const coverHtml = item.thumbnail_url
             ? `<img src="${item.thumbnail_url}" alt="Cover" loading="lazy">`
             : `<i class="bi bi-image text-muted" style="font-size: 2rem;"></i>`;
 
         const issueSubtitle = item.issue_number
-            ? `${escapeHtml(item.title)} #${escapeHtml(item.issue_number)}`
-            : escapeHtml(item.full_title);
+            ? `${CLU.escapeHtml(item.title)} #${CLU.escapeHtml(item.issue_number)}`
+            : CLU.escapeHtml(item.full_title);
 
         return `
-            <div class="issue-card" data-path="${escapeHtml(item.issue_path || '')}">
+            <div class="issue-card" data-path="${CLU.escapeHtml(item.issue_path || '')}">
                 <div class="issue-cover">
                     ${coverHtml}
                     <div class="issue-cover-overlay">
@@ -585,10 +578,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     </div>
                 </div>
                 <div class="issue-details">
-                    <div class="publisher-badge">${escapeHtml(item.publisher)}</div>
-                    <div class="series-title" title="${escapeHtml(item.full_title)}">${escapeHtml(item.title)} ${escapeHtml(item.year)}</div>
-                    <div class="issue-subtitle" title="${escapeHtml(item.full_title)} #${escapeHtml(item.issue_number)}">${issueSubtitle}</div>
-                    <div class="read-time"><i class="bi bi-clock"></i> ${escapeHtml(item.read_time)}</div>
+                    <div class="publisher-badge">${CLU.escapeHtml(item.publisher)}</div>
+                    <div class="series-title" title="${CLU.escapeHtml(item.full_title)}">${CLU.escapeHtml(item.title)} ${CLU.escapeHtml(item.year)}</div>
+                    <div class="issue-subtitle" title="${CLU.escapeHtml(item.full_title)} #${CLU.escapeHtml(item.issue_number)}">${issueSubtitle}</div>
+                    <div class="read-time"><i class="bi bi-clock"></i> ${CLU.escapeHtml(item.read_time)}</div>
                 </div>
             </div>
         `;
@@ -617,7 +610,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Create new date group
                 const groupHtml = `
                     <div class="timeline-date-group" data-date="${group.date}">
-                        <div class="date-header">${escapeHtml(group.date)}</div>
+                        <div class="date-header">${CLU.escapeHtml(group.date)}</div>
                         <div class="cards-grid">
                             ${group.entries.map(item => {
                                 currentOffset++;

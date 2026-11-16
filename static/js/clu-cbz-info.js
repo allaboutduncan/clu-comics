@@ -468,10 +468,6 @@
       ? _pendingEdits[key] : _originalValue(key);
   }
 
-  function _escapeAttr(text) {
-    return CLU.escapeHtml(String(text)).replace(/"/g, '&quot;');
-  }
-
   /** Display HTML for one value (never the editor's seed -- that stays raw). */
   function _formatValue(field, value) {
     if (field.key === 'PageCount') {
@@ -516,7 +512,7 @@
     return '<li class="cbz-ci-row' + (dirty ? ' cbz-ci-dirty' : '') + '" data-key="' + field.key + '">' +
       '<strong>' + CLU.escapeHtml(field.label) + ':</strong> ' +
       '<span class="cbz-ci-value" data-key="' + field.key + '" tabindex="0" role="button" ' +
-        'title="Click to edit" aria-label="Edit ' + _escapeAttr(field.label) + '">' +
+        'title="Click to edit" aria-label="Edit ' + CLU.escapeHtml(field.label) + '">' +
         display + '<i class="bi bi-pencil cbz-ci-pencil" aria-hidden="true"></i>' +
       '</span>' +
       '</li>';

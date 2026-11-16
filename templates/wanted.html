@@ -373,12 +373,6 @@
         await ensureSourceSearch().run(query);
     }
 
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     // Trigger GetComics auto-download for missing issues
     function checkForMissing() {
         const btn = document.getElementById('checkMissingBtn');

@@ -29,10 +29,6 @@
   var S = null;            // per-open state
   var _sortables = [];
 
-  function _esc(s) {
-    return CLU.escapeHtml ? CLU.escapeHtml(s == null ? '' : String(s)) : String(s);
-  }
-
   function _size(bytes) {
     return CLU.formatFileSize ? CLU.formatFileSize(bytes) : (bytes + ' B');
   }
@@ -108,7 +104,7 @@
         '<div class="card-body py-2 px-3 small">' +
         '<div class="d-flex justify-content-between align-items-start gap-2">' +
         '<div><span class="badge ' + (isBase ? 'text-bg-primary' : 'text-bg-info') + ' me-1">' + key + '</span>' +
-        '<strong>' + _esc(f.name) + '</strong>' +
+        '<strong>' + CLU.escapeHtml(f.name) + '</strong>' +
         (f.in_library ? ' <span class="badge text-bg-secondary">Library</span>' : '') +
         (key === S.targetKey
           ? ' <span class="badge text-bg-danger" title="Merge writes over this file; its original goes to the Trash">' +
@@ -118,7 +114,7 @@
           ? '<span class="badge text-bg-primary">Base</span>'
           : '<button type="button" class="btn btn-sm btn-outline-primary py-0" data-merge-make-base="' + key + '">Use as base</button>') +
         '</div>' +
-        '<div class="text-muted merge-file-path">' + _esc(_dirName(f.path)) + '</div>' +
+        '<div class="text-muted merge-file-path">' + CLU.escapeHtml(_dirName(f.path)) + '</div>' +
         '<div>' + _size(f.file_size) + ' &middot; ' + f.page_count + ' pages &middot; ' + dims +
         (f.has_comicinfo ? ' &middot; ComicInfo.xml' : '') + '</div>' +
         '</div></div></div>';
@@ -143,15 +139,15 @@
     if (opts.added) badges += '<span class="badge text-bg-success">Added</span>';
 
     var action = opts.action || '';
-    return '<div class="col" data-key="' + key + '" data-entry="' + _esc(entry) + '"' +
+    return '<div class="col" data-key="' + key + '" data-entry="' + CLU.escapeHtml(entry) + '"' +
       (opts.finalIdx != null ? ' data-final-idx="' + opts.finalIdx + '"' : '') + '>' +
       '<div class="' + classes + '">' +
       '<div class="merge-page-badges">' + badges + '</div>' +
       '<div class="merge-thumb-wrap" data-merge-preview="1">' +
-      '<img loading="lazy" alt="" src="' + _esc(_thumbUrl(f.path, entry)) + '"></div>' +
+      '<img loading="lazy" alt="" src="' + CLU.escapeHtml(_thumbUrl(f.path, entry)) + '"></div>' +
       '<div class="card-body p-1">' +
       (opts.number != null ? '<div class="merge-page-meta fw-semibold">' + opts.number + '</div>' : '') +
-      '<div class="merge-page-meta merge-page-name" title="' + _esc(entry) + '">' + _esc(p.basename) + '</div>' +
+      '<div class="merge-page-meta merge-page-name" title="' + CLU.escapeHtml(entry) + '">' + CLU.escapeHtml(p.basename) + '</div>' +
       '<div class="merge-page-meta text-muted">' +
       (p.width ? p.width + '×' + p.height : '?') + ' &middot; ' + _size(p.size) + '</div>' +
       action +
@@ -186,7 +182,7 @@
       var isAdded = !!added[p.entry];
       var btn = isAdded
         ? '<button type="button" class="btn btn-sm btn-outline-secondary w-100 py-0 mt-1" disabled>Added</button>'
-        : '<button type="button" class="btn btn-sm btn-outline-info w-100 py-0 mt-1" data-merge-add="' + _esc(p.entry) + '">' +
+        : '<button type="button" class="btn btn-sm btn-outline-info w-100 py-0 mt-1" data-merge-add="' + CLU.escapeHtml(p.entry) + '">' +
           '<i class="bi bi-plus-lg"></i> Add</button>';
       return _pageCard(donorKey, p.entry, { added: isAdded, action: btn });
     }).join('');
@@ -200,7 +196,7 @@
         '<input class="form-check-input" type="radio" name="mergeTarget" id="' + id + '" value="' + key + '"' +
         (S.targetKey === key ? ' checked' : '') + '>' +
         '<label class="form-check-label" for="' + id + '"><span class="badge text-bg-secondary me-1">' + key + '</span>' +
-        _esc(S.files[key].name) + '</label></div>';
+        CLU.escapeHtml(S.files[key].name) + '</label></div>';
     }).join('');
     _el('mergeTargetChoices').innerHTML = choices;
     _el('mergeOtherName').textContent = S.files[_other(S.targetKey)].name;

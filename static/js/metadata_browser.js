@@ -545,12 +545,6 @@
 
     // ------- Escaping helpers -------
 
-    function escapeHtml(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-    }
-    function escapeAttr(s) { return escapeHtml(s); }
 
     // ------- Event wiring -------
 

@@ -73,8 +73,6 @@
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  function _esc(text) { return CLU.escapeHtml(text === null || text === undefined ? '' : String(text)); }
-
   function _encodePathForReader(path) {
     var clean = path.charAt(0) === '/' ? path.substring(1) : path;
     return clean.split('/').map(function (c) { return encodeURIComponent(c); }).join('/');
@@ -131,7 +129,7 @@
     out += f.has_comicinfo
       ? '<span class="badge bg-success me-1">Tagged</span>'
       : '<span class="badge bg-secondary me-1">No ComicInfo</span>';
-    if (f.provider) out += '<span class="badge bg-light text-dark border me-1">' + _esc(f.provider) + '</span>';
+    if (f.provider) out += '<span class="badge bg-light text-dark border me-1">' + CLU.escapeHtml(f.provider) + '</span>';
     return out;
   }
 
@@ -141,7 +139,7 @@
     }
     if (r.metaError) {
       return '<div class="alert alert-danger small py-1 px-2 mb-2 text-break">Could not read this file: ' +
-        _esc(r.metaError) + '</div>';
+        CLU.escapeHtml(r.metaError) + '</div>';
     }
     if (r.meta && !r.meta.comicinfo) {
       return '<div class="alert alert-secondary small py-1 px-2 mb-2">No ComicInfo.xml in this file.</div>';
@@ -151,7 +149,7 @@
 
   function _nameHtml(f, i) {
     var html = '<div class="d-flex align-items-start gap-1">' +
-      '<div class="fw-bold text-break flex-grow-1">' + _esc(f.name) + '</div>';
+      '<div class="fw-bold text-break flex-grow-1">' + CLU.escapeHtml(f.name) + '</div>';
     if (_onRename) {
       html += '<button type="button" class="btn btn-sm btn-link p-0 ms-1" data-dupe-act="rename" data-col="' + i + '" ' +
         'title="Rename this file" aria-label="Rename this file"><i class="bi bi-pencil"></i></button>';
@@ -164,7 +162,7 @@
     var html = '<div class="' + colClass + ' mb-3"><div class="card h-100"><div class="card-body d-flex flex-column">';
     if (total > 1) html += '<div class="small text-muted text-uppercase">' + _letter(i) + '</div>';
     html += '<div id="cbzDupeName' + i + '">' + _nameHtml(f, i) + '</div>' +
-      '<div class="small text-muted text-break mb-1">' + _esc(f.folder) + '</div>' +
+      '<div class="small text-muted text-break mb-1">' + CLU.escapeHtml(f.folder) + '</div>' +
       '<div class="mb-2">' + _badges(f, i, keepIndex) + '</div>' +
       _columnNote(r);
 
@@ -202,7 +200,7 @@
   // and { unknown: true } when the column could not supply it at all.
   function _cellHtml(cell) {
     if (cell.unknown || _isBlank(cell.value)) return '<span class="text-muted">—</span>';
-    return cell.html !== undefined ? cell.html : _esc(cell.value);
+    return cell.html !== undefined ? cell.html : CLU.escapeHtml(cell.value);
   }
 
   function _rowHtml(row, total) {
@@ -215,9 +213,9 @@
     return {
       differs: differs,
       html: '<tr' + (differs ? ' class="table-warning"' : '') + '>' +
-        '<th scope="row" class="small fw-normal text-muted">' + _esc(row.label) + '</th>' +
+        '<th scope="row" class="small fw-normal text-muted">' + CLU.escapeHtml(row.label) + '</th>' +
         row.cells.map(function (c) {
-          return '<td class="small text-break"' + (c.title ? ' title="' + _esc(c.title) + '"' : '') + '>' +
+          return '<td class="small text-break"' + (c.title ? ' title="' + CLU.escapeHtml(c.title) + '"' : '') + '>' +
             _cellHtml(c) + '</td>';
         }).join('') +
         '</tr>'
@@ -248,7 +246,7 @@
       var wh = d[key];
       if (!wh) return { value: null };
       var cell = { value: wh[0] + ' × ' + wh[1], area: wh[0] * wh[1] };
-      cell.html = _esc(cell.value) + ' <span class="text-muted">(' + (cell.area / 1e6).toFixed(1) + ' MP)</span>';
+      cell.html = CLU.escapeHtml(cell.value) + ' <span class="text-muted">(' + (cell.area / 1e6).toFixed(1) + ' MP)</span>';
       if (key === 'pages' && d.sampled) {
         cell.title = 'Median of ' + d.sampled + ' sampled page' + (d.sampled === 1 ? '' : 's');
       }
@@ -268,11 +266,11 @@
       { label: 'Folder', cells: each(function (f) { return { value: f.folder }; }) },
       { label: 'Size', cells: each(function (f) {
           var n = Number(f.size || 0);
-          return { value: n, html: _esc(CLU.formatFileSize(n)), title: n.toLocaleString() + ' bytes' };
+          return { value: n, html: CLU.escapeHtml(CLU.formatFileSize(n)), title: n.toLocaleString() + ' bytes' };
         }) },
       { label: 'Modified', cells: each(function (f) {
           if (!f.modified_at) return { value: null };
-          return { value: f.modified_at, html: _esc(new Date(f.modified_at * 1000).toLocaleString()) };
+          return { value: f.modified_at, html: CLU.escapeHtml(new Date(f.modified_at * 1000).toLocaleString()) };
         }) },
       { label: 'Pages', cells: each(function (f, r) {
           return r.info ? { value: r.info.page_count } : { unknown: true };
@@ -304,7 +302,7 @@
         cells: results.map(function (r) {
           if (!r.meta) return { unknown: true };
           var name = (r.meta.file_list || [])[n];
-          return { value: name, html: '<code>' + _esc(name) + '</code>' };
+          return { value: name, html: '<code>' + CLU.escapeHtml(name) + '</code>' };
         })
       });
     }
@@ -330,7 +328,7 @@
       var rendered = s.rows.map(function (row) { return _rowHtml(row, total); }).filter(Boolean);
       if (!rendered.length) return;
       body += '<tr><th colspan="' + (total + 1) + '" class="pt-3 border-0"><h6 class="mb-0">' +
-        _esc(s.title) + '</h6></th></tr>';
+        CLU.escapeHtml(s.title) + '</h6></th></tr>';
       rendered.forEach(function (r) {
         if (r.differs) diffCount++;
         body += r.html;
@@ -572,7 +570,7 @@
     }).catch(function (err) {
       if (token !== _token) return;
       content.innerHTML = '<div class="alert alert-danger">Error loading file information: ' +
-        _esc(err && err.message) + '</div>';
+        CLU.escapeHtml(err && err.message) + '</div>';
     });
   };
 

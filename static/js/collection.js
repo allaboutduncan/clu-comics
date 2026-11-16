@@ -4413,23 +4413,27 @@ async function loadFavoritePublishers() {
         });
 
         // Render slides with same structure as grid-item folders
+        // Paths and names come from the filesystem: they are escaped into
+        // attributes/text and the clicks are handled by onDashboardClick via
+        // data-dash-action, never by an onclick string (a folder named
+        // "Devil's Due" used to end the JS string literal).
         swiper.innerHTML = publisherDetails.map(pub => {
-            // Escape name for use in onclick handler
-            const escapedName = pub.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const path = CLU.escapeHtml(pub.path);
+            const name = CLU.escapeHtml(pub.name);
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card${pub.hasThumbnail ? ' has-thumbnail' : ''}" data-path="${pub.path}" onclick="loadDirectory('${pub.path}')">
+                <div class="dashboard-card${pub.hasThumbnail ? ' has-thumbnail' : ''}" data-path="${path}" data-dash-action="open-folder">
                     <div class="dashboard-card-img-container">
-                        <img src="${pub.thumbnailUrl || ''}" alt="${pub.name}" class="thumbnail" style="${pub.hasThumbnail ? '' : 'display: none;'}">
+                        <img src="${CLU.escapeHtml(pub.thumbnailUrl || '')}" alt="${name}" class="thumbnail" style="${pub.hasThumbnail ? '' : 'display: none;'}">
                         <div class="icon-overlay" style="${pub.hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button aria-label="Remove from Favorites" class="favorite-button favorited" onclick="event.stopPropagation(); removeFavoriteFromDashboard('${pub.path}', '${escapedName}', this)" title="Remove from Favorites">
+                        <button aria-label="Remove from Favorites" class="favorite-button favorited" data-dash-action="remove-favorite" data-path="${path}" data-name="${name}" title="Remove from Favorites">
                             <i class="bi bi-bookmark-heart-fill"></i>
                         </button>
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate item-name" title="${pub.name}">${pub.name}</div>
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
                         <small class="item-meta${pub.folderCount === null ? ' metadata-loading' : ''}">${pub.folderCount === null ? 'Loading...' :
                     [
                         pub.folderCount > 0 ? `${pub.folderCount} folder${pub.folderCount !== 1 ? 's' : ''}` : '',
@@ -4551,8 +4555,8 @@ async function loadDashboardMetadata(paths) {
  * the collection tree.
  */
 function renderWantToReadListSlide(list) {
-    const name = list.name || 'Untitled list';
-    const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const name = CLU.escapeHtml(list.name || 'Untitled list');
+    const listId = Number(list.id);
     const cover = (list.covers && list.covers.length) ? list.covers[0] : null;
     const thumbnailUrl = cover ? `/api/thumbnail?path=${encodeURIComponent(cover)}` : '';
     const total = list.entry_count || 0;
@@ -4561,10 +4565,10 @@ function renderWantToReadListSlide(list) {
 
     return `
     <div class="swiper-slide">
-        <div class="dashboard-card${cover ? ' has-thumbnail' : ''}" data-reading-list-id="${list.id}"
-             onclick="window.location.href='/reading-lists/${list.id}'">
+        <div class="dashboard-card${cover ? ' has-thumbnail' : ''}" data-reading-list-id="${listId}"
+             data-dash-action="open-reading-list">
             <div class="dashboard-card-img-container">
-                <img src="${thumbnailUrl}" alt="${escapedName}" class="thumbnail" style="${cover ? '' : 'display: none;'}">
+                <img src="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail" style="${cover ? '' : 'display: none;'}">
                 <div class="icon-overlay" style="${cover ? 'display: none;' : ''}">
                     <i class="bi bi-journal-album"></i>
                 </div>
@@ -4573,13 +4577,13 @@ function renderWantToReadListSlide(list) {
                          aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
                 <button aria-label="Remove from Want to Read" class="to-read-button marked"
-                        onclick="event.stopPropagation(); removeReadingListFromWantToRead(${list.id}, '${escapedName}', this)"
+                        data-dash-action="remove-reading-list" data-reading-list-id="${listId}" data-name="${name}"
                         title="Remove from Want to Read">
                     <i class="bi bi-bookmark"></i>
                 </button>
             </div>
             <div class="dashboard-card-body">
-                <div class="text-truncate item-name" title="${escapedName}">${name}</div>
+                <div class="text-truncate item-name" title="${name}">${name}</div>
                 <small class="text-muted">Reading List &bull; ${read}/${total}</small>
             </div>
         </div>
@@ -4653,9 +4657,9 @@ async function loadWantToRead() {
 
         // Render slides — reading lists first, then the path-based items
         swiper.innerHTML = listSlides + data.items.map(item => {
-            const name = item.name || item.path.split('/').pop();
-            const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            const escapedPath = item.path.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const name = CLU.escapeHtml(item.name || item.path.split('/').pop());
+            const path = CLU.escapeHtml(item.path);
+            const type = item.type === 'file' ? 'file' : 'folder';
             const isFile = item.type === 'file';
 
             let thumbnailUrl = '';
@@ -4675,13 +4679,13 @@ async function loadWantToRead() {
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card${hasThumbnail ? ' has-thumbnail' : ''}" data-path="${item.path}" onclick="navigateToItem('${escapedPath}', '${item.type}')">
+                <div class="dashboard-card${hasThumbnail ? ' has-thumbnail' : ''}" data-path="${path}" data-type="${type}" data-dash-action="open-item">
                     <div class="dashboard-card-img-container">
-                        <img src="${thumbnailUrl}" alt="${name}" class="thumbnail" style="${hasThumbnail ? '' : 'display: none;'}">
+                        <img src="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail" style="${hasThumbnail ? '' : 'display: none;'}">
                         <div class="icon-overlay" style="${hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button aria-label="Remove from To Read" class="to-read-button marked" onclick="event.stopPropagation(); removeFromWantToRead('${escapedPath}', '${escapedName}', this)" title="Remove from To Read">
+                        <button aria-label="Remove from To Read" class="to-read-button marked" data-dash-action="remove-to-read" data-path="${path}" data-name="${name}" title="Remove from To Read">
                             <i class="bi bi-bookmark"></i>
                         </button>
                     </div>
@@ -4740,16 +4744,16 @@ async function loadRecentlyAddedSwiper() {
 
         // Render slides
         swiper.innerHTML = data.files.map(file => {
-            const name = file.file_name;
-            const path = file.file_path;
-            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(path)}`;
+            const name = CLU.escapeHtml(file.file_name);
+            const path = CLU.escapeHtml(file.file_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(file.file_path)}`;
             const timeAgo = formatTimeAgo(file.added_at);
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${name}">${name}</div>
@@ -4804,22 +4808,22 @@ async function loadContinueReadingSwiper() {
 
         // Render slides
         swiper.innerHTML = data.items.map(item => {
-            const name = item.file_name;
-            const path = item.comic_path;
-            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(path)}`;
+            const name = CLU.escapeHtml(item.file_name);
+            const path = CLU.escapeHtml(item.comic_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.comic_path)}`;
             const timeAgo = formatReadTimeAgo(item.updated_at);
-            const progress = item.progress_percent || 0;
-            const pageInfo = item.total_pages ? `Page ${item.page_number + 1} of ${item.total_pages}` : `${progress}%`;
+            const progress = Number(item.progress_percent) || 0;
+            const pageInfo = item.total_pages ? `Page ${Number(item.page_number) + 1} of ${Number(item.total_pages)}` : `${progress}%`;
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
-                        <button aria-label="Mark as Unread" class="mark-unread-btn" onclick="event.stopPropagation(); markAsUnread('${path.replace(/'/g, "\\'")}')" title="Mark as Unread">
+                        <button aria-label="Mark as Unread" class="mark-unread-btn" data-dash-action="mark-unread" data-path="${path}" title="Mark as Unread">
                             <i class="bi bi-x-circle-fill"></i>
                         </button>
                     </div>
@@ -4881,19 +4885,21 @@ async function loadOnTheStackSwiper() {
             const timeAgo = formatReadTimeAgo(item.last_read_at);
             // Make it obvious when a next-up issue came from a bookmarked
             // reading list rather than a series subscription.
+            const listName = CLU.escapeHtml(item.reading_list_name);
+            const fileName = CLU.escapeHtml(item.file_name);
             const listBadge = item.source === 'reading_list'
-                ? `<span class="badge bg-warning text-dark mt-1 text-truncate mw-100 d-inline-block" title="${item.reading_list_name}"><i class="bi bi-journal-bookmark me-1"></i>${item.reading_list_name}</span>`
+                ? `<span class="badge bg-warning text-dark mt-1 text-truncate mw-100 d-inline-block" title="${listName}"><i class="bi bi-journal-bookmark me-1"></i>${listName}</span>`
                 : '';
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${item.file_path}"
-                     onclick="openReaderForFile('${item.file_path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${CLU.escapeHtml(item.file_path)}"
+                     data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate item-name" title="${item.file_name}">${item.file_name}</div>
-                        <small class="text-muted">${item.series_name} #${item.issue_number}<br/>${timeAgo}</small>
+                        <div class="text-truncate item-name" title="${fileName}">${fileName}</div>
+                        <small class="text-muted">${CLU.escapeHtml(item.series_name)} #${CLU.escapeHtml(item.issue_number)}<br/>${timeAgo}</small>
                         ${listBadge}
                     </div>
                 </div>
@@ -5230,6 +5236,50 @@ function togglePublisherFavorite(path, name, button) {
             CLU.showError('Failed to update favorite');
         });
 }
+
+/**
+ * One delegated click handler for every dashboard swiper card and button.
+ *
+ * The cards carry their path/name in data-* attributes (escaped with
+ * CLU.escapeHtml, so the parser hands back the raw value) and say what a click
+ * does in data-dash-action. The nearest action wins, so a button inside a card
+ * acts instead of the card, which is what event.stopPropagation() did inline.
+ */
+function onDashboardClick(event) {
+    const el = event.target.closest('[data-dash-action]');
+    if (!el || !el.closest('.swiper-slide')) return;
+    const d = el.dataset;
+    switch (d.dashAction) {
+        case 'open-folder':
+            loadDirectory(d.path);
+            break;
+        case 'open-item':
+            navigateToItem(d.path, d.type);
+            break;
+        case 'open-reader':
+            openReaderForFile(d.path);
+            break;
+        case 'open-reading-list':
+            window.location.href = '/reading-lists/' + encodeURIComponent(d.readingListId);
+            break;
+        case 'remove-favorite':
+            removeFavoriteFromDashboard(d.path, d.name, el);
+            break;
+        case 'remove-to-read':
+            removeFromWantToRead(d.path, d.name, el);
+            break;
+        case 'remove-reading-list':
+            removeReadingListFromWantToRead(Number(d.readingListId), d.name, el);
+            break;
+        case 'mark-unread':
+            markAsUnread(d.path);
+            break;
+        default:
+            return;
+    }
+    event.stopPropagation();
+}
+document.addEventListener('click', onDashboardClick);
 
 /**
  * Remove a publisher from favorites via the dashboard swiper
