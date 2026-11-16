@@ -14,7 +14,6 @@ Identity contract:
   server has on disk), matching the existing reading_positions UNIQUE key.
 """
 
-import hmac
 import os
 
 from flask import Blueprint, jsonify, request, Response
@@ -67,8 +66,9 @@ def _require_api_token():
     data call (progress, favorites, browse) scopes to that user.
     """
     from flask import g
-    from core.database import (
-        _hash_token, get_owner_user, get_user_by_token_hash, has_api_tokens,
+    from core.auth import bearer_token_from_header, user_for_bearer_token
+    from core.auth_throttle import (
+        SCOPE_TOKEN, client_address, throttle, too_many_attempts_json,
     )
 
     legacy_token = get_api_token()
@@ -83,23 +83,26 @@ def _require_api_token():
             ),
         }), 503
 
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    presented = bearer_token_from_header(request.headers.get("Authorization", ""))
+    if presented is None:
+        # No credential: an unauthenticated request, not a failed guess.
         return jsonify({"error": "unauthorized"}), 401
 
-    presented = auth_header[len("Bearer "):].strip()
+    # Refused before the token is checked (core/auth_throttle.py), so a
+    # guess made inside the window teaches nothing.
+    address = client_address()
+    wait = throttle.retry_after(SCOPE_TOKEN, address)
+    if wait:
+        return too_many_attempts_json(wait)
 
-    # Per-user token → its user.
-    user = get_user_by_token_hash(_hash_token(presented))
-    if user:
+    # Per-user token → its user; legacy global token → Store Owner.
+    matched, user = user_for_bearer_token(presented, legacy_token=legacy_token)
+    if matched:
+        throttle.record_success(SCOPE_TOKEN, address)
         g.current_user = user
         return None
 
-    # Legacy global token → Store Owner (constant-time compare).
-    if legacy_token and hmac.compare_digest(presented, legacy_token):
-        g.current_user = get_owner_user()
-        return None
-
+    throttle.record_failure(SCOPE_TOKEN, address)
     return jsonify({"error": "unauthorized"}), 401
 
 

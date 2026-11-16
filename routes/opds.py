@@ -8,6 +8,7 @@ and downloading comics from OPDS-compatible readers like Panels, Chunky, etc.
 from flask import Blueprint, render_template, request, url_for, Response
 from core.database import get_to_read_items, get_libraries
 from core.app_logging import app_logger
+from core.auth_throttle import SCOPE_OPDS, client_address, throttle as auth_throttle
 import os
 import hashlib
 from datetime import datetime
@@ -21,6 +22,19 @@ def _opds_unauthorized():
     return Response(
         "Authentication required", status=401,
         headers={"WWW-Authenticate": 'Basic realm="CLU OPDS"'},
+    )
+
+
+def _opds_throttled(wait):
+    """429 while this address is throttled (core/auth_throttle.py).
+
+    Deliberately no ``WWW-Authenticate``: OPDS readers re-prompt (or resend
+    the same stored password) on a challenge, and this is not one.
+    """
+    return Response(
+        "Too many failed sign-in attempts. Try again later.", status=429,
+        headers={"Retry-After": str(int(wait))},
+        mimetype="text/plain",
     )
 
 
@@ -42,10 +56,20 @@ def _opds_auth():
 
     auth = request.authorization
     if not auth or not auth.username:
+        # No credential at all is not a failed guess: readers ask without
+        # one first and send it after the 401 challenge.
         return _opds_unauthorized()
+
+    address = client_address()
+    wait = auth_throttle.retry_after(SCOPE_OPDS, address, auth.username)
+    if wait:
+        return _opds_throttled(wait)
+
     user = verify_password(auth.username, auth.password or "")
     if not user:
+        auth_throttle.record_failure(SCOPE_OPDS, address, auth.username)
         return _opds_unauthorized()
+    auth_throttle.record_success(SCOPE_OPDS, address, auth.username)
     g.current_user = user
     update_last_login(user["id"])
     return None

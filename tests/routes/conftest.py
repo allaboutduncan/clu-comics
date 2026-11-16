@@ -244,11 +244,14 @@ def app(db_connection, tmp_path):
     def api_insights():
         from flask import jsonify, request as flask_request
         from core.auth import resolve_optional_bearer_user
+        from core.auth_throttle import too_many_attempts_json
         from models.stats import get_insights_stats
 
         status, user = resolve_optional_bearer_user(
             flask_request.headers.get("Authorization", "")
         )
+        if status == "throttled":
+            return too_many_attempts_json(user)
         if status == "invalid":
             return jsonify({"error": "unauthorized"}), 401
         payload = get_insights_stats(user_id=user["id"] if user else None)

@@ -260,6 +260,27 @@ def _reset_provider_latches():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: Failed-login throttle doesn't outlive a test (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_auth_throttle():
+    """``core.auth_throttle.throttle`` is process-global. Many tests log in
+    with a wrong password on purpose, and every test client shares one
+    address, so without this the run would start answering 429 to tests that
+    have nothing to do with throttling. Reset on both sides of the test, and
+    only if the module is already imported."""
+    import sys
+
+    module = sys.modules.get("core.auth_throttle")
+    if module is not None:
+        module.throttle.reset()
+    yield
+    module = sys.modules.get("core.auth_throttle")
+    if module is not None:
+        module.throttle.reset()
+
+
+# ---------------------------------------------------------------------------
 # Fixture: Logging suppression (autouse)
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
