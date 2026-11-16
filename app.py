@@ -171,7 +171,7 @@ from models.stats import (
 from models.timeline import get_reading_timeline
 
 # Add URL encoding support for template filters
-from core.file_watcher import FileWatcher
+from core.file_watcher import FileWatcher, set_overflow_recovery
 from apscheduler.triggers.cron import CronTrigger
 
 
@@ -8117,8 +8117,22 @@ def prebuild_browse_cache():
             app_logger.error(f"❌ Error pre-building browse cache for {root}: {e}")
 
 
+def resync_index_after_watcher_overflow():
+    """Recover the file events an inotify queue overflow dropped (#732).
+
+    Handed to the scheduler rather than run here: this is called on the
+    watcher's timer thread, and the sync walks every library root.
+    """
+    app_state.scheduler.add_job(
+        scheduled_file_index_rebuild,
+        id="file_index_overflow_sync",
+        replace_existing=True,
+    )
+
+
 # Start a file watcher for each library root in background
 def start_file_watcher_background():
+    set_overflow_recovery(resync_index_after_watcher_overflow)
     for root in get_library_roots():
         try:
             app_logger.info(f"Initializing file watcher for {root}...")
