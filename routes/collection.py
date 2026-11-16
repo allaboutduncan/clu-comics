@@ -1443,31 +1443,43 @@ def list_downloads():
                      cache_stats, MAX_CACHE_SIZE, cleanup_cache, is_cache_valid,
                      get_directory_listing)
 
-    from core.path_access import (resolve_served_path, staging_root_for,
-                                  STAGING_TARGET, STAGING_WATCH)
+    from core.path_access import (resolve_served_path, STAGING_TARGET,
+                                  STAGING_WATCH)
 
     target_dir = get_target_dir_live()
     requested = request.args.get('path') or target_dir
     staging = (STAGING_TARGET, STAGING_WATCH)
 
-    # The File Manager's Downloads view (a Clerk page): WATCH and TARGET only.
-    # A path that is also inside a library -- TARGET configured inside one --
-    # still needs a folder grant to be listed.
-    served, refusal = resolve_served_path(requested, staging=staging, mode='browse')
+    # A File Manager listing (a Clerk route by policy). It serves WATCH and
+    # TARGET, and the library roots too: files.js reloads whatever folder the
+    # panel shows through here after a bulk rename, usually a library folder.
+    # Realpath-contained, and everything outside those roots is refused.
+    #
+    # Not folder-grant scoped, deliberately: /list-directories lists the same
+    # library folders without a grant check (test_file_manager_not_folder_scoped),
+    # and two listings of one folder must not disagree. Reading a file's
+    # content or metadata (/cbz-metadata, /get-image-data, ...) is still
+    # grant-checked.
+    served, refusal = resolve_served_path(
+        requested, staging=staging, mode='browse', apply_grants=False)
     if refusal:
         return jsonify({"error": refusal[0]}), refusal[1]
-    stage_root = staging_root_for(served.path, staging)
-    if stage_root is None:
-        return jsonify({"error": "Access denied - not a downloads folder"}), 403
     current_path = served.path
 
     if not os.path.isdir(current_path):
         return jsonify({"error": "Directory not found"}), 404
 
     def _parent(path):
-        if os.path.normpath(path) == os.path.normpath(stage_root):
+        # No "Parent" above a served root, unless that root is itself inside
+        # another one (WATCH nested in TARGET is a supported layout).
+        if os.path.normpath(path) != os.path.normpath(served.root):
+            return os.path.dirname(path)
+        parent = os.path.dirname(path)
+        if parent == path:
             return None
-        return os.path.dirname(path)
+        _ok, outside = resolve_served_path(
+            parent, staging=staging, mode='browse', apply_grants=False)
+        return None if outside else parent
 
     try:
         cleanup_cache()

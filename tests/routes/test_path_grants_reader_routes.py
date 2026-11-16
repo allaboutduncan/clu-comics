@@ -252,11 +252,34 @@ class TestListDownloads:
         resp = client.get("/list-downloads", query_string={"path": multi_user.watch})
         assert resp.status_code == 200
 
-    def test_clerk_refused_library_folder(self, client, multi_user):
-        # Even a folder the Clerk holds a grant on: this route lists the
-        # download folders and nothing else.
+    def test_clerk_lists_library_folder(self, client, multi_user):
+        # files.js reloads the panel's current folder -- usually a library
+        # folder -- through this route after a bulk rename.
         _as_clerk(client)
         resp = client.get("/list-downloads", query_string={"path": multi_user.grant})
+        assert resp.status_code == 200
+        assert "XMen 001.cbz" in resp.get_json()["files"]
+        assert os.path.normpath(resp.get_json()["parent"]) == os.path.normpath(multi_user.root)
+
+    def test_library_listing_matches_file_manager_listing(self, client, multi_user):
+        # Not folder-grant scoped, exactly like /list-directories
+        # (test_file_manager_not_folder_scoped): an ungranted sibling lists.
+        _as_clerk(client)
+        resp = client.get("/list-downloads", query_string={"path": multi_user.sibling})
+        assert resp.status_code == 200
+        assert "Batman 001.cbz" in resp.get_json()["files"]
+
+    def test_no_parent_above_library_root(self, client, multi_user):
+        _as_clerk(client)
+        resp = client.get("/list-downloads", query_string={"path": multi_user.root})
+        assert resp.status_code == 200
+        assert resp.get_json()["parent"] is None
+
+    def test_symlink_out_of_library_refused(self, client, multi_user):
+        link = os.path.join(multi_user.grant, "escape")
+        _symlink_or_skip(multi_user.outside, link)
+        _as_clerk(client)
+        resp = client.get("/list-downloads", query_string={"path": link})
         assert resp.status_code == 403
 
     def test_clerk_refused_outside(self, client, multi_user):

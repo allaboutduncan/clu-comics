@@ -127,7 +127,7 @@ def _reexpress(raw_real, configured):
     return os.path.normpath(os.path.join(configured, rel))
 
 
-def resolve_served_path(path, staging=(), mode="full"):
+def resolve_served_path(path, staging=(), mode="full", apply_grants=True):
     """Decide whether the current user may be served ``path``.
 
     Returns ``(ServedPath, None)`` on success, where ``ServedPath.path`` is the
@@ -140,6 +140,12 @@ def resolve_served_path(path, staging=(), mode="full"):
     (``STAGING_WATCH``/``STAGING_TARGET``); they are offered only to Clerks
     and above. ``mode`` is the grant level a library path needs: ``'full'``
     to read a file, ``'browse'`` for a listing that filters its results.
+
+    ``apply_grants=False`` keeps the containment and the staging role check
+    but skips the folder grant. It exists for the File Manager's listings
+    only, which are deliberately not folder-scoped (see ``/list-directories``
+    and ``test_file_manager_not_folder_scoped``); anything that reads file
+    content or metadata must leave it on.
     """
     if not path or not isinstance(path, str) or "\0" in path:
         return None, ("Invalid path", 400)
@@ -162,7 +168,7 @@ def resolve_served_path(path, staging=(), mode="full"):
 
     canonical = _reexpress(raw_real, root)
 
-    if kind == KIND_LIBRARY and is_login_required():
+    if kind == KIND_LIBRARY and apply_grants and is_login_required():
         user = current_user()
         if user is None:
             return None, ("Login required", 401)
@@ -172,17 +178,6 @@ def resolve_served_path(path, staging=(), mode="full"):
                 return None, ("Access denied - you do not have access to this folder", 403)
 
     return ServedPath(canonical, kind, root), None
-
-
-def staging_root_for(path, staging):
-    """The configured WATCH/TARGET root (named in ``staging``) whose realpath
-    contains ``path``'s, or None. For a route that serves the download folders
-    *only*, even where one of them sits inside a library."""
-    try:
-        hit = _containing(_real(path), _staging_roots(staging))
-    except Exception:
-        return None
-    return hit[0] if hit else None
 
 
 def grant_level_filter(served):
