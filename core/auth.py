@@ -325,7 +325,21 @@ _OWNER_PREFIXES = (
     "/api/import",
     "/api/setup",              # Guided Setup (preflight reads paths, uid, owner state)
     "/setup",                  # Guided Setup page (also covers /setup-owner above)
+    # Download client and indexer configuration holds credentials, and the
+    # only pages that manage it (/config, /setup) are owner-only. The two
+    # /api/download-clients routes Clerk pages use are listed just below.
+    "/api/download-clients",
+    "/api/indexers",
 )
+
+# Under an owner prefix but used by Clerk pages: the manual search modal reads
+# the source order, and the Status page clears finished Usenet/DC++ rows.
+# Neither reads or writes client configuration. Exact paths, so a new
+# /api/download-clients route is owner-only until someone decides otherwise.
+_CLERK_PATHS_UNDER_OWNER_PREFIXES = frozenset({
+    "/api/download-clients/sources",
+    "/api/download-clients/downloads/clear",
+})
 
 # GET is Reader (browsing), but creating/editing/deleting requires Owner.
 _OWNER_MUTATION_PREFIXES = (
@@ -362,10 +376,8 @@ _READER_READ_POST_PREFIXES = (
 # Clerk-level areas where even GET is a Clerk feature (not just Reader viewing).
 _CLERK_PREFIXES = (
     "/api/getcomics",
-    "/api/download-clients",
     "/api/download-runs",      # automatic download run reports (Status page)
     "/download_status",        # download queue rows (Status page): /download_status/<id>, /download_status_all
-    "/api/indexers",
     "/api/usenet",
     "/api/dcpp",
     "/api/pull-list",
@@ -406,6 +418,8 @@ def required_role_for_request():
     path = request.path
     mutating = request.method in _MUTATING_METHODS
 
+    if path in _CLERK_PATHS_UNDER_OWNER_PREFIXES:
+        return "clerk"
     if path.startswith(_OWNER_PREFIXES):
         return "owner"
     if mutating and path.startswith(_OWNER_MUTATION_PREFIXES):

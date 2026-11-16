@@ -122,6 +122,18 @@ class TestRolePolicy:
         ("POST", "/api/problem-files/delete", "owner"),
         ("POST", "/api/problem-files/replace", "owner"),
         ("POST", "/api/problem-files/replacements/apply", "owner"),
+        # Download client / indexer configuration holds credentials and is
+        # managed only from /config and /setup, both owner-only.
+        ("GET", "/api/download-clients", "owner"),
+        ("POST", "/api/download-clients/sabnzbd/config", "owner"),
+        ("POST", "/api/download-clients/sabnzbd/test", "owner"),
+        ("GET", "/api/indexers", "owner"),
+        ("POST", "/api/indexers/test", "owner"),
+        # ...except the two routes Clerk pages call.
+        ("GET", "/api/download-clients/sources", "clerk"),
+        ("POST", "/api/download-clients/downloads/clear", "clerk"),
+        ("POST", "/api/usenet/search", "clerk"),
+        ("POST", "/api/dcpp/grab", "clerk"),
     ])
     def test_required_role(self, app, method, path, expected):
         with app.test_request_context(path, method=method):
