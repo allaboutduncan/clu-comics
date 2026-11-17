@@ -182,8 +182,6 @@ def _schedule_auto_retry(task, last_error):
 
 # Setup the download directory from config.
 watch = get_watch_dir() or "/downloads/temp"
-from core.database import get_user_preference
-custom_headers_str = get_user_preference("custom_headers", "")
 
 # Import-time bootstrap only -- WATCH is editable at runtime from Settings, so
 # every download must resolve it through _download_dir() instead of this constant.
@@ -218,29 +216,6 @@ def _download_dir():
             return DOWNLOAD_DIR
     return resolved or DOWNLOAD_DIR
 
-# Default headers for HTTP requests.
-default_headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/112.0.0.0 Safari/537.36"
-    )
-}
-
-if custom_headers_str:
-    try:
-        custom_headers = json.loads(custom_headers_str)
-        if isinstance(custom_headers, dict):
-            custom_headers = {k.strip(): v.strip() for k, v in custom_headers.items()}
-            default_headers.update(custom_headers)
-            monitor_logger.info("Custom headers from settings applied.")
-        else:
-            monitor_logger.warning("Custom headers from settings are not a valid dictionary. Ignoring.")
-    except Exception as e:
-        monitor_logger.warning(f"Failed to parse custom headers: {e}. Ignoring.")
-
-headers = default_headers
-
 # Basic headers for internal downloads (no custom headers required)
 # Used when downloads are initiated from within the app (Pull List, Weekly Packs)
 basic_headers = {
@@ -250,6 +225,18 @@ basic_headers = {
         "Chrome/112.0.0.0 Safari/537.36"
     )
 }
+
+
+def _full_headers():
+    """Basic headers plus the user's custom_headers, read per download.
+
+    Never a module constant: this module is imported before init_db(), and a
+    snapshot taken here ignored every later edit (and every removal) of the
+    custom headers until a restart. Which hosts may receive them is still
+    decided per request by url_guard.scope_headers / guard_session.
+    """
+    return url_guard.download_headers(basic_headers)
+
 
 def _make_gc_scraper():
     """Build a fresh cloudscraper session for getcomics.org.
@@ -287,7 +274,7 @@ configure_cors(app)
 # -------------------------------
 # URL Resolver
 # -------------------------------
-def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
+def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
     """
     Follow every ordinary 3xx redirect **and** the HTML *meta-refresh* pages
     that GetComics sometimes serves, stopping once we reach the real file
@@ -302,6 +289,8 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
     """
     global gc_scraper
 
+    if hdrs is None:
+        hdrs = _full_headers()
     current = url
     for _ in range(max_hops):
         # Every hop is checked before anything is sent to it, outside the try
@@ -464,8 +453,10 @@ def process_download(task):
     source_page_url = task.get('page_url')
 
     # Use basic headers for internal downloads (Pull List, Weekly Packs, UI searches)
-    # Use full headers (with custom_headers_str) for external downloads (browser extension)
-    use_headers = basic_headers if internal else headers
+    # Use full headers (with the user's custom_headers, read now) for external
+    # downloads (browser extension). Read once per task so every mirror and
+    # retry attempt of this download sends the same set.
+    use_headers = basic_headers if internal else _full_headers()
 
     # If cancelled while queued, don't start at all
     if is_cancel_requested(download_id):
@@ -743,7 +734,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     Args:
         url: The (resolved) download URL to fetch
         download_id: Unique identifier for progress tracking
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
         source_url: The original getcomics link to surface as the manual-download
             link on a Cloudflare failure (preferably the post page). The resolved
             mirror URL — and even the tokenized /dls/ link — 403 in a browser;
@@ -751,7 +742,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
             mirrors require. Defaults to ``url``.
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
 
     retries = 3
     delay = 2  # base delay in seconds
@@ -796,7 +787,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
         session.headers["User-Agent"] = scraper_ua
     session.headers["Referer"] = "https://getcomics.org/"
     # Check every request and redirect hop; keep custom headers on known hosts.
-    url_guard.guard_session(session, headers, basic_headers)
+    url_guard.guard_session(session, hdrs, basic_headers)
 
     # The destination name is reserved once and held for every attempt. Taking
     # it per attempt is what let two of the three workers agree on the same
@@ -1060,7 +1051,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
 def _pd_id(url: str) -> str:
     return urlparse(url).path.rstrip("/").split("/")[-1]
 
-def _requests_session() -> requests.Session:
+def _requests_session(hdrs) -> requests.Session:
+    """A retrying session guarded for *hdrs* (the headers this download sends)."""
     s = requests.Session()
     retries = Retry(
         total=5,
@@ -1073,7 +1065,7 @@ def _requests_session() -> requests.Session:
     s.mount("https://", HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
     s.mount("http://",  HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
     # Check every request and redirect hop; keep custom headers on known hosts.
-    return url_guard.guard_session(s, headers, basic_headers)
+    return url_guard.guard_session(s, hdrs, basic_headers)
 
 def _parse_total_from_headers(hdrs, default_size=None):
     # Prefer Content-Range when resuming, else Content-Length
@@ -1103,10 +1095,10 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
         url: The PixelDrain URL
         download_id: Unique identifier for progress tracking
         dest_name: Optional destination filename
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
 
     file_id = _pd_id(url)
 
@@ -1118,7 +1110,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     #    which is faster + works for both modes; if it fails, fall back to library/info.
     is_folder = False
     original_name = dest_name
-    session = _requests_session()
+    session = _requests_session(hdrs)
 
     # Build the *download* endpoints up-front
     file_dl_url   = f"https://pixeldrain.com/api/file/{file_id}?download"
@@ -1317,10 +1309,10 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
         url: The ComicBookPlus download URL
         download_id: Unique identifier for progress tracking
         dest_name: Optional destination filename
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
     parsed = urlparse(url)
     query_params = dict(param.split('=') for param in parsed.query.split('&') if '=' in param)
 
@@ -1349,7 +1341,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
     })
 
     # Setup session with retries
-    session = _requests_session()
+    session = _requests_session(hdrs)
 
     # Choose output path. O_EXCL reservation, not a bare exists() scan -- see
     # claim_download_path; three workers share this directory.

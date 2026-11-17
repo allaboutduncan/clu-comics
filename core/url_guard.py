@@ -26,6 +26,8 @@ not offer without replacing its transport.
 from __future__ import annotations
 
 import ipaddress
+import json
+import logging
 import socket
 from urllib.parse import urlsplit
 
@@ -193,6 +195,53 @@ def is_allowed_url(url):
 # ---------------------------------------------------------------------------
 # custom_headers scoping
 # ---------------------------------------------------------------------------
+
+_last_rejected_custom_headers = None
+
+
+def _parse_custom_headers(raw):
+    """The stored ``custom_headers`` JSON as a dict of stripped strings.
+
+    ``{}`` for an empty, malformed or non-object value. A bad value is warned
+    about once per distinct value, not on every download that reads it.
+    """
+    global _last_rejected_custom_headers
+    if not raw or not str(raw).strip():
+        return {}
+    problem = None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {k.strip(): v.strip() for k, v in parsed.items()}
+        problem = "Custom headers from settings are not a valid dictionary. Ignoring."
+    except Exception as e:
+        problem = f"Failed to parse custom headers: {e}. Ignoring."
+    if raw != _last_rejected_custom_headers:
+        _last_rejected_custom_headers = raw
+        # The logger api.py's download log has always carried this on.
+        logging.getLogger("monitor_logger").warning(problem)
+    return {}
+
+
+def download_headers(basic_headers):
+    """*basic_headers* plus the user's ``custom_headers``, read now.
+
+    Read per download through core.settings (a 5s snapshot), never held in a
+    module constant: api.py is imported before init_db(), and a value frozen
+    there ignored every later edit on the settings page -- including removing a
+    header, which kept being sent until a restart. Scoping (which hosts may
+    receive the custom part) is still :func:`scope_headers` /
+    :func:`guard_session`'s job; this only says what the custom part is.
+    """
+    full = dict(basic_headers or {})
+    try:
+        from core.settings import get_setting
+        raw = get_setting("HEADERS")
+    except Exception:
+        raw = ""
+    full.update(_parse_custom_headers(raw))
+    return full
+
 
 def _host_of(url):
     try:
