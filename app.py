@@ -128,6 +128,7 @@ from packaging import version as pkg_version
 from core.database import (
     init_db,
     get_db_connection,
+    db_conn,
     log_recent_file,
     invalidate_browse_cache,
     get_file_index_from_db,
@@ -6128,14 +6129,15 @@ def get_thumbnail():
         if served is not None:
             return served
 
-    # Check DB status
-    conn = get_db_connection()
+    # Check DB status. db_conn() closes on every path: this route runs once per
+    # cover on every grid page, so a leaked read connection here pins a WAL
+    # read mark on the hottest path in the app.
     job = None
-    if conn:
-        job = conn.execute(
-            "SELECT * FROM thumbnail_jobs WHERE path = ?", (file_path,)
-        ).fetchone()
-        conn.close()
+    with db_conn() as conn:
+        if conn:
+            job = conn.execute(
+                "SELECT * FROM thumbnail_jobs WHERE path = ?", (file_path,)
+            ).fetchone()
 
     if job and job["status"] == "completed" and os.path.exists(cache_path) and not stale:
         served = _serve_cached_thumbnail(shard_dir, filename)
@@ -6169,15 +6171,14 @@ def get_thumbnail():
         # permanent load on a two-worker executor.
         return redirect(url_for("static", filename="images/error.svg"))
 
-    # Insert 'processing' status synchronously to prevent race conditions
-    conn = get_db_connection()
-    if conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO thumbnail_jobs (path, status) VALUES (?, ?)",
-            (file_path, "processing"),
-        )
-        conn.commit()
-        conn.close()
+    # Record 'processing' synchronously, before the job is queued, so a fast
+    # worker's 'completed' cannot be overwritten by it. Through set_job_status,
+    # never a raw upsert: that is what stamps file_mtime, and a bare
+    # (path, status) INSERT OR REPLACE left it NULL -- wiping any value already
+    # there -- which scan_library_task reads as "mtime unknown" and re-queues
+    # whenever the job dies before its own terminal write. It opens and closes its own connection; the read
+    # connection above is already closed, so nothing here holds a second one.
+    set_job_status(file_path, "processing")
 
     # Submit task
     submit_thumbnail_job(
