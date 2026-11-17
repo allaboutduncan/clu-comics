@@ -169,3 +169,189 @@ class TestDecorator:
         gate.set()
         first.join(2)
         assert overlapped == []
+
+
+class _HookedLock:
+    """The real lock, plus a one-shot hook fired just after one thread releases it.
+
+    Lets a test act at the exact moment the runner has made its between-passes
+    decision and dropped the lock, which is where a request used to be lost.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.armed_for = None  # thread ident whose next release fires the hook
+        self.hook = None
+
+    def __enter__(self):
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        self._lock.release()
+        if self.armed_for == threading.get_ident():
+            self.armed_for = None
+            self.hook()
+        return False
+
+
+JOIN = 5  # seconds; a safety net against a hang, never a timing assertion
+
+
+class TestNoRequestIsLost:
+    """A request that lands at any point while a sweep runs earns a pass."""
+
+    def test_a_request_right_after_the_final_check_still_gets_a_pass(
+        self, monkeypatch
+    ):
+        """The old window: the runner has decided "nothing more is owed" and
+        let go of the lock, but has not yet released the claim. A request
+        landing there saw the claim held, set the flag and returned, and the
+        release then cleared the flag unread."""
+        lock = _HookedLock()
+        monkeypatch.setattr(app_state, "_target_sweep_lock", lock)
+        calls = []
+        injected = []
+
+        @app_state.single_flight_target_sweep
+        def pass_():
+            calls.append(threading.get_ident())
+            if len(calls) == 1:
+                # The body's last act in its final pass: arm the hook so the
+                # runner's next lock release -- its stop decision -- lets
+                # another download's request in.
+                lock.armed_for = threading.get_ident()
+
+        def request_from_another_download():
+            t = threading.Thread(target=pass_)
+            t.start()
+            t.join(JOIN)
+            injected.append(not t.is_alive())
+
+        lock.hook = request_from_another_download
+        pass_()
+
+        assert injected == [True]
+        assert len(calls) == 2, "the request made during the final pass was dropped"
+        assert app_state.target_sweep_running() is False
+
+    def test_a_request_mid_pass_returns_at_once_and_earns_one_more_pass(self):
+        """The lock is not held while the body runs: the second caller is not
+        blocked behind the pass, and its work is done afterwards."""
+        in_body = threading.Event()
+        let_go = threading.Event()
+        calls = []
+
+        @app_state.single_flight_target_sweep
+        def pass_():
+            calls.append(1)
+            if len(calls) == 1:
+                in_body.set()
+                assert let_go.wait(JOIN)
+
+        runner = threading.Thread(target=pass_)
+        runner.start()
+        assert in_body.wait(JOIN)
+
+        requester = threading.Thread(target=pass_)
+        requester.start()
+        requester.join(JOIN)
+        # Returned while the body is still parked on let_go.
+        assert not requester.is_alive()
+        assert len(calls) == 1
+
+        let_go.set()
+        runner.join(JOIN)
+        assert not runner.is_alive()
+        assert len(calls) == 2
+        assert app_state.target_sweep_running() is False
+
+    def test_many_requests_during_one_pass_coalesce_into_one_more(self):
+        in_body = threading.Event()
+        let_go = threading.Event()
+        calls = []
+
+        @app_state.single_flight_target_sweep
+        def pass_():
+            calls.append(1)
+            if len(calls) == 1:
+                in_body.set()
+                assert let_go.wait(JOIN)
+
+        runner = threading.Thread(target=pass_)
+        runner.start()
+        assert in_body.wait(JOIN)
+
+        requesters = [threading.Thread(target=pass_) for _ in range(8)]
+        for t in requesters:
+            t.start()
+        for t in requesters:
+            t.join(JOIN)
+            assert not t.is_alive()
+
+        let_go.set()
+        runner.join(JOIN)
+        assert len(calls) == 2
+
+    def test_a_failed_pass_still_runs_the_pending_rerun(self):
+        in_body = threading.Event()
+        let_go = threading.Event()
+        calls = []
+        outcome = {}
+
+        @app_state.single_flight_target_sweep
+        def pass_():
+            calls.append(1)
+            if len(calls) == 1:
+                in_body.set()
+                assert let_go.wait(JOIN)
+                raise RuntimeError("first pass failed")
+            return "second pass ok"
+
+        def run():
+            try:
+                outcome["result"] = pass_()
+            except Exception as e:  # pragma: no cover - the failure mode
+                outcome["error"] = e
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        assert in_body.wait(JOIN)
+        requester = threading.Thread(target=pass_)
+        requester.start()
+        requester.join(JOIN)
+        assert not requester.is_alive()
+
+        let_go.set()
+        runner.join(JOIN)
+        assert len(calls) == 2
+        assert outcome == {"result": "second pass ok"}
+        assert app_state.target_sweep_running() is False
+        # Still usable afterwards.
+        assert pass_() == "second pass ok"
+
+    def test_a_failure_in_the_last_pass_propagates_and_releases(self):
+        calls = []
+
+        @app_state.single_flight_target_sweep
+        def pass_():
+            calls.append(1)
+            if len(calls) == 1:
+                pass_()  # a request arriving mid-pass
+                return "first"
+            raise RuntimeError("second pass failed")
+
+        with pytest.raises(RuntimeError, match="second pass failed"):
+            pass_()
+        assert len(calls) == 2
+        assert app_state.target_sweep_running() is False
+        assert app_state.claim_target_sweep() is True
+
+    def test_an_escaping_base_exception_releases_the_claim(self):
+        @app_state.single_flight_target_sweep
+        def pass_():
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            pass_()
+        assert app_state.target_sweep_running() is False

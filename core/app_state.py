@@ -112,12 +112,26 @@ def claim_target_sweep():
         return True
 
 
-def request_target_sweep_rerun():
-    """Consume the pending-rerun flag; True when another pass is owed."""
+def finish_target_sweep_pass(may_continue=True):
+    """End one pass: keep the claim for another pass, or give it up.
+
+    Returns True when a re-run was requested and *may_continue* allows one; the
+    request is consumed and the caller still holds the claim. Otherwise the
+    claim is released and False is returned.
+
+    Deciding "nothing more is owed" and releasing the claim MUST be one step
+    under the lock. They used to be two (consume the flag, then release in a
+    ``finally``), and a request landing between them saw the claim still held,
+    set the flag and returned -- and the release then cleared that flag
+    unread, stranding the download that asked until some later one finished.
+    """
     with _target_sweep_lock:
-        wanted = _target_sweep["rerun"]
+        if may_continue and _target_sweep["rerun"]:
+            _target_sweep["rerun"] = False
+            return True
+        _target_sweep["started_at"] = None
         _target_sweep["rerun"] = False
-        return wanted
+        return False
 
 
 def release_target_sweep():
@@ -146,7 +160,12 @@ def target_sweep_age():
 
 
 def single_flight_target_sweep(func):
-    """Serialise *func*, re-running it once per request that arrived meanwhile.
+    """Serialise *func*, running one more pass if any request arrived meanwhile.
+
+    Requests during a pass coalesce into a single further pass, up to
+    MAX_TARGET_SWEEP_PASSES in all. A pass that raises still honours a pending
+    re-run; the exception propagates only if the final pass raised (earlier
+    failures are logged).
 
     A decorator rather than a wrapper function because api.py imports the name
     ``process_incoming_wanted_issues`` and must not be edited, so the claiming
@@ -164,18 +183,41 @@ def single_flight_target_sweep(func):
                 "Wanted scan already running; coalescing into the run in flight"
             )
             return None
+        # The lock is only taken between passes, never while the body runs, so
+        # a request arriving mid-pass is recorded at once and returns.
+        held = True
         try:
-            result = func(*args, **kwargs)
-            passes = 1
-            while passes < MAX_TARGET_SWEEP_PASSES and request_target_sweep_rerun():
+            passes = 0
+            while True:
                 passes += 1
-                app_logger.debug(f"Wanted scan: coalesced re-run (pass {passes})")
-                result = func(*args, **kwargs)
-            return result
+                result, error = None, None
+                try:
+                    result = func(*args, **kwargs)
+                except Exception as e:
+                    # A failed pass must not swallow a re-run someone asked
+                    # for meanwhile: their download still needs filing.
+                    error = e
+                if not finish_target_sweep_pass(passes < MAX_TARGET_SWEEP_PASSES):
+                    held = False
+                    break
+                if error is not None:
+                    app_logger.error(
+                        f"Wanted scan pass {passes} failed: {error}; "
+                        "running the re-run requested meanwhile",
+                        exc_info=error,
+                    )
+                app_logger.debug(
+                    f"Wanted scan: coalesced re-run (pass {passes + 1})"
+                )
         finally:
-            # Unconditional: one failed pass must not lock the scan out for the
-            # life of the process.
-            release_target_sweep()
+            # Anything that escaped the loop (KeyboardInterrupt, SystemExit, an
+            # error in the bookkeeping itself) must not leave the claim held,
+            # or every later sweep would stand down for the life of the process.
+            if held:
+                release_target_sweep()
+        if error is not None:
+            raise error
+        return result
 
     return wrapper
 

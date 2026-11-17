@@ -104,6 +104,13 @@ a caller that stands down silently can strand a file in TARGET until the next
 download finishes. `/api/scan-downloads` answers **409** rather than reporting a
 scan it did not run.
 
+> **"Is a re-run owed?" and "release the claim" are one step under the lock**
+> (`finish_target_sweep_pass`). They used to be two, and a request landing
+> between them saw the claim held, set the flag, and had it cleared unread by
+> the release. The lock is never held while the body runs; requests during a
+> pass coalesce into one further pass; a pass that raises still runs a pending
+> re-run, and only the final pass's exception propagates.
+
 **`core/problem_replacements.py` is the destructive twin** and uses the same
 collector (`skip_converted_siblings=False` — it decides `.cbr` vs `.cbz` for
 itself in `is_acceptable_replacement`). A match there *trashes* the file it
