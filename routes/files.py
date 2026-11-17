@@ -95,6 +95,33 @@ def _validate_move(source, destination):
     return None
 
 
+def _move_item(source, destination, is_file):
+    """Move one file or folder for ``/move`` and ``/move-batch``.
+
+    Not ``shutil.move``: across devices it is ``copy2`` (or ``copytree`` of
+    ``copy2`` for a folder), and a mount that refuses ``utime``/``chmod``
+    turns a complete copy into a reported failure with the source left behind
+    (#582). ``destination`` is always the full target path, so an existing
+    *directory* there is refused rather than silently moved into, which is
+    what ``shutil.move`` did -- and which left ``update_index_on_move``
+    recording a path the item never landed at.
+
+    A moved comic takes its new folder's owner and mode
+    (``match_parent_permissions``), or a download that arrived ``root:0600``
+    stays unreadable to thumbnails after it is filed. A folder keeps its
+    contents' modes, as before.
+    """
+    from helpers import move_file, move_tree, match_parent_permissions
+
+    if is_file:
+        if os.path.isdir(destination):
+            raise IsADirectoryError(f"A folder already exists at {destination}")
+        move_file(source, destination)
+        match_parent_permissions(destination)
+    else:
+        move_tree(source, destination)
+
+
 def _do_move_batch(op_id, items):
     """Background thread: move every item, then queue the metadata for them.
 
@@ -133,7 +160,7 @@ def _do_move_batch(op_id, items):
                                            detail=os.path.basename(source))
                 try:
                     is_file = os.path.isfile(source)
-                    shutil.move(source, destination)
+                    _move_item(source, destination, is_file)
                     update_index_on_move(source, destination, reconcile=False)
                     for p in (source, destination):
                         sid = _series_id_for_path(p)

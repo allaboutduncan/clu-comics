@@ -248,7 +248,16 @@ download in one library:
 `helpers.open_zip_for_write` (every CBZ CLU writes) and
 `app.process_incoming_wanted_issues` (TARGET → library, where the same EPERM
 left a complete copy in `/data` *and* the source in TARGET to be re-copied on
-every sweep).
+every sweep). So do the other movers onto a mount: `/move` and `/move-batch`
+(`routes.files._move_item`), `models.comicvine.auto_move_file`, the
+replacement staging and rollback in `core.problem_replacements`, trash restore,
+and the Usenet import into WATCH. Each comic moved onto the library then gets
+`match_parent_permissions`, or a download that arrived `root:0600` stays
+unreadable to thumbnails. `helpers.move_tree` is the folder counterpart (same
+hidden-sibling staging, same tolerated `copystat`); it refuses an existing
+destination instead of nesting into it as `shutil.move` did. Tests:
+`tests/unit/test_library_moves_cross_device.py`,
+`tests/routes/test_move_batch_cross_device.py`.
 
 - **Only the metadata failure is demoted.** A failed `copyfile` and a source
   that cannot be removed both still raise: the second is the #582 failure mode
@@ -266,6 +275,16 @@ every sweep).
   disk-full or NAS drop mid-copy lost it. A failed copy removes the sibling; a
   crash leftover is hidden (never indexed or moved) and reaped by the next
   cross-device move into that folder once a day old (`STALE_INCOMING_SECONDS`).
+  **The reaper takes only `move_file`'s own shape** (`_MOVE_FILE_STAGED`: `.` +
+  32 lowercase hex + `.clu_incoming`, fullmatch) and only regular files. The
+  fixed-name siblings of `core.problem_replacements` (`.<name>.clu_incoming`,
+  held across the trash step) and `core.comicvine_db_update` share the suffix
+  and must never be reaped; those modules clear their own. A `move_tree` stage
+  is a directory, so it is skipped too. **Age is `max(st_mtime, st_ctime)`**,
+  never mtime alone: `copystat` stamps the source's old mtime on a sibling
+  created a moment ago, so by mtime a live copy reads as a day stale. ctime is
+  recent for a just-staged file on both POSIX (inode change, which copystat
+  bumps) and Windows (creation time).
   The fallback refuses when `src` and `dst` are the same file (a case-only
   rename): the copy would land on it and `os.remove(src)` delete it.
   Tests: `tests/unit/test_move_file_atomic_overwrite.py`.

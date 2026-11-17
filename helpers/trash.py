@@ -470,7 +470,16 @@ def restore_from_trash(item_name):
     os.makedirs(parent_dir, exist_ok=True)
 
     try:
-        shutil.move(item_path, original_path)
+        # The trash is on /cache and the library on another mount, so this is
+        # a copy. move_file/move_tree rather than shutil.move: a library mount
+        # that refuses utime/chmod must not fail a restore whose bytes all
+        # arrived, leaving the item both restored and still in the trash (#582).
+        from helpers import match_parent_permissions, move_file, move_tree
+        if os.path.isdir(item_path) and not os.path.islink(item_path):
+            move_tree(item_path, original_path)
+        else:
+            move_file(item_path, original_path)
+            match_parent_permissions(original_path)
         app_logger.info(f"Restored from trash: {item_name} -> {original_path}")
 
         # Remove from manifest

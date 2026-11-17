@@ -36,7 +36,6 @@ Things here that look arbitrary and are not:
 """
 
 import os
-import shutil
 import threading
 import zipfile
 
@@ -352,11 +351,17 @@ def _swap(row, src):
     staged = os.path.join(dest_dir, "." + os.path.basename(dest) + ".clu_incoming")
     trashed_to = None
 
+    from helpers import move_file
+
     try:
         os.makedirs(dest_dir, exist_ok=True)
         if os.path.exists(staged):
             os.remove(staged)
-        shutil.move(src, staged)
+        # move_file, not shutil.move: TARGET and the library are usually two
+        # mounts, and shutil.move's copy2 fails a complete copy on a library
+        # mount that refuses utime/chmod (#582) -- the swap would never happen.
+        # A failed copy leaves nothing at `staged` and the download in TARGET.
+        move_file(src, staged)
     except Exception as e:
         return False, f"could not stage the replacement ({e})", None
 
@@ -408,12 +413,14 @@ def _unstage(staged, original_src):
     """
     if not os.path.exists(staged):
         return
+    from helpers import move_file
+
     try:
         if os.path.exists(original_src):
             os.remove(staged)
             return
         os.makedirs(os.path.dirname(original_src), exist_ok=True)
-        shutil.move(staged, original_src)
+        move_file(staged, original_src)
     except Exception as e:
         app_logger.error(
             f"Could not return the download to {original_src}: {e}. "
@@ -430,10 +437,18 @@ def _restore_trashed(trashed_to, target_path):
     """
     if not trashed_to:
         return
+    from helpers import match_parent_permissions, move_file
+
     try:
         if os.path.exists(trashed_to) and not os.path.exists(target_path):
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            shutil.move(trashed_to, target_path)
+            # The trash is on /cache, the library on another mount: a refused
+            # utime/chmod must not report a restored comic as lost.
+            move_file(trashed_to, target_path)
+            try:
+                match_parent_permissions(target_path)
+            except Exception:
+                pass
             app_logger.info(f"Restored {target_path} after a failed replacement")
     except Exception as e:
         app_logger.error(

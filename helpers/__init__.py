@@ -2,6 +2,7 @@
 # so that `from helpers import is_hidden` etc. continues to work
 # now that helpers/ is a package directory.
 
+import errno
 import os
 import re
 import stat
@@ -341,12 +342,84 @@ def move_file(src, dst):
     os.remove(src)
 
 
+def move_tree(src, dst):
+    """Move the directory *src* to *dst*, which must not exist yet.
+
+    The directory counterpart of ``move_file``. ``shutil.move`` of a folder
+    across devices is ``copytree(copy_function=copy2)``, and both the per-file
+    ``copystat`` and copytree's own per-directory ``copystat`` turn a refused
+    ``utime``/``chmod`` into ``shutil.Error`` *after* every byte was copied --
+    so the source is never removed, the caller reports a failure, and a full
+    second copy sits at the destination (#582). Here a refused metadata copy is
+    a DEBUG line, as in ``move_file``.
+
+    The copy goes to a hidden ``.<32 hex>.clu_incoming`` sibling of *dst* and
+    is renamed into place only once complete, so a failed copy leaves nothing
+    at *dst* (the partial sibling is removed). The source is removed last; if
+    that fails the call raises with the complete copy already at *dst*, which
+    is what ``shutil.move`` does too.
+
+    ``shutil.move`` would move *src* **into** *dst* when *dst* is an existing
+    directory. Callers here pass the full destination path, so that silent
+    nesting is refused instead (``FileExistsError``) -- except a case-only
+    rename, where *dst* "exists" only because it is *src*.
+    """
+    if os.path.lexists(dst) and not _same_file(src, dst):
+        raise FileExistsError(errno.EEXIST, "Destination already exists", dst)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        if _same_file(src, dst):
+            raise
+
+    dst_dir = os.path.dirname(os.path.abspath(dst))
+    staged = os.path.join(dst_dir, f".{uuid.uuid4().hex}{INCOMING_SUFFIX}")
+    try:
+        _copy_tree_tolerant(src, staged)
+        os.rename(staged, dst)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    shutil.rmtree(src)
+
+
+def _copystat_tolerant(src, dst):
+    try:
+        shutil.copystat(src, dst, follow_symlinks=False)
+    except OSError as e:
+        app_logger.debug(
+            f"Kept {dst} without its source timestamps/mode ({e}); "
+            "the mount refuses utime/chmod"
+        )
+
+
+def _copy_tree_tolerant(src, dst):
+    """``copytree(symlinks=True)`` whose metadata copies may fail."""
+    os.mkdir(dst)
+    with os.scandir(src) as it:
+        entries = list(it)
+    for entry in entries:
+        target = os.path.join(dst, entry.name)
+        if entry.is_symlink():
+            os.symlink(os.readlink(entry.path), target)
+        elif entry.is_dir(follow_symlinks=False):
+            _copy_tree_tolerant(entry.path, target)
+        else:
+            shutil.copyfile(entry.path, target)
+            _copystat_tolerant(entry.path, target)
+    _copystat_tolerant(src, dst)
+
+
 # Suffix of a file staged beside its destination before an atomic os.replace.
 # Shared with core.problem_replacements and core.comicvine_db_update.
 INCOMING_SUFFIX = ".clu_incoming"
 # A staged sibling this old belongs to a writer that died (a crash, a container
 # stop): a live copy keeps its mtime fresh. A day is far beyond any real copy.
 STALE_INCOMING_SECONDS = 24 * 3600
+# The exact name move_file and move_tree stage under (".<uuid4 hex>.clu_incoming").
+# Only this shape is ever reaped; see _reap_stale_incoming.
+_MOVE_FILE_STAGED = re.compile(r"\.[0-9a-f]{32}" + re.escape(INCOMING_SUFFIX))
 
 
 def _same_file(a, b):
@@ -357,21 +430,36 @@ def _same_file(a, b):
 
 
 def _reap_stale_incoming(folder):
-    """Remove ``.*.clu_incoming`` files in *folder* left by a dead writer.
+    """Remove staged copies in *folder* that a dead ``move_file`` left behind.
 
-    Best-effort and age-gated, so a staged copy another writer is still
-    filling is never touched. Never raises.
+    Only names ``move_file`` itself creates are candidates
+    (``_MOVE_FILE_STAGED``: a dot, 32 lowercase hex, ``.clu_incoming``). The
+    fixed-name siblings ``core.problem_replacements`` and
+    ``core.comicvine_db_update`` stage with share the suffix but not the shape,
+    and are never touched here: a replacement sits staged beside the damaged
+    file across the whole trash step, and those modules clear their own
+    leftovers. Directories are skipped too, which keeps a ``move_tree`` stage
+    being filled out of reach.
+
+    Age is the newer of ``st_mtime`` and ``st_ctime``, never mtime alone.
+    ``move_file`` runs ``copystat`` on its sibling just before the final
+    ``os.replace``, which stamps the *source's* mtime -- often months old -- on
+    a file created a moment ago, so by mtime alone a live copy reads as a day
+    stale. ctime is recent for a file just staged either way: on POSIX it is
+    the inode-change time, which copystat itself bumps; on Windows it is the
+    creation time. Best-effort; never raises.
     """
     cutoff = time.time() - STALE_INCOMING_SECONDS
     try:
         with os.scandir(folder) as it:
             for entry in it:
-                name = entry.name
-                if not (name.startswith(".") and name.endswith(INCOMING_SUFFIX)):
+                if not _MOVE_FILE_STAGED.fullmatch(entry.name):
                     continue
                 try:
-                    if entry.is_file(follow_symlinks=False) and \
-                            entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    if max(st.st_mtime, st.st_ctime) < cutoff:
                         os.remove(entry.path)
                         app_logger.info(f"Removed stale staged copy {entry.path}")
                 except OSError as e:

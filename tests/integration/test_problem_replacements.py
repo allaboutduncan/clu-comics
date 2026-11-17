@@ -459,9 +459,14 @@ class TestSwapOrdering:
         _good_cbz(library["target"] / "Tales of the Unexpected 008.cbz")
 
         real_replace = os.replace
+        failed = []
 
+        # Fails only the swap's own staged -> damaged replace. The restore
+        # (helpers.move_file, trash -> damaged) is an os.replace onto the same
+        # path, and must be allowed to put the original back.
         def boom(src, dst):
-            if str(dst) == str(damaged):
+            if str(dst) == str(damaged) and not failed:
+                failed.append(src)
                 raise OSError("simulated failure putting the replacement in place")
             return real_replace(src, dst)
 
@@ -473,6 +478,70 @@ class TestSwapOrdering:
         assert changed[0]["status"] == STATUS_FAILED
         assert damaged.exists(), "the damaged file must come back"
         assert damaged.read_bytes() == original
+
+
+class TestAcrossMounts:
+    """TARGET and the library are usually two mounts (#582).
+
+    ``shutil.move`` staged the replacement with ``copy2``, whose ``copystat``
+    raises EPERM on a library mount that refuses utime/chmod -- after the
+    bytes were written -- so every replacement on such a mount failed at
+    "could not stage the replacement". Staging now goes through
+    ``helpers.move_file``.
+    """
+
+    @pytest.fixture
+    def mounts(self, library, monkeypatch):
+        import errno
+        import shutil
+
+        root = os.path.dirname(str(library["trash"]))
+        real_rename, real_replace, real_copystat = os.rename, os.replace, shutil.copystat
+
+        def _volume(p):
+            return os.path.relpath(os.path.abspath(str(p)), root).split(os.sep)[0]
+
+        def _guard(real):
+            def _move(src, dst, *a, **k):
+                if _volume(src) != _volume(dst):
+                    raise OSError(errno.EXDEV, "Invalid cross-device link")
+                return real(src, dst, *a, **k)
+            return _move
+
+        def _copystat(src, dst, *a, **k):
+            if _volume(dst) == "data":
+                raise PermissionError(errno.EPERM, "Operation not permitted", str(dst))
+            return real_copystat(src, dst, *a, **k)
+
+        monkeypatch.setattr(os, "rename", _guard(real_rename))
+        monkeypatch.setattr(os, "replace", _guard(real_replace))
+        monkeypatch.setattr(shutil, "copystat", _copystat)
+        # Windows' copy2 is CopyFile2 and never calls copystat; take the POSIX
+        # path so the old shutil.move would fail here too.
+        monkeypatch.setattr(shutil, "_winapi", None)
+        return library
+
+    def test_a_refusing_library_mount_still_takes_the_replacement(
+        self, store, mounts, no_aliases
+    ):
+        damaged = mounts["damaged"]
+        claim_replacement(str(damaged), series="Tales of the Unexpected", issue="8")
+        incoming = mounts["target"] / "Tales of the Unexpected 008.cbz"
+        _good_cbz(incoming)
+        normalised = []
+
+        with patch("helpers.trash.move_to_trash", side_effect=_make_trash(mounts["trash"])),              patch("helpers.match_parent_permissions", side_effect=normalised.append):
+            changed = apply_pending(str(mounts["target"]), PATTERN,
+                                    alias_lookup=no_aliases)
+
+        assert changed[0]["status"] == STATUS_APPLIED, changed
+        with zipfile.ZipFile(damaged) as zf:
+            assert zf.testzip() is None
+        assert not incoming.exists()
+        assert (mounts["trash"] / damaged.name).exists(), "the original is in the trash"
+        assert str(damaged) in normalised
+        leftovers = [p.name for p in damaged.parent.iterdir() if "clu_incoming" in p.name]
+        assert leftovers == []
 
 
 def _make_trash(trash_dir):

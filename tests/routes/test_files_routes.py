@@ -202,7 +202,7 @@ class TestDoMoveBatch:
                               "fn": fn, "user_id": user_id})
             return "tag-op"
 
-        def default_move(s, d):
+        def default_move(s, d, is_file):
             moved.append(s)
 
         fake = _fake_app(
@@ -210,7 +210,7 @@ class TestDoMoveBatch:
             **app_overrides,
         )
         with _FakeApp(fake), \
-             patch("routes.files.shutil.move", side_effect=move or default_move), \
+             patch("routes.files._move_item", side_effect=move or default_move), \
              patch("routes.files.os.path.isfile", return_value=True), \
              patch("routes.files.app_state") as mock_state, \
              patch("routes.files.memory_context"), \
@@ -260,7 +260,7 @@ class TestDoMoveBatch:
     def test_a_failed_item_does_not_stop_the_rest(self):
         moved = []
 
-        def flaky(s, d):
+        def flaky(s, d, is_file):
             if s.endswith("b1.cbz"):
                 raise OSError("busy")
             moved.append(s)
