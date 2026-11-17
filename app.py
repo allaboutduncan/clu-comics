@@ -103,6 +103,7 @@ from core.user_time import (
     describe_age,
     format_user_time,
     host_offset_label,
+    next_utc_day_at,
     user_offset_label,
     utc_now_iso,
 )
@@ -2606,14 +2607,17 @@ def schedule_weekly_packs_retry():
         if not config:
             return
 
-        # Parse time
-        time_parts = config["time"].split(":")
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        # Calculate tomorrow's date/time
-        tomorrow = datetime.now() + timedelta(days=1)
-        run_time = tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # The stored time is UTC, like every schedule time, so "tomorrow at the
+        # same time" is computed in UTC and handed to the trigger *aware*. It
+        # used to be applied to a naive local datetime.now(), which a
+        # DateTrigger reads in the scheduler's zone (the host's), so on a
+        # non-UTC host the retry fired off by the host offset.
+        run_time = next_utc_day_at(config["time"])
+        if run_time is None:
+            app_logger.error(
+                f"Weekly packs retry not scheduled: unreadable time {config['time']!r}"
+            )
+            return
 
         # Add a one-time job (DateTrigger)
         from apscheduler.triggers.date import DateTrigger
@@ -2629,7 +2633,8 @@ def schedule_weekly_packs_retry():
         )
 
         app_logger.info(
-            f"📅 Scheduled weekly packs retry for {run_time.strftime('%Y-%m-%d %H:%M')}"
+            f"📅 Scheduled weekly packs retry for "
+            f"{run_time.strftime('%Y-%m-%d %H:%M')} UTC"
         )
 
     except Exception as e:

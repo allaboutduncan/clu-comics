@@ -162,6 +162,47 @@ def describe_age(value, now=None):
     return f"{int(seconds // 86400)} day(s) ago"
 
 
+def parse_schedule_time(value):
+    """A stored schedule time ("HH:MM", UTC) as ``(hour, minute)``, or None.
+
+    Pure and non-raising, like the rest of this module: a blank, malformed or
+    out-of-range value is None so the caller can log and stand down.
+    """
+    try:
+        parts = str(value).strip().split(":")
+        hour, minute = int(parts[0]), int(parts[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return hour, minute
+
+
+def next_utc_day_at(schedule_time, now=None):
+    """Tomorrow -- the next *UTC* day -- at *schedule_time*, as an aware UTC datetime.
+
+    *schedule_time* is a ``schedules.time`` value, which is UTC by convention
+    (see the module docstring). The weekly-packs retry used to apply it to a
+    naive local ``datetime.now()``, so on a host at UTC-5 a 14:00 UTC schedule
+    retried at 14:00 *local*, 19:00 UTC -- five hours late -- and the "tomorrow"
+    was the host's tomorrow, which near midnight is a different calendar day
+    from UTC's. Both halves are UTC here, and the result is aware, so
+    APScheduler fires it at that instant whatever zone the scheduler runs in.
+
+    *now* is injectable for tests; a naive value is read as UTC, an aware one
+    is normalised. Returns None when either input cannot be read.
+    """
+    parsed = parse_schedule_time(schedule_time)
+    if parsed is None:
+        return None
+    reference = utc_now() if now is None else parse_utc(now)
+    if reference is None:
+        return None
+    hour, minute = parsed
+    tomorrow = reference.date() + timedelta(days=1)
+    return datetime(tomorrow.year, tomorrow.month, tomorrow.day, hour, minute, tzinfo=UTC)
+
+
 def utc_now_iso():
     """Now, as "2026-09-23T16:47:05Z" -- parseable by JS `Date.parse`.
 
