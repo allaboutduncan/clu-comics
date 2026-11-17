@@ -196,6 +196,54 @@ class TestProblemHandoff:
         assert kwargs["error_class"] == CLASS_RAR_PARTIAL
         assert "65" in kwargs["error_message"]
 
+    def test_a_conversion_whose_tools_all_hang_fails_and_keeps_the_cbr(
+            self, tmp_path, monkeypatch):
+        """A hanging extractor is a failed conversion, not a stuck worker.
+
+        Runs the real extractor with ``subprocess.run`` playing tools that
+        write part of the archive and then time out.
+        """
+        import subprocess
+
+        import helpers
+        from cbz_ops.single_file import convert_to_cbz
+        from core.problem_files import CLASS_RAR_FAILED, SOURCE_CONVERT
+
+        monkeypatch.setattr("helpers.library.is_allowed_path", lambda p: True)
+
+        def hang(cmd, **kwargs):
+            assert kwargs.get("timeout"), f"{cmd[0]} run without a timeout"
+            if cmd[0] == "lsar" or cmd[1] in ("lb", "l"):
+                raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+            dest = {"unrar": lambda: cmd[-1].rstrip("/"),
+                    "7z": lambda: cmd[2][2:],
+                    "unar": lambda: cmd[3]}[cmd[0]]()
+            with open(os.path.join(dest, "page001.jpg"), "wb") as f:
+                f.write(b"half")
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+        monkeypatch.setattr(helpers.subprocess, "run", hang)
+
+        cbr = tmp_path / "Hangs 001.cbr"
+        cbr.write_bytes(b"not really a rar")
+        recorded = []
+
+        with patch("core.problem_files.record_problem",
+                   side_effect=lambda *a, **k: recorded.append((a, k))), \
+                patch("core.database.invalidate_browse_cache"), \
+                patch("core.database.delete_file_index_entry"), \
+                patch("core.database.add_file_index_entry"), \
+                patch("core.database.move_path_references"):
+            assert convert_to_cbz(str(cbr)) is False
+
+        assert cbr.exists(), "the source must survive a timed-out extraction"
+        assert sorted(os.listdir(tmp_path)) == ["Hangs 001.cbr"], \
+            "no CBZ and no leftover temp dir"
+        assert len(recorded) == 1
+        args, kwargs = recorded[0]
+        assert args == (str(cbr), SOURCE_CONVERT)
+        assert kwargs["error_class"] == CLASS_RAR_FAILED
+
     def test_no_source_means_no_row(self, tmp_path):
         """The rebuild fallback records its own row against the .cbz path.
 

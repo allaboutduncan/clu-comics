@@ -665,6 +665,83 @@ def unzip_file(file_path):
     return base_dir
 
 
+# External archive tools (unrar, 7z, unar, lsar) run with a timeout, always.
+# Without one a tool that hangs -- a damaged archive, a password prompt, a NAS
+# read that stalls -- blocks its caller forever, and for monitor.py that is the
+# whole WATCH pipeline. A timed-out attempt is a failed attempt: the extractor
+# discards it and tries the next tool, exactly as for a partial extraction.
+#
+# A listing reads headers only, so it gets a fixed, short budget. An extraction
+# scales with the size of the archive *set* (every volume of a multipart RAR):
+# a floor for small comics on a slow mount, a rate well below what a NAS
+# sustains so a legitimate multi-GB release is not cut off, and a ceiling so a
+# truly stuck tool is given up on within the hour.
+ARCHIVE_LIST_TIMEOUT = 60
+ARCHIVE_EXTRACT_TIMEOUT_MIN = 180
+ARCHIVE_EXTRACT_TIMEOUT_MAX = 3600
+ARCHIVE_EXTRACT_BYTES_PER_SECOND = 4 * 1024 * 1024
+
+# The name an archive set shares once its volume suffix is removed:
+# "X.part01.rar", "X.r00", "X.z01" and "X.001" all belong to "X".
+_ARCHIVE_VOLUME_SUFFIX_RE = re.compile(
+    r"(?:\.part\d+)?\.(?:rar|r\d{2,3}|zip|z\d{2}|7z|cbr|cbz|cb7|\d{3})$",
+    re.IGNORECASE,
+)
+
+
+def _archive_set_size(archive_path):
+    """Bytes in *archive_path* plus every sibling volume of the same set."""
+    try:
+        own = os.path.getsize(archive_path)
+    except OSError:
+        own = 0
+    name = os.path.basename(archive_path)
+    stem = _ARCHIVE_VOLUME_SUFFIX_RE.sub("", name).lower()
+    if stem == name.lower():
+        return own
+    folder = os.path.dirname(archive_path) or "."
+    total = 0
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if _ARCHIVE_VOLUME_SUFFIX_RE.sub("", entry.name).lower() != stem:
+                    continue
+                try:
+                    if entry.is_file():
+                        total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return own
+    return max(total, own)
+
+
+def archive_extract_timeout(archive_path):
+    """Seconds one extraction attempt of *archive_path* may take."""
+    by_size = _archive_set_size(archive_path) / ARCHIVE_EXTRACT_BYTES_PER_SECOND
+    return int(min(max(by_size, ARCHIVE_EXTRACT_TIMEOUT_MIN), ARCHIVE_EXTRACT_TIMEOUT_MAX))
+
+
+def run_archive_tool(cmd, timeout):
+    """Run an external archive tool and capture its output.
+
+    ``stdin`` is ``/dev/null`` and the tool gets a session of its own, so it
+    has neither a stdin nor a controlling terminal to ask a password on: a
+    prompt reads EOF and the tool fails at once instead of waiting forever.
+    On timeout ``subprocess.run`` kills the tool and reaps it, then raises
+    ``subprocess.TimeoutExpired``; the caller treats that as a failed attempt.
+    (The tools are executed directly, never through a shell, and p7zip's
+    ``7z`` wrapper ``exec``s the binary, so the killed process is the tool.)
+    """
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        timeout=timeout,
+    )
+
+
 def _count_unar_failures(stdout_bytes):
     """Count files that failed during unar extraction from its stdout."""
     try:
@@ -676,20 +753,22 @@ def _count_unar_failures(stdout_bytes):
         return 0
 
 
-def _try_extract_with_tool(tool_name, rar_path, output_dir):
+def _try_extract_with_tool(tool_name, rar_path, output_dir, timeout):
     """Attempt full extraction with a single tool.
 
     Returns (returncode, has_files, failed_count, output_tail) or raises
-    FileNotFoundError if the tool is missing.
+    FileNotFoundError if the tool is missing and ``subprocess.TimeoutExpired``
+    if it ran past *timeout* seconds (it has been killed by then).
     """
     if tool_name == "unrar":
-        cmd = ["unrar", "x", "-y", "-o+", rar_path, output_dir + "/"]
+        # -p-: never ask for a password.
+        cmd = ["unrar", "x", "-y", "-o+", "-p-", rar_path, output_dir + "/"]
     elif tool_name == "7z":
         cmd = ["7z", "x", f"-o{output_dir}", "-y", rar_path]
     else:
         cmd = ["unar", "-f", "-o", output_dir, rar_path]
 
-    result = subprocess.run(cmd, capture_output=True)
+    result = run_archive_tool(cmd, timeout)
     has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
     failed_count = _count_unar_failures(result.stdout) if tool_name == "unar" and result.stdout else 0
 
@@ -823,6 +902,7 @@ def extract_rar_with_unar(rar_path, output_dir):
             stage = output_dir
 
         expected_pages = _expected_page_count(rar_path)
+        timeout = archive_extract_timeout(rar_path)
 
         # Try each tool in order of capability
         tools = ["unrar", "7z", "unar"]
@@ -833,7 +913,7 @@ def extract_rar_with_unar(rar_path, output_dir):
             try:
                 app_logger.info(f"Extracting {rar_path} to {output_dir} using {tool_name}")
                 returncode, has_files, failed_count, output_tail = _try_extract_with_tool(
-                    tool_name, rar_path, stage
+                    tool_name, rar_path, stage, timeout
                 )
 
                 if not has_files:
@@ -872,6 +952,15 @@ def extract_rar_with_unar(rar_path, output_dir):
 
             except FileNotFoundError:
                 app_logger.debug(f"{tool_name} not found, trying next tool")
+                continue
+            except subprocess.TimeoutExpired:
+                # The tool has been killed; whatever it wrote is incomplete.
+                last_error = f"{tool_name} timed out after {timeout}s"
+                app_logger.warning(
+                    f"{tool_name} timed out after {timeout}s extracting "
+                    f"{os.path.basename(rar_path)}; discarding its output"
+                )
+                _reset_dir(stage)
                 continue
             except Exception as e:
                 last_error = e
@@ -947,15 +1036,21 @@ def list_rar_entries(rar_path):
             return None
 
         commands = [
-            ("unrar", ["unrar", "lb", "-y", "--", rar_path]),
+            ("unrar", ["unrar", "lb", "-p-", "-y", "--", rar_path]),
             ("7z", ["7z", "l", "-ba", "-slt", rar_path]),
             ("lsar", ["lsar", rar_path]),
         ]
         for tool_name, cmd in commands:
             try:
-                result = subprocess.run(cmd, capture_output=True)
+                result = run_archive_tool(cmd, ARCHIVE_LIST_TIMEOUT)
             except FileNotFoundError:
                 app_logger.debug(f"{tool_name} not found, trying next listing tool")
+                continue
+            except subprocess.TimeoutExpired:
+                app_logger.warning(
+                    f"{tool_name} timed out after {ARCHIVE_LIST_TIMEOUT}s listing "
+                    f"{os.path.basename(rar_path)}; trying next listing tool"
+                )
                 continue
             except Exception as e:
                 app_logger.warning(f"{tool_name} listing failed: {e}, trying next tool")

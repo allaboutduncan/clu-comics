@@ -349,6 +349,19 @@ file gave 80 pages on the next run, so this is not only about damaged archives.
   `cbz_ops.single_file`'s `__main__` exits non-zero so `/stream` does not end in
   a success toast.
 
+- **A tool that hangs is a failed attempt.** Every archive tool runs through
+  `helpers.run_archive_tool` (timeout required, `stdin=DEVNULL`, own session,
+  so a password prompt reads EOF; unrar also gets `-p-`). They had no timeout,
+  so one damaged archive or stalled NAS read blocked the single-threaded
+  monitor for good. Listing gets `ARCHIVE_LIST_TIMEOUT` (60s); an extraction
+  gets `archive_extract_timeout()`: the whole volume set's size at 4 MB/s,
+  floor 180s, ceiling 3600s. A timeout is discarded like a partial attempt
+  (one WARNING naming tool, archive and timeout; next tool; `(False, n)`), so
+  the backoff and the Library Health row follow from the existing contract.
+  `unwrap._extract_zip`'s 7z/unar fallback stages each attempt in a hidden
+  `.clu_zip_*` dir, because its `out_dir` is shared by a whole layer.
+  `tests/unit/test_archive_tool_timeouts.py` is the AST ratchet.
+
 Tests: `tests/unit/test_rar_extract_strict.py`,
 `tests/mocked/test_convert_to_cbz_contract.py`.
 
