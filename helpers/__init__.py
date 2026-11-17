@@ -287,7 +287,7 @@ def move_file(src, dst):
     not be copied, or the source could not be removed.
 
     The copy never writes onto *dst* itself. It goes to a hidden
-    ``.clu_incoming`` sibling in *dst*'s folder (the shape
+    ``.<32 hex>.clu_incoming`` sibling in *dst*'s folder (the shape
     ``core.problem_replacements`` and ``core.comicvine_db_update`` stage with),
     which is then ``os.replace``'d over *dst* -- a rename within one directory,
     so atomic. Copying straight onto *dst* truncated an existing comic first:
@@ -316,10 +316,10 @@ def move_file(src, dst):
 
     dst_dir = os.path.dirname(os.path.abspath(dst))
     _reap_stale_incoming(dst_dir)
-    staged = os.path.join(
-        dst_dir,
-        f".{os.path.basename(dst)}.{uuid.uuid4().hex[:8]}{INCOMING_SUFFIX}",
-    )
+    # Fixed length, independent of dst's name: a filename component is capped
+    # at 255 *bytes* (less on eCryptfs), so deriving the sibling from a long or
+    # non-ASCII comic name would make the move fail with ENAMETOOLONG.
+    staged = os.path.join(dst_dir, f".{uuid.uuid4().hex}{INCOMING_SUFFIX}")
     try:
         shutil.copyfile(src, staged)
         try:

@@ -258,7 +258,9 @@ every sweep).
 - **Timestamps are still copied when the mount allows it** — `copystat` is
   attempted every time and only its failure is swallowed, to a DEBUG line.
 - **The copy never writes onto `dst`.** It goes to a hidden
-  `.<name>.<hex>.clu_incoming` sibling and is `os.replace`'d over `dst`. Every
+  `.<32 hex>.clu_incoming` sibling and is `os.replace`'d over `dst`. The name
+  must not embed `dst`'s: a component is capped at 255 bytes, and a long or
+  non-ASCII comic name plus a suffix hits ENAMETOOLONG. Every
   in-place CBZ rewrite is staged in `CACHE_DIR/tmp` and lands here
   cross-device; copying straight onto the comic truncated it first, so a
   disk-full or NAS drop mid-copy lost it. A failed copy removes the sibling; a

@@ -179,8 +179,8 @@ class TestSuccessfulCrossDeviceOverwrite:
 class TestCrashLeftovers:
     def test_stale_sibling_is_reaped_and_a_live_one_kept(self, volumes):
         staging, library = volumes
-        stale = library / ".Series 002 (2020).cbz.deadbeef.clu_incoming"
-        live = library / ".Series 003 (2020).cbz.cafef00d.clu_incoming"
+        stale = library / (".%s.clu_incoming" % ("a" * 32))
+        live = library / (".%s.clu_incoming" % ("b" * 32))
         other_hidden = library / ".keepme"
         for p in (stale, live, other_hidden):
             p.write_bytes(b"x")
@@ -222,3 +222,61 @@ class TestSameFileGuard:
 
         monkeypatch.undo()
         assert src.read_bytes() == ORIGINAL
+
+
+def _name_of_bytes(n_bytes, char):
+    """A '.cbz' name of exactly *n_bytes* UTF-8 bytes built from *char*."""
+    width = len(char.encode("utf-8"))
+    body = n_bytes - len(".cbz")
+    count, rest = divmod(body, width)
+    return char * count + "x" * rest + ".cbz"
+
+
+def _can_create(folder, name):
+    try:
+        (folder / name).write_bytes(b"")
+    except OSError:
+        return False
+    (folder / name).unlink()
+    return True
+
+
+class TestLongDestinationNames:
+    """The sibling's name must not grow with the destination's (ENAMETOOLONG)."""
+
+    @pytest.mark.parametrize("char", ["a", "コ"], ids=["ascii", "utf8-3byte"])
+    def test_max_length_name_survives_a_cross_device_overwrite(
+            self, volumes, char):
+        staging, library = volumes
+        # 255 bytes is the per-component cap on ext4 and most Linux
+        # filesystems; Windows caps at 255 UTF-16 units, so the ASCII name is
+        # at its limit there too, and the 3-byte name is 85 characters.
+        name = _name_of_bytes(255, char)
+        assert len(name.encode("utf-8")) == 255
+        if not _can_create(library, name):
+            pytest.skip("this filesystem cannot hold a 255-byte name")
+        dest = library / name
+        dest.write_bytes(ORIGINAL)
+        src = staging / "new.cbz"
+        src.write_bytes(b"the rewritten comic")
+
+        helpers.move_file(str(src), str(dest))
+
+        assert dest.read_bytes() == b"the rewritten comic"
+        assert sorted(p.name for p in library.iterdir()) == [name]
+
+    def test_sibling_name_length_is_fixed(self, volumes, monkeypatch):
+        staging, library = volumes
+        targets = []
+        real_copyfile = shutil.copyfile
+        monkeypatch.setattr(
+            helpers.shutil, "copyfile",
+            lambda s, d, **k: (targets.append(d), real_copyfile(s, d, **k))[1],
+        )
+        for name in ("a.cbz", _name_of_bytes(200, "a")):
+            src = staging / "new.cbz"
+            src.write_bytes(b"x")
+            helpers.move_file(str(src), str(library / name))
+
+        lengths = {len(os.path.basename(t)) for t in targets}
+        assert len(lengths) == 1 and lengths.pop() <= 64
