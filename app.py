@@ -453,11 +453,15 @@ def scheduled_file_index_rebuild():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -3779,11 +3783,15 @@ def api_rebuild_file_index():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -4148,7 +4156,9 @@ def _build_file_index_locked():
     app_logger.info("Database empty, building file index from filesystem...")
     start_time = time.time()
 
-    file_index.clear()
+    # Walked into a local list and swapped in only once the walk finished, so
+    # a reader never sees a half-built index and a failed walk leaves none.
+    new_index = []
     excluded_extensions = {
         ".png",
         ".jpg",
@@ -4213,7 +4223,7 @@ def _build_file_index_locked():
                             if parent_rel
                             else library_root
                         )
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(dir_path),
@@ -4257,7 +4267,7 @@ def _build_file_index_locked():
                             else library_root
                         )
 
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(file_path),
@@ -4290,6 +4300,7 @@ def _build_file_index_locked():
         app_logger.error(f"Error building file index: {e}")
         return
 
+    file_index[:] = new_index
     build_time = time.time() - start_time
     app_logger.info(
         f"File index built successfully: {len(file_index)} items in {build_time:.2f} seconds"
@@ -4351,7 +4362,11 @@ def scan_filesystem_for_sync(walked_roots=None):
             common_path = os.path.commonpath([normalized_path, normalized_target_dir])
             return os.path.samefile(common_path, normalized_target_dir)
         except (ValueError, OSError):
-            return normalized_path.startswith(normalized_target_dir)
+            # On a separator boundary: a bare prefix test put a sibling such
+            # as /downloads/processed2 inside TARGET /downloads/processed.
+            return normalized_path == normalized_target_dir or normalized_path.startswith(
+                normalized_target_dir.rstrip(os.sep) + os.sep
+            )
 
     # Folder art lives in the cache (core/folder_art.py); a legacy folder.* on
     # disk still counts. The cached set is read once for the whole walk rather
@@ -4487,8 +4502,11 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                 common_path = os.path.commonpath([path, normalized_target_dir])
                 return os.path.samefile(common_path, normalized_target_dir)
             except (ValueError, OSError):
-                # Fallback: Check if normalized path starts with TARGET folder
-                return path.startswith(normalized_target_dir)
+                # Fallback: the path is TARGET or under it, on a separator
+                # boundary so a sibling like /downloads/processed2 is not.
+                return path == normalized_target_dir or path.startswith(
+                    normalized_target_dir.rstrip(os.sep) + os.sep
+                )
 
         # "In the library" means under ANY enabled library root, not a
         # hard-coded /data: a library at /comics made every move look like
@@ -6688,17 +6706,29 @@ def save_download_api_config():
         if "downloadAllowPrivateHosts" in data:
             set_setting("DOWNLOAD_ALLOW_PRIVATE_HOSTS", bool(data.get("downloadAllowPrivateHosts")))
 
-        # Save API credentials to DB (provider_credentials)
-        try:
-            from core.database import save_provider_credentials
+        # Save API credentials to DB (provider_credentials). A failed save
+        # (unreadable encryption key, locked database) must reach the page:
+        # it used to be swallowed here and the page reported success.
+        from core.database import save_provider_credentials
 
-            cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
-            if cv_key:
-                save_provider_credentials("comicvine", {"api_key": cv_key})
-        except Exception:
-            pass
+        cv_key_error = None
+        cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
+        if cv_key:
+            try:
+                cv_saved = save_provider_credentials("comicvine", {"api_key": cv_key})
+            except Exception as e:
+                app_logger.error(f"Error saving ComicVine API key: {e}")
+                cv_saved = False
+            if not cv_saved:
+                app_logger.error("ComicVine API key was not saved")
+                cv_key_error = (
+                    "The ComicVine API key could not be saved; "
+                    "the other settings were saved. See the app log for the cause."
+                )
 
         load_flask_config(app)
+        if cv_key_error:
+            return jsonify({"success": False, "error": cv_key_error}), 500
         return jsonify({"success": True, "message": "Download & API settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving download/API config: {e}")

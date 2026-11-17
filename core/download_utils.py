@@ -118,6 +118,50 @@ def replace_session(old, make_new):
     return new
 
 
+class SharedSession:
+    """One HTTP session shared by worker threads, replaced once per failure.
+
+    api.py's three download workers resolve getcomics URLs through one
+    module-level cloudscraper session. Rebinding a global from each worker let
+    two workers that saw the same session fail both rebuild it -- the second
+    closing the replacement the first had just built -- and let a worker swap
+    the session out from under another that had just put FlareSolverr's
+    clearance cookies on it, so its retry went out on a fresh session with no
+    clearance.
+
+    Callers take a local reference with :meth:`get`, make every attempt of one
+    hop on it, and hand it back to :meth:`replace` when it fails. Only the
+    caller still holding the *current* session rebuilds; one holding an older
+    generation gets the session someone else already built. The lock covers
+    only the check-and-swap: building a cloudscraper session sends nothing,
+    and the old session is closed after the lock is released. Closing it is
+    safe for a request still in flight on it (see :func:`replace_session`).
+    """
+
+    def __init__(self, make_new):
+        self._make_new = make_new
+        self._lock = threading.Lock()
+        self._session = make_new()
+
+    def get(self):
+        with self._lock:
+            return self._session
+
+    def replace(self, failed):
+        """Retire *failed* and return the session to use instead.
+
+        If *failed* has already been replaced, the existing replacement is
+        returned and nothing is built or closed.
+        """
+        with self._lock:
+            if self._session is not failed:
+                return self._session
+            new = self._make_new()
+            self._session = new
+        close_quietly(failed)
+        return new
+
+
 # ---------------------------------------------------------------------------
 # Cooperative cancellation
 #

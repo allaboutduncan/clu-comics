@@ -83,7 +83,7 @@ class TestResolveFinalUrl:
         src = ast.unparse(_function(api_tree, "resolve_final_url"))
         assert "flaresolverr.clear_challenge(current, gc_scraper, context='resolve')" in src
         assert "flaresolverr.note_still_challenged(current, 'resolve')" in src
-        assert src.index("clear_challenge") < src.index("replace_session")
+        assert src.index("clear_challenge") < src.index("gc_session.replace(")
 
 
 class TestLifecycle:

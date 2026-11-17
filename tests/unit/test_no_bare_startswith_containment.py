@@ -28,9 +28,6 @@ _ROOTISH_SUFFIXES = ("dir", "root", "folder")
 
 # (relative file, enclosing function) -> why it is not a containment decision.
 ALLOWED = {
-    # TARGET exclusion for the file index, only reached when commonpath/
-    # samefile raised; deciding "do not index" is not an access decision.
-    ("app.py", "is_in_target_dir"): "index exclusion fallback, not access control",
     # Path *translation* to the legacy /data form; the separator is checked
     # on the very next line.
     ("core/metadata_scanner.py", "queue_file_for_scan"): "separator checked after",

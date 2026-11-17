@@ -67,7 +67,7 @@ from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
     claim_download_path,
     release_download_claim,
-    replace_session,
+    SharedSession,
     close_quietly,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
@@ -262,8 +262,11 @@ def _make_gc_scraper():
     )
 
 
-# Cloudscraper instance for bypassing Cloudflare protection on getcomics.org
-gc_scraper = _make_gc_scraper()
+# Cloudscraper session for bypassing Cloudflare protection on getcomics.org,
+# shared by the download workers. Take a local reference per hop and replace it
+# through the holder: rebinding a global from each worker let two of them
+# rebuild it at once, or swap out a session another had just cleared.
+gc_session = SharedSession(_make_gc_scraper)
 
 
 def _is_cloudflare_challenge(resp) -> bool:
@@ -293,8 +296,6 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
     that no provider branch matches, so the caller would mislabel and misroute
     the download.
     """
-    global gc_scraper
-
     if hdrs is None:
         hdrs = _full_headers()
     current = url
@@ -306,69 +307,78 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
         is_gc = 'getcomics.org' in current.lower()
         r = None
         cleared = False
+        # Every attempt of this hop uses this one reference, so a clearance put
+        # on it is what the retry is sent with, whatever the other workers do.
+        gc_scraper = gc_session.get() if is_gc else None
 
-        for attempt in (1, 2):
-            try:
-                if is_gc:
-                    # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
-                    r = gc_scraper.get(current, allow_redirects=False, timeout=30)
-                    if _is_cloudflare_challenge(r) and attempt == 1:
-                        # Prefer real clearance from the bundled FlareSolverr;
-                        # a fresh scraper is the fallback when it is off or fails.
-                        if flaresolverr.clear_challenge(current, gc_scraper, context="resolve"):
-                            cleared = True
-                            monitor_logger.info(
-                                f"Cloudflare challenge resolving {current} — retrying with FlareSolverr clearance"
+        # A fallback GET is streamed, and a redirect hop or a non-HTML answer
+        # never reads its body, so its connection stayed checked out of the
+        # pool until the garbage collector found it. Close every hop's response.
+        try:
+            for attempt in (1, 2):
+                try:
+                    if is_gc:
+                        # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
+                        r = gc_scraper.get(current, allow_redirects=False, timeout=30)
+                        if _is_cloudflare_challenge(r) and attempt == 1:
+                            # Prefer real clearance from the bundled FlareSolverr;
+                            # a fresh scraper is the fallback when it is off or fails.
+                            if flaresolverr.clear_challenge(current, gc_scraper, context="resolve"):
+                                cleared = True
+                                monitor_logger.info(
+                                    f"Cloudflare challenge resolving {current} — retrying with FlareSolverr clearance"
+                                )
+                                continue
+                            monitor_logger.warning(
+                                f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
                             )
+                            gc_scraper = gc_session.replace(gc_scraper)
                             continue
+                    else:
+                        try:
+                            r = requests.head(current, headers=hop_hdrs,
+                                              allow_redirects=False, timeout=15)
+                        except requests.RequestException:
+                            # some hosts block HEAD → fall back to a very small GET
+                            r = requests.get(current, headers=hop_hdrs, stream=True,
+                                             allow_redirects=False, timeout=15)
+                    break
+                except Exception as e:
+                    if is_gc and attempt == 1:
                         monitor_logger.warning(
-                            f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
+                            f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
                         )
-                        gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                        gc_scraper = gc_session.replace(gc_scraper)
                         continue
-                else:
-                    try:
-                        r = requests.head(current, headers=hop_hdrs,
-                                          allow_redirects=False, timeout=15)
-                    except requests.RequestException:
-                        # some hosts block HEAD → fall back to a very small GET
-                        r = requests.get(current, headers=hop_hdrs, stream=True,
-                                         allow_redirects=False, timeout=15)
-                break
-            except Exception as e:
-                if is_gc and attempt == 1:
-                    monitor_logger.warning(
-                        f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
-                    )
-                    gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
-                    continue
-                monitor_logger.warning(f"Error resolving URL {current}: {e}")
+                    monitor_logger.warning(f"Error resolving URL {current}: {e}")
+                    return current
+
+            if r is None:
+                monitor_logger.warning(f"Could not resolve URL {current}")
                 return current
 
-        if r is None:
-            monitor_logger.warning(f"Could not resolve URL {current}")
-            return current
-
-        # Ordinary HTTP 3xx
-        if 300 <= r.status_code < 400 and 'location' in r.headers:
-            current = urljoin(current, r.headers['location'])
-            continue
-        # Meta-refresh (GetComics' /dlds pages). Skip on a Cloudflare
-        # interstitial, whose markup can carry a bogus url= we'd chase.
-        if (not _is_cloudflare_challenge(r) and
-                'text/html' in r.headers.get('content-type', '') and
-                b'<meta' in r.content[:2048]):
-            m = re.search(br'url=([^">]+)', r.content[:2048], flags=re.I)
-            if m:
-                current = urljoin(current, m.group(1).decode().strip())
+            # Ordinary HTTP 3xx
+            if 300 <= r.status_code < 400 and 'location' in r.headers:
+                current = urljoin(current, r.headers['location'])
                 continue
-        if _is_cloudflare_challenge(r):
-            if cleared:
-                flaresolverr.note_still_challenged(current, "resolve")
-            monitor_logger.warning(
-                f"Cloudflare still blocking {current} (HTTP {r.status_code}) — returning unresolved"
-            )
-        return current
+            # Meta-refresh (GetComics' /dlds pages). Skip on a Cloudflare
+            # interstitial, whose markup can carry a bogus url= we'd chase.
+            if (not _is_cloudflare_challenge(r) and
+                    'text/html' in r.headers.get('content-type', '') and
+                    b'<meta' in r.content[:2048]):
+                m = re.search(br'url=([^">]+)', r.content[:2048], flags=re.I)
+                if m:
+                    current = urljoin(current, m.group(1).decode().strip())
+                    continue
+            if _is_cloudflare_challenge(r):
+                if cleared:
+                    flaresolverr.note_still_challenged(current, "resolve")
+                monitor_logger.warning(
+                    f"Cloudflare still blocking {current} (HTTP {r.status_code}) — returning unresolved"
+                )
+            return current
+        finally:
+            close_quietly(r)
     return current        # give up after max_hops
 
 # -------------------------------
@@ -761,7 +771,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     # Use cloudscraper so Cloudflare-fronted mirrors (e.g. comicfiles.ru) are
     # fetched with a solved challenge instead of getting a 403. cloudscraper
     # returns a requests.Session subclass, so the Retry adapter below still
-    # applies. A fresh instance (not the shared gc_scraper) avoids mutating the
+    # applies. A fresh instance (not the shared gc_session) avoids mutating the
     # module-level scraper with our custom Retry adapter.
     session = cloudscraper.create_scraper(
         browser={
@@ -808,6 +818,9 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     flaresolverr_cleared = False
 
     for attempt in range(retries):
+        # Closed in the finally below: a 403/404, an HTML answer or a failed
+        # read leaves the streamed body unread, and its connection checked out.
+        response = None
         try:
             # A stalled read can sit on the socket for the full 300s timeout, so
             # a cancel often only becomes actionable once the attempt unwinds.
@@ -1023,6 +1036,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                 while remaining_sleep > 0 and not is_cancel_requested(download_id):
                     time.sleep(min(1, remaining_sleep))
                     remaining_sleep -= 1
+        finally:
+            close_quietly(response)
 
     # All retries failed - cleanup
     session.close()

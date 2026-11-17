@@ -4326,9 +4326,7 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     Use update_scrape_index() for conditional re-scraping.
     """
     import re
-    from core.database import get_db_connection
-
-    conn = get_db_connection()
+    from core.database import db_conn
 
     # The entry key is shared with download-time link resolution
     # (_entry_links_for_slug), so it lives at module level -- a private copy
@@ -4337,13 +4335,12 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
 
     scraper = cloudscraper.create_scraper()
     # Load stored Last-Modified for conditional fetch (skip if page unchanged).
-    # Close this connection immediately — the writes below open their own; leaving
-    # it open leaked one connection per URL scraped under the threaded indexer.
-    stored_lastmod = conn.execute(
-        "SELECT url_last_modified FROM getcomics_urls WHERE full_url = ? LIMIT 1",
-        (url,)
-    ).fetchone()
-    conn.close()
+    # Closed before the fetch: no connection is held across network I/O.
+    with db_conn() as conn:
+        stored_lastmod = conn.execute(
+            "SELECT url_last_modified FROM getcomics_urls WHERE full_url = ? LIMIT 1",
+            (url,)
+        ).fetchone()
     headers = {}
     if stored_lastmod and stored_lastmod[0]:
         headers["If-Modified-Since"] = stored_lastmod[0]
@@ -4358,11 +4355,14 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
         soup = BeautifulSoup(resp.text, 'html.parser')
         results = []
         http_last_modified = resp.headers.get("Last-Modified")
-        # Track entry URLs for this page to build result dicts
-        entry_urls = []
+        # Rows parsed from this page, written together in one transaction once
+        # the whole page is parsed. One connection and commit per entry was a
+        # write transaction per comic on a listing page, and a write that
+        # raised left its connection -- and the WAL write lock -- to the GC.
+        pending_rows = []
 
         def _parse_and_store(title_text: str, download_url: str | None, entry_url: str):
-            """Parse a title and store in scrape index."""
+            """Parse a title and stage its row for the scrape index."""
             if not title_text or len(title_text) < 3 or not is_valid_series_name(title_text):
                 return
             # Normalize ALL dash variants to ASCII dash immediately, before any
@@ -4405,26 +4405,11 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             else:
                 stored_series = ""
 
-            conn = get_db_connection()
-            # Get current scrape_attempts before INSERT OR REPLACE wipes it
-            current_attempts = conn.execute(
-                "SELECT COALESCE(scrape_attempts, 0) FROM getcomics_urls WHERE url = ?", (entry_url,)
-            ).fetchone()
-            current_attempts = current_attempts[0] if current_attempts else 0
             if download_url:
                 scrape_status = 'success'
             else:
                 scrape_status = 'empty'
-            conn.execute("""
-                INSERT OR REPLACE INTO getcomics_urls
-                (url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
-                 title, issue_num, issue_range, year, volume,
-                 is_annual, is_bulk_pack, is_multi_series, format_variants,
-                 download_url, lastmod, indexed_at, scrape_status, scrape_attempts,
-                 last_scrape_attempt, url_last_modified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
-                        ?, ?, CURRENT_TIMESTAMP, ?)
-            """, (
+            pending_rows.append((
                 entry_url,     # unique per-entry URL
                 url,           # base page URL for lookups
                 url_slug,
@@ -4443,12 +4428,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                 download_url,
                 lastmod,
                 scrape_status,
-                current_attempts + 1,
                 http_last_modified,
             ))
-            conn.commit()
-            conn.close()
-            entry_urls.append(entry_url)
             results.append({
                 'url': entry_url, 'full_url': url, 'series_norm': stored_series, 'url_slug': url_slug,
                 'title': title_text, 'issue_num': parsed.issue,
@@ -4526,10 +4507,49 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             entry_url = f"{url}#{entry_slug}"
             _parse_and_store(title_text, download_url, entry_url)
 
+        if pending_rows:
+            _store_scraped_rows(pending_rows)
         return results
     except Exception as e:
         logger.debug(f"Error scraping {url}: {e}")
         return []
+
+
+def _store_scraped_rows(rows: list) -> None:
+    """Write one scraped page's rows to ``getcomics_urls`` in one transaction.
+
+    Each row is ``_scrape_url_to_index``'s staged tuple: every column of the
+    insert except ``scrape_attempts``, which is read here per row before
+    ``INSERT OR REPLACE`` wipes it. Reads inside the transaction see its own
+    earlier writes, so two entries on one page sharing a slug count their
+    attempts exactly as the old one-commit-per-entry writes did.
+
+    Raises on failure; the connection is closed (and the transaction rolled
+    back) on every path, so a failed write never holds the WAL write lock.
+    """
+    from core.database import db_conn
+
+    with db_conn() as conn:
+        if conn is None:
+            raise RuntimeError("could not open the database to store scraped entries")
+        for row in rows:
+            entry_url = row[0]
+            current = conn.execute(
+                "SELECT COALESCE(scrape_attempts, 0) FROM getcomics_urls WHERE url = ?",
+                (entry_url,),
+            ).fetchone()
+            attempts = (current[0] if current else 0) + 1
+            conn.execute("""
+                INSERT OR REPLACE INTO getcomics_urls
+                (url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
+                 title, issue_num, issue_range, year, volume,
+                 is_annual, is_bulk_pack, is_multi_series, format_variants,
+                 download_url, lastmod, indexed_at, scrape_status, scrape_attempts,
+                 last_scrape_attempt, url_last_modified)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP,
+                        ?, ?, CURRENT_TIMESTAMP, ?)
+            """, (*row[:-1], attempts, row[-1]))
+        conn.commit()
 
 
 def build_scrape_index(
