@@ -964,10 +964,6 @@
     // Initialize on page load
     initReadingStatsFilter();
 
-    // ===== TOAST HELPERS =====
-    const showSuccess = message => CLU.showSuccess(message);
-    const showError = message => CLU.showError(message);
-
     // ===== READING TRENDS =====
     const trendsYearFilter = document.getElementById('trendsYearFilter');
     const backfillMetadataBtn = document.getElementById('backfillMetadataBtn');
@@ -1045,7 +1041,39 @@
         backfillConfirmModal.show();
     });
 
-    // Handle confirmed backfill
+    // Show the finished run's report: a toast with the counts, then the
+    // skipped-issues modal when anything was skipped.
+    function showBackfillResult(result) {
+        if (!result) {
+            CLU.showError('The backfill finished but its report is unavailable');
+            return;
+        }
+        if (result.error) {
+            CLU.showError('Backfill: ' + result.error);
+        }
+        CLU.showSuccess(`Backfill complete! Updated: ${result.updated} comics, Skipped: ${result.skipped} comics`);
+        loadReadingTrends(trendsYearFilter.value);
+
+        const skipped = result.skipped_issues || [];
+        if (skipped.length > 0) {
+            const skippedList = document.getElementById('skippedIssuesList');
+            skippedList.innerHTML = skipped.map(item => `
+                <div class="list-group-item d-flex justify-content-between align-items-start">
+                    <div class="me-auto">
+                        <div class="fw-medium text-truncate" style="max-width: 500px;" title="${CLU.escapeHtml(item.file)}">${CLU.escapeHtml(item.file)}</div>
+                    </div>
+                    <span class="badge bg-secondary">${CLU.escapeHtml(item.reason)}</span>
+                </div>
+            `).join('') + (result.skipped_issues_truncated
+                ? `<div class="list-group-item text-muted small">Only the first ${skipped.length} of ${result.skipped} skipped comics are listed.</div>`
+                : '');
+            new bootstrap.Modal(document.getElementById('skippedIssuesModal')).show();
+        }
+    }
+
+    // Handle confirmed backfill. The run is a background operation: start it,
+    // follow /api/operation/<id> (never /api/operations, which clears the
+    // header's notification queue), then read the report.
     confirmBackfillBtn.addEventListener('click', async function () {
         backfillConfirmModal.hide();
 
@@ -1053,39 +1081,45 @@
         const originalHtml = btn.innerHTML;
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
+        const restore = () => { btn.disabled = false; btn.innerHTML = originalHtml; };
 
+        let data;
         try {
             const response = await fetch('/api/backfill-reading-metadata', { method: 'POST' });
-            const data = await response.json();
-
-            if (data.success) {
-                showSuccess(`Backfill complete! Updated: ${data.updated} comics, Skipped: ${data.skipped} comics`);
-                // Reload trends to show updated data
-                loadReadingTrends(trendsYearFilter.value);
-
-                // Show skipped issues modal if there are any
-                if (data.skipped_issues && data.skipped_issues.length > 0) {
-                    const skippedList = document.getElementById('skippedIssuesList');
-                    skippedList.innerHTML = data.skipped_issues.map(item => `
-                        <div class="list-group-item d-flex justify-content-between align-items-start">
-                            <div class="me-auto">
-                                <div class="fw-medium text-truncate" style="max-width: 500px;" title="${CLU.escapeHtml(item.file)}">${CLU.escapeHtml(item.file)}</div>
-                            </div>
-                            <span class="badge bg-secondary">${CLU.escapeHtml(item.reason)}</span>
-                        </div>
-                    `).join('');
-                    new bootstrap.Modal(document.getElementById('skippedIssuesModal')).show();
-                }
-            } else {
-                showError('Error: ' + (data.error || 'Unknown error'));
-            }
+            data = await response.json();
         } catch (error) {
             console.error('Backfill error:', error);
-            showError('Error during backfill: ' + error.message);
-        } finally {
-            btn.disabled = false;
-            btn.innerHTML = originalHtml;
+            CLU.showError('Could not start the backfill: ' + error.message);
+            restore();
+            return;
         }
+        if (!data.success) {
+            CLU.showError(data.error || 'Could not start the backfill');
+            restore();
+            return;
+        }
+
+        CLU.showToast('Backfill', 'Reading metadata from your reading history…', 'info');
+        const opId = data.op_id;
+        const timer = CLU.startPoll(signal =>
+            fetch(`/api/operation/${encodeURIComponent(opId)}`, { signal })
+                .then(r => r.json())
+                .then(opData => {
+                    if (!opData.success) return;  // transient; ask again next tick
+                    const op = opData.operation || null;
+                    if (op && (op.status === 'running' || op.status === 'queued')) {
+                        if (op.total) {
+                            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${op.current} / ${op.total}`;
+                        }
+                        return;
+                    }
+                    clearInterval(timer);
+                    return fetch('/api/backfill-reading-metadata/result', { signal })
+                        .then(r => r.json())
+                        .then(res => showBackfillResult(res.result))
+                        .catch(() => CLU.showError('Could not load the backfill report'))
+                        .finally(restore);
+                }), 2000);
     });
 
     // Initialize trends on page load

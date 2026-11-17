@@ -88,7 +88,6 @@ from core.memory_utils import (
     get_global_monitor,
 )
 from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
-from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from core.version import __version__
@@ -6016,97 +6015,6 @@ def api_reading_trends(field):
 
     trends = get_reading_trends(field, year=year, limit=limit)
     return jsonify(trends)
-
-
-@app.route("/api/backfill-reading-metadata", methods=["POST"])
-def api_backfill_reading_metadata():
-    """Re-read ComicInfo.xml for all issues_read entries and update metadata fields."""
-    from core.comicinfo import read_comicinfo_from_zip
-
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({"error": "Database connection failed"}), 500
-
-        c = conn.cursor()
-        c.execute("SELECT id, issue_path FROM issues_read")
-        rows = c.fetchall()
-
-        updated_count = 0
-        skipped_count = 0
-        skipped_issues = []
-
-        for row in rows:
-            issue_id = row[0]
-            issue_path = row[1]
-            filename = os.path.basename(issue_path)
-
-            # Skip if file doesn't exist
-            if not os.path.exists(issue_path):
-                skipped_count += 1
-                skipped_issues.append({"file": filename, "reason": "File not found"})
-                continue
-
-            # Skip if not a CBZ/ZIP
-            if not issue_path.lower().endswith((".cbz", ".zip")):
-                skipped_count += 1
-                skipped_issues.append(
-                    {"file": filename, "reason": "Not a CBZ/ZIP file"}
-                )
-                continue
-
-            try:
-                comic_info = read_comicinfo_from_zip(issue_path)
-                if comic_info:
-                    # Strip "[3258]"-style provider IDs, or this route would
-                    # re-dirty issues_read after the migration cleaned it.
-                    writer = normalize_credit_list(comic_info.get("Writer", ""))
-                    penciller = normalize_credit_list(comic_info.get("Penciller", ""))
-                    characters = normalize_credit_list(comic_info.get("Characters", ""))
-                    publisher = strip_provider_ids(comic_info.get("Publisher", ""))
-
-                    c.execute(
-                        """
-                        UPDATE issues_read
-                        SET writer = ?, penciller = ?, characters = ?, publisher = ?
-                        WHERE id = ?
-                    """,
-                        (writer, penciller, characters, publisher, issue_id),
-                    )
-                    updated_count += 1
-                else:
-                    skipped_count += 1
-                    skipped_issues.append(
-                        {"file": filename, "reason": "No ComicInfo.xml"}
-                    )
-            except Exception as e:
-                app_logger.warning(
-                    f"Could not read ComicInfo.xml for {issue_path}: {e}"
-                )
-                skipped_count += 1
-                skipped_issues.append({"file": filename, "reason": f"Error: {str(e)}"})
-
-        conn.commit()
-        conn.close()
-
-        # Clear stats cache
-        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
-
-        app_logger.info(
-            f"Backfill complete: {updated_count} updated, {skipped_count} skipped"
-        )
-        return jsonify(
-            {
-                "success": True,
-                "updated": updated_count,
-                "skipped": skipped_count,
-                "skipped_issues": skipped_issues,
-            }
-        )
-
-    except Exception as e:
-        app_logger.error(f"Error during backfill: {e}")
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/recently-read")
