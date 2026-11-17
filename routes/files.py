@@ -122,6 +122,53 @@ def _move_item(source, destination, is_file):
         move_tree(source, destination)
 
 
+def _flag_mislabelled_rar(path):
+    """List a RAR/7z named ``.cbz`` on Library Health as soon as it is filed.
+
+    Nothing can preview, tag or edit such a file, and the only trace used to be
+    "File is not a zip file" in the log. The row's advice is Rebuild, which
+    converts it; a successful rebuild clears the row. Cheap (a six-byte read),
+    so it runs in the move phase. Never raises.
+    """
+    try:
+        from helpers import mislabelled_cbz_format
+        real_format = mislabelled_cbz_format(path)
+        if not real_format:
+            return False
+        from core.problem_files import record_problem, SOURCE_CONVERT
+        app_logger.warning(
+            f"{path} is a {real_format} archive named .cbz; it needs converting")
+        record_problem(
+            path, SOURCE_CONVERT, error_class="BadZipFile",
+            error_message=f"File is not a zip file (a {real_format} archive named .cbz)")
+        return True
+    except Exception:
+        app_logger.debug("Mislabelled-RAR check failed", exc_info=True)
+        return False
+
+
+def _convert_mislabelled_rar(path):
+    """Tag-phase repair for a RAR/7z named ``.cbz``: True when ``path`` is taggable.
+
+    With AUTOCONVERT on it is converted in place (``convert_to_cbz`` on a
+    ``.cbz`` is Rebuild, whose non-zip fallback converts it through the RAR
+    tool ladder and clears the Library Health row). Otherwise, or when the
+    conversion fails, the file is left for the page and the providers are not
+    asked about it: every one of them would fail on the archive, after
+    spending a rate-limited lookup.
+    """
+    from helpers import mislabelled_cbz_format
+    real_format = mislabelled_cbz_format(path)
+    if not real_format:
+        return True
+    from core.settings import get_bool
+    if not get_bool("AUTOCONVERT"):
+        return False
+    from cbz_ops.single_file import convert_to_cbz
+    app_logger.info(f"Converting {real_format} archive named .cbz before tagging: {path}")
+    return bool(convert_to_cbz(path)) and zipfile.is_zipfile(path)
+
+
 def _do_move_batch(op_id, items):
     """Background thread: move every item, then queue the metadata for them.
 
@@ -167,6 +214,8 @@ def _do_move_batch(op_id, items):
                         if sid:
                             affected_series.add(sid)
                     moved.append((destination, is_file))
+                    if is_file:
+                        _flag_mislabelled_rar(destination)
                     if t_abs:
                         src_abs = os.path.abspath(source)
                         if src_abs == t_abs or src_abs.startswith(t_abs + os.sep):
@@ -252,7 +301,9 @@ def _do_tag_batch(op_id, moved):
             app_state.update_operation(op_id, current=index, detail=os.path.basename(path))
             try:
                 provider_order = _move_metadata_order(path)
-                if is_file:
+                if is_file and not _convert_mislabelled_rar(path):
+                    final.append((path, True))
+                elif is_file:
                     # Chain the (possibly renamed) path through each provider in
                     # priority order. Each provider skips files that already have
                     # metadata, so the first that matches wins and later ones no-op.

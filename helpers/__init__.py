@@ -620,6 +620,46 @@ def describe_archive_error(exc):
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
+_NON_ZIP_MAGIC = (
+    (b"Rar!\x1a\x07", "rar"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+)
+
+
+def sniff_archive_format(path):
+    """``'rar'`` or ``'7z'`` when ``path`` starts with that signature, else None.
+
+    The answer comes from the bytes, never the name. Release groups ship RAR
+    and 7-Zip archives named ``.cbz`` (a six-issue pack of 7z files was the
+    report), and every conversion decision in the WATCH pipeline used to be
+    made on the extension alone: such a file sailed through to the library,
+    where nothing could preview, tag or edit it ("File is not a zip file")
+    while a reader that sniffs content opened it happily. One six-byte read;
+    None on any OSError. A zip is None too -- this only names what a ``.cbz``
+    must not be.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(6)
+    except OSError:
+        return None
+    for magic, name in _NON_ZIP_MAGIC:
+        if head.startswith(magic):
+            return name
+    return None
+
+
+def mislabelled_cbz_format(path):
+    """The real format of a RAR/7z archive named ``.cbz``, or None.
+
+    Both convert through the RAR ladder (``extract_rar_with_unar``: unrar,
+    then 7z, then unar -- the tools read content, not names).
+    """
+    if not str(path).lower().endswith(".cbz"):
+        return None
+    return sniff_archive_format(path)
+
+
 #########################
 #   File Extraction     #
 #########################

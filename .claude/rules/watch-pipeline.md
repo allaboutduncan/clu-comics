@@ -312,6 +312,27 @@ Retry for that source points at **Rebuild**, which is
 already streamed; re-running it inside the request would outlive gunicorn's
 timeout on a 500MB pack.
 
+#### A RAR or 7z named `.cbz` is recognised by its bytes
+
+Every conversion decision used to be made on the extension, so a RAR or 7-Zip
+archive shipped as `.cbz` (the report was a pack of six 7z files) reached the
+library as a "CBZ" nothing could preview, tag or edit ("File is not a zip
+file"), while a reader that sniffs content opened it.
+`helpers.mislabelled_cbz_format` (a six-byte read, `'rar'`/`'7z'`/None) is
+checked in three places. Both formats convert through the RAR ladder, whose
+tools read content:
+
+- `monitor._move_file` renames it to `.cbr` in TARGET, so the existing CBR
+  branch converts it. With AUTOCONVERT off a RAR is still renamed (that is its
+  right label); a 7z keeps its name and is only logged.
+- `routes.files._do_move_batch` lists it on Library Health (`SOURCE_CONVERT`,
+  advice Rebuild). The move phase is the step that always runs.
+- `routes.files._do_tag_batch` converts it first when AUTOCONVERT is on, and
+  otherwise skips the providers for it.
+
+`api._finish_download_in_watch` still decides on the name; the two `routes`
+checks are the net for files that arrive that way.
+
 #### A RAR extraction is all or nothing
 
 `helpers.extract_rar_with_unar` used to return `(True, 0)` for **any** non-zero
