@@ -248,7 +248,16 @@ download in one library:
 `helpers.open_zip_for_write` (every CBZ CLU writes) and
 `app.process_incoming_wanted_issues` (TARGET → library, where the same EPERM
 left a complete copy in `/data` *and* the source in TARGET to be re-copied on
-every sweep).
+every sweep). So do the other movers onto a mount: `/move` and `/move-batch`
+(`routes.files._move_item`), `models.comicvine.auto_move_file`, the
+replacement staging and rollback in `core.problem_replacements`, trash restore,
+and the Usenet import into WATCH. Each comic moved onto the library then gets
+`match_parent_permissions`, or a download that arrived `root:0600` stays
+unreadable to thumbnails. `helpers.move_tree` is the folder counterpart (same
+hidden-sibling staging, same tolerated `copystat`); it refuses an existing
+destination instead of nesting into it as `shutil.move` did. Tests:
+`tests/unit/test_library_moves_cross_device.py`,
+`tests/routes/test_move_batch_cross_device.py`.
 
 - **Only the metadata failure is demoted.** A failed `copyfile` and a source
   that cannot be removed both still raise: the second is the #582 failure mode

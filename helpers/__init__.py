@@ -2,6 +2,7 @@
 # so that `from helpers import is_hidden` etc. continues to work
 # now that helpers/ is a package directory.
 
+import errno
 import os
 import re
 import stat
@@ -339,6 +340,75 @@ def move_file(src, dst):
             pass
         raise
     os.remove(src)
+
+
+def move_tree(src, dst):
+    """Move the directory *src* to *dst*, which must not exist yet.
+
+    The directory counterpart of ``move_file``. ``shutil.move`` of a folder
+    across devices is ``copytree(copy_function=copy2)``, and both the per-file
+    ``copystat`` and copytree's own per-directory ``copystat`` turn a refused
+    ``utime``/``chmod`` into ``shutil.Error`` *after* every byte was copied --
+    so the source is never removed, the caller reports a failure, and a full
+    second copy sits at the destination (#582). Here a refused metadata copy is
+    a DEBUG line, as in ``move_file``.
+
+    The copy goes to a hidden ``.<32 hex>.clu_incoming`` sibling of *dst* and
+    is renamed into place only once complete, so a failed copy leaves nothing
+    at *dst* (the partial sibling is removed). The source is removed last; if
+    that fails the call raises with the complete copy already at *dst*, which
+    is what ``shutil.move`` does too.
+
+    ``shutil.move`` would move *src* **into** *dst* when *dst* is an existing
+    directory. Callers here pass the full destination path, so that silent
+    nesting is refused instead (``FileExistsError``) -- except a case-only
+    rename, where *dst* "exists" only because it is *src*.
+    """
+    if os.path.lexists(dst) and not _same_file(src, dst):
+        raise FileExistsError(errno.EEXIST, "Destination already exists", dst)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        if _same_file(src, dst):
+            raise
+
+    dst_dir = os.path.dirname(os.path.abspath(dst))
+    staged = os.path.join(dst_dir, f".{uuid.uuid4().hex}{INCOMING_SUFFIX}")
+    try:
+        _copy_tree_tolerant(src, staged)
+        os.rename(staged, dst)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    shutil.rmtree(src)
+
+
+def _copystat_tolerant(src, dst):
+    try:
+        shutil.copystat(src, dst, follow_symlinks=False)
+    except OSError as e:
+        app_logger.debug(
+            f"Kept {dst} without its source timestamps/mode ({e}); "
+            "the mount refuses utime/chmod"
+        )
+
+
+def _copy_tree_tolerant(src, dst):
+    """``copytree(symlinks=True)`` whose metadata copies may fail."""
+    os.mkdir(dst)
+    with os.scandir(src) as it:
+        entries = list(it)
+    for entry in entries:
+        target = os.path.join(dst, entry.name)
+        if entry.is_symlink():
+            os.symlink(os.readlink(entry.path), target)
+        elif entry.is_dir(follow_symlinks=False):
+            _copy_tree_tolerant(entry.path, target)
+        else:
+            shutil.copyfile(entry.path, target)
+            _copystat_tolerant(entry.path, target)
+    _copystat_tolerant(src, dst)
 
 
 # Suffix of a file staged beside its destination before an atomic os.replace.

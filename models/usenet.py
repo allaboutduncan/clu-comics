@@ -13,7 +13,6 @@ This module never touches ``api.py``. It reads the WATCH path via
 the folder monitor handles convert/rename/import from that point on.
 """
 import os
-import shutil
 import threading
 import time
 import uuid
@@ -605,7 +604,13 @@ def _move_into_watch(src_file, watch) -> int:
     """Move a single file into WATCH with a unique name; return 1/0."""
     try:
         dest = _unique_path(os.path.join(watch, os.path.basename(src_file)))
-        shutil.move(src_file, dest)
+        # move_file, not shutil.move: the client's completed folder is often
+        # another mount, and shutil.move's copy2 reports a complete copy as a
+        # failure when WATCH refuses utime/chmod (#582) -- leaving the copy in
+        # WATCH and the import marked failed. move_file also copies to a hidden
+        # sibling first, so the monitor never sees a half-written comic.
+        from helpers import move_file
+        move_file(src_file, dest)
         try:
             from helpers import match_parent_permissions
             match_parent_permissions(dest)

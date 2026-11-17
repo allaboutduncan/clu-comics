@@ -9,7 +9,6 @@ from core.app_logging import app_logger
 from datetime import datetime, date
 from typing import Optional, Dict, List, Any
 import os
-import shutil
 import re
 import threading
 import time
@@ -1697,7 +1696,13 @@ def auto_move_file(file_path: str, volume_data: Dict[str, Any], config: Dict[str
 
         # Move the file
         app_logger.info(f"🚚 Moving file from '{file_path}' to '{new_file_path}'")
-        shutil.move(file_path, new_file_path)
+        # move_file, not shutil.move: the source is usually in TARGET, another
+        # mount, and shutil.move's copy2 fallback fails a complete copy on a
+        # library mount that refuses utime/chmod (#582). The exists-check above
+        # is what keeps this from overwriting a filed comic.
+        from helpers import move_file, match_parent_permissions
+        move_file(file_path, new_file_path)
+        match_parent_permissions(new_file_path)
         app_logger.info(f"✅ File successfully moved to: '{new_file_path}'")
 
         return new_file_path
