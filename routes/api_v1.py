@@ -26,7 +26,7 @@ from core.database import (
     filesystem_browse_publishers,
     filesystem_browse_series,
     get_api_browse_mode,
-    get_api_token,
+    get_api_token_digest,
     get_db_connection,
     has_api_tokens,
     get_favorite_publishers_paginated,
@@ -51,10 +51,10 @@ api_v1_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 # ---------------------------------------------------------------------------
 
 
-def _api_enabled(legacy_token):
+def _api_enabled(legacy_digest):
     """The token API is enabled once any per-user token OR a legacy global
     token exists. Otherwise the whole blueprint returns 503 (probe protection)."""
-    return bool(legacy_token) or has_api_tokens()
+    return bool(legacy_digest) or has_api_tokens()
 
 
 @api_v1_bp.before_request
@@ -73,9 +73,9 @@ def _require_api_token():
         too_many_attempts_json,
     )
 
-    legacy_token = get_api_token()
+    legacy_digest = get_api_token_digest()
 
-    if not _api_enabled(legacy_token):
+    if not _api_enabled(legacy_digest):
         return jsonify({
             "error": "api_disabled",
             "message": (
@@ -100,7 +100,7 @@ def _require_api_token():
         return too_many_attempts_json(wait)
 
     # Per-user token → its user; legacy global token → Store Owner.
-    matched, user = user_for_bearer_token(presented, legacy_token=legacy_token)
+    matched, user = user_for_bearer_token(presented, legacy_digest=legacy_digest)
     if matched:
         throttle.record_success(SCOPE_TOKEN, address, token_key)
         g.current_user = user

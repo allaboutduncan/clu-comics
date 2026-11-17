@@ -245,9 +245,13 @@ seed_monitor_from_env()
 
 # Multi-user: ensure a Store Owner account exists (implicit-owner mode for
 # single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
-from core.database import seed_owner_if_needed
+from core.database import migrate_legacy_api_token_to_digest, seed_owner_if_needed
 
 seed_owner_if_needed()
+
+# The legacy global API token used to be stored in plain text. Keep only its
+# hash (idempotent; existing clients keep working).
+migrate_legacy_api_token_to_digest()
 
 # Upgrade the provisional per-process secret key (set in load_flask_config
 # before the DB existed) to a stable, persisted one so browser sessions survive

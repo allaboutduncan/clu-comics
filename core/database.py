@@ -9701,34 +9701,70 @@ def delete_user_setting(key, user_id=None):
 # =============================================================================
 
 
-def get_api_token():
-    """Return the stored API token, or None if not generated yet."""
-    return get_user_preference("api_token", default=None)
+# The legacy global token is stored as ``sha256:<hex digest>``, never as the
+# token itself, exactly like the per-user api_tokens rows. The prefix is what
+# makes the one-time migration idempotent: a stored value without it is a
+# plaintext token from an older release (or written straight to the
+# preference), and is hashed on read as well, so it keeps working before the
+# migration has run.
+LEGACY_TOKEN_DIGEST_PREFIX = "sha256:"
+
+
+def _legacy_digest_of(stored):
+    """The sha256 hex digest for a stored ``api_token`` value, or None."""
+    if not stored or not isinstance(stored, str):
+        return None
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return stored[len(LEGACY_TOKEN_DIGEST_PREFIX):] or None
+    return _hash_token(stored)
+
+
+def get_api_token_digest():
+    """The sha256 digest of the legacy global API token, or None when unset.
+
+    The token itself is not stored and cannot be read back: compare a
+    presented token by hashing it (``_hash_token``).
+    """
+    return _legacy_digest_of(get_user_preference("api_token", default=None))
 
 
 def rotate_api_token():
     """
-    Generate a fresh API token, persist it under user_preferences, and return it.
-    Overwrites any existing token (used to revoke old clients).
+    Generate a fresh API token, persist only its digest, and return the token.
+    Overwrites any existing token (used to revoke old clients). The return
+    value is the one and only time the token is available in plain text.
     """
     import secrets
 
     token = secrets.token_urlsafe(32)
-    set_user_preference("api_token", token, category="security")
+    if not set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(token),
+        category="security",
+    ):
+        raise RuntimeError("could not save the API token")
     return token
 
 
-def ensure_api_token():
+def migrate_legacy_api_token_to_digest():
+    """Replace a plaintext legacy ``api_token`` with its digest, once.
+
+    Idempotent: a value already carrying ``LEGACY_TOKEN_DIGEST_PREFIX`` is
+    left alone, so it can never be hashed twice. Clients holding the token
+    keep working, because the bearer check hashes what they present. Returns
+    True when a value was converted.
     """
-    Return the existing API token, generating one on first call.
-    Use this in places where the token must exist (e.g. tests / first-run).
-    For runtime auth checks prefer get_api_token() so an unset token reports
-    'API disabled' rather than silently bootstrapping.
-    """
-    existing = get_api_token()
-    if existing:
-        return existing
-    return rotate_api_token()
+    stored = get_user_preference("api_token", default=None)
+    if not stored or not isinstance(stored, str):
+        return False
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return False
+    if set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(stored),
+        category="security",
+    ):
+        app_logger.info("Stored the legacy API token as a hash")
+        return True
+    return False
 
 
 _API_BROWSE_MODES = ("metadata", "filesystem")
@@ -10453,8 +10489,8 @@ def seed_owner_if_needed():
         return
 
     # Migrate the legacy global API token so the existing client keeps working.
-    legacy_token = get_api_token()
-    if legacy_token:
+    legacy_digest = get_api_token_digest()
+    if legacy_digest:
         conn = get_db_connection()
         if conn:
             try:
@@ -10462,7 +10498,7 @@ def seed_owner_if_needed():
                 c.execute(
                     "INSERT OR IGNORE INTO api_tokens (user_id, token_hash, name) "
                     "VALUES (?, ?, ?)",
-                    (owner_id, _hash_token(legacy_token), "Migrated global token"),
+                    (owner_id, legacy_digest, "Migrated global token"),
                 )
                 conn.commit()
                 app_logger.info("Migrated global API token to the Store Owner account")

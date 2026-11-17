@@ -103,31 +103,32 @@ def bearer_token_from_header(auth_header):
     return presented or None
 
 
-def user_for_bearer_token(presented, legacy_token=None):
+def user_for_bearer_token(presented, legacy_digest=None):
     """``(matched, user)`` for a presented API token.
 
     ``matched`` is False when the token is unknown. The legacy global token
     matches as the Store Owner, which may be None on a database with no owner
     row; that is still a match, as it always was.
 
-    Per-user tokens are looked up by their sha256 (the table stores only the
-    digest), so no secret is compared directly. The legacy global token is a
-    plaintext preference and is compared with ``hmac.compare_digest`` over
-    bytes: on two ``str`` values it raises ``TypeError`` for any non-ASCII
-    character, and a header can carry one.
+    Both kinds are stored only as a sha256 digest, so the presented token is
+    hashed and the digests compared; no secret is compared directly. The
+    legacy digest is compared with ``hmac.compare_digest`` over bytes.
     """
     import hmac
-    from core.database import _hash_token, get_api_token, get_user_by_token_hash
+    from core.database import (
+        _hash_token, get_api_token_digest, get_user_by_token_hash,
+    )
 
     if not presented:
         return False, None
-    user = get_user_by_token_hash(_hash_token(presented))
+    presented_digest = _hash_token(presented)
+    user = get_user_by_token_hash(presented_digest)
     if user:
         return True, user
-    if legacy_token is None:
-        legacy_token = get_api_token()
-    if legacy_token and hmac.compare_digest(
-        presented.encode("utf-8"), str(legacy_token).encode("utf-8")
+    if legacy_digest is None:
+        legacy_digest = get_api_token_digest()
+    if legacy_digest and hmac.compare_digest(
+        presented_digest.encode("utf-8"), str(legacy_digest).encode("utf-8")
     ):
         return True, get_owner()
     return False, None

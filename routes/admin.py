@@ -19,7 +19,7 @@ from core.database import (
     delete_user,
     list_api_tokens,
     get_api_browse_mode,
-    get_api_token,
+    get_api_token_digest,
     get_libraries,
     get_owner_user,
     get_user_by_id,
@@ -45,18 +45,23 @@ VALID_ROLES = ("reader", "clerk", "owner")
 
 @admin_bp.route("/api-token", methods=["GET"])
 def get_token():
-    """Return the long-lived API token used by the offline mobile/desktop client."""
-    token = get_api_token()
+    """Whether the legacy global API token is set.
+
+    The token is stored only as a hash, so it cannot be shown again; the
+    page offers Rotate, which returns a new token once.
+    """
     return jsonify({
         "success": True,
-        "configured": bool(token),
-        "token": token or "",
+        "configured": bool(get_api_token_digest()),
     })
 
 
 @admin_bp.route("/api-token/rotate", methods=["POST"])
 def rotate_token():
-    """Generate a fresh API token, replacing any existing one."""
+    """Generate a fresh API token, replacing any existing one.
+
+    The response is the only place the new token ever appears in plain text.
+    """
     try:
         token = rotate_api_token()
         return jsonify({"success": True, "token": token})
