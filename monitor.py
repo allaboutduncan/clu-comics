@@ -38,18 +38,11 @@ init_db()
 # Re-run load_config so the WATCH/TARGET migration (which needs the DB) can finish.
 load_config()
 
-# These initial reads remain for startup.
-directory = get_watch_dir() or "/downloads/temp"
-target_directory = get_target_dir() or "/downloads/processed"
-ignored_extensions = get_list("IGNORED_EXTENSIONS")
-autoconvert = get_bool("AUTOCONVERT")
-subdirectories = get_bool("READ_SUBDIRECTORIES")
-move_directories = get_bool("MOVE_DIRECTORY")
-consolidate_directories = get_bool("CONSOLIDATE_DIRECTORIES")
-auto_rename_monitor = get_bool("AUTO_RENAME_MONITOR")
-auto_cleanup = get_bool("AUTO_CLEANUP_ORPHAN_FILES")
-cleanup_interval_hours = get_int("CLEANUP_INTERVAL_HOURS")
-reconcile_interval_minutes = get_int("RECONCILE_INTERVAL_MINUTES")
+# No setting is read into a module constant here. They used to be, and the main
+# loop's cleanup/reconcile schedule was built from them once, so changing the
+# cleanup toggle or either interval in Settings did nothing until the monitor
+# restarted. Everything is read per call through core.settings (a 5s snapshot,
+# so a change made in the web process is seen within seconds).
 
 # Logging setup - MONITOR_LOG imported from app_logging
 monitor_logger = logging.getLogger("monitor_logger")
@@ -59,18 +52,6 @@ if not monitor_logger.handlers:
     monitor_handler = logging.FileHandler(MONITOR_LOG)
     monitor_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     monitor_logger.addHandler(monitor_handler)
-
-monitor_logger.info("Monitor script started!")
-monitor_logger.info(f"1. Monitoring: {directory}")
-monitor_logger.info(f"2. Target: {target_directory}")
-monitor_logger.info(f"3. Ignored Extensions: {ignored_extensions}")
-monitor_logger.info(f"4. Auto-Conversion Enabled: {autoconvert}")
-monitor_logger.info(f"5. Monitor Sub-Directories Enabled: {subdirectories}")
-monitor_logger.info(f"6. Move Sub-Directories Enabled: {move_directories}")
-monitor_logger.info(f"7. Consolidate Directories: {consolidate_directories}")
-monitor_logger.info(f"8. Auto Cleanup Orphan Files: {auto_cleanup}")
-monitor_logger.info(f"9. Cleanup Interval: {cleanup_interval_hours} hour(s)")
-monitor_logger.info(f"10. Reconciliation Sweep Interval: {reconcile_interval_minutes} minute(s)")
 
 def strip_comic_extension(name):
     """Drop a trailing comic extension from a *directory* name.
@@ -108,12 +89,16 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         self.directory = directory
         self.target_directory = target_directory
         self.ignored_extensions = set(ext.lower() for ext in ignored_extensions)
-        self.autoconvert = autoconvert
-        self.subdirectories = subdirectories
-        self.move_directories = move_directories
-        self.consolidate_directories = consolidate_directories
-        self.auto_rename_monitor = auto_rename_monitor
-        self.reconcile_interval_minutes = reconcile_interval_minutes
+        # Starting values only; reload_settings() refreshes them on every
+        # event and sweep.
+        self.autoconvert = get_bool("AUTOCONVERT")
+        self.subdirectories = get_bool("READ_SUBDIRECTORIES")
+        self.move_directories = get_bool("MOVE_DIRECTORY")
+        self.consolidate_directories = get_bool("CONSOLIDATE_DIRECTORIES")
+        self.auto_rename_monitor = get_bool("AUTO_RENAME_MONITOR")
+        self.auto_cleanup = get_bool("AUTO_CLEANUP_ORPHAN_FILES")
+        self.cleanup_interval_hours = get_int("CLEANUP_INTERVAL_HOURS")
+        self.reconcile_interval_minutes = get_int("RECONCILE_INTERVAL_MINUTES")
         self._initial_dir_file_counts = {}
 
         # Guard so the periodic reconciliation sweep (main thread) and live
@@ -1388,20 +1373,147 @@ def reschedule_if_changed(observer, event_handler, scheduled):
     return wanted
 
 
+# "The settings store could not be read" -- distinct from None, which is "off".
+_UNKNOWN = object()
+
+
+def _positive_int(value):
+    """``value`` as an int if it is a whole number above 0, else None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def cleanup_interval_seconds(enabled, hours):
+    """Seconds between orphan-file cleanups, or None when cleanup is off.
+
+    Off when Auto Cleanup is unticked *or* the interval is not a whole number
+    of hours above 0. A stored 0 used to make the "interval elapsed" test true
+    on every one-second tick, so the cleanup walked WATCH once a second.
+    """
+    if not enabled:
+        return None
+    hours = _positive_int(hours)
+    return hours * 3600 if hours else None
+
+
+def reconcile_interval_seconds(minutes):
+    """Seconds between reconciliation sweeps, or None when they are off.
+
+    0 (and anything negative or unreadable) disables the sweep, as it always
+    has. The smallest real interval is one minute, so this can never spin.
+    """
+    minutes = _positive_int(minutes)
+    return minutes * 60 if minutes else None
+
+
+def read_periodic_intervals():
+    """(cleanup, reconcile) intervals in seconds as currently stored.
+
+    Either is None for "off", and _UNKNOWN when the settings store cannot be
+    read: core.settings.get_* would hand back the defaults instead, which
+    would switch a cleanup the user turned off back on during every
+    "database is locked".
+    """
+    from core.settings import peek_setting
+    enabled = peek_setting("AUTO_CLEANUP_ORPHAN_FILES")
+    hours = peek_setting("CLEANUP_INTERVAL_HOURS")
+    minutes = peek_setting("RECONCILE_INTERVAL_MINUTES")
+    if enabled is None or hours is None:
+        cleanup = _UNKNOWN
+    else:
+        cleanup = cleanup_interval_seconds(enabled, hours)
+    reconcile = _UNKNOWN if minutes is None else reconcile_interval_seconds(minutes)
+    return cleanup, reconcile
+
+
+class IntervalSchedule:
+    """Decides when a periodic job is due while its interval can change live.
+
+    ``due(interval, now)`` is called on every tick with the interval just read
+    from the settings (seconds, None for "off", _UNKNOWN for "could not read")
+    and an injected clock, so it is tested without sleeping.
+
+    * The job is due when ``interval`` seconds have passed since it last ran.
+      It is marked as run *before* the caller runs it, so a job that raises
+      waits a full interval rather than retrying on the next tick.
+    * Changing the interval keeps the last-run time: lengthening it defers the
+      next run, shortening it runs the job at most once now and then on the
+      new interval -- never a burst.
+    * Switching the job on starts the clock then, so it first runs one
+      interval later rather than immediately.
+    * An unreadable setting keeps whatever interval was in effect.
+    * A change is logged once, at INFO, when the effective interval changes;
+      the same value on the next tick says nothing.
+    """
+
+    def __init__(self, name, unit_seconds, unit_name, now):
+        self.name = name
+        self._unit_seconds = unit_seconds
+        self._unit_name = unit_name
+        self.last_run = now
+        self.interval = _UNKNOWN  # nothing announced yet
+
+    def describe(self, interval):
+        if interval is None:
+            return f"{self.name}: disabled"
+        count = interval // self._unit_seconds
+        return f"{self.name}: every {count} {self._unit_name}(s)"
+
+    def due(self, interval, now):
+        if interval is _UNKNOWN:
+            interval = self.interval
+            if interval is _UNKNOWN:
+                return False
+        elif interval != self.interval:
+            if self.interval is None and interval is not None:
+                # Off -> on: count the first interval from now.
+                self.last_run = now
+            self.interval = interval
+            monitor_logger.info(self.describe(interval))
+        if interval is None:
+            return False
+        if now < self.last_run:
+            # The clock went backwards; restart the wait rather than stall.
+            self.last_run = now
+        if now - self.last_run >= interval:
+            self.last_run = now
+            return True
+        return False
+
+
 def main():
     lock_handle = acquire_single_instance_lock()  # noqa: F841 -- held for life
     start_ppid = os.getppid()
 
+    monitor_logger.info("Monitor script started!")
+
+    directory = get_watch_dir() or "/downloads/temp"
     os.makedirs(directory, exist_ok=True)
 
     event_handler = DownloadCompleteHandler(
         directory=directory,
-        target_directory=target_directory,
-        ignored_extensions=ignored_extensions
+        target_directory=get_target_dir() or "/downloads/processed",
+        ignored_extensions=get_list("IGNORED_EXTENSIONS"),
     )
+    # Logs the configuration once; later calls log it again only on a change.
+    event_handler.reload_settings()
 
-    # Initial cleanup of orphan files in target directory
-    if auto_cleanup:
+    clock = time.monotonic
+    cleanup_schedule = IntervalSchedule("Periodic orphan-file cleanup", 3600, "hour", clock())
+    reconcile_schedule = IntervalSchedule("Reconciliation sweep", 60, "minute", clock())
+    cleanup_interval, reconcile_interval = read_periodic_intervals()
+    # Announce both schedules now; the startup runs below count as their
+    # first run.
+    cleanup_schedule.due(cleanup_interval, clock())
+    reconcile_schedule.due(reconcile_interval, clock())
+
+    # Initial cleanup of orphan files in WATCH, when periodic cleanup is on.
+    if cleanup_schedule.interval not in (None, _UNKNOWN):
         monitor_logger.info("Performing initial cleanup of orphan files...")
         event_handler.cleanup_orphan_files()
     else:
@@ -1412,25 +1524,17 @@ def main():
     event_handler.reconcile_directory()
 
     observer = PollingObserver(timeout=30)
-    observer.schedule(event_handler, directory, recursive=subdirectories)
-    scheduled = (directory, subdirectories)
+    scheduled = current_watch()
+    observer.schedule(event_handler, scheduled[0], recursive=scheduled[1])
     observer.start()
 
-    # Set up periodic cleanup (every hour)
-    last_cleanup_time = time.time()
-    cleanup_interval = cleanup_interval_hours * 3600  # Convert hours to seconds
-
-    # Set up periodic reconciliation sweep (self-healing for missed events).
-    last_reconcile_time = time.time()
-    reconcile_interval = reconcile_interval_minutes * 60  # Convert minutes to seconds
-
-    last_lifecycle_check = time.time()
+    last_lifecycle_check = clock()
 
     try:
         while True:
             time.sleep(1)
 
-            current_time = time.time()
+            current_time = clock()
 
             if current_time - last_lifecycle_check >= LIFECYCLE_CHECK_SECONDS:
                 last_lifecycle_check = current_time
@@ -1440,19 +1544,18 @@ def main():
                     break
                 scheduled = reschedule_if_changed(observer, event_handler, scheduled)
 
-            # Check if it's time for periodic cleanup (only if auto_cleanup is enabled)
-            if auto_cleanup:
-                if current_time - last_cleanup_time >= cleanup_interval:
-                    monitor_logger.info("Running periodic cleanup of orphan files...")
-                    event_handler.cleanup_orphan_files()
-                    last_cleanup_time = current_time
+            # Read per tick (a cached snapshot), so toggling cleanup or changing
+            # either interval in Settings applies without a restart.
+            cleanup_interval, reconcile_interval = read_periodic_intervals()
+
+            if cleanup_schedule.due(cleanup_interval, current_time):
+                monitor_logger.info("Running periodic cleanup of orphan files...")
+                event_handler.cleanup_orphan_files()
 
             # Periodic reconciliation sweep so files that missed their watchdog
-            # event get moved instead of being stranded (0 disables).
-            if reconcile_interval > 0:
-                if current_time - last_reconcile_time >= reconcile_interval:
-                    event_handler.reconcile_directory()
-                    last_reconcile_time = current_time
+            # event get moved instead of being stranded.
+            if reconcile_schedule.due(reconcile_interval, current_time):
+                event_handler.reconcile_directory()
 
     except KeyboardInterrupt:
         pass
