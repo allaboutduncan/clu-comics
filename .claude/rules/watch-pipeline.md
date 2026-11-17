@@ -257,6 +257,16 @@ every sweep).
   a partial copy at `dst`; this one *keeps* a complete one. Different questions.
 - **Timestamps are still copied when the mount allows it** — `copystat` is
   attempted every time and only its failure is swallowed, to a DEBUG line.
+- **The copy never writes onto `dst`.** It goes to a hidden
+  `.<name>.<hex>.clu_incoming` sibling and is `os.replace`'d over `dst`. Every
+  in-place CBZ rewrite is staged in `CACHE_DIR/tmp` and lands here
+  cross-device; copying straight onto the comic truncated it first, so a
+  disk-full or NAS drop mid-copy lost it. A failed copy removes the sibling; a
+  crash leftover is hidden (never indexed or moved) and reaped by the next
+  cross-device move into that folder once a day old (`STALE_INCOMING_SECONDS`).
+  The fallback refuses when `src` and `dst` are the same file (a case-only
+  rename): the copy would land on it and `os.remove(src)` delete it.
+  Tests: `tests/unit/test_move_file_atomic_overwrite.py`.
 
 #### `convert_to_cbz` reports its own outcome; `os.path.exists` does not
 

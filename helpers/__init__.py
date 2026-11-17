@@ -6,6 +6,8 @@ import os
 import re
 import stat
 import tempfile
+import time
+import uuid
 import zipfile
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import math
@@ -284,6 +286,19 @@ def move_file(src, dst):
     for the two failures a caller genuinely has to act on -- the contents could
     not be copied, or the source could not be removed.
 
+    The copy never writes onto *dst* itself. It goes to a hidden
+    ``.clu_incoming`` sibling in *dst*'s folder (the shape
+    ``core.problem_replacements`` and ``core.comicvine_db_update`` stage with),
+    which is then ``os.replace``'d over *dst* -- a rename within one directory,
+    so atomic. Copying straight onto *dst* truncated an existing comic first:
+    every in-place CBZ rewrite is staged in ``CACHE_DIR/tmp`` and lands here
+    cross-device, so a disk-full, a NAS drop or a container stop mid-copy left
+    the original truncated and the staged copy deleted -- the comic was gone.
+    A failed copy now removes the sibling and leaves *dst* untouched. A sibling
+    left by a crash is hidden (``is_hidden``: never indexed, moved or matched)
+    and reaped by the next cross-device move into that folder once it is
+    ``STALE_INCOMING_SECONDS`` old.
+
     Not for directories: ``dst`` is always a full file path here.
     """
     try:
@@ -293,17 +308,76 @@ def move_file(src, dst):
         os.replace(src, dst)
         return
     except OSError:
-        pass  # cross-device (EXDEV), or a destination we must copy onto
+        # Cross-device (EXDEV), or a destination we must copy onto. A
+        # case-only rename on a case-insensitive mount is the same file: the
+        # copy below would land on it and the os.remove(src) would delete it.
+        if _same_file(src, dst):
+            raise
 
-    shutil.copyfile(src, dst)
+    dst_dir = os.path.dirname(os.path.abspath(dst))
+    _reap_stale_incoming(dst_dir)
+    staged = os.path.join(
+        dst_dir,
+        f".{os.path.basename(dst)}.{uuid.uuid4().hex[:8]}{INCOMING_SUFFIX}",
+    )
     try:
-        shutil.copystat(src, dst)
-    except OSError as e:
-        app_logger.debug(
-            f"Kept {dst} without its source timestamps/mode ({e}); "
-            "the mount refuses utime/chmod"
-        )
+        shutil.copyfile(src, staged)
+        try:
+            shutil.copystat(src, staged)
+        except OSError as e:
+            app_logger.debug(
+                f"Kept {dst} without its source timestamps/mode ({e}); "
+                "the mount refuses utime/chmod"
+            )
+        # Same directory, so this cannot be cross-device; until it runs the
+        # original at dst is untouched.
+        os.replace(staged, dst)
+    except BaseException:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        raise
     os.remove(src)
+
+
+# Suffix of a file staged beside its destination before an atomic os.replace.
+# Shared with core.problem_replacements and core.comicvine_db_update.
+INCOMING_SUFFIX = ".clu_incoming"
+# A staged sibling this old belongs to a writer that died (a crash, a container
+# stop): a live copy keeps its mtime fresh. A day is far beyond any real copy.
+STALE_INCOMING_SECONDS = 24 * 3600
+
+
+def _same_file(a, b):
+    try:
+        return os.path.exists(b) and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _reap_stale_incoming(folder):
+    """Remove ``.*.clu_incoming`` files in *folder* left by a dead writer.
+
+    Best-effort and age-gated, so a staged copy another writer is still
+    filling is never touched. Never raises.
+    """
+    cutoff = time.time() - STALE_INCOMING_SECONDS
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                name = entry.name
+                if not (name.startswith(".") and name.endswith(INCOMING_SUFFIX)):
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False) and \
+                            entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        os.remove(entry.path)
+                        app_logger.info(f"Removed stale staged copy {entry.path}")
+                except OSError as e:
+                    app_logger.debug(f"Could not remove stale {entry.path}: {e}")
+    except OSError:
+        pass
 
 
 def _zip_assembly_dir():
@@ -364,7 +438,9 @@ def open_zip_for_write(dest_path, compression=zipfile.ZIP_DEFLATED,
         # when the temp and destination live on different devices. move_file
         # rather than shutil.move: a mount that refuses utime/chmod must not
         # turn a complete archive into a reported failure -- and the next line
-        # sets the mode we actually want anyway.
+        # sets the mode we actually want anyway. It also copies to a hidden
+        # sibling and renames that over dest_path, so an in-place rewrite that
+        # fails mid-copy leaves the original comic intact.
         move_file(tmp_path, dest_path)
         moved = True
         if set_permissions:

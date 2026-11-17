@@ -1,0 +1,224 @@
+"""``helpers.move_file`` must never truncate the destination before the new
+copy is complete.
+
+Every in-place CBZ rewrite is assembled in ``CACHE_DIR/tmp`` by
+``open_zip_for_write`` and moved over the original with ``move_file``. Those
+are normally two volumes, so the move is a copy -- and it used to be
+``shutil.copyfile(src, dst)`` straight onto the existing comic. A disk-full,
+a NAS drop or a container stop part-way through left the original truncated,
+and the ``finally`` in ``open_zip_for_write`` then deleted the staged archive:
+the comic was gone.
+
+The copy now goes to a hidden ``.clu_incoming`` sibling in the destination
+folder and is ``os.replace``'d over the destination, so the original is
+untouched until the new file is complete.
+"""
+import errno
+import os
+import shutil
+import time
+import zipfile
+
+import pytest
+
+import helpers
+
+
+ORIGINAL = b"PK original comic bytes " * 512
+
+
+@pytest.fixture
+def volumes(tmp_path, monkeypatch):
+    """Two folders that behave like two filesystems.
+
+    os.replace between them fails with EXDEV, exactly as across mounts; a
+    rename within one folder still works, as it does on a real volume.
+    """
+    staging = tmp_path / "cache_tmp"
+    library = tmp_path / "library" / "Series (2020)"
+    staging.mkdir()
+    library.mkdir(parents=True)
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        if os.path.dirname(os.path.abspath(src)) != os.path.dirname(os.path.abspath(dst)):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(helpers.os, "replace", _replace)
+    monkeypatch.setattr(helpers, "_zip_assembly_dir", lambda: str(staging))
+    return staging, library
+
+
+@pytest.fixture
+def existing_comic(volumes):
+    _, library = volumes
+    comic = library / "Series 001 (2020).cbz"
+    comic.write_bytes(ORIGINAL)
+    return comic
+
+
+def _copy_half_then_fail(monkeypatch, exc=None):
+    """copyfile as a full disk reports it: some bytes written, then ENOSPC."""
+    targets = []
+
+    def _partial(src, dst, **kwargs):
+        targets.append(dst)
+        with open(src, "rb") as fin, open(dst, "wb") as fout:
+            data = fin.read()
+            fout.write(data[: len(data) // 2])
+        raise exc or OSError(errno.ENOSPC, "No space left on device", str(dst))
+
+    monkeypatch.setattr(helpers.shutil, "copyfile", _partial)
+    return targets
+
+
+def _incoming(folder):
+    return [p.name for p in folder.iterdir() if "clu_incoming" in p.name]
+
+
+class TestCopyFailurePreservesOriginal:
+    def test_partial_copy_leaves_the_original_byte_identical(
+            self, volumes, existing_comic, monkeypatch):
+        staging, library = volumes
+        src = staging / "new.cbz"
+        src.write_bytes(b"the rewritten comic" * 1000)
+        targets = _copy_half_then_fail(monkeypatch)
+
+        with pytest.raises(OSError):
+            helpers.move_file(str(src), str(existing_comic))
+
+        assert existing_comic.read_bytes() == ORIGINAL
+        assert _incoming(library) == [], "the partial sibling must be removed"
+        assert src.exists(), "the source must survive a failed move"
+        assert targets and os.path.abspath(targets[0]) != os.path.abspath(str(existing_comic))
+
+    def test_rewrite_through_open_zip_for_write_keeps_the_original(
+            self, volumes, existing_comic, monkeypatch):
+        """The reported path: an in-place CBZ rewrite failing mid-copy."""
+        staging, library = volumes
+        _copy_half_then_fail(monkeypatch)
+
+        with pytest.raises(OSError):
+            with helpers.open_zip_for_write(str(existing_comic)) as zf:
+                zf.writestr("001.jpg", b"new page")
+
+        assert existing_comic.read_bytes() == ORIGINAL
+        assert _incoming(library) == []
+        assert sorted(p.name for p in library.iterdir()) == [existing_comic.name]
+        assert os.listdir(str(staging)) == [], "the staged archive is cleaned up"
+
+    def test_a_failed_final_rename_keeps_the_original(
+            self, volumes, existing_comic, monkeypatch):
+        staging, library = volumes
+        src = staging / "new.cbz"
+        src.write_bytes(b"new")
+        cross_device = helpers.os.replace
+
+        def _refuse_swap(a, b):
+            if os.path.dirname(os.path.abspath(a)) == os.path.dirname(os.path.abspath(b)):
+                raise PermissionError(errno.EACCES, "Permission denied", b)
+            return cross_device(a, b)
+
+        monkeypatch.setattr(helpers.os, "replace", _refuse_swap)
+
+        with pytest.raises(PermissionError):
+            helpers.move_file(str(src), str(existing_comic))
+
+        assert existing_comic.read_bytes() == ORIGINAL
+        assert _incoming(library) == []
+        assert src.exists()
+
+
+class TestSuccessfulCrossDeviceOverwrite:
+    def test_overwrite_lands_and_leaves_no_sibling(self, volumes, existing_comic):
+        staging, library = volumes
+        src = staging / "new.cbz"
+        src.write_bytes(b"the rewritten comic")
+
+        helpers.move_file(str(src), str(existing_comic))
+
+        assert existing_comic.read_bytes() == b"the rewritten comic"
+        assert not src.exists()
+        assert sorted(p.name for p in library.iterdir()) == [existing_comic.name]
+
+    def test_zip_rewrite_lands_with_parent_permissions(
+            self, volumes, existing_comic, monkeypatch):
+        """match_parent_permissions still runs on the final path."""
+        _, library = volumes
+        seen = []
+        monkeypatch.setattr(helpers, "match_parent_permissions", seen.append)
+
+        with helpers.open_zip_for_write(str(existing_comic)) as zf:
+            zf.writestr("001.jpg", b"new page")
+
+        with zipfile.ZipFile(str(existing_comic)) as zf:
+            assert zf.namelist() == ["001.jpg"]
+        assert seen == [str(existing_comic)]
+        assert _incoming(library) == []
+
+    def test_the_copy_never_opens_the_destination(self, volumes, existing_comic, monkeypatch):
+        staging, _ = volumes
+        src = staging / "new.cbz"
+        src.write_bytes(b"new")
+        targets = []
+        real_copyfile = shutil.copyfile
+        monkeypatch.setattr(
+            helpers.shutil, "copyfile",
+            lambda s, d, **k: (targets.append(d), real_copyfile(s, d, **k))[1],
+        )
+
+        helpers.move_file(str(src), str(existing_comic))
+
+        assert len(targets) == 1
+        name = os.path.basename(targets[0])
+        assert name.startswith(".") and name.endswith(helpers.INCOMING_SUFFIX)
+        assert helpers.is_hidden(targets[0]), "a staged copy must never look like a comic"
+
+
+class TestCrashLeftovers:
+    def test_stale_sibling_is_reaped_and_a_live_one_kept(self, volumes):
+        staging, library = volumes
+        stale = library / ".Series 002 (2020).cbz.deadbeef.clu_incoming"
+        live = library / ".Series 003 (2020).cbz.cafef00d.clu_incoming"
+        other_hidden = library / ".keepme"
+        for p in (stale, live, other_hidden):
+            p.write_bytes(b"x")
+        old = time.time() - helpers.STALE_INCOMING_SECONDS - 60
+        os.utime(str(stale), (old, old))
+        os.utime(str(other_hidden), (old, old))
+
+        src = staging / "new.cbz"
+        src.write_bytes(b"new")
+        helpers.move_file(str(src), str(library / "Series 001 (2020).cbz"))
+
+        assert not stale.exists()
+        assert live.exists(), "a sibling another writer may still be filling is kept"
+        assert other_hidden.exists(), "only .clu_incoming files are reaped"
+
+
+class TestSameFileGuard:
+    def test_case_only_rename_fallback_never_deletes_the_file(self, tmp_path, monkeypatch):
+        """If the rename fails and dst is src under another case, do not copy.
+
+        Copying would land on the very file and the os.remove(src) after it
+        would delete the comic.
+        """
+        src = tmp_path / "series 001.cbz"
+        src.write_bytes(ORIGINAL)
+        dst = tmp_path / "Series 001.cbz"
+        monkeypatch.setattr(helpers.os.path, "samefile", lambda a, b: True)
+        monkeypatch.setattr(helpers.os.path, "exists", lambda p: True)
+
+        def _refuse(a, b):
+            raise PermissionError(errno.EACCES, "Permission denied", b)
+
+        monkeypatch.setattr(helpers.os, "replace", _refuse)
+        monkeypatch.setattr(helpers.shutil, "copyfile",
+                            lambda *a, **k: pytest.fail("must not copy onto itself"))
+
+        with pytest.raises(PermissionError):
+            helpers.move_file(str(src), str(dst))
+
+        monkeypatch.undo()
+        assert src.read_bytes() == ORIGINAL

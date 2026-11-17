@@ -32,10 +32,16 @@ def _force_cross_device(monkeypatch):
     """Make os.replace fail as it would across two mounts.
 
     The tolerant path only runs on the copy fallback; on one filesystem
-    os.replace succeeds and never touches metadata at all.
+    os.replace succeeds and never touches metadata at all. A rename within one
+    directory is never cross-device, so that one still goes through: it is how
+    move_file swaps its staged sibling over the destination.
     """
+    real_replace = os.replace
+
     def _exdev(src, dst):
-        raise OSError(errno.EXDEV, "Invalid cross-device link")
+        if os.path.dirname(os.path.abspath(src)) != os.path.dirname(os.path.abspath(dst)):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(src, dst)
 
     monkeypatch.setattr(helpers.os, "replace", _exdev)
 
@@ -90,7 +96,8 @@ class TestMoveFile:
         src = tmp_path / "a.cbz"
         src.write_bytes(b"payload")
         os.utime(str(src), (1_000_000_000, 1_000_000_000))
-        dst = tmp_path / "b.cbz"
+        dst = tmp_path / "dest" / "b.cbz"
+        dst.parent.mkdir()
 
         helpers.move_file(str(src), str(dst))
 
@@ -109,8 +116,9 @@ class TestMoveFile:
         src = tmp_path / "a.cbz"
         src.write_bytes(b"payload")
 
+        (tmp_path / "dest").mkdir()
         with pytest.raises(PermissionError):
-            helpers.move_file(str(src), str(tmp_path / "b.cbz"))
+            helpers.move_file(str(src), str(tmp_path / "dest" / "b.cbz"))
         assert src.exists()
 
     def test_an_unremovable_source_still_raises(self, tmp_path, monkeypatch):
@@ -129,8 +137,9 @@ class TestMoveFile:
         src = tmp_path / "a.cbz"
         src.write_bytes(b"payload")
 
+        (tmp_path / "dest").mkdir()
         with pytest.raises(PermissionError):
-            helpers.move_file(str(src), str(tmp_path / "b.cbz"))
+            helpers.move_file(str(src), str(tmp_path / "dest" / "b.cbz"))
 
 
 class TestZipWriterSurvivesRefusedMetadata:
