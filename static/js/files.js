@@ -6036,8 +6036,28 @@ async function applySmartRenamePlan(plan, panel) {
       return false;
     }
     const s = j.summary || {};
+    const conflicts = Array.isArray(s.conflicts) ? s.conflicts : [];
     const msg = `Renamed ${s.renamed || 0}, skipped ${s.skipped || 0}, failed ${s.failed || 0}`;
-    CLU.showToast('Smart Rename', msg, (s.failed || 0) > 0 ? 'warning' : 'success');
+    CLU.showToast('Smart Rename', msg,
+      ((s.failed || 0) > 0 || conflicts.length) ? 'warning' : 'success');
+    if (conflicts.length) {
+      // A destination that was taken at apply time is never overwritten; say
+      // which files were left alone and why.
+      const shown = conflicts.slice(0, 5)
+        .map(c => `${c.old_name} → ${c.new_name}: ${c.reason}`);
+      if (conflicts.length > shown.length) {
+        shown.push(`…and ${conflicts.length - shown.length} more`);
+      }
+      // Stays until closed: the user needs time to read which files they were.
+      CLU.showToast(`Not renamed (${conflicts.length})`, shown.join('; '), 'warning', 0);
+    }
+    const errors = Array.isArray(s.errors) ? s.errors : [];
+    if (errors.length) {
+      const first = errors[0];
+      const name = (first.old_path || '').split(/[\\/]/).pop();
+      CLU.showError(`Rename failed for ${name}: ${first.error}` +
+        (errors.length > 1 ? ` (and ${errors.length - 1} more)` : ''));
+    }
     const currentPath = panel === 'source' ? currentSourcePath : currentDestinationPath;
     if (currentPath) loadDirectories(currentPath, panel);
     return true;
