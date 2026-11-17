@@ -2,7 +2,8 @@
 Reading Position Blueprint
 
 Manages the comic reader's "resume where I left off" bookmark:
-``/api/reading-position`` (GET / POST / DELETE).
+``/api/reading-position`` (GET / POST / DELETE), and the Insights page's
+reading-history metadata backfill (``/api/backfill-reading-metadata``).
 
 Contract notes for anyone touching this file:
 
@@ -149,3 +150,37 @@ def api_reading_position():
 
         success = delete_reading_position(comic_path)
         return jsonify({"success": success})
+
+
+@reading_bp.route("/api/backfill-reading-metadata", methods=["POST"])
+def api_backfill_reading_metadata():
+    """Start re-reading ComicInfo.xml for every comic in the reading history.
+
+    Runs off-request (``core.reading_metadata_backfill``): opening every archive
+    in the history can far outlast gunicorn's timeout, and it used to do so
+    while holding the database write lock. Answers ``{success, op_id}``; the
+    page follows ``/api/operation/<op_id>`` (never ``/api/operations``) and
+    then reads the report from ``/api/backfill-reading-metadata/result``.
+    409 while a run is already going.
+    """
+    from core.database import current_user_id
+    from core.reading_metadata_backfill import start_backfill
+
+    op_id = start_backfill(user_id=current_user_id())
+    if op_id is None:
+        return jsonify({"success": False,
+                        "error": "A metadata backfill is already running"}), 409
+    return jsonify({"success": True, "op_id": op_id})
+
+
+@reading_bp.route("/api/backfill-reading-metadata/result", methods=["GET"])
+def api_backfill_reading_metadata_result():
+    """The caller's last backfill report, or ``result: null`` if none."""
+    from core.database import current_user_id
+    from core.reading_metadata_backfill import is_running, last_result
+
+    return jsonify({
+        "success": True,
+        "running": is_running(),
+        "result": last_result(user_id=current_user_id()),
+    })

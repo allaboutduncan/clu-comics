@@ -243,3 +243,69 @@ class TestPathIsStoredVerbatim:
         assert client.get(
             "/api/reading-position?path=/data/batman/batman 001.cbz"
         ).get_json()["page_number"] is None
+
+
+class TestBackfillReadingMetadata:
+    """/api/backfill-reading-metadata: started off-request, one run at a time."""
+
+    @pytest.fixture(autouse=True)
+    def _idle(self):
+        import core.reading_metadata_backfill as bf
+        with bf._last_result_lock:
+            bf._last_result = None
+        yield
+        _wait_idle()
+        with bf._last_result_lock:
+            bf._last_result = None
+
+    def test_starts_a_background_run_and_reports_it(self, client, create_cbz):
+        path = str(create_cbz(
+            "Backfill 001.cbz",
+            comicinfo_xml="<ComicInfo><Writer>Ann Nocenti</Writer></ComicInfo>"))
+        conn = get_db_connection()
+        conn.execute("INSERT INTO issues_read (user_id, issue_path) VALUES (1, ?)", (path,))
+        conn.commit()
+        conn.close()
+
+        r = client.post("/api/backfill-reading-metadata")
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["success"] is True and body["op_id"]
+        _wait_idle()
+
+        r = client.get("/api/backfill-reading-metadata/result")
+        result = r.get_json()["result"]
+        assert result["updated"] == 1 and result["skipped"] == 0
+
+        conn = get_db_connection()
+        writer = conn.execute(
+            "SELECT writer FROM issues_read WHERE issue_path = ?", (path,)
+        ).fetchone()[0]
+        conn.close()
+        assert writer == "Ann Nocenti"
+
+    def test_second_start_while_running_is_409(self, client):
+        import core.reading_metadata_backfill as bf
+
+        assert bf._run_lock.acquire(blocking=False)
+        try:
+            r = client.post("/api/backfill-reading-metadata")
+            assert r.status_code == 409
+            assert r.get_json()["success"] is False
+            assert client.get(
+                "/api/backfill-reading-metadata/result").get_json()["running"] is True
+        finally:
+            bf._run_lock.release()
+
+    def test_result_is_null_before_any_run(self, client):
+        body = client.get("/api/backfill-reading-metadata/result").get_json()
+        assert body == {"success": True, "running": False, "result": None}
+
+
+def _wait_idle(timeout=10):
+    import time
+    import core.reading_metadata_backfill as bf
+
+    deadline = time.time() + timeout
+    while bf.is_running() and time.time() < deadline:
+        time.sleep(0.02)
