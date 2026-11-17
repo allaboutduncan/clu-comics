@@ -20,9 +20,6 @@
 
   var CLU = window.CLU = window.CLU || {};
 
-  /** Track the current EventSource so we can close a previous one */
-  var _currentEventSource = null;
-
   // ── Helpers ─────────────────────────────────────────────────────────────
 
   function _getContract() {
@@ -35,9 +32,107 @@
 
   // ── Single-file streaming op ────────────────────────────────────────────
 
+  var OP_LABELS = {
+    crop: 'Crop Cover',
+    remove: 'Remove 1st Image',
+    single_file: 'Rebuild',
+    enhance_single: 'Enhance',
+    add: 'Add Blank to End',
+    'delete': 'Delete'
+  };
+
+  // ── Busy overlay on the file being worked on ────────────────────────────
+  //
+  // The header indicator is out of sight once the page is scrolled, so the
+  // file itself also carries a spinner wherever it is listed. Two sources
+  // feed it: actions started on this page (marked at once) and the server's
+  // operations list (every poll), which is what re-marks a file after the
+  // list is redrawn or the page is reopened mid-action.
+
+  var _localBusy = {};    // path -> label, actions this page started
+  var _serverBusy = {};   // path -> label, from the last operations poll
+  var BUSY_ATTRS = ['data-path', 'data-fullpath', 'data-issue-path'];
+
+  function _busyLabel(path) {
+    return _localBusy[path] || _serverBusy[path] || null;
+  }
+
+  /** The element the overlay covers: the cover when the item has one. */
+  function _busyHost(el) {
+    var thumb = el.querySelector('.thumbnail-container');
+    if (thumb) return thumb;
+    if (el.tagName === 'TR') return el.cells[0] || el;
+    return el;
+  }
+
+  function _applyBusy() {
+    var stale = document.querySelectorAll('.clu-file-busy-overlay');
+    for (var i = 0; i < stale.length; i++) {
+      if (!_busyLabel(stale[i].dataset.busyPath)) {
+        var old = stale[i].parentNode;
+        old.removeChild(stale[i]);
+        old.classList.remove('clu-file-busy');
+        old.removeAttribute('aria-busy');
+      }
+    }
+    var paths = Object.keys(_localBusy).concat(Object.keys(_serverBusy));
+    paths.forEach(function (path) {
+      var label = _busyLabel(path);
+      BUSY_ATTRS.forEach(function (attr) {
+        var els = document.querySelectorAll('[' + attr + '="' + CSS.escape(path) + '"]');
+        for (var j = 0; j < els.length; j++) {
+          var host = _busyHost(els[j]);
+          if (host.querySelector(':scope > .clu-file-busy-overlay')) continue;
+          var overlay = document.createElement('div');
+          overlay.className = 'clu-file-busy-overlay';
+          overlay.dataset.busyPath = path;
+          overlay.setAttribute('role', 'status');
+          var spinner = document.createElement('span');
+          spinner.className = 'spinner-border spinner-border-sm';
+          spinner.setAttribute('aria-hidden', 'true');
+          var text = document.createElement('span');
+          text.className = 'clu-file-busy-text';
+          text.textContent = label + '…';
+          overlay.appendChild(spinner);
+          overlay.appendChild(text);
+          host.classList.add('clu-file-busy');
+          host.setAttribute('aria-busy', 'true');
+          host.appendChild(overlay);
+        }
+      });
+    });
+  }
+
+  function _setLocalBusy(path, label) {
+    if (label) _localBusy[path] = label; else delete _localBusy[path];
+    _applyBusy();
+  }
+
+  document.addEventListener('clu:operations', function (event) {
+    _serverBusy = {};
+    (event.detail || []).forEach(function (op) {
+      if (op.path && (op.status === 'running' || op.status === 'queued')) {
+        _serverBusy[op.path] = String(op.label || '').split(':')[0] || 'Working';
+      }
+    });
+    _applyBusy();
+  });
+
+  /** Ask the header indicator to redraw now rather than at its next poll. */
+  function _refreshOpsIndicator() {
+    if (typeof window.updateOperationsIndicator === 'function') {
+      window.updateOperationsIndicator();
+    }
+  }
+
   /**
    * Execute a streaming operation on a single file.
-   * Supports: crop, remove, single_file, enhance_single, add, rebuild
+   * Supports: crop, remove, single_file, enhance_single, add, delete
+   *
+   * Progress is shown in the header operations indicator, the same on every
+   * page, and never in a page's own progress card: the server registers the
+   * operation and keeps following it if this page goes away. This stream only
+   * tells the page when to refresh and what to say at the end.
    *
    * @param {string} scriptType
    * @param {string} filePath
@@ -48,24 +143,16 @@
       return;
     }
 
-    // Close any previous EventSource
-    if (_currentEventSource) {
-      _currentEventSource.close();
-      _currentEventSource = null;
-    }
-
     var url = '/stream/' + scriptType + '?file_path=' + encodeURIComponent(filePath);
-    console.log('CLU.executeStreamingOp:', scriptType, filePath);
-
     var fname = _filename(filePath);
+    var label = OP_LABELS[scriptType] || scriptType;
+    // Taken now: the page overwrites window._cluStreaming on its next action,
+    // and a second action must not steal this one's callbacks.
+    var contract = _getContract();
 
-    // Reset & show progress
-    CLU.resetProgress();
-    CLU.updateProgress(0, 'Starting ' + scriptType + ' on ' + fname + '...');
-    CLU.showProgressIndicator();
+    _setLocalBusy(filePath, label);
 
     var eventSource = new EventSource(url);
-    _currentEventSource = eventSource;
     var completed = false;
     // The server ends a failed run with an "An error occurred" line and then
     // closes the stream, which the browser reports as a connection error.
@@ -74,80 +161,56 @@
     var failed = false;
     var failureReason = '';
 
+    eventSource.onopen = function () {
+      setTimeout(_refreshOpsIndicator, 300);
+    };
+
     eventSource.onmessage = function (event) {
       var line = event.data.trim();
       if (!line) return;
-      console.log('Progress:', line);
-
       var reason = line.match(/Failed to .+/);
       if (reason) failureReason = reason[0];
-      if (line.indexOf('An error occurred') === 0) {
-        failed = true;
-        return;
-      }
-
-      // Heuristic progress from message content
-      if (line.includes('Extracting') || line.includes('Unzipping')) {
-        CLU.updateProgress(25, 'Extracting: ' + fname);
-      } else if (line.includes('Processing') || line.includes('Cropping') || line.includes('Enhancing')) {
-        CLU.updateProgress(50, line);
-      } else if (line.includes('Compressing') || line.includes('Zipping') || line.includes('Creating CBZ')) {
-        CLU.updateProgress(75, 'Compressing: ' + fname);
-      } else if (line.includes('Complete') || line.includes('complete') || line.includes('Success') || line.includes('success')) {
-        CLU.updateProgress(100, scriptType + ' completed for ' + fname + '!');
-      } else if (line.includes('Adding blank') || line.includes('Blank image')) {
-        CLU.updateProgress(50, 'Adding blank image to ' + fname + '...');
-      } else if (line.includes('Removing') || line.includes('Deleting')) {
-        CLU.updateProgress(50, line);
-      } else if (!line.startsWith('INFO:') && !line.startsWith('DEBUG:')) {
-        var bar = document.getElementById('progress-bar');
-        var txt = document.getElementById('progress-text');
-        if (txt) txt.textContent = line;
-      }
+      if (line.indexOf('An error occurred') === 0) failed = true;
     };
 
-    eventSource.addEventListener('completed', function (event) {
+    eventSource.addEventListener('completed', function () {
       completed = true;
-      console.log('Operation completed:', event.data);
-      CLU.updateProgress(100, scriptType + ' completed successfully for ' + fname + '!');
-      CLU.showToast('Success', 'Operation completed successfully!', 'success');
       eventSource.close();
-      _currentEventSource = null;
-
-      setTimeout(function () { CLU.hideProgressIndicator(); }, 3000);
-
-      var contract = _getContract();
+      _setLocalBusy(filePath, null);
+      CLU.showToast(label, 'Completed for ' + fname, 'success');
+      _refreshOpsIndicator();
       if (typeof contract.onComplete === 'function') {
         contract.onComplete(scriptType, filePath);
       }
     });
 
-    eventSource.onerror = function (error) {
-      console.error('EventSource error:', error);
+    eventSource.onerror = function () {
       eventSource.close();
-      _currentEventSource = null;
 
       setTimeout(function () {
-        if (!completed) {
-          var message = 'Connection error during operation';
-          var status = 'Error: Connection lost during operation';
-          if (failed) {
-            message = failureReason || ('The operation failed for ' + fname);
-            if (scriptType === 'single_file') {
-              message += ' — the file was left as it was. See Library Health for details.';
-            }
-            status = 'Error: ' + (failureReason || 'the operation failed');
+        if (completed) return;
+        // If the action is still running, the next operations poll re-marks
+        // the file from the server's list.
+        _setLocalBusy(filePath, null);
+        _refreshOpsIndicator();
+        var message;
+        if (failed) {
+          message = failureReason || (label + ' failed for ' + fname);
+          if (scriptType === 'single_file') {
+            message += ' — the file was left as it was. See Library Health for details.';
           }
           CLU.showError(message);
-          CLU.updateProgress(0);
-          CLU.resetProgress('bg-danger');
-          var txt = document.getElementById('progress-text');
-          if (txt) txt.textContent = status;
-
-          var contract = _getContract();
-          if (typeof contract.onError === 'function') {
-            contract.onError(scriptType, filePath, failed ? message : 'Connection error');
-          }
+        } else {
+          // The stream dropped, not the operation: the server keeps running
+          // it and the header indicator still shows it.
+          message = 'Connection error';
+          CLU.showToast(label,
+            'Lost the live connection for ' + fname +
+            '. It keeps running; check the operations indicator in the header.',
+            'warning');
+        }
+        if (typeof contract.onError === 'function') {
+          contract.onError(scriptType, filePath, message);
         }
       }, 100);
     };

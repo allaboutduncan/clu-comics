@@ -257,6 +257,9 @@
           if (!indicator) return;
 
           const ops = data.operations || [];
+          // Pages mark the files being worked on (clu-streaming.js). Sent on
+          // every poll, an empty one included, so a finished file is unmarked.
+          document.dispatchEvent(new CustomEvent('clu:operations', { detail: ops }));
           if (ops.length === 0) {
             indicator.classList.add('d-none');
             return;
@@ -288,7 +291,7 @@
           // Labels and details carry file names; never inject them as HTML.
           const esc = CLU.escapeHtml;
 
-          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search', index: 'bi-card-list' };
+          const iconMap = { metadata: 'bi-tags', move: 'bi-arrows-move', convert: 'bi-arrow-repeat', rebuild: 'bi-hammer', import: 'bi-cloud-upload', upload: 'bi-cloud-arrow-up', match: 'bi-collection', repair: 'bi-wrench-adjustable', rename: 'bi-input-cursor-text', credit_backfill: 'bi-person-badge', search: 'bi-search', index: 'bi-card-list', crop: 'bi-crop', remove: 'bi-file-earmark-minus', enhance: 'bi-magic', add: 'bi-file-earmark-plus', delete: 'bi-trash' };
           let html = '';
           ops.forEach(op => {
             const isRunning = op.status === 'running';

@@ -463,6 +463,18 @@ class TestCbzInfoEditorFrontend:
     def test_no_native_dialogs(self, js):
         assert not re.search(r"(?<![\w.])(confirm|alert|prompt)\s*\(", js)
 
+    def test_page_images_carry_the_archive_version(self, js):
+        """A rewritten CBZ keeps its page URLs, and a browser reuses an image
+        it already loaded from one, so the preview showed the old cover after
+        a crop or edit. Every page image goes through _pageUrl, which adds
+        the mtime /cbz-metadata reports."""
+        assert "_viewerRev = data.modified" in js
+        helper = js.split("function _pageUrl", 1)[1].split("\n  }", 1)[0]
+        assert "'?v='" in helper and "_viewerRev" in helper
+        rest = js.replace(helper, "")
+        assert not re.search(r"\.src = '/api/read/|imageUrl = '/api/read/", rest)
+        assert "Date.now()" not in helper
+
     def test_editable_keys_match_route_allowlist(self, js):
         from routes.metadata import EDITABLE_COMICINFO_FIELDS
         groups = js.split("var _fieldGroups", 1)[1].split("var _fieldByKey", 1)[0]
@@ -492,6 +504,17 @@ class TestCbzMetadataDimensions:
             for name, data in pages:
                 zf.writestr(name, data)
         return path
+
+    def test_modified_follows_a_rewrite(self, client, lib_dir):
+        """`modified` is the preview's cache key: it must move with the file."""
+        path = self._make(lib_dir, [("p01.png", _png(10, 20))])
+        first = client.get("/cbz-metadata", query_string={"path": path}).get_json()
+        assert first["modified"] == int(os.path.getmtime(path) * 1000)
+
+        later = os.path.getmtime(path) + 60
+        os.utime(path, (later, later))
+        second = client.get("/cbz-metadata", query_string={"path": path}).get_json()
+        assert second["modified"] != first["modified"]
 
     def test_omitted_unless_requested(self, client, lib_dir):
         path = self._make(lib_dir, [("p01.png", _png(10, 20))])

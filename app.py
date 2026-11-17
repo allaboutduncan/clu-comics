@@ -63,6 +63,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 import core.app_state as app_state
+import core.stream_ops as stream_ops
 from routes.favorites import favorites_bp
 
 from routes.opds import opds_bp
@@ -7090,15 +7091,17 @@ def stream_logs(script_type):
 
         script_module = f"cbz_ops.{script_type}"
 
+        # Resolved here, inside the request: the generator below runs after the
+        # request context is gone, and an op with no owner is hidden from the
+        # user who started it.
+        op_user_id = current_user_id()
+
         def generate_logs():
-            # Track single-file convert/rebuild operations
-            op_id = None
-            if script_type == "single_file":
-                op_id = app_state.register_operation(
-                    "convert", os.path.basename(file_path)
-                )
-            _progress_re = re.compile(r"Compression progress: ([\d.]+)% \((\d+)/(\d+)")
-            _step_re = re.compile(r"Step (\d+)/(\d+): (.+)")
+            # Every single-file action is registered, so it shows in the header
+            # operations indicator on every page (core/stream_ops.py).
+            op_id = stream_ops.register_single_file_op(
+                script_type, file_path, user_id=op_user_id
+            )
 
             process = subprocess.Popen(
                 ["python", "-u", "-m", script_module, file_path],
@@ -7110,54 +7113,18 @@ def stream_logs(script_type):
             # Capture both stdout and stderr
             try:
                 for line in process.stdout:
-                    if op_id:
-                        m = _progress_re.search(line)
-                        if m:
-                            pct = int(float(m.group(1)))
-                            app_state.update_operation(
-                                op_id,
-                                current=pct,
-                                total=100,
-                                detail=f"Compressing ({m.group(2)}/{m.group(3)} files)",
-                            )
-                        else:
-                            m2 = _step_re.search(line)
-                            if m2:
-                                app_state.update_operation(
-                                    op_id, detail=m2.group(3).strip(".\n")
-                                )
+                    stream_ops.track_line(op_id, line)
                     yield f"data: {line}\n\n"  # Format required by SSE
                 for line in process.stderr:
                     yield f"data: ERROR: {line}\n\n"
             except GeneratorExit:
-                # Client disconnected — continue monitoring subprocess in background
-                if process.poll() is None and op_id:
-
-                    def _drain_and_track():
-                        try:
-                            for line in process.stdout:
-                                m = _progress_re.search(line)
-                                if m:
-                                    pct = int(float(m.group(1)))
-                                    app_state.update_operation(
-                                        op_id,
-                                        current=pct,
-                                        total=100,
-                                        detail=f"Compressing ({m.group(2)}/{m.group(3)} files)",
-                                    )
-                            process.wait()
-                            app_state.complete_operation(
-                                op_id, error=(process.returncode != 0)
-                            )
-                        except Exception:
-                            app_state.complete_operation(op_id, error=True)
-
-                    threading.Thread(target=_drain_and_track, daemon=True).start()
+                # The page went away. The subprocess keeps running; keep
+                # reading its pipes and finish the op when it exits.
+                stream_ops.follow_in_background(process, op_id)
                 return
 
             process.wait()
-            if op_id:
-                app_state.complete_operation(op_id, error=(process.returncode != 0))
+            stream_ops.finish(op_id, process.returncode)
             if process.returncode != 0:
                 yield f"data: An error occurred while streaming logs. Return code: {process.returncode}.\n\n"
             else:

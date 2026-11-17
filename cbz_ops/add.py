@@ -5,6 +5,7 @@ import shutil
 from PIL import Image, ImageFilter
 from core.app_logging import app_logger
 from helpers import open_zip_for_write
+from core.thumbnail_cache import regenerate_thumbnail
 
 
 def handle_cbz_file(file_path):
@@ -57,6 +58,14 @@ def handle_cbz_file(file_path):
 
         # Step 7: Delete the .bak file
         os.remove(bak_file_path)
+
+        # The archive was rewritten, so its cached cover is stale by mtime.
+        # After the cleanup and guarded: the CBZ is already written, and an
+        # unwritable cache must not be reported as a failed add.
+        try:
+            regenerate_thumbnail(file_path)
+        except Exception as e:
+            app_logger.warning(f"Could not refresh thumbnail for {file_path}: {e}")
 
     except Exception as e:
         app_logger.error(f"Failed to process {file_path}: {e}")
