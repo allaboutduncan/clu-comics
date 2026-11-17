@@ -1,6 +1,7 @@
 ---
 paths:
   - "core/thumbnail_cache.py"
+  - "core/thumbnail_scan.py"
   - "core/folder_thumbnails.py"
   - "core/folder_art.py"
   - "core/custom_covers.py"
@@ -90,11 +91,25 @@ Things that look arbitrary and are not:
   once, so such a request fell through to the `processing` upsert and submitted
   another doomed job on every poll — and the grid re-polls every 2s while the
   server answers `loading.svg`, which without this branch it would forever.
-- **Job rows are written only through `set_job_status`**, because that is what
+- **Job rows are written only through `set_job_status`** (or, for the startup
+  scan, its batch counterpart `mark_processing_batch`), because that is what
   stamps `file_mtime`. A raw `INSERT OR REPLACE (path, status)` leaves it NULL
   *and* wipes any value already there, and `scan_library_task` reads NULL as
   "migrated, mtime unknown" and re-queues. A `.cbz` self-healed (its
   `completed` row goes through the cache); every CBR ever viewed did not.
+- **The startup scan never holds a write transaction across file I/O.**
+  `app.scan_library_task` is a thin caller of
+  `core.thumbnail_scan.scan_library_thumbnails`, which works per directory in
+  chunks of `SCAN_BATCH_SIZE`: stat with no connection open, one short read
+  (`get_job_rows`), decide in memory (`needs_thumbnail`), one short write
+  (`mark_processing_batch`, which stamps the caller's `file_mtime`), commit,
+  and only then submit. It used to upsert inside a per-directory transaction
+  and stat/submit within it, so on a slow NAS every other writer — including
+  the scan's own jobs' terminal `set_job_status` — failed with "database is
+  locked". Submitting after the commit is also the route's ordering: the
+  `processing` row exists before the job can finish, so it never overwrites a
+  fast worker's verdict. A busy database costs one chunk (nothing submitted
+  for it); only corruption ends the scan. `tests/unit/test_thumbnail_scan.py`.
 - **`scan_library_task` must enumerate the same set as `build_file_index`** —
   the `is_hidden` prune on directories and the `.`/`_` guard on files, not an
   extension test alone. It is the only library walker whose output never
