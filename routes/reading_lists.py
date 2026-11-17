@@ -71,6 +71,7 @@ from models.comicvine import (
 )
 from core.app_logging import app_logger
 import core.app_state as app_state
+from core.task_registry import TaskRegistry
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
 
@@ -90,8 +91,9 @@ def sanitize_description_filter(value):
     # tag, all text escaped), never the stored value itself.
     return Markup(sanitize_description_html(value))  # nosec B704
 
-# In-memory store for background import tasks
-import_tasks = {}
+# In-memory store for background import tasks. Finished tasks are dropped an
+# hour after their last poll; it used to keep every task for the process's life.
+import_tasks = TaskRegistry()
 
 # GitHub tree cache (memory + disk-backed with TTL)
 _github_tree_cache = {"tree": None, "fetched_at": 0}
@@ -523,6 +525,7 @@ def import_status(task_id):
     task = import_tasks.get(task_id)
     if not task:
         return jsonify({'success': False, 'message': 'Task not found'})
+    import_tasks.touch(task_id)
 
     return jsonify({
         'success': True,
