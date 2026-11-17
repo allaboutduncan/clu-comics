@@ -4582,6 +4582,7 @@ def get_folder_sidecars():
     ever reaches ``open``. A missing file is ``exists: False``, not an error.
     """
     from core.auth import file_op_refusal
+    from core.path_access import resolve_served_path
 
     path = request.args.get('path', '')
     if not path:
@@ -4592,6 +4593,11 @@ def get_folder_sidecars():
         return jsonify({"success": False, "error": refusal[0]}), refusal[1]
     if not is_valid_library_path(path):
         return jsonify({"success": False, "error": "Path is not inside a library"}), 400
+    # The same on the realpath, grants included: a symlinked folder is judged
+    # by where it points.
+    _served, refusal = resolve_served_path(path, mode="full")
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
     if not os.path.isdir(path):
         return jsonify({"success": False, "error": "Folder not found"}), 404
 
@@ -4600,6 +4606,10 @@ def get_folder_sidecars():
         full = os.path.join(path, name)
         if not os.path.isfile(full):
             files[name] = {"exists": False, "content": ""}
+            continue
+        # A sidecar that is a symlink out of the library is not served.
+        if not is_valid_library_path(full):
+            files[name] = {"exists": True, "content": "", "error": "Could not read file"}
             continue
         try:
             with open(full, 'r', encoding='utf-8', errors='replace') as f:

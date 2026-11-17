@@ -3279,6 +3279,7 @@ from helpers.library import (
     get_default_library,
     get_default_library_root,
     is_valid_library_path,
+    is_within_roots,
     get_library_for_path,
     watch_target_verdict,
     is_root_mounted,
@@ -5511,8 +5512,8 @@ def _find_extracted_file(directory, filename):
         for f in files:
             if f.lower() == target:
                 full = os.path.join(root, f)
-                # Path traversal guard
-                if os.path.realpath(full).startswith(os.path.realpath(directory)):
+                # Path traversal guard (realpath, separator-bounded)
+                if is_within_roots(full, [directory]):
                     return full
     return None
 
@@ -6422,10 +6423,11 @@ def download_file():
         return jsonify({"error": "Missing path parameter"}), 400
 
     # Security: Ensure the file path is within allowed directories
+    # Realpath and separator-bounded on both arms (helpers.library).
     normalized_path = os.path.normpath(file_path)
     if not (
         is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
+        or is_within_roots(normalized_path, [get_target_dir_live()])
     ):
         return jsonify({"error": "Access denied"}), 403
 

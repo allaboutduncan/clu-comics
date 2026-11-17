@@ -535,6 +535,34 @@ class TestBulkOrchestrator:
         assert not _has_comicinfo(multi_user.sibling_cbz)
 
 
+class TestProviderMixGrant:
+    """The provider counts describe a folder's comics: a Clerk needs a full
+    grant on it, as for the re-tag the picker leads to."""
+
+    def test_clerk_refused_on_ungranted_folder(self, client, multi_user):
+        _as_clerk(client)
+        with patch("core.database.get_provider_mix") as mix:
+            resp = client.get("/api/bulk-metadata/provider-mix",
+                              query_string={"path": multi_user.sibling})
+        assert resp.status_code == 403
+        mix.assert_not_called()
+
+    def test_clerk_refused_on_traverse_only_root(self, client, multi_user):
+        _as_clerk(client)
+        with patch("core.database.get_provider_mix") as mix:
+            resp = client.get("/api/bulk-metadata/provider-mix",
+                              query_string={"path": multi_user.root})
+        assert resp.status_code == 403
+        mix.assert_not_called()
+
+    def test_clerk_allowed_on_granted_folder(self, client, multi_user):
+        _as_clerk(client)
+        with patch("core.database.get_provider_mix", return_value={}):
+            resp = client.get("/api/bulk-metadata/provider-mix",
+                              query_string={"path": multi_user.grant})
+        assert resp.status_code == 200
+
+
 class TestBulkExpansionUnit:
     """The orchestrator's expansion, called directly with a captured scope."""
 

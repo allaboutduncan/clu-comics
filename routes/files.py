@@ -23,7 +23,7 @@ from flask import Blueprint, request, jsonify, render_template_string, Response
 from core.app_logging import app_logger
 from core.auth import file_op_refusal
 from helpers.library import (is_critical_path, get_critical_path_error_message, is_valid_library_path,
-                             get_default_library_root)
+                             get_default_library_root, is_within_roots)
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
 from helpers import is_hidden
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
@@ -638,10 +638,8 @@ def combine_cbz():
     target_dir = get_target_dir() or "/downloads/processed"
 
     for f in files:
-        normalized = os.path.normpath(f)
-        if not (is_valid_library_path(normalized) or
-                normalized.startswith(os.path.normpath(watch_dir)) or
-                normalized.startswith(os.path.normpath(target_dir))):
+        # Realpath and separator-bounded: /downloads/temp2 is not WATCH.
+        if not (is_valid_library_path(f) or is_within_roots(f, (watch_dir, target_dir))):
             return jsonify({"error": "Access denied"}), 403
 
     temp_dir = None
@@ -769,9 +767,9 @@ def _split_access_allowed(normalized_path):
     from core.config import get_watch_dir, get_target_dir
     watch_dir = get_watch_dir() or "/downloads/temp"
     target_dir = get_target_dir() or "/downloads/processed"
+    # Realpath and separator-bounded: /downloads/temp2 is not WATCH.
     return (is_valid_library_path(normalized_path) or
-            normalized_path.startswith(os.path.normpath(watch_dir)) or
-            normalized_path.startswith(os.path.normpath(target_dir)))
+            is_within_roots(normalized_path, (watch_dir, target_dir)))
 
 
 @files_bp.route('/api/split-cbz/inspect', methods=['GET'])

@@ -1,5 +1,8 @@
 """GET /api/folder-sidecars -- read-only view of a folder's cvinfo and series.json."""
+import os
 from unittest.mock import patch
+
+import pytest
 
 
 def _get(client, path=None):
@@ -21,12 +24,10 @@ class TestFolderSidecarsRoute:
     def test_folder_grant_is_enforced(self, _refuse, client, tmp_path):
         assert _get(client, tmp_path).status_code == 403
 
-    @patch("routes.metadata.is_valid_library_path", return_value=True)
-    def test_missing_folder(self, _valid, client, tmp_path):
+    def test_missing_folder(self, client, tmp_path, tmp_path_library):
         assert _get(client, tmp_path / "nope").status_code == 404
 
-    @patch("routes.metadata.is_valid_library_path", return_value=True)
-    def test_returns_both_files(self, _valid, client, tmp_path):
+    def test_returns_both_files(self, client, tmp_path, tmp_path_library):
         (tmp_path / "cvinfo").write_text("https://comicvine.gamespot.com/x/4050-1/\n")
         (tmp_path / "series.json").write_text('{"metadata": {"name": "X"}}')
         data = _get(client, tmp_path).get_json()
@@ -34,20 +35,67 @@ class TestFolderSidecarsRoute:
         assert "4050-1" in data["files"]["cvinfo"]["content"]
         assert '"name": "X"' in data["files"]["series.json"]["content"]
 
-    @patch("routes.metadata.is_valid_library_path", return_value=True)
-    def test_absent_files_are_not_an_error(self, _valid, client, tmp_path):
+    def test_absent_files_are_not_an_error(self, client, tmp_path, tmp_path_library):
         (tmp_path / "cvinfo").write_text("x")
         data = _get(client, tmp_path).get_json()
         assert data["files"]["cvinfo"]["exists"] is True
         assert data["files"]["series.json"] == {"exists": False, "content": ""}
 
-    @patch("routes.metadata.is_valid_library_path", return_value=True)
-    def test_oversized_file_is_truncated(self, _valid, client, tmp_path):
+    def test_oversized_file_is_truncated(self, client, tmp_path, tmp_path_library):
         from routes.metadata import SIDECAR_VIEW_MAX_BYTES
         (tmp_path / "series.json").write_text("a" * (SIDECAR_VIEW_MAX_BYTES + 10))
         info = _get(client, tmp_path).get_json()["files"]["series.json"]
         assert info["truncated"] is True
         assert len(info["content"]) == SIDECAR_VIEW_MAX_BYTES
+
+
+class TestFolderSidecarsContainment:
+    """Containment on the realpath, not the spelling of the path."""
+
+    def test_name_prefix_lookalike_of_the_library_is_refused(self, client, tmp_path):
+        from core.database import add_library, get_db_connection
+
+        lib = tmp_path / "Lib"
+        lookalike = tmp_path / "Lib2"          # starts with "Lib"
+        lib.mkdir()
+        lookalike.mkdir()
+        (lookalike / "cvinfo").write_text("x")
+        conn = get_db_connection()
+        try:
+            conn.execute("DELETE FROM libraries")
+            conn.commit()
+        finally:
+            conn.close()
+        assert add_library("Lib", str(lib))
+        resp = _get(client, lookalike)
+        assert resp.status_code in (400, 403)
+        assert "files" not in (resp.get_json() or {})
+
+    def test_symlinked_folder_out_of_the_library_is_refused(
+            self, client, tmp_path, tmp_path_library):
+        outside = tmp_path.parent / (tmp_path.name + "-outside")
+        outside.mkdir()
+        (outside / "cvinfo").write_text("outside-content")
+        link = tmp_path / "Linked"
+        try:
+            os.symlink(str(outside), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available here")
+        resp = _get(client, link)
+        assert resp.status_code in (400, 403)
+        assert "outside-content" not in resp.get_data(as_text=True)
+
+    def test_symlinked_sidecar_out_of_the_library_is_not_served(
+            self, client, tmp_path, tmp_path_library):
+        outside = tmp_path.parent / (tmp_path.name + "-outside-file")
+        outside.write_text("outside-content")
+        try:
+            os.symlink(str(outside), str(tmp_path / "cvinfo"))
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available here")
+        resp = _get(client, tmp_path)
+        assert resp.status_code == 200
+        assert "outside-content" not in resp.get_data(as_text=True)
 
 
 class TestListingShowsSeriesJson:

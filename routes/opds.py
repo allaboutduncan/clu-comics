@@ -87,15 +87,16 @@ def get_library_roots():
 
 
 def is_valid_library_path(path):
-    """Check if a path is within any enabled library."""
+    """Check if a path is within any enabled library.
+
+    Realpath and separator-bounded (``helpers.library.is_within_roots``), so
+    a symlink out of a library is refused.
+    """
+    from helpers.library import is_within_roots
+
     if not path:
         return False
-    normalized = os.path.normpath(path)
-    for root in get_library_roots():
-        root_normalized = os.path.normpath(root)
-        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
-            return True
-    return False
+    return is_within_roots(path, get_library_roots())
 
 # MIME types for comic files
 COMIC_MIME_TYPES = {
