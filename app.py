@@ -6799,17 +6799,29 @@ def save_download_api_config():
         if "downloadAllowPrivateHosts" in data:
             set_setting("DOWNLOAD_ALLOW_PRIVATE_HOSTS", bool(data.get("downloadAllowPrivateHosts")))
 
-        # Save API credentials to DB (provider_credentials)
-        try:
-            from core.database import save_provider_credentials
+        # Save API credentials to DB (provider_credentials). A failed save
+        # (unreadable encryption key, locked database) must reach the page:
+        # it used to be swallowed here and the page reported success.
+        from core.database import save_provider_credentials
 
-            cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
-            if cv_key:
-                save_provider_credentials("comicvine", {"api_key": cv_key})
-        except Exception:
-            pass
+        cv_key_error = None
+        cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
+        if cv_key:
+            try:
+                cv_saved = save_provider_credentials("comicvine", {"api_key": cv_key})
+            except Exception as e:
+                app_logger.error(f"Error saving ComicVine API key: {e}")
+                cv_saved = False
+            if not cv_saved:
+                app_logger.error("ComicVine API key was not saved")
+                cv_key_error = (
+                    "The ComicVine API key could not be saved; "
+                    "the other settings were saved. See the app log for the cause."
+                )
 
         load_flask_config(app)
+        if cv_key_error:
+            return jsonify({"success": False, "error": cv_key_error}), 500
         return jsonify({"success": True, "message": "Download & API settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving download/API config: {e}")
