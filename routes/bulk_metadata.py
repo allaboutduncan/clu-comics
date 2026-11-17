@@ -30,6 +30,11 @@ from core.database import (
     update_bulk_job_counts,
     update_review_status,
 )
+from core.path_access import (
+    capture_write_scope,
+    grant_refusal,
+    write_paths_refusal,
+)
 from helpers.library import is_valid_library_path
 from models.providers import ProviderCredentials, get_provider_by_name
 
@@ -39,6 +44,24 @@ bulk_metadata_bp = Blueprint('bulk_metadata', __name__)
 
 def _err(message, status=400):
     return jsonify({"success": False, "error": message}), status
+
+
+def _write_refusal(paths):
+    """A JSON refusal unless every path is a library path the current user may
+    write (realpath containment plus a 'full' folder grant), else None."""
+    refusal = write_paths_refusal(paths)
+    if refusal:
+        return _err(refusal[0], status=refusal[1])
+    return None
+
+
+def _stored_refusal(*paths):
+    """Grant check for a path read from a review or audit row (another user's
+    job may have written it). A no-op for owners and single-user installs."""
+    refusal = grant_refusal(*[p for p in paths if p])
+    if refusal:
+        return _err(refusal[0], status=refusal[1])
+    return None
 
 
 class _ProviderCallError(RuntimeError):
@@ -163,6 +186,12 @@ def _apply_series_to_folder(
         e for e in sorted(os.listdir(folder_path))
         if os.path.isfile(os.path.join(folder_path, e)) and e.lower().endswith(('.cbz', '.zip'))
     ]
+    # Runs in the request that authorised folder_path; a symlinked entry into
+    # an ungranted folder is dropped.
+    from core.path_access import keep_writable
+    writable = set(keep_writable(
+        folder_path, [os.path.join(folder_path, e) for e in folder_comics]))
+    folder_comics = [e for e in folder_comics if os.path.join(folder_path, e) in writable]
     is_one_shot = len(folder_comics) == 1
     for entry in folder_comics:
         fp = os.path.join(folder_path, entry)
@@ -295,8 +324,15 @@ def start_job():
 
     if scope not in ('files', 'folder'):
         return _err("scope must be 'files' or 'folder'")
-    if not isinstance(paths, list) or not paths:
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         return _err("paths must be a non-empty list")
+
+    # Every path must be inside a library with a full folder grant, checked
+    # before anything is expanded or queued. One refusal refuses the job.
+    refusal = _write_refusal(paths)
+    if refusal:
+        return refusal
+
     if provider is not None:
         err = _validate_forced_provider(provider, library_id, paths)
         if err:
@@ -308,11 +344,6 @@ def start_job():
     elif replace or only_from:
         return _err("replace and only_from require a provider")
 
-    # Guard: paths must resolve under a configured library root.
-    for p in paths:
-        if not is_valid_library_path(p):
-            return _err(f"path outside library: {p}", status=403)
-
     try:
         job_id = start_bulk_job(
             scope=scope,
@@ -322,6 +353,9 @@ def start_job():
             provider=provider,
             replace=replace,
             only_from=only_from,
+            # The folder expansion keeps to the requester's grants, captured
+            # here because the queued runner has no request user.
+            allowed=capture_write_scope(),
         )
     except Exception as e:
         app_logger.error(f"start_bulk_job failed: {e}")
@@ -354,11 +388,12 @@ def start_backfill():
     dry_run = bool(data.get('dry_run', False))
     if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
         return _err("paths must be a non-empty list")
-    for p in paths:
-        if not is_valid_library_path(p):
-            return _err(f"path outside library: {p}", status=403)
+    refusal = _write_refusal(paths)
+    if refusal:
+        return refusal
     try:
-        job_id = start_backfill_job(paths, library_id=data.get('library_id'), dry_run=dry_run)
+        job_id = start_backfill_job(paths, library_id=data.get('library_id'), dry_run=dry_run,
+                                    allowed=capture_write_scope())
     except Exception as e:
         app_logger.error(f"start_backfill_job failed: {e}")
         return _err(f"failed to start job: {e}", status=500)
@@ -523,6 +558,9 @@ def resolve_review(review_id):
         return _err("review item not found", status=404)
     if item.get('status') != 'pending':
         return _err(f"review item already {item.get('status')}", status=409)
+    refusal = _stored_refusal(item.get('file_path'), item.get('folder_path'))
+    if refusal:
+        return refusal
 
     # Lazy import to avoid circular import at module load.
     from core.bulk_metadata import _instantiate_provider, _write_metadata
@@ -866,6 +904,9 @@ def apply_cvinfo(review_id):
         return _err(f"review item already {item.get('status')}", status=409)
 
     folder_path = item['folder_path']
+    refusal = _stored_refusal(folder_path)
+    if refusal:
+        return refusal
     if not os.path.isdir(folder_path):
         return _err(f"folder no longer exists: {folder_path}", status=410)
 
@@ -1037,6 +1078,9 @@ def _revert_audit_row(audit_id):
         return False, "already reverted", 409
 
     file_path = row['file_path']
+    refusal = grant_refusal(file_path)
+    if refusal:
+        return False, refusal[0], refusal[1]
     if not os.path.exists(file_path):
         return False, f"file no longer exists: {file_path}", 410
 

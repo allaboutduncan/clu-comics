@@ -116,9 +116,12 @@ class TestRetagWithProvider:
         assert r.status_code == 400
 
     def test_path_outside_library_rejected(self, bulk_client, tmp_path):
-        with patch('routes.bulk_metadata.is_valid_library_path', return_value=False):
-            r = bulk_client.post('/api/bulk-metadata/start', json={
-                'scope': 'files', 'paths': [str(tmp_path / 'x.cbz')], 'provider': 'comicvine'})
+        # bulk_client makes tmp_path the library; a sibling whose name merely
+        # starts with it is outside (separator-bounded containment).
+        outside = tmp_path.parent / (tmp_path.name + '-outside')
+        outside.mkdir()
+        r = bulk_client.post('/api/bulk-metadata/start', json={
+            'scope': 'files', 'paths': [str(outside / 'x.cbz')], 'provider': 'comicvine'})
         assert r.status_code == 403
 
     def test_cvinfo_of_another_provider_is_ignored(self, tmp_path):

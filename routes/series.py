@@ -1392,6 +1392,13 @@ def map_series(series_id):
     if not mapped_path or not series_data:
         return jsonify({"error": "Missing mapped_path or series data"}), 400
 
+    # cvinfo and series.json are written into the folder: a non-owner needs a
+    # full grant on it (owners keep mapping any folder, as before).
+    from core.path_access import grant_refusal
+    refusal = grant_refusal(mapped_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+
     try:
         publisher = series_data.get("publisher")
         if publisher and isinstance(publisher, dict):
@@ -1546,6 +1553,13 @@ def subscribe_series(series_id):
 
     if not path or path == "/":
         return jsonify({"success": False, "error": "Path required"}), 400
+
+    # The folder is created and cvinfo/series.json written into it: a
+    # non-owner needs a full grant on it (owners are unrestricted, as before).
+    from core.path_access import grant_refusal
+    refusal = grant_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     try:
         series = get_series_by_id(series_id)

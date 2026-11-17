@@ -94,12 +94,55 @@ def current_user():
     return user
 
 
+def bearer_token_from_header(auth_header):
+    """The token in an ``Authorization: Bearer <token>`` value, or None.
+
+    None means *no credential was presented* (no header, another scheme, or an
+    empty token), which is an unauthenticated request rather than a failed
+    guess and is never counted by the throttle.
+    """
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    presented = auth_header[len("Bearer "):].strip()
+    return presented or None
+
+
+def user_for_bearer_token(presented, legacy_token=None):
+    """``(matched, user)`` for a presented API token.
+
+    ``matched`` is False when the token is unknown. The legacy global token
+    matches as the Store Owner, which may be None on a database with no owner
+    row; that is still a match, as it always was.
+
+    Per-user tokens are looked up by their sha256 (the table stores only the
+    digest), so no secret is compared directly. The legacy global token is a
+    plaintext preference and is compared with ``hmac.compare_digest`` over
+    bytes: on two ``str`` values it raises ``TypeError`` for any non-ASCII
+    character, and a header can carry one.
+    """
+    import hmac
+    from core.database import _hash_token, get_api_token, get_user_by_token_hash
+
+    if not presented:
+        return False, None
+    user = get_user_by_token_hash(_hash_token(presented))
+    if user:
+        return True, user
+    if legacy_token is None:
+        legacy_token = get_api_token()
+    if legacy_token and hmac.compare_digest(
+        presented.encode("utf-8"), str(legacy_token).encode("utf-8")
+    ):
+        return True, get_owner()
+    return False, None
+
+
 def resolve_optional_bearer_user(auth_header):
     """Resolve an optional ``Authorization: Bearer <token>`` header to a user.
 
     For endpoints that are public by default but can be *personalised* with an
     API token (e.g. ``/api/insights`` for a Homepage widget). Returns a
-    ``(status, user)`` tuple:
+    ``(status, value)`` tuple:
 
         ("anonymous", None)  no Bearer credentials — the caller should fall
                              back to its default identity (the Store Owner).
@@ -109,33 +152,35 @@ def resolve_optional_bearer_user(auth_header):
                              the caller should reject with 401 so a
                              misconfigured token isn't silently served as the
                              owner's data.
+        ("throttled", secs)  this client address failed too many token checks
+                             (core/auth_throttle.py); the token was NOT
+                             checked. The caller answers 429 with
+                             ``Retry-After: secs``.
 
     Unlike the ``/api/v1`` gate this never 503s: a missing token is a valid
     anonymous state, not an error. The per-user tokens are the same ones minted
     in Settings → Users and used by ``/api/v1``.
     """
-    import hmac
-    from core.database import (
-        _hash_token,
-        get_api_token,
-        get_user_by_token_hash,
+    from core.auth_throttle import (
+        SCOPE_TOKEN, client_address, throttle, token_account_key,
     )
 
-    if not auth_header or not auth_header.startswith("Bearer "):
+    presented = bearer_token_from_header(auth_header)
+    if presented is None:
         return "anonymous", None
 
-    presented = auth_header[len("Bearer "):].strip()
-    if not presented:
-        return "anonymous", None
+    address = client_address()
+    token_key = token_account_key(presented)
+    wait = throttle.retry_after(SCOPE_TOKEN, address, token_key)
+    if wait:
+        return "throttled", wait
 
-    user = get_user_by_token_hash(_hash_token(presented))
-    if user:
+    matched, user = user_for_bearer_token(presented)
+    if matched:
+        throttle.record_success(SCOPE_TOKEN, address, token_key)
         return "ok", user
 
-    legacy_token = get_api_token()
-    if legacy_token and hmac.compare_digest(presented, legacy_token):
-        return "ok", get_owner()
-
+    throttle.record_failure(SCOPE_TOKEN, address, token_key)
     return "invalid", None
 
 
@@ -212,23 +257,44 @@ def _load_scope(user):
     return libraries, granted, grants
 
 
+def _under_root(norm, root):
+    """Separator-bounded: ``/data/X`` is under ``/data`` but not ``/data/X-Men``."""
+    if norm == root:
+        return True
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return norm.startswith(prefix)
+
+
+def _containing_library(norm, libraries):
+    """``(root, id)`` of the MOST SPECIFIC library containing ``norm``, or None.
+
+    Libraries can nest (a library root inside another). The innermost one owns
+    the path: its grants decide access, whichever order the libraries are
+    listed in. Taking the first match instead let an outer library listed first
+    shadow every grant on the inner one.
+    """
+    best = None
+    for lib in libraries:
+        root = os.path.normpath(lib["path"])
+        if _under_root(norm, root) and (best is None or len(root) > len(best[0])):
+            best = (root, lib["id"])
+    return best
+
+
 def _level_for(path, libraries, granted, grants):
     """Pure access-level computation against pre-loaded scope (see _load_scope)."""
     if not path:
         return "none"
     norm = os.path.normpath(path)
 
-    lib_root = None
-    lib_id = None
-    for lib in libraries:
-        root = os.path.normpath(lib["path"])
-        if norm == root or norm.startswith(root + os.sep):
-            lib_root, lib_id = root, lib["id"]
-            break
-    if lib_root is None or lib_id not in granted:
+    found = _containing_library(norm, libraries)
+    if found is None:
+        return "none"
+    lib_root, lib_id = found
+    if lib_id not in granted:
         return "none"
 
-    in_lib = [g for g in grants if g == lib_root or g.startswith(lib_root + os.sep)]
+    in_lib = [g for g in grants if _under_root(g, lib_root)]
     if not in_lib:
         return "none"  # granted library, no folder picks -> nothing
 
@@ -270,13 +336,13 @@ def accessible_folder_prefixes(user):
     if not user:
         return []
     libraries, granted, grants = _load_scope(user)
-    lib_roots = [(os.path.normpath(l["path"]), l["id"]) for l in libraries]
     out = []
     for g in grants:
-        for root, lid in lib_roots:
-            if (g == root or g.startswith(root + os.sep)) and lid in granted:
-                out.append(g)
-                break
+        # The grant belongs to the most specific library containing it, the
+        # same rule _level_for applies to the paths it is compared against.
+        found = _containing_library(g, libraries)
+        if found and found[1] in granted:
+            out.append(g)
     return out
 
 

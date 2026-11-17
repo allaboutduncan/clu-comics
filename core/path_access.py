@@ -23,6 +23,12 @@ decide two things, in this order and before anything is opened:
 Owners and single-user (implicit-owner) installs skip the grant step, exactly
 as ``core.auth.folder_access_level`` treats them; containment still applies.
 
+Routes that WRITE (ComicInfo.xml, cvinfo/series.json, folder art, bulk
+metadata jobs) use the same rules through :func:`write_paths_refusal` (always
+``'full'``; one refusal refuses the request). Work that runs after the request
+returns and expands a folder into files does so in the request, narrowed by
+:func:`capture_write_scope` -- the worker thread has no request user.
+
 Kept free of any ``app`` import so it is tested directly (app.py cannot be
 imported in tests).
 """
@@ -178,6 +184,140 @@ def resolve_served_path(path, staging=(), mode="full", apply_grants=True):
                 return None, ("Access denied - you do not have access to this folder", 403)
 
     return ServedPath(canonical, kind, root), None
+
+
+def write_paths_refusal(paths, staging=()):
+    """``(message, status)`` if any of ``paths`` may not be written, else None.
+
+    The write-side twin of :func:`resolve_served_path` for routes that write
+    ComicInfo.xml, sidecars, folder art or index rows about a path taken from
+    the request: every path must pass containment and, inside a library, a
+    ``'full'`` grant. One refusal refuses the whole request, as the File
+    Manager's batch operations do -- nothing is written or queued.
+    """
+    for path in paths:
+        _served, refusal = resolve_served_path(path, staging=staging, mode="full")
+        if refusal:
+            return refusal
+    return None
+
+
+def grant_refusal(*paths, staging=()):
+    """:func:`write_paths_refusal` for non-owners only.
+
+    For routes whose owner behaviour must stay exactly as it was:
+
+    - a path read from the database rather than the request -- a review or
+      audit row names a file another user's job may have written, and a stale
+      row must still report "file no longer exists" to an owner;
+    - routes that historically accepted any folder from an owner (mapping or
+      subscribing a series to a folder that may not be in a library yet).
+
+    Owners and single-user installs are not restricted at all; anyone else
+    needs exactly what :func:`write_paths_refusal` requires.
+    """
+    if not is_login_required():
+        return None
+    user = current_user()
+    if user and user.get("role") == "owner":
+        return None
+    return write_paths_refusal(paths, staging=staging)
+
+
+def folder_art_write_refusal(folder_path):
+    """``(message, status)`` if the user may not (re)generate ``folder_path``'s art.
+
+    ``/api/generate-folder-thumbnail`` and the thumbnail sweeps write a
+    ``folder_art`` row and a cache image for the folder. The folder must lie
+    inside a library (or TARGET, which the collection grid also browses) and,
+    inside a library, carry a ``'full'`` grant: generating art is a write, so
+    the 'traverse' that lets the grid *show* an ancestor's art is not enough.
+    """
+    return write_paths_refusal([folder_path], staging=(STAGING_TARGET,))
+
+
+def capture_write_scope():
+    """The current user's write scope, captured now, as ``allowed(path)``.
+
+    Background work (bulk metadata jobs, thumbnail sweeps) runs on a worker
+    thread with no request user, and some of it expands a requested folder
+    into files and subfolders. This snapshot -- taken in the request -- lets
+    that expansion keep to the grants the request was authorised with.
+
+    Returns None when unrestricted (owner, single-user install). Otherwise
+    ``allowed(path)`` is True only for a path that has a ``'full'`` grant both
+    as named and as it really resolves (re-expressed under its library root,
+    so a symlink into an ungranted folder is judged by its target).
+    """
+    if not is_login_required():
+        return None
+    user = current_user()
+    if user and user.get("role") == "owner":
+        return None
+    if not user:
+        return lambda _p: False
+    libraries, granted, grants = _load_scope(user)
+    roots = _library_roots()
+
+    def allowed(path):
+        if not path or not isinstance(path, str):
+            return False
+        if _level_for(path, libraries, granted, grants) != "full":
+            return False
+        try:
+            raw_real = os.path.realpath(path)
+        except (OSError, ValueError):
+            return False
+        lib = _containing(os.path.normcase(raw_real), roots)
+        if not lib:
+            return False
+        return _level_for(_reexpress(raw_real, lib[0]), libraries, granted, grants) == "full"
+
+    return allowed
+
+
+def keep_writable(folder, paths, allowed=None):
+    """``paths`` found by listing ``folder`` (already authorised), minus any the
+    user may not write -- in practice a symlinked entry pointing into an
+    ungranted folder. Entries of a staging folder carry no grants and are kept
+    unless they really resolve into a library. ``folder=None`` judges each
+    entry on its own (a walk over several roots). ``allowed`` defaults to a
+    fresh :func:`capture_write_scope`.
+    """
+    if allowed is None:
+        allowed = capture_write_scope()
+    if allowed is None:
+        return list(paths)
+    roots = _library_roots()
+    folder_in_library = bool(folder) and bool(_containing(_real(folder), roots))
+    kept = []
+    for p in paths:
+        in_library = folder_in_library or bool(_containing(_real(p), roots))
+        if not in_library or allowed(p):
+            kept.append(p)
+    return kept
+
+
+def filter_buckets(buckets, allowed):
+    """``{folder: [files]}`` narrowed to what ``allowed`` permits.
+
+    A folder is kept only if it is itself writable (bulk jobs write cvinfo and
+    series.json into it), and then only its writable files. Returns
+    ``(kept, dropped_file_count)``; ``allowed=None`` keeps everything.
+    """
+    if allowed is None:
+        return buckets, 0
+    kept = {}
+    dropped = 0
+    for folder, files in buckets.items():
+        if not allowed(folder):
+            dropped += len(files)
+            continue
+        ok = [f for f in files if allowed(f)]
+        dropped += len(files) - len(ok)
+        if ok:
+            kept[folder] = ok
+    return kept, dropped
 
 
 def grant_level_filter(served):

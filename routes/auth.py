@@ -34,6 +34,12 @@ from core.auth import (
     is_login_required,
     load_current_user,
 )
+from core.auth_throttle import (
+    SCOPE_LOGIN,
+    client_address,
+    retry_after_text,
+    throttle as auth_throttle,
+)
 from core.config import apply_session_cookie_policy
 from core.request_origin import check_current_request
 from helpers.redirects import login_next_target, safe_redirect_target
@@ -306,9 +312,26 @@ def login():
     if request.method == "POST":
         username = request.form.get("username", "")
         password = request.form.get("password", "")
+        address = client_address()
+
+        # Refused before the password is checked, so a guess made inside the
+        # window teaches nothing. Keyed on (address, attempted username) and
+        # never on the account alone: the same page and status whether or
+        # not the username exists (core/auth_throttle.py).
+        wait = auth_throttle.retry_after(SCOPE_LOGIN, address, username)
+        if wait:
+            response = current_app.make_response((
+                render_template("login.html", error=retry_after_text(wait)),
+                429,
+            ))
+            response.headers["Retry-After"] = str(wait)
+            return response
 
         user = verify_password(username, password)
+        if not user:
+            auth_throttle.record_failure(SCOPE_LOGIN, address, username)
         if user:
+            auth_throttle.record_success(SCOPE_LOGIN, address, username)
             session["user_id"] = user["id"]
             session["authenticated"] = True  # legacy flag, kept for compatibility
             update_last_login(user["id"])

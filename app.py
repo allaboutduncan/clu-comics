@@ -6272,11 +6272,19 @@ def get_thumbnail():
 @app.route("/api/generate-folder-thumbnail", methods=["POST"])
 def generate_folder_thumbnail():
     """Generate a fanned stack thumbnail for a folder using cached thumbnails."""
-    data = request.get_json()
+    from core.path_access import folder_art_write_refusal
+
+    data = request.get_json(silent=True) or {}
     folder_path = data.get("folder_path")
 
     if not folder_path:
         return jsonify({"error": "Missing folder_path"}), 400
+
+    # Containment and the folder grant, before anything is read or written
+    # (tests/unit/test_folder_thumbnail_route_grants.py pins this order).
+    refusal = folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
@@ -7826,11 +7834,14 @@ def api_insights():
     silently surface the owner's stats.
     """
     from core.auth import resolve_optional_bearer_user
+    from core.auth_throttle import too_many_attempts_json
     from models.stats import get_insights_stats
 
     status, user = resolve_optional_bearer_user(
         request.headers.get("Authorization", "")
     )
+    if status == "throttled":
+        return too_many_attempts_json(user)
     if status == "invalid":
         return jsonify({"error": "unauthorized"}), 401
 

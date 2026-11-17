@@ -139,15 +139,19 @@ def library_root_for(path):
     except Exception:
         return None
     roots = get_library_roots()
+    best = None
+    best_len = -1
     for root in roots:
         try:
             root_normalized = os.path.realpath(root)
         except Exception:
             continue
-        if normalized == root_normalized or normalized.startswith(
-            root_normalized + os.sep
-        ):
-            return root
+        if (normalized == root_normalized or normalized.startswith(
+                root_normalized + os.sep)) and len(root_normalized) > best_len:
+            # Longest root wins: a nested library is reported as itself.
+            best, best_len = root, len(root_normalized)
+    if best is not None:
+        return best
     # A bind mount is invisible to realpath: /library2 and /data can be one
     # host folder under two names, and no string comparison sees that.
     return _aliased_library_root(normalized, roots)
@@ -248,11 +252,15 @@ def get_library_for_path(path):
         return None
     from core.database import get_libraries
     normalized = os.path.normpath(path)
+    # Most specific (longest) root wins, so a library nested inside another
+    # owns its own paths whatever order the libraries are listed in.
+    best = None
+    best_len = -1
     for lib in get_libraries(enabled_only=True):
         root = os.path.normpath(lib['path'])
-        if normalized == root or normalized.startswith(root + os.sep):
-            return lib
-    return None
+        if (normalized == root or normalized.startswith(root + os.sep)) and len(root) > best_len:
+            best, best_len = lib, len(root)
+    return best
 
 
 def is_root_mounted(root):
@@ -270,11 +278,15 @@ def is_root_mounted(root):
 
 def _containing_root(path, roots):
     normalized = os.path.normpath(path)
+    best = None
     for root in roots:
         root_normalized = os.path.normpath(root)
         if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
-            return root_normalized
-    return None
+            # Longest root wins, so a nested library's own mount is the one
+            # whose mounted-ness decides.
+            if best is None or len(root_normalized) > len(best):
+                best = root_normalized
+    return best
 
 
 def is_path_provably_gone(path, roots=None, mounted=None):

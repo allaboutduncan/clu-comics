@@ -143,14 +143,20 @@ def start_backfill_job(
     paths: List[str],
     library_id: Optional[int] = None,
     dry_run: bool = False,
+    allowed=None,
 ) -> str:
     """Start a backfill over one or more library folders (recursive).
 
     Returns the job id; progress, counts and undo are the bulk-metadata ones.
     Counts: ``auto_accepted`` = files filled (or that would be, on a dry run),
     ``skipped`` = nothing to add or no provider to ask, ``errors``.
+
+    ``allowed`` is the requester's write scope captured in the request (see
+    ``core.path_access.capture_write_scope``); the walk is narrowed to it here,
+    before the runner is queued, because the runner has no request user.
     """
     from core.bulk_metadata import _OP_ID_MAP, _enumerate_folder_recursive
+    from core.path_access import filter_buckets
 
     job_id = uuid.uuid4().hex
     buckets: Dict[str, List[str]] = {}
@@ -161,6 +167,7 @@ def start_backfill_job(
         # AppleDouble sidecars (._x.cbz) are resource forks, not archives.
         buckets[k] = sorted(f for f in set(v) if not os.path.basename(f).startswith('.'))
     buckets = {k: v for k, v in buckets.items() if v}
+    buckets, _dropped = filter_buckets(buckets, allowed)
     total_files = sum(len(v) for v in buckets.values())
 
     create_bulk_job(

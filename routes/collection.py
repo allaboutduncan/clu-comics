@@ -1891,13 +1891,22 @@ def _start_thumbnail_sweep(regenerate_all):
     folder takes far longer than gunicorn's 120s timeout, so the request only
     hands back an operation id for the progress UI to poll.
     """
-    data = request.get_json() or {}
-    roots = _thumbnail_sweep_roots(data.get('path'))
+    from core.path_access import folder_art_write_refusal, keep_writable
+
+    data = request.get_json(silent=True) or {}
+    requested = data.get('path')
+    if requested:
+        refusal = folder_art_write_refusal(requested)
+        if refusal:
+            return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+    roots = _thumbnail_sweep_roots(requested)
 
     if not roots:
         return jsonify({"success": False, "error": "Invalid path"}), 400
 
-    folders = _walk_folders(roots)
+    # The walk happens here, in the request, and is narrowed to the folders
+    # the requester may write; the sweep thread only gets this list.
+    folders = keep_writable(requested, _walk_folders(roots))
     if not folders:
         return jsonify({
             "success": True,
