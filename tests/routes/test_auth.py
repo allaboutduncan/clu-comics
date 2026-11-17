@@ -3,8 +3,9 @@ Routes: /login, /logout and the before_app_request auth gate.
 
 Auth is now opt-in and DB-user based (see routes/auth.py + core/auth.py):
 - Implicit-owner mode: no accounts + no env gate → no login required.
-- Login required once >1 account exists (or the CLU_USERNAME/CLU_PASSWORD env
-  gate is set), validated against the users table.
+- Login required once any account has a password, >1 account exists, or the
+  CLU_USERNAME/CLU_PASSWORD env gate is set, validated against the users
+  table (the one-account cases are in test_password_means_login.py).
 """
 from urllib.parse import parse_qs, urlsplit
 

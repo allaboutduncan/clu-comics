@@ -16,6 +16,17 @@
 
   <div id="alert-area"></div>
 
+  {# Shown while the install is open (no account has a password). Filled in
+     by loadUsers() from the list response's login_required. #}
+  <div class="alert alert-warning d-none" id="open-install-notice" role="status">
+    <i class="bi bi-unlock me-1" aria-hidden="true"></i>
+    <strong>This instance is unauthenticated.</strong>
+    No account has a password, so anyone who can reach this address is the Store Owner.
+    Setting a password on the Store Owner account turns on login, for this browser and every
+    other one, OPDS reading apps included.
+    <a href="{{ url_for('setup.setup_owner_page') }}" class="alert-link" id="open-install-setup-link">Set the owner password</a>
+  </div>
+
   <div class="table-responsive">
     <table class="table table-hover align-middle">
       <thead>
@@ -143,6 +154,12 @@ async function loadUsers() {
   if (!resp.ok) { alertMsg("Failed to load users."); return; }
   const data = await resp.json();
   LIBRARIES = data.libraries || [];
+  const openInstall = data.login_required === false;
+  document.getElementById("open-install-notice").classList.toggle("d-none", !openInstall);
+  // The setup page only serves a placeholder owner; otherwise the owner row's
+  // Edit button is where the password is set.
+  const placeholder = (data.users || []).some(u => u.role === "owner" && u.needs_setup);
+  document.getElementById("open-install-setup-link").classList.toggle("d-none", !placeholder);
   const rows = (data.users || []).map(u => {
     const libs = u.role === "owner"
       ? "<span class='text-muted small'>All</span>"
@@ -438,7 +455,11 @@ async function saveUser() {
     alertMsg(data.error || "Save failed."); return;
   }
   hideUserModal();
-  alertMsg("Saved.", "success");
+  if (data.login_turned_on) {
+    alertMsg("Saved. Login is now on: other browsers and reading apps are asked for a password. You stay signed in on this browser.", "success");
+  } else {
+    alertMsg("Saved.", "success");
+  }
   loadUsers();
 }
 

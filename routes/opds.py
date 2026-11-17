@@ -42,9 +42,10 @@ def _opds_throttled(wait):
 def _opds_auth():
     """Identify the OPDS client so feeds scope to their account.
 
-    In implicit-owner mode (single-user) no auth is required and the request
-    runs as the owner — unchanged behaviour. Once real accounts exist, OPDS
-    requires HTTP Basic Auth validated against the users table.
+    In implicit-owner mode (no account has a password) no auth is required and
+    the request runs as the owner — unchanged behaviour. Once login is required
+    (any password, even on the only account), OPDS requires HTTP Basic Auth
+    validated against the users table.
     """
     from flask import g
     from core.auth import is_login_required

@@ -220,7 +220,8 @@ class TestImplicitOwnerHeader:
     def _single_user(self, db_connection, monkeypatch):
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
-        create_user("owner", password="ownerpass", role="owner")
+        # An open install: the owner has no password (a password means login).
+        create_user("owner", password=None, role="owner", needs_setup=1)
         yield
 
     def test_no_username_chip_without_login(self, client):

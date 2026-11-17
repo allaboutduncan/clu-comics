@@ -34,7 +34,7 @@ This started as a set of utilities built while moving a 70,000+ issue comic libr
 - **[Comic downloads](FEATURES.md#downloads)** — search and download from Direct Download Source, Usenet via Newznab indexers with SABnzbd or NZBGet, and DC++/AirDC++, with configurable source priority and a browser extension for one-click sends.
 - **[Folder monitoring](FEATURES.md#folder-monitoring)** — watch a downloads folder and automatically unpack, convert to CBZ, rename and file new comics into your library.
 - **[Insights, Timeline and CLU Wrapped](FEATURES.md#insights-timeline--clu-wrapped)** — collection size and reading stats, a full timeline of what you have read, and shareable year-in-review images.
-- **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. Single-user installs need no login at all.
+- **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. A single-user install with no password needs no login; once you set an owner password, CLU asks for it.
 - **[API and OPDS](FEATURES.md#api--integrations)** — a token-authenticated `/api/v1` for companion apps, self-documenting at `/api/v1/docs`, plus OPDS feeds for comic reader apps and optional Komga reading sync.
 
 See **[FEATURES.md](FEATURES.md)** for the complete breakdown.
@@ -198,7 +198,9 @@ Yes. CLU operates directly on the files on disk, so anything you fix or tag in C
 
 ### Can multiple people use one CLU install?
 
-Yes. CLU supports multiple accounts across three roles — Reader, Clerk and Store Owner — with per-library and per-folder access grants. Reading history, favorites and reading lists are kept separate per user. A single-user install requires no login at all.
+Yes. CLU supports multiple accounts across three roles — Reader, Clerk and Store Owner — with per-library and per-folder access grants. Reading history, favorites and reading lists are kept separate per user. A single-user install where no password has been set requires no login, and anyone who can reach it is the owner.
+
+**A password means login.** If you set an owner password, CLU asks for it, even when yours is the only account. OPDS reading apps then need your username and password, and `/api/v1` clients need an API token (My Account → API Tokens). Forgot the owner password? See [Multi-User Accounts & Permissions](FEATURES.md#multi-user-accounts--permissions) for the recovery steps.
 
 ### Is there a mobile app or OPDS support?
 
