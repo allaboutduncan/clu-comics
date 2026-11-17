@@ -56,11 +56,57 @@ def is_library_root(path):
     return any(normalized == os.path.normpath(r) for r in get_library_roots())
 
 
+def resolved_for_containment(path):
+    """``path`` as a containment decision compares it, or None if unusable.
+
+    The realpath (symlinks resolved, so a link is judged by where it points;
+    a path that does not exist yet resolves through its nearest existing
+    parent), case-folded where the platform is case-insensitive -- the same
+    form ``core.path_access`` compares. Only the *decision* uses this: callers
+    keep acting on, and storing, the path exactly as given.
+    """
+    if not path or not isinstance(path, str) or "\0" in path:
+        return None
+    try:
+        return os.path.normcase(os.path.realpath(path))
+    except (OSError, ValueError):
+        return None
+
+
+def path_within(real_path, real_root):
+    """True if ``real_path`` is ``real_root`` or inside it, on a separator.
+
+    Both arguments come from :func:`resolved_for_containment`. A bare
+    ``startswith(root)`` would put ``/data2/x`` inside ``/data``.
+    """
+    if not real_path or not real_root:
+        return False
+    if real_path == real_root:
+        return True
+    prefix = real_root if real_root.endswith(os.sep) else real_root + os.sep
+    return real_path.startswith(prefix)
+
+
+def is_within_roots(path, roots):
+    """True if ``path`` resolves inside any of ``roots`` (resolved once each)."""
+    real = resolved_for_containment(path)
+    if real is None:
+        return False
+    for root in roots:
+        real_root = resolved_for_containment(root)
+        if real_root and path_within(real, real_root):
+            return True
+    return False
+
+
 def is_allowed_path(path):
-    """Check if path is within any allowed directory (libraries, downloads, temp)."""
+    """Check if path is within any allowed directory (libraries, downloads, temp).
+
+    Realpath and separator-bounded on both sides (see
+    :func:`resolved_for_containment`).
+    """
     if not path:
         return False
-    normalized = os.path.normpath(os.path.realpath(path))
 
     allowed_roots = list(get_library_roots())
 
@@ -73,16 +119,18 @@ def is_allowed_path(path):
     # Add system temp directory
     allowed_roots.append(tempfile.gettempdir())
 
-    for root in allowed_roots:
-        root_normalized = os.path.normpath(os.path.realpath(root))
-        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
-            return True
-    return False
+    return is_within_roots(path, allowed_roots)
 
 
 def is_valid_library_path(path):
     """
     Check if a path is within any enabled library.
+
+    The decision is made on realpaths, separator-bounded: a symlink inside a
+    library that points out of it is *not* in the library, and ``/data2`` is
+    not inside ``/data``. A path that does not exist yet (the destination of
+    a move) is judged by its nearest existing parent. The path itself is not
+    changed -- callers keep the spelling they were given.
 
     Args:
         path: The path to validate
@@ -92,13 +140,7 @@ def is_valid_library_path(path):
     """
     if not path:
         return False
-    normalized = os.path.normpath(path)
-    for root in get_library_roots():
-        root_normalized = os.path.normpath(root)
-        # Check if path equals root or is a subdirectory of root
-        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
-            return True
-    return False
+    return is_within_roots(path, get_library_roots())
 
 
 def is_below_library_root(path):

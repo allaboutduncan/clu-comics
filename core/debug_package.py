@@ -30,6 +30,7 @@ from collections import deque
 
 from core.app_logging import APP_LOG, MONITOR_LOG, LOG_DIR, app_logger
 from core.config import CONFIG_DIR, CONFIG_FILE
+from core.log_redact import redact_url
 from core.version import __version__
 from models.providers.crypto import mask_credential
 
@@ -327,7 +328,7 @@ _URL_QUERY_RE = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
 def _scrub(text):
     """Secrets masked and URL query strings dropped (a mirror URL in an error
     message can carry a token)."""
-    return _URL_QUERY_RE.sub(r"\1?...", _redact_blob(text))
+    return _URL_QUERY_RE.sub(r"\1?...", redact_url(_redact_blob(text)))
 
 
 def _download_runs_json() -> str:
@@ -399,7 +400,9 @@ def build_debug_package() -> bytes:
         zf.writestr("config.ini", _redacted_settings())
         zf.writestr("db_settings.json", _db_settings_json())
         zf.writestr("download_runs.json", _download_runs_json())
-        zf.writestr("logs/app.log", _tail(APP_LOG))
-        zf.writestr("logs/monitor.log", _tail(MONITOR_LOG))
+        # Credentials in logged URLs are masked at the log site; this also
+        # covers lines written before that, or by code that forgot.
+        zf.writestr("logs/app.log", redact_url(_tail(APP_LOG)))
+        zf.writestr("logs/monitor.log", redact_url(_tail(MONITOR_LOG)))
     buf.seek(0)
     return buf.getvalue()

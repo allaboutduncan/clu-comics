@@ -10,6 +10,7 @@ import base64
 from typing import List, Optional, Union
 
 from core.app_logging import app_logger
+from core.log_redact import redact_url
 from .base import BaseDownloadClient, ClientType, DownloadStatus, NZBSubmitResult
 from . import register_download_client
 
@@ -110,13 +111,13 @@ class NZBGetClient(BaseDownloadClient):
                 self.last_error = "401 Unauthorized — check username/password"
                 return False
             if resp.status_code != 200:
-                self.last_error = f"HTTP {resp.status_code} from {url}"
+                self.last_error = f"HTTP {resp.status_code} from {redact_url(url)}"
                 return False
             try:
                 data = resp.json()
             except ValueError:
                 self.last_error = (
-                    f"Non-JSON response from {url} — is this an NZBGet JSON-RPC endpoint?"
+                    f"Non-JSON response from {redact_url(url)} — is this an NZBGet JSON-RPC endpoint?"
                 )
                 return False
             if isinstance(data, dict) and data.get("result") is not None:
@@ -125,17 +126,17 @@ class NZBGetClient(BaseDownloadClient):
             return False
         except requests.exceptions.ConnectionError:
             self.last_error = (
-                f"Could not connect to {url} — check the host/port are reachable "
+                f"Could not connect to {redact_url(url)} — check the host/port are reachable "
                 f"from the CLU container (localhost inside Docker is the container "
                 f"itself, not your homeserver)"
             )
             return False
         except requests.exceptions.Timeout:
-            self.last_error = f"Timed out connecting to {url}"
+            self.last_error = f"Timed out connecting to {redact_url(url)}"
             return False
         except Exception as e:
-            self.last_error = str(e)
-            app_logger.error(f"NZBGet connection test failed: {e}")
+            self.last_error = redact_url(e)
+            app_logger.error(f"NZBGet connection test failed: {redact_url(e)}")
             return False
 
     def _rpc(self, method: str, params: list):
@@ -187,9 +188,9 @@ class NZBGetClient(BaseDownloadClient):
             self.last_error = f"NZBGet append returned {nzbid}"
             return NZBSubmitResult(success=False, error=self.last_error)
         except Exception as e:
-            self.last_error = str(e)
-            app_logger.error(f"NZBGet add_nzb failed: {e}")
-            return NZBSubmitResult(success=False, error=str(e))
+            self.last_error = redact_url(e)
+            app_logger.error(f"NZBGet add_nzb failed: {redact_url(e)}")
+            return NZBSubmitResult(success=False, error=redact_url(e))
 
     def get_history(self) -> List[DownloadStatus]:
         """Return completed/failed downloads from NZBGet history."""
@@ -206,7 +207,7 @@ class NZBGetClient(BaseDownloadClient):
                 ))
             return out
         except Exception as e:
-            app_logger.error(f"NZBGet get_history failed: {e}")
+            app_logger.error(f"NZBGet get_history failed: {redact_url(e)}")
             return []
 
     def get_queue(self) -> List[DownloadStatus]:
@@ -238,7 +239,7 @@ class NZBGetClient(BaseDownloadClient):
                 ))
             return out
         except Exception as e:
-            app_logger.error(f"NZBGet get_queue failed: {e}")
+            app_logger.error(f"NZBGet get_queue failed: {redact_url(e)}")
             return []
 
     def get_status(self, client_id: str) -> Optional[DownloadStatus]:

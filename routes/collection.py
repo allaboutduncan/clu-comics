@@ -1772,11 +1772,18 @@ def pin_folder_thumbnail():
             {"success": False, "error": "Only comic files can be pinned"}
         ), 400
 
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
+    # Containment on the realpath as well as the grant: the comic is read to
+    # build the cover and the folder's art is written, so both must lie in a
+    # library (or TARGET, which the grid also browses). The pin is stored
+    # with the paths exactly as given -- they are joined on file_index.path.
+    from core.path_access import (folder_art_write_refusal, resolve_served_path,
+                                  STAGING_TARGET)
+    _served, refusal = resolve_served_path(comic_path, staging=(STAGING_TARGET,), mode="full")
     folder_path = os.path.dirname(comic_path)
+    refusal = refusal or folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+
     if not set_folder_pin(folder_path, comic_path):
         return jsonify({"success": False, "error": "Could not save pin"}), 500
 
@@ -1804,9 +1811,12 @@ def unpin_folder_thumbnail():
     if not folder_path or not os.path.isdir(folder_path):
         return jsonify({"success": False, "error": "Invalid folder path"}), 400
 
-    denied = enforce_path_access(folder_path)
-    if denied:
-        return denied
+    # Rebuilding writes the folder's art: library (or TARGET) containment on
+    # the realpath, plus a 'full' grant, as /api/generate-folder-thumbnail.
+    from core.path_access import folder_art_write_refusal
+    refusal = folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     delete_folder_pin(folder_path)
     _regenerate(folder_path)

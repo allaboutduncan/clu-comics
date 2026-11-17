@@ -107,31 +107,32 @@ def bearer_token_from_header(auth_header):
     return presented or None
 
 
-def user_for_bearer_token(presented, legacy_token=None):
+def user_for_bearer_token(presented, legacy_digest=None):
     """``(matched, user)`` for a presented API token.
 
     ``matched`` is False when the token is unknown. The legacy global token
     matches as the Store Owner, which may be None on a database with no owner
     row; that is still a match, as it always was.
 
-    Per-user tokens are looked up by their sha256 (the table stores only the
-    digest), so no secret is compared directly. The legacy global token is a
-    plaintext preference and is compared with ``hmac.compare_digest`` over
-    bytes: on two ``str`` values it raises ``TypeError`` for any non-ASCII
-    character, and a header can carry one.
+    Both kinds are stored only as a sha256 digest, so the presented token is
+    hashed and the digests compared; no secret is compared directly. The
+    legacy digest is compared with ``hmac.compare_digest`` over bytes.
     """
     import hmac
-    from core.database import _hash_token, get_api_token, get_user_by_token_hash
+    from core.database import (
+        _hash_token, get_api_token_digest, get_user_by_token_hash,
+    )
 
     if not presented:
         return False, None
-    user = get_user_by_token_hash(_hash_token(presented))
+    presented_digest = _hash_token(presented)
+    user = get_user_by_token_hash(presented_digest)
     if user:
         return True, user
-    if legacy_token is None:
-        legacy_token = get_api_token()
-    if legacy_token and hmac.compare_digest(
-        presented.encode("utf-8"), str(legacy_token).encode("utf-8")
+    if legacy_digest is None:
+        legacy_digest = get_api_token_digest()
+    if legacy_digest and hmac.compare_digest(
+        presented_digest.encode("utf-8"), str(legacy_digest).encode("utf-8")
     ):
         return True, get_owner()
     return False, None
@@ -484,6 +485,24 @@ _CLERK_PAGE_PATHS = frozenset({
 })
 
 
+def path_matches_prefix(path, prefixes):
+    """True if ``path`` is one of ``prefixes`` or below one on a ``/`` boundary.
+
+    A prefix that already ends in ``/`` matches what follows it. Otherwise
+    ``/api/favorites`` matches ``/api/favorites`` and ``/api/favorites/x`` but
+    not ``/api/favorites-admin``. Used where a prefix *grants* (the Reader
+    tables, the login exemptions), so a future route whose name merely starts
+    the same way is not swept in.
+    """
+    for prefix in prefixes:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def required_role_for_request():
     """Return the minimum role required for the current request's path+method."""
     path = request.path
@@ -495,9 +514,11 @@ def required_role_for_request():
         return "owner"
     if mutating and path.startswith(_OWNER_MUTATION_PREFIXES):
         return "owner"
-    if path.startswith(_READER_WRITE_PREFIXES):
+    # The Reader tables lower the bar, so they match on a segment boundary.
+    # The Owner/Clerk tables raise it and keep plain prefix matching.
+    if path_matches_prefix(path, _READER_WRITE_PREFIXES):
         return "reader"
-    if path.startswith(_READER_READ_POST_PREFIXES):
+    if path_matches_prefix(path, _READER_READ_POST_PREFIXES):
         return "reader"
     if path in _CLERK_PAGE_PATHS:
         return "clerk"

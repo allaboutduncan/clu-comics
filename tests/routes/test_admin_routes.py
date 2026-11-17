@@ -3,7 +3,14 @@ import io
 import json
 import zipfile
 
-from core.database import get_api_browse_mode, get_api_token, set_user_preference
+from core.database import (
+    LEGACY_TOKEN_DIGEST_PREFIX,
+    _hash_token,
+    get_api_browse_mode,
+    get_api_token_digest,
+    get_user_preference,
+    set_user_preference,
+)
 
 
 class TestGetApiToken:
@@ -14,35 +21,41 @@ class TestGetApiToken:
         body = resp.get_json()
         assert body["success"] is True
         assert body["configured"] is False
-        assert body["token"] == ""
+        assert "token" not in body
 
-    def test_returns_token_when_present(self, db_connection, client):
-        set_user_preference("api_token", "preset-token", category="security")
+    def test_reports_configured_but_never_the_token(self, db_connection, client):
+        """The token is stored as a hash: the page can say "set", not show it."""
+        value = "fake-" + "preset"
+        set_user_preference("api_token", value, category="security")
         resp = client.get("/api/admin/api-token")
         body = resp.get_json()
         assert body["configured"] is True
-        assert body["token"] == "preset-token"
+        assert value not in resp.get_data(as_text=True)
 
 
 class TestRotateApiToken:
 
     def test_rotate_generates_token_when_none_exists(self, db_connection, client):
-        assert get_api_token() is None
+        assert get_api_token_digest() is None
         resp = client.post("/api/admin/api-token/rotate")
         assert resp.status_code == 200
         body = resp.get_json()
         assert body["success"] is True
         assert body["token"]
-        # Persisted to user_preferences
-        assert get_api_token() == body["token"]
+        # Only the digest is persisted, never the token.
+        stored = get_user_preference("api_token")
+        assert stored == LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(body["token"])
+        assert body["token"] not in stored
+        assert get_api_token_digest() == _hash_token(body["token"])
 
     def test_rotate_replaces_existing_token(self, db_connection, client):
-        set_user_preference("api_token", "old-token", category="security")
+        old = "fake-" + "old"
+        set_user_preference("api_token", old, category="security")
         resp = client.post("/api/admin/api-token/rotate")
         body = resp.get_json()
         assert body["success"] is True
-        assert body["token"] != "old-token"
-        assert get_api_token() == body["token"]
+        assert body["token"] != old
+        assert get_api_token_digest() == _hash_token(body["token"])
 
     def test_rotated_tokens_are_distinct(self, db_connection, client):
         first = client.post("/api/admin/api-token/rotate").get_json()["token"]
@@ -50,7 +63,13 @@ class TestRotateApiToken:
         assert first and second
         assert first != second
         # The latest rotation wins
-        assert get_api_token() == second
+        assert get_api_token_digest() == _hash_token(second)
+
+    def test_status_after_rotate_does_not_echo_the_token(self, db_connection, client):
+        token = client.post("/api/admin/api-token/rotate").get_json()["token"]
+        resp = client.get("/api/admin/api-token")
+        assert resp.get_json()["configured"] is True
+        assert token not in resp.get_data(as_text=True)
 
 
 class TestApiBrowseMode:

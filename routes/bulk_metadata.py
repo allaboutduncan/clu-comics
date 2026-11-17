@@ -33,6 +33,7 @@ from core.database import (
 from core.path_access import (
     capture_write_scope,
     grant_refusal,
+    resolve_served_path,
     write_paths_refusal,
 )
 from helpers.library import is_valid_library_path
@@ -284,6 +285,11 @@ def provider_mix():
     library_id = request.args.get('library_id', type=int)
     if not path or not is_valid_library_path(path):
         return _err("path outside library", status=403)
+    # The counts describe the folder's comics, so a folder-scoped user needs a
+    # 'full' grant on it (a 'traverse'-only ancestor would count grant siblings).
+    _served, refusal = resolve_served_path(path, mode="full")
+    if refusal:
+        return _err(refusal[0], status=refusal[1])
     mix = get_provider_mix(path, recursive=recursive)
     if mix is None:
         return _err("could not read the file index", status=500)

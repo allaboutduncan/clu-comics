@@ -33,6 +33,7 @@ from core.auth import (
     current_user,
     is_login_required,
     load_current_user,
+    path_matches_prefix,
 )
 from core.auth_throttle import (
     SCOPE_LOGIN,
@@ -261,7 +262,8 @@ def require_login():
     """
     if request.path in _EXEMPT_PATHS:
         return None
-    if any(request.path.startswith(p) for p in _EXEMPT_PREFIXES):
+    # On a segment boundary, so /login exempts /login but not a future /login-x.
+    if path_matches_prefix(request.path, _EXEMPT_PREFIXES):
         return None
 
     user = load_current_user()
