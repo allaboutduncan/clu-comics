@@ -1002,16 +1002,13 @@ def process_incoming_wanted_issues():
             continue
 
         # Move file with original name first -- but never onto a comic already
-        # in the series folder. move_file is os.replace underneath, which
-        # replaces an existing destination without a word (#723).
-        from cbz_ops.rename import free_destination
-
-        temp_dest = free_destination(src, os.path.join(dest_dir, filename))
-        if os.path.basename(temp_dest) != filename:
-            app_logger.warning(
-                f"{filename} already exists in {dest_dir}; filing this copy as "
-                f"{os.path.basename(temp_dest)} so neither is overwritten"
-            )
+        # in the series folder (#723). The move itself refuses an existing
+        # destination (replace=False): an os.path.exists check beforehand left
+        # a window in which a comic created at that name was replaced, and
+        # filing the download as "Name (1)" put a second copy of an issue the
+        # library already had beside the first (#731). A refused download stays
+        # in TARGET for the user to decide about.
+        temp_dest = os.path.join(dest_dir, filename)
 
         try:
             # move_file, not shutil.move: shutil.move's cross-device fallback
@@ -1021,9 +1018,25 @@ def process_incoming_wanted_issues():
             # *after* the library copy is complete. moved_count never
             # incremented, the TARGET source was never unlinked, and the same
             # comic was re-copied into the library on every subsequent sweep.
-            from helpers import move_file
+            from helpers import move_file, rename_no_clobber
 
-            move_file(src, temp_dest)
+            try:
+                move_file(src, temp_dest, replace=False)
+            except FileExistsError:
+                # Not moved: no moved_count, no queue-stamp clear, no index
+                # row. Announced once per file -- it is matched again on
+                # every pass while the issue stays wanted.
+                try:
+                    src_stat = os.stat(src)
+                    fingerprint = (src_stat.st_mtime, src_stat.st_size)
+                except OSError:
+                    fingerprint = None
+                refusal = f"Not filing {filename}: {temp_dest} already exists"
+                if app_state.first_filing_refusal(src, fingerprint):
+                    app_logger.warning(f"{refusal}. Left in TARGET: {src}")
+                else:
+                    app_logger.debug(refusal)
+                continue
             app_logger.info(f"Moved: {filename} -> {dest_dir}")
             moved_count += 1
             affected_series.add(issue["series_id"])
@@ -1067,18 +1080,20 @@ def process_incoming_wanted_issues():
                 new_filename = get_renamed_filename(filename, file_path=temp_dest)
                 if new_filename and new_filename != filename:
                     # Two different issues can render to one name; a bare
-                    # os.rename onto it destroyed the first one (#723).
-                    final_path = free_destination(
-                        temp_dest, os.path.join(dest_dir, new_filename)
-                    )
-                    if os.path.basename(final_path) != new_filename:
+                    # os.rename onto it destroyed the first one (#723). The
+                    # comic is already filed, so on a collision it simply
+                    # keeps the name it arrived with.
+                    renamed_path = os.path.join(dest_dir, new_filename)
+                    try:
+                        rename_no_clobber(temp_dest, renamed_path)
+                        final_path = renamed_path
+                    except FileExistsError:
                         app_logger.warning(
                             f"Rename target {new_filename} already exists in "
-                            f"{dest_dir}; using {os.path.basename(final_path)} "
-                            f"so neither comic is overwritten"
+                            f"{dest_dir}; keeping {filename} so neither comic "
+                            f"is overwritten"
                         )
                 if final_path != temp_dest:
-                    os.rename(temp_dest, final_path)
                     app_logger.info(
                         f"Renamed: {os.path.basename(temp_dest)} -> "
                         f"{os.path.basename(final_path)}"

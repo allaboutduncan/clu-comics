@@ -222,6 +222,29 @@ def single_flight_target_sweep(func):
     return wrapper
 
 
+# A download the wanted pass declined to file because its name is already taken
+# in the series folder (#731). It stays in TARGET and is matched again on every
+# pass while the issue stays wanted -- and a pass runs per completed download --
+# so the refusal is announced once per file and is DEBUG after that. Keyed on
+# (path, mtime, size): a re-download landing at the same path is a new file and
+# is announced again. In memory on purpose; a restart costs one repeated line.
+_filing_refusals = set()
+_filing_refusals_lock = threading.Lock()
+MAX_FILING_REFUSALS = 2000
+
+
+def first_filing_refusal(path, fingerprint=None):
+    """True the first time this file is refused, False on every repeat."""
+    key = (path, fingerprint)
+    with _filing_refusals_lock:
+        if key in _filing_refusals:
+            return False
+        if len(_filing_refusals) >= MAX_FILING_REFUSALS:
+            _filing_refusals.clear()
+        _filing_refusals.add(key)
+        return True
+
+
 # ── Operations Registry ──
 _operations = {}
 _operations_lock = threading.Lock()

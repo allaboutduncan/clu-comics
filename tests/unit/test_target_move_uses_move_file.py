@@ -152,23 +152,81 @@ def test_never_moves_or_renames_onto_an_existing_comic(func_node):
     """#723: twelve Supergirl issues rendered to one name through the rename
     pattern, and a bare ``os.rename`` onto it replaced each one with the next
     -- eleven comics destroyed. ``move_file`` is ``os.replace`` underneath and
-    does the same to a download that shares a filed comic's name. Both
-    destinations go through ``free_destination``."""
-    assert len(_bare_calls(func_node, "free_destination")) >= 2, (
-        "the TARGET -> library move and the rename after it must both pick "
-        "their destination with cbz_ops.rename.free_destination"
+    does the same to a download that shares a filed comic's name.
+
+    #731: picking a free name with ``os.path.exists`` first (``free_destination``)
+    still left a window before the write, and filed a second copy of an issue
+    the library already had as ``Name (1)``. The move and the rename now refuse
+    an existing destination themselves."""
+    moves = _bare_calls(func_node, "move_file")
+    assert len(moves) == 1
+    replace = [kw for kw in moves[0].keywords if kw.arg == "replace"]
+    assert replace and isinstance(replace[0].value, ast.Constant), (
+        "the TARGET -> library move must pass replace=False"
     )
-    renames = _calls(func_node, "os", "rename")
-    assert len(renames) == 1
-    dest = renames[0].args[1]
-    assert isinstance(dest, ast.Name) and dest.id == "final_path"
-    assigned = [
-        n for n in ast.walk(func_node)
-        if isinstance(n, ast.Assign)
-        and any(isinstance(t, ast.Name) and t.id == "final_path" for t in n.targets)
-        and isinstance(n.value, ast.Call)
-        and isinstance(n.value.func, ast.Name)
+    assert replace[0].value.value is False
+
+    assert _bare_calls(func_node, "rename_no_clobber"), (
+        "the rename after filing must go through helpers.rename_no_clobber"
+    )
+    assert not _calls(func_node, "os", "rename")
+    assert not _calls(func_node, "os", "replace")
+    assert not _bare_calls(func_node, "free_destination"), (
+        "a check-then-write destination is the race #731 reported"
+    )
+
+
+def _handlers(func_node, exc_name):
+    return [
+        h for h in ast.walk(func_node)
+        if isinstance(h, ast.ExceptHandler)
+        and isinstance(h.type, ast.Name)
+        and h.type.id == exc_name
     ]
-    assert any(n.value.func.id == "free_destination" for n in assigned), (
-        "final_path must come from free_destination before it is renamed onto"
-    )
+
+
+def test_a_refused_move_leaves_the_download_and_counts_nothing(func_node):
+    """#731: a download whose name is taken stays in TARGET. The handler must
+    ``continue`` before ``moved_count``, the queue-stamp clear and the index
+    insert, and must announce through ``first_filing_refusal`` -- the file is
+    matched again on every pass, and a pass runs per completed download."""
+    handlers = [
+        h for h in _handlers(func_node, "FileExistsError")
+        if any(isinstance(n, ast.Continue) for n in ast.walk(h))
+    ]
+    assert len(handlers) == 1, "the refused move must skip to the next match"
+    handler = handlers[0]
+    assert _calls(handler, "app_state", "first_filing_refusal")
+    assert not [
+        n for n in ast.walk(handler)
+        if isinstance(n, ast.AugAssign)
+        and isinstance(n.target, ast.Name)
+        and n.target.id == "moved_count"
+    ]
+    assert not _bare_calls(handler, "clear_wanted_queue_stamp")
+    assert not _bare_calls(handler, "add_file_index_entry")
+
+
+class TestFirstFilingRefusal:
+    def test_announces_once_per_file(self):
+        from core import app_state
+
+        path = "/downloads/processed/__test_731__/Batman 001.cbz"
+        assert app_state.first_filing_refusal(path, (1.0, 10)) is True
+        assert app_state.first_filing_refusal(path, (1.0, 10)) is False
+
+    def test_a_rewritten_file_is_announced_again(self):
+        from core import app_state
+
+        path = "/downloads/processed/__test_731__/Batman 002.cbz"
+        assert app_state.first_filing_refusal(path, (1.0, 10)) is True
+        assert app_state.first_filing_refusal(path, (2.0, 11)) is True
+
+    def test_the_memo_is_bounded(self, monkeypatch):
+        from core import app_state
+
+        monkeypatch.setattr(app_state, "_filing_refusals", set())
+        monkeypatch.setattr(app_state, "MAX_FILING_REFUSALS", 3)
+        for n in range(10):
+            app_state.first_filing_refusal(f"/t/{n}.cbz")
+        assert len(app_state._filing_refusals) <= 3
