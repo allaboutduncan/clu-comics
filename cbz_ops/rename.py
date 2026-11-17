@@ -6,6 +6,7 @@ import configparser
 import datetime
 from core.app_logging import app_logger
 from helpers import is_hidden
+from helpers.no_clobber import rename_no_clobber
 # The hostile set and the per-character map are shared with folder names
 # (helpers.sanitize_path_segment). FILENAME_ILLEGAL_CHARS is re-exported.
 from core.filename_chars import (
@@ -1776,21 +1777,19 @@ def rename_comic_from_metadata(file_path, metadata, fallback_pattern=None):
             return file_path, False
 
         new_path = os.path.join(os.path.dirname(file_path), new_name)
-        # On case-insensitive filesystems a case-only rename (e.g. "Avx" -> "AVX")
-        # makes new_path resolve to the source file itself, so os.path.exists reports
-        # a false collision. Permit it — os.rename applies the case change in place.
-        if os.path.exists(new_path):
-            try:
-                same_file = os.path.samefile(file_path, new_path)
-            except OSError:
-                same_file = False
-            if not same_file:
-                app_logger.warning(
-                    f"Target file already exists, skipping rename: {new_path}"
-                )
-                return file_path, False
+        # The rename itself refuses a different file at new_path. An
+        # os.path.exists check followed by os.rename left a window in which a
+        # comic created at that name was silently replaced (#731). A case-only
+        # rename ("Avx" -> "AVX") on a case-insensitive filesystem resolves to
+        # the source itself and is applied in place, not treated as a collision.
+        try:
+            rename_no_clobber(file_path, new_path)
+        except FileExistsError:
+            app_logger.warning(
+                f"Target file already exists, skipping rename: {new_path}"
+            )
+            return file_path, False
 
-        os.rename(file_path, new_path)
         app_logger.info(f"Auto-renamed: {old_name} -> {new_name}")
         return new_path, True
 

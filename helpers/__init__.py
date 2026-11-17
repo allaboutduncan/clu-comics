@@ -19,6 +19,9 @@ import gc
 import io
 from contextlib import contextmanager
 
+# Standard library only, so this cannot cycle back into the package.
+from helpers.no_clobber import rename_no_clobber  # noqa: F401  (re-exported)
+
 #########################
 # Hidden File Handling  #
 #########################
@@ -264,7 +267,7 @@ def match_parent_permissions(path):
         pass
 
 
-def move_file(src, dst):
+def move_file(src, dst, replace=True):
     """Move *src* onto *dst* without letting a metadata copy fail the move.
 
     ``shutil.move`` falls back to ``copy2`` for a cross-device move, and
@@ -301,13 +304,27 @@ def move_file(src, dst):
     ``STALE_INCOMING_SECONDS`` old.
 
     Not for directories: ``dst`` is always a full file path here.
+
+    ``replace=False`` is for a caller that must never overwrite (filing a
+    download into the library, #731): a different file already at *dst* raises
+    ``FileExistsError``, with *src* left where it was and *dst* untouched. The
+    refusal is made by the rename itself (``helpers.no_clobber``), not by an
+    ``os.path.exists`` check beforehand, so a file that appears at *dst* while
+    the copy is running is not replaced either.
     """
+    # os.replace rather than os.rename so an existing destination is clobbered
+    # on Windows too, matching what rename already does on POSIX.
+    install = os.replace if replace else rename_no_clobber
+
     try:
-        # Same-device fast path. os.replace rather than os.rename so an
-        # existing destination is clobbered on Windows too, matching what
-        # rename already does on POSIX.
-        os.replace(src, dst)
+        # Same-device fast path.
+        install(src, dst)
         return
+    except FileExistsError:
+        if not replace:
+            raise
+        if _same_file(src, dst):
+            raise
     except OSError:
         # Cross-device (EXDEV), or a destination we must copy onto. A
         # case-only rename on a case-insensitive mount is the same file: the
@@ -331,8 +348,10 @@ def move_file(src, dst):
                 "the mount refuses utime/chmod"
             )
         # Same directory, so this cannot be cross-device; until it runs the
-        # original at dst is untouched.
-        os.replace(staged, dst)
+        # original at dst is untouched. With replace=False this is the
+        # no-clobber rename: a file that appeared at dst during the copy
+        # raises FileExistsError, and the staged copy is removed below.
+        install(staged, dst)
     except BaseException:
         try:
             os.remove(staged)

@@ -259,6 +259,24 @@ destination instead of nesting into it as `shutil.move` did. Tests:
 `tests/unit/test_library_moves_cross_device.py`,
 `tests/routes/test_move_batch_cross_device.py`.
 
+- **Filing a download never overwrites, and never invents a name (#731).**
+  `process_incoming_wanted_issues` calls `move_file(src, dst, replace=False)`;
+  the refusal comes from the rename itself (`helpers.no_clobber.rename_no_clobber`:
+  Windows `os.rename`, `renameat2(RENAME_NOREPLACE)`, `link`+`unlink`, and only
+  then check-then-rename on a mount with neither), not from an `os.path.exists`
+  check made earlier. A download whose name is taken **stays in TARGET**: it
+  used to be filed as `Name (1)`, a second copy of an issue the library already
+  had. The handler `continue`s before `moved_count`, the queue-stamp clear and
+  the index insert, and announces through `app_state.first_filing_refusal`
+  (WARNING once per file, DEBUG after), because the file is matched again on
+  every pass. The rename *after* filing is different: the comic is already in
+  the library, so on a collision it keeps the name it arrived with.
+  `rename_comic_from_metadata` uses the same primitive. `replace=True` stays
+  the default: every in-place CBZ rewrite relies on the overwrite.
+  `rename_files`/`rename_file` still use `free_destination` and ` (1)`.
+  **A manual `/move` or `/move-batch` overwrites on purpose**
+  (`routes.files._move_item`): dragging a better copy onto a comic in the File
+  Manager is how users replace one. Do not pass `replace=False` there.
 - **Only the metadata failure is demoted.** A failed `copyfile` and a source
   that cannot be removed both still raise: the second is the #582 failure mode
   above, and in TARGET a leftover source is re-matched forever.

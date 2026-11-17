@@ -8,7 +8,6 @@ and extracts only the issue number from each filename. Values are then fed
 through the existing custom-pattern + filename-cleanup pipeline.
 """
 
-import errno
 import os
 from typing import Dict, List, Optional
 
@@ -521,114 +520,18 @@ def plan_smart_rename(
 # The plan is computed when the preview opens, and applied whenever the user
 # clicks Apply -- or from a client-supplied plan. A comic that lands at a
 # planned name in between (a download, another rename, a second tab) would be
-# silently replaced by ``os.rename`` on POSIX. Checking ``os.path.exists`` first
-# only narrows that window, so the rename itself refuses an existing
-# destination wherever the platform lets it:
-#
-#   1. Windows: ``os.rename`` already refuses (``FileExistsError``).
-#   2. Linux: ``renameat2(RENAME_NOREPLACE)`` -- atomic, no hard link needed.
-#   3. Elsewhere, or where the filesystem rejects that flag: ``os.link`` +
-#      ``os.unlink``. ``link`` fails with EEXIST rather than replacing.
-#   4. A filesystem with neither (CIFS, some FUSE, mergerfs across branches):
-#      check, then ``os.rename``. Still a race, but a window of microseconds
-#      instead of however long the preview modal stayed open.
+# silently replaced by ``os.rename`` on POSIX, so the rename itself refuses an
+# existing destination. The primitive lives in ``helpers.no_clobber`` (the
+# TARGET filing pass and the metadata renamer use it too, #731); the names
+# below are kept for this module's callers.
 
-_AT_FDCWD = -100
-_RENAME_NOREPLACE = 1
-_UNSUPPORTED_ERRNOS = {
-    getattr(errno, name)
-    for name in ("EINVAL", "ENOSYS", "EOPNOTSUPP", "ENOTSUP")
-    if hasattr(errno, name)
-}
-_renameat2_fn = None  # None = not looked up yet, False = unavailable
-
-
-def _load_renameat2():
-    """glibc's ``renameat2`` via ctypes, or None where there is none."""
-    global _renameat2_fn
-    if _renameat2_fn is None:
-        _renameat2_fn = False
-        if os.name == "posix":
-            try:
-                import ctypes
-
-                libc = ctypes.CDLL(None, use_errno=True)
-                fn = libc.renameat2
-                fn.argtypes = [
-                    ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
-                ]
-                fn.restype = ctypes.c_int
-                _renameat2_fn = fn
-            except (OSError, AttributeError):
-                pass
-    return _renameat2_fn or None
-
-
-def _renameat2_noreplace(src: str, dst: str) -> bool:
-    """Rename with RENAME_NOREPLACE. True if renamed, False if this platform or
-    filesystem does not offer it. Raises ``FileExistsError`` if *dst* exists."""
-    fn = _load_renameat2()
-    if fn is None:
-        return False
-    import ctypes
-
-    ctypes.set_errno(0)
-    if fn(_AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dst), _RENAME_NOREPLACE) == 0:
-        return True
-    err = ctypes.get_errno()
-    if err in _UNSUPPORTED_ERRNOS:
-        return False
-    # OSError() picks the subclass from the errno: EEXIST -> FileExistsError.
-    raise OSError(err, os.strerror(err), src, None, dst)
-
-
-def _destination_exists(dst: str) -> FileExistsError:
-    return FileExistsError(errno.EEXIST, "A file already exists at the destination", dst)
-
-
-def _link_then_unlink(src: str, dst: str) -> bool:
-    """Rename via a hard link. True if renamed, False if the filesystem cannot
-    hard-link. Raises ``FileExistsError`` if *dst* exists."""
-    try:
-        os.link(src, dst, follow_symlinks=False)
-    except FileExistsError:
-        raise
-    except (OSError, NotImplementedError):
-        return False
-    try:
-        os.unlink(src)
-    except OSError:
-        # Do not leave the comic under two names; *dst* is the link we just made.
-        try:
-            os.unlink(dst)
-        except OSError:
-            pass
-        raise
-    return True
-
-
-def _rename_no_clobber(src: str, dst: str) -> None:
-    """Rename *src* to *dst*, raising ``FileExistsError`` instead of replacing
-    a different file already at *dst*.
-
-    A case-only rename (``Foo.cbz`` -> ``foo.cbz``) on a case-insensitive mount
-    finds *dst* "existing" because it is *src* itself; that is not a collision.
-    """
-    if os.path.lexists(dst):
-        if _same_file(src, dst):
-            os.rename(src, dst)
-            return
-        raise _destination_exists(dst)
-    if os.name == "nt":
-        os.rename(src, dst)  # refuses an existing destination on Windows
-        return
-    if _renameat2_noreplace(src, dst):
-        return
-    if _link_then_unlink(src, dst):
-        return
-    if os.path.lexists(dst):
-        raise _destination_exists(dst)
-    os.rename(src, dst)
+from helpers.no_clobber import (  # noqa: E402
+    _RENAME_NOREPLACE,
+    _link_then_unlink,
+    _load_renameat2,
+    _renameat2_noreplace,
+    rename_no_clobber as _rename_no_clobber,
+)
 
 
 def apply_smart_rename(plan: Dict) -> Dict:

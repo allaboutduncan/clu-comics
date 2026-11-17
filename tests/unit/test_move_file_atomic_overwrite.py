@@ -348,3 +348,103 @@ class TestLongDestinationNames:
 
         lengths = {len(os.path.basename(t)) for t in targets}
         assert len(lengths) == 1 and lengths.pop() <= 64
+
+
+class TestNoReplace:
+    """``move_file(..., replace=False)`` files a download without ever
+    overwriting (#731). The refusal comes from the rename, not from an
+    ``os.path.exists`` check made beforehand."""
+
+    def test_same_volume_refuses_an_existing_destination(self, tmp_path):
+        src, dst = tmp_path / "new.cbz", tmp_path / "Series 001.cbz"
+        src.write_bytes(b"download")
+        dst.write_bytes(ORIGINAL)
+        with pytest.raises(FileExistsError):
+            helpers.move_file(str(src), str(dst), replace=False)
+        assert dst.read_bytes() == ORIGINAL
+        assert src.read_bytes() == b"download"
+
+    def test_same_volume_moves_onto_a_free_name(self, tmp_path):
+        src, dst = tmp_path / "new.cbz", tmp_path / "Series 001.cbz"
+        src.write_bytes(b"download")
+        helpers.move_file(str(src), str(dst), replace=False)
+        assert dst.read_bytes() == b"download"
+        assert not src.exists()
+
+    def test_case_only_rename_is_not_a_collision(self, tmp_path):
+        src = tmp_path / "series 001.cbz"
+        src.write_bytes(b"download")
+        dst = tmp_path / "Series 001.cbz"
+        if not dst.exists():
+            pytest.skip("case-sensitive filesystem")
+        helpers.move_file(str(src), str(dst), replace=False)
+        assert "Series 001.cbz" in os.listdir(tmp_path)
+        assert dst.read_bytes() == b"download"
+
+    def _cross_device(self, monkeypatch, on_install=None):
+        """Make the direct rename fail with EXDEV; a rename within one folder
+        (the staged sibling onto its destination) still works."""
+        import helpers.no_clobber as nc
+
+        real = nc.rename_no_clobber
+
+        def _rename(src, dst):
+            if os.path.dirname(os.path.abspath(src)) != os.path.dirname(os.path.abspath(dst)):
+                raise OSError(errno.EXDEV, "Invalid cross-device link")
+            if on_install:
+                on_install(dst)
+            return real(src, dst)
+
+        monkeypatch.setattr(helpers, "rename_no_clobber", _rename)
+
+    def test_cross_volume_moves_onto_a_free_name(self, volumes, monkeypatch):
+        staging, library = volumes
+        self._cross_device(monkeypatch)
+        src, dst = staging / "new.cbz", library / "Series 002 (2020).cbz"
+        src.write_bytes(b"download")
+        helpers.move_file(str(src), str(dst), replace=False)
+        assert dst.read_bytes() == b"download"
+        assert not src.exists()
+        assert os.listdir(library) == ["Series 002 (2020).cbz"]
+
+    def test_cross_volume_refuses_an_existing_destination(
+        self, volumes, existing_comic, monkeypatch
+    ):
+        staging, library = volumes
+        self._cross_device(monkeypatch)
+        src = staging / "new.cbz"
+        src.write_bytes(b"download")
+        with pytest.raises(FileExistsError):
+            helpers.move_file(str(src), str(existing_comic), replace=False)
+        assert existing_comic.read_bytes() == ORIGINAL
+        assert src.read_bytes() == b"download"
+        assert os.listdir(library) == [existing_comic.name]
+
+    def test_a_comic_that_appears_during_the_copy_is_not_replaced(
+        self, volumes, monkeypatch
+    ):
+        """The race itself: the name was free when the move started and is
+        taken by the time the staged copy is installed."""
+        staging, library = volumes
+        dst = library / "Series 003 (2020).cbz"
+
+        def _someone_else_files_it(path):
+            with open(path, "wb") as fh:
+                fh.write(ORIGINAL)
+
+        self._cross_device(monkeypatch, on_install=_someone_else_files_it)
+        src = staging / "new.cbz"
+        src.write_bytes(b"download")
+        with pytest.raises(FileExistsError):
+            helpers.move_file(str(src), str(dst), replace=False)
+        assert dst.read_bytes() == ORIGINAL
+        assert src.read_bytes() == b"download"
+        assert os.listdir(library) == [dst.name], "the staged copy must be removed"
+
+    def test_default_still_replaces(self, tmp_path):
+        """Every in-place CBZ rewrite relies on the overwrite."""
+        src, dst = tmp_path / "new.cbz", tmp_path / "Series 001.cbz"
+        src.write_bytes(b"rewritten")
+        dst.write_bytes(ORIGINAL)
+        helpers.move_file(str(src), str(dst))
+        assert dst.read_bytes() == b"rewritten"
