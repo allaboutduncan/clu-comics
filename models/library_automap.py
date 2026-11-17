@@ -347,6 +347,17 @@ def get_library_roots():
     return _roots()
 
 
+def is_valid_library_path(path):
+    """Realpath, separator-bounded containment in this module's roots.
+
+    Goes through :func:`get_library_roots` above (not helpers' own), so the
+    tests' monkeypatched roots apply here too.
+    """
+    from helpers.library import is_within_roots
+
+    return is_within_roots(path, [r for r in get_library_roots() if r])
+
+
 def _fetch_comicvine_series_dict(series_id, fallback):
     """Build a series payload from ComicVine for an offset (cv) id.
 
@@ -530,6 +541,11 @@ def apply_automap(items, api=None):
             continue
         if not os.path.isdir(folder):
             failed.append({"folder": folder, "error": "Folder no longer exists"})
+            continue
+        # The folder comes back from the browser: sidecars are written into it
+        # and downloads filed into it, so it must really be a library folder.
+        if not is_valid_library_path(folder):
+            failed.append({"folder": folder, "error": "Folder is not inside a configured library"})
             continue
 
         try:
@@ -890,7 +906,10 @@ def add_folder_to_pull_list(
     # anything else the caller could name) out of it.
     nfolder = _norm(folder)
     roots = [_norm(root) for root in get_library_roots() if root]
-    if not any(nfolder == root or nfolder.startswith(root + "/") for root in roots):
+    # Lexically under a root AND on the realpath (a symlink out of a library
+    # is not a library folder).
+    if (not any(nfolder == root or nfolder.startswith(root + "/") for root in roots)
+            or not is_valid_library_path(folder)):
         return {
             "status": "failed",
             "message": "Folder is not inside a configured library",

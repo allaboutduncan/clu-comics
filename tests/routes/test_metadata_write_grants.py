@@ -615,17 +615,128 @@ class TestSeriesMappingWrites:
         save.assert_not_called()
         assert not os.path.exists(new_folder)
 
-    def test_owner_maps_any_folder_as_before(self, client, multi_user):
+    @staticmethod
+    def _writers():
+        from contextlib import ExitStack
+
+        stack = ExitStack()
+        stack.enter_context(patch("models.metron.create_cvinfo_file", return_value=True))
+        stack.enter_context(patch("models.metron.get_flask_api", return_value=None))
+        stack.enter_context(patch("models.series_json.write_series_json"))
+        stack.enter_context(patch("core.series_json_builder.with_description_fallback",
+                                  side_effect=lambda s, _p: s))
+        return stack
+
+    def test_owner_maps_any_library_folder(self, client, multi_user):
+        """The Clerk's ungranted sibling is still a library folder for an owner."""
         _as_owner(client)
-        with patch("core.database.save_series_mapping", return_value=True), \
-                patch("models.metron.create_cvinfo_file", return_value=True), \
-                patch("models.metron.get_flask_api", return_value=None), \
-                patch("models.series_json.write_series_json"), \
-                patch("core.series_json_builder.with_description_fallback",
-                      side_effect=lambda s, _p: s):
+        with patch("core.database.save_series_mapping", return_value=True) as save, \
+                self._writers():
+            resp = client.post("/api/series/1/map", json={
+                "mapped_path": multi_user.sibling, "series": self.SERIES})
+        assert resp.status_code == 200
+        # Stored exactly as given.
+        assert save.call_args[0][1] == multi_user.sibling
+
+    def test_owner_cannot_map_outside_every_library(self, client, multi_user):
+        """Downloads are filed into a mapped folder: containment applies to
+        owners too, and is a 400, not a permission error."""
+        _as_owner(client)
+        with patch("core.database.save_series_mapping") as save, self._writers():
             resp = client.post("/api/series/1/map", json={
                 "mapped_path": multi_user.outside, "series": self.SERIES})
+        assert resp.status_code == 400
+        assert "inside a library" in resp.get_json()["error"]
+        save.assert_not_called()
+
+    def test_owner_cannot_map_a_name_prefix_lookalike_of_the_root(
+            self, client, multi_user, tmp_path):
+        lookalike_root = tmp_path / "LibA2"   # "LibA2" starts with "LibA"
+        lookalike_root.mkdir()
+        _as_owner(client)
+        with patch("core.database.save_series_mapping") as save, self._writers():
+            resp = client.post("/api/series/1/map", json={
+                "mapped_path": str(lookalike_root), "series": self.SERIES})
+        assert resp.status_code == 400
+        save.assert_not_called()
+
+    def test_owner_cannot_map_a_symlink_out_of_the_library(self, client, multi_user):
+        link = os.path.join(multi_user.root, "Linked")
+        _symlink_or_skip(multi_user.outside, link)
+        _as_owner(client)
+        with patch("core.database.save_series_mapping") as save, self._writers():
+            resp = client.post("/api/series/1/map", json={
+                "mapped_path": link, "series": self.SERIES})
+        assert resp.status_code == 400
+        save.assert_not_called()
+
+    def test_owner_cannot_subscribe_outside_every_library(self, client, multi_user):
+        _as_owner(client)
+        new_folder = os.path.join(multi_user.outside, "Batman (2020)")
+        with patch("core.database.save_series_mapping") as save:
+            resp = client.post("/api/series/1/subscribe", json={"path": new_folder})
+        assert resp.status_code == 400
+        save.assert_not_called()
+        assert not os.path.exists(new_folder)
+
+    def test_existing_outside_mapping_still_reads(self, client, multi_user):
+        """A mapping saved before this rule is not touched by it."""
+        _as_owner(client)
+        with patch("core.database.get_series_mapping", return_value=multi_user.outside):
+            resp = client.get("/api/series/1/mapping")
         assert resp.status_code == 200
+        assert resp.get_json()["mapped_path"] == multi_user.outside
+
+    def test_import_skips_a_mapping_outside_every_library(self, client, multi_user):
+        import io
+        import json as _json
+
+        _as_owner(client)
+        payload = {"version": 1, "series": [
+            {"id": 5, "name": "Inside", "mapped_path": multi_user.grant},
+            {"id": 6, "name": "Outside", "mapped_path": multi_user.outside},
+        ]}
+        with patch("core.database.import_series_row", return_value="inserted") as imp:
+            resp = client.post(
+                "/api/pull-list/import",
+                data={"file": (io.BytesIO(_json.dumps(payload).encode()), "pull.json")},
+                content_type="multipart/form-data",
+            )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert body["imported_new"] == 1
+        assert [e["id"] for e in body["errors"]] == [6]
+        assert [c.args[0]["id"] for c in imp.call_args_list] == [5]
+
+    def test_clerk_cannot_add_ungranted_folder_to_pull_list(self, client, multi_user):
+        _as_clerk(client)
+        with patch("models.library_automap.add_folder_to_pull_list") as add:
+            resp = client.post("/api/pull-list/add-folder",
+                               json={"folder": multi_user.sibling})
+        assert resp.status_code == 403
+        add.assert_not_called()
+
+    def test_clerk_cannot_apply_automap_to_ungranted_folder(self, client, multi_user):
+        _as_clerk(client)
+        with patch("models.library_automap.apply_and_sync") as apply:
+            resp = client.post("/api/pull-list/apply", json={"items": [
+                {"folder": multi_user.grant, "metron_id": 1},
+                {"folder": multi_user.sibling, "metron_id": 2},
+            ]})
+        assert resp.status_code == 403
+        apply.assert_not_called()
+
+    def test_apply_automap_refuses_folder_outside_every_library(self, multi_user):
+        from models import library_automap
+
+        with patch.object(library_automap, "get_library_roots",
+                          return_value=[multi_user.root]), \
+                patch("core.database.save_series_mapping") as save:
+            result = library_automap.apply_automap(
+                [{"folder": multi_user.outside, "metron_id": 7}], api=MagicMock())
+        assert result["applied"] == 0
+        assert "not inside" in result["failed"][0]["error"]
+        save.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
