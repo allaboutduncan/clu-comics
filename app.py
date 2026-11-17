@@ -4473,7 +4473,11 @@ def scan_filesystem_for_sync(walked_roots=None):
             common_path = os.path.commonpath([normalized_path, normalized_target_dir])
             return os.path.samefile(common_path, normalized_target_dir)
         except (ValueError, OSError):
-            return normalized_path.startswith(normalized_target_dir)
+            # On a separator boundary: a bare prefix test put a sibling such
+            # as /downloads/processed2 inside TARGET /downloads/processed.
+            return normalized_path == normalized_target_dir or normalized_path.startswith(
+                normalized_target_dir.rstrip(os.sep) + os.sep
+            )
 
     # Folder art lives in the cache (core/folder_art.py); a legacy folder.* on
     # disk still counts. The cached set is read once for the whole walk rather
@@ -4609,8 +4613,11 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                 common_path = os.path.commonpath([path, normalized_target_dir])
                 return os.path.samefile(common_path, normalized_target_dir)
             except (ValueError, OSError):
-                # Fallback: Check if normalized path starts with TARGET folder
-                return path.startswith(normalized_target_dir)
+                # Fallback: the path is TARGET or under it, on a separator
+                # boundary so a sibling like /downloads/processed2 is not.
+                return path == normalized_target_dir or path.startswith(
+                    normalized_target_dir.rstrip(os.sep) + os.sep
+                )
 
         # "In the library" means under ANY enabled library root, not a
         # hard-coded /data: a library at /comics made every move look like
