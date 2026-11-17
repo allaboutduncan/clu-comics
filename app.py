@@ -115,7 +115,6 @@ from core.thumbnail_cache import (
     file_changed_since,
     regenerate_thumbnail,
     set_job_status,
-    prune_hidden_jobs,
     is_in_flight,
     submit_thumbnail_job,
 )
@@ -2964,144 +2963,36 @@ thumbnail_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def scan_library_task():
-    """Background task to scan library for new/changed files and generate thumbnails."""
+    """Background task to scan library for new/changed files and generate thumbnails.
+
+    A thin caller: the walk, the decision and the short per-chunk transactions
+    live in core.thumbnail_scan, which tests can import. Never hold a write
+    transaction across file I/O -- see that module's docstring.
+    """
     app_logger.info("Starting background library scan for thumbnails...")
 
-    # Local import on purpose. This function is defined *above* app.py's
-    # module-level `from helpers import is_hidden`, and it is reached from a
-    # thread started at import time (start_background_scanner), so a
-    # module-level reference resolves only because that thread sleeps first.
-    # A local import cannot be broken by reordering. Same pattern as the
-    # prune_empty_dirs import further down.
-    from helpers import is_hidden
+    # Local import on purpose. This function is reached from a thread started
+    # at import time (start_background_scanner), so a module-level reference
+    # resolves only because that thread sleeps first. A local import cannot be
+    # broken by reordering.
+    from core.thumbnail_scan import scan_library_thumbnails
 
-    conn = get_db_connection()
-    if not conn:
-        app_logger.error("Could not connect to DB for library scan")
-        return
-
-    try:
-        # Clear the rows the pre-filter walk recorded -- see
-        # core.thumbnail_cache.prune_hidden_jobs. Done before the map below is
-        # built so they cannot be considered one last time. Inside this try, so
-        # a corrupt database is still reported via app_state.set_db_integrity.
-        prune_hidden_jobs(conn)
-
-        # Get all existing jobs to minimize DB queries in loop
-        # Map path -> (status, file_mtime)
-        cursor = conn.execute("SELECT path, status, file_mtime FROM thumbnail_jobs")
-        existing_jobs = {
-            row["path"]: (row["status"], row["file_mtime"]) for row in cursor.fetchall()
-        }
-
-        count_queued = 0
-        count_skipped = 0
-
-        # Iterate over all configured library roots
-        library_roots = get_library_roots()
-        if not library_roots:
-            app_logger.warning("No libraries configured, skipping scan")
-            return
-
-        for library_root in library_roots:
-            if not os.path.exists(library_root):
-                app_logger.warning(f"Library path not found, skipping: {library_root}")
-                continue
-            app_logger.info(f"Scanning library: {library_root}")
-            for root, dirs, files in os.walk(library_root):
-                # Enumerate exactly what build_file_index enumerates (the
-                # is_hidden prune and the '.'/'_' guard further down this
-                # file). This scan is the only library walker whose output
-                # never reaches file_index, so nothing downstream catches its
-                # mistakes: a macOS AppleDouble sidecar
-                # ("._X-Force 005 (2020).cbz") is a 4KB resource fork, not an
-                # archive, so it failed with "File is not a zip file", recorded
-                # an error row, and -- once #548 made errored rows retryable on
-                # every restart -- a Mac-copied library re-queued thousands of
-                # them at every boot against a two-worker executor. None of
-                # them are in the file index, so nothing could have displayed
-                # the result even if it had worked.
-                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
-
-                for file in files:
-                    if file.startswith(".") or file.startswith("_"):
-                        continue
-                    if file.lower().endswith((".cbz", ".cbr", ".zip", ".rar", ".pdf")):
-                        full_path = os.path.join(root, file)
-                        try:
-                            stat = os.stat(full_path)
-                            current_mtime = stat.st_mtime
-
-                            should_process = False
-
-                            if full_path not in existing_jobs:
-                                should_process = True  # New file
-                            else:
-                                status, stored_mtime = existing_jobs[full_path]
-                                # Check if file modified since last scan
-                                # stored_mtime might be None if migrated
-                                if stored_mtime is None or current_mtime > stored_mtime:
-                                    should_process = True
-                                elif status == "error":
-                                    # Retry. A thumbnail fails for transient
-                                    # reasons far more often than permanent
-                                    # ones -- an unwritable /cache, a full
-                                    # disk, a file still being copied -- and
-                                    # treating the first failure as final left
-                                    # those comics showing error.svg forever
-                                    # with no way back (#548). This scan runs
-                                    # once per startup, so the retry is bounded
-                                    # to one attempt per restart.
-                                    should_process = True
-                                elif status == "processing" and not is_in_flight(
-                                    full_path
-                                ):
-                                    # Orphaned: the job was queued by an
-                                    # earlier process and died with it (a
-                                    # restart, a worker kill). Nothing else
-                                    # will ever settle this row.
-                                    should_process = True
-
-                            if should_process:
-                                # Update DB to mark as pending/processing and update mtime
-                                conn.execute(
-                                    """
-                                    INSERT INTO thumbnail_jobs (path, status, file_mtime, updated_at)
-                                    VALUES (?, 'processing', ?, CURRENT_TIMESTAMP)
-                                    ON CONFLICT(path) DO UPDATE SET
-                                        status='processing',
-                                        file_mtime=excluded.file_mtime,
-                                        updated_at=CURRENT_TIMESTAMP
-                                """,
-                                    (full_path, current_mtime),
-                                )
-
-                                # Queue the job
-                                cache_path = thumbnail_cache_path(full_path)
-
-                                submit_thumbnail_job(
-                                    thumbnail_executor,
-                                    generate_thumbnail_task,
-                                    full_path,
-                                    cache_path,
-                                )
-                                count_queued += 1
-                            else:
-                                count_skipped += 1
-
-                        except OSError as e:
-                            app_logger.error(f"Error accessing file {full_path}: {e}")
-
-                # Commit batches or at end? At end is fine for single thread scan
-                conn.commit()
-
-        app_logger.info(
-            f"Library scan complete. Queued {count_queued} thumbnails, skipped {count_skipped}."
+    def submit(full_path):
+        # Through the registry, so is_in_flight sees it; called only after the
+        # job's 'processing' row is committed.
+        return submit_thumbnail_job(
+            thumbnail_executor,
+            generate_thumbnail_task,
+            full_path,
+            thumbnail_cache_path(full_path),
         )
 
+    try:
+        scan_library_thumbnails(get_library_roots(), submit)
     except sqlite3.DatabaseError as e:
-        # Corruption ("database disk image is malformed") — record and surface it
+        # Corruption ("database disk image is malformed") -- record and surface it
         # once via app_state instead of logging an opaque error every scan cycle.
+        # The scan re-raises only corruption; a busy database costs a chunk.
         app_state.set_db_integrity(False, str(e))
         app_logger.error(
             f"Library scan aborted: database is corrupt ({e}). "
@@ -3109,8 +3000,6 @@ def scan_library_task():
         )
     except Exception as e:
         app_logger.error(f"Error during library scan: {e}")
-    finally:
-        conn.close()
 
 
 # Start background scanner

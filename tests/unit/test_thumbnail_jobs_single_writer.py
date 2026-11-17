@@ -28,12 +28,11 @@ OWNER = "core/thumbnail_cache.py"
 
 # (module, enclosing function) -> number of writes still allowed there.
 ALLOWED = {
-    # The startup scan's batched 'processing' upsert. Not the defect: it is an
-    # ON CONFLICT DO UPDATE that stamps file_mtime itself (asserted below). It
-    # runs on the scan's own connection inside a per-directory transaction, so
-    # routing it through set_job_status -- which opens a second connection --
-    # would wait out the 30s busy timeout behind the scan's own write lock.
-    ("app.py", "scan_library_task"): 1,
+    # Empty. The startup scan's batched 'processing' upsert used to live in
+    # app.scan_library_task, on the scan's own connection inside a
+    # per-directory transaction held across file I/O. It is now
+    # core.thumbnail_cache.mark_processing_batch: one short transaction per
+    # chunk, file_mtime supplied by the caller (asserted below).
 }
 
 _PRUNE_DIRS = {"tests", "node_modules", "venv", "env", "build", "dist",
@@ -108,7 +107,7 @@ class TestOnlyTheOwnerWritesJobRows:
         assert any(True for _ in _writes(owner)), (
             "the pattern no longer recognises the owner's own writes"
         )
-        assert ("app.py", "scan_library_task") in _all_writes()
+        assert "mark_processing_batch" in {func for func, _ in _writes(owner)}
 
     def test_no_new_raw_writes(self):
         offenders = {
@@ -126,12 +125,18 @@ class TestOnlyTheOwnerWritesJobRows:
         stale = {k: v for k, v in ALLOWED.items() if len(found.get(k, [])) < v}
         assert not stale, f"lower ALLOWED to match the code: {stale}"
 
-    def test_the_allowed_write_stamps_file_mtime(self):
-        for sql in _all_writes()[("app.py", "scan_library_task")]:
+    def test_the_scans_batch_write_stamps_file_mtime(self):
+        owner = os.path.join(PROJECT_ROOT, *OWNER.split("/"))
+        sqls = [sql for func, sql in _writes(owner) if func == "mark_processing_batch"]
+        assert sqls, "the scan's batch writer is gone from the owner"
+        for sql in sqls:
             assert "file_mtime" in sql and "excluded.file_mtime" in sql, (
                 "the scan's upsert no longer stamps file_mtime"
             )
             assert "OR REPLACE" not in sql.upper()
+
+    def test_the_scan_in_app_writes_no_rows_itself(self):
+        assert ("app.py", "scan_library_task") not in _all_writes()
 
     def test_the_serving_route_goes_through_the_owner(self):
         path = os.path.join(PROJECT_ROOT, "app.py")

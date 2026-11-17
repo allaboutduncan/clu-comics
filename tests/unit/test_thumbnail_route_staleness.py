@@ -48,9 +48,22 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 APP_PATH = os.path.join(PROJECT_ROOT, "app.py")
 
 
+# The startup scan's walk and decision moved out of app.scan_library_task into
+# core/thumbnail_scan.py (so it can be tested with a real database, and so no
+# write transaction is held across file I/O). The structural checks on that
+# logic follow it there; app.scan_library_task keeps the submit wiring.
+SCAN_PATH = os.path.join(PROJECT_ROOT, "core", "thumbnail_scan.py")
+
+
 @pytest.fixture(scope="module")
 def tree():
     with open(APP_PATH, encoding="utf-8") as fh:
+        return ast.parse(fh.read())
+
+
+@pytest.fixture(scope="module")
+def scan_tree():
+    with open(SCAN_PATH, encoding="utf-8") as fh:
         return ast.parse(fh.read())
 
 
@@ -58,14 +71,18 @@ def _func(tree, name):
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
-    pytest.fail(f"{name} not found in app.py")
+    pytest.fail(f"{name} not found")
 
 
-def _src(tree, name):
-    with open(APP_PATH, encoding="utf-8") as fh:
+def _src(tree, name, path=APP_PATH):
+    with open(path, encoding="utf-8") as fh:
         lines = fh.read().splitlines()
     node = _func(tree, name)
     return "\n".join(lines[node.lineno - 1: node.end_lineno])
+
+
+def _scan_src(scan_tree, name):
+    return _src(scan_tree, name, SCAN_PATH)
 
 
 def _calls(node):
@@ -199,11 +216,11 @@ class TestCoverCacheHeaders:
 
 class TestStartupScan:
 
-    def test_retries_errored_jobs(self, tree):
+    def test_retries_errored_jobs(self, scan_tree):
         """The old code documented its refusal to retry ('assume errors are
         permanent until file changes'), which turned one unwritable-cache
         failure into a permanently broken thumbnail."""
-        src = _src(tree, "scan_library_task")
+        src = _scan_src(scan_tree, "needs_thumbnail")
         assert "assume errors are permanent" not in src
 
         lines = src.splitlines()
@@ -213,12 +230,21 @@ class TestStartupScan:
         )
         assert idx is not None, "the errored-job branch is gone from the scan"
         branch = "\n".join(lines[idx: idx + 14])
-        assert "should_process = True" in branch, (
+        assert "return True" in branch, (
             "errored thumbnail jobs are still never retried"
         )
 
     def test_uses_the_shared_cache_path_helper(self, tree):
         assert "thumbnail_cache_path" in _calls(_func(tree, "scan_library_task"))
+
+    def test_app_delegates_to_the_core_scan(self, tree):
+        """The walk lives in core.thumbnail_scan; a second copy in app.py is
+        how the two would drift, and app.py cannot be tested."""
+        fn = _func(tree, "scan_library_task")
+        assert "scan_library_thumbnails" in _calls(fn)
+        src = _src(tree, "scan_library_task")
+        assert "os.walk" not in src
+        assert "conn.execute" not in src
 
 
 class TestGenerators:
@@ -253,49 +279,44 @@ class TestStartupScanEnumeratesWhatTheIndexHolds:
     that the index does not hold is a thumbnail nothing can ever request;
     anything the index holds that the scan skips is a spinner."""
 
-    def test_prunes_hidden_directories(self, tree):
-        src = _src(tree, "scan_library_task")
+    def test_prunes_hidden_directories(self, scan_tree):
+        src = _scan_src(scan_tree, "iter_candidate_dirs")
         assert "dirs[:]" in src, "hidden directories are descended into again"
         assert "is_hidden" in src
 
-    def test_skips_hidden_files_before_testing_the_extension(self, tree):
+    def test_skips_hidden_files_before_testing_the_extension(self, scan_tree):
         """An AppleDouble sidecar carries a comic extension, so an
         extension-first test still lets it through."""
-        lines = _src(tree, "scan_library_task").splitlines()
+        lines = _scan_src(scan_tree, "iter_candidate_dirs").splitlines()
         guard = next(
             (i for i, l in enumerate(lines) if "file.startswith" in l), None
         )
         assert guard is not None, "the '.'/'_' guard on files is gone"
         assert any("continue" in l for l in lines[guard: guard + 3])
 
-        ext = next((i for i, l in enumerate(lines) if '".cbz"' in l), None)
+        ext = next(
+            (i for i, l in enumerate(lines) if "SCAN_EXTENSIONS" in l), None
+        )
         assert ext is not None
         assert guard < ext, "the extension test runs before the name guard"
 
-    def test_is_hidden_cannot_depend_on_module_import_order(self, tree):
-        """scan_library_task is defined above app.py's module-level
-        `from helpers import is_hidden` AND is reached from a thread started at
-        import time, so a module-level reference resolves only because that
-        thread sleeps first. Either remedy is fine; relying on the sleep is
-        not."""
+    def test_the_scan_import_cannot_depend_on_module_import_order(self, tree):
+        """scan_library_task is reached from a thread started at app.py's
+        import time, so a module-level reference defined further down resolves
+        only because that thread sleeps first. It imports the core scan
+        locally; core.thumbnail_scan itself imports is_hidden at its top."""
         fn = _func(tree, "scan_library_task")
-
-        local = any(
+        assert any(
             isinstance(n, ast.ImportFrom)
-            and any(a.name == "is_hidden" for a in n.names)
+            and n.module == "core.thumbnail_scan"
+            and any(a.name == "scan_library_thumbnails" for a in n.names)
             for n in ast.walk(fn)
         )
-        module_level_before = any(
-            isinstance(n, ast.ImportFrom)
-            and any(a.name == "is_hidden" for a in n.names)
-            and n.lineno < fn.lineno
-            for n in tree.body
+
+    def test_prunes_rows_left_by_the_old_walk(self, scan_tree):
+        assert "prune_hidden_jobs" in _calls(
+            _func(scan_tree, "scan_library_thumbnails")
         )
-
-        assert local or module_level_before
-
-    def test_prunes_rows_left_by_the_old_walk(self, tree):
-        assert "prune_hidden_jobs" in _calls(_func(tree, "scan_library_task"))
 
 
 class TestOrphanedProcessingRows:
@@ -311,15 +332,27 @@ class TestOrphanedProcessingRows:
             "row then spins forever"
         )
 
-    def test_scan_requeues_orphaned_processing_rows(self, tree):
-        lines = _src(tree, "scan_library_task").splitlines()
+    def test_scan_requeues_orphaned_processing_rows(self, scan_tree):
+        """The decision takes in_flight as an argument (checked before any
+        status branch); the scan feeds it core.thumbnail_cache.is_in_flight.
+        The behaviour is in tests/unit/test_thumbnail_scan.py."""
+        lines = _scan_src(scan_tree, "needs_thumbnail").splitlines()
+        guard = next((i for i, l in enumerate(lines) if "if in_flight" in l), None)
         idx = next(
             (i for i, l in enumerate(lines) if 'status == "processing"' in l), None
         )
-        assert idx is not None, "the scan no longer reconsiders 'processing' rows"
-        branch = "\n".join(lines[idx: idx + 10])
-        assert "is_in_flight" in branch
-        assert "should_process = True" in branch
+        assert guard is not None and idx is not None, (
+            "the scan no longer reconsiders 'processing' rows"
+        )
+        assert guard < idx
+        assert "return True" in "\n".join(lines[idx: idx + 10])
+
+        fn = _func(scan_tree, "scan_library_thumbnails")
+        defaults = {
+            a.arg: d for a, d in zip(fn.args.kwonlyargs, fn.args.kw_defaults)
+        }
+        assert isinstance(defaults["in_flight"], ast.Name)
+        assert defaults["in_flight"].id == "is_in_flight"
 
     @pytest.mark.parametrize("name", ["get_thumbnail", "scan_library_task"])
     def test_jobs_are_submitted_through_the_registry(self, tree, name):

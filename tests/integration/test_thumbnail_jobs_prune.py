@@ -105,7 +105,7 @@ class TestLeavesRealComicsAlone:
 
 
 class TestNeverRaises:
-    """scan_library_task calls this inside the try that reports DB corruption;
+    """The startup scan (core.thumbnail_scan) calls this before anything else;
     it must not become a new way for the scan to die."""
 
     def test_returns_zero_on_an_empty_table(self, db_connection):
@@ -125,7 +125,7 @@ class TestNeverRaises:
         assert prune_hidden_jobs(_Broken()) == 0
 
     def test_leaves_a_caller_supplied_connection_open(self, db_connection):
-        """scan_library_task keeps using the connection it passes in."""
+        """A caller that passes its own connection keeps using it."""
         _seed(db_connection, "/data/DC/._x.cbz")
 
         prune_hidden_jobs(db_connection)
