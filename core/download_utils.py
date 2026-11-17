@@ -360,6 +360,9 @@ def reset_for_retry(progress, download_id) -> None:
         'provider': None,
         'manual_url': None,
         'retry_at': None,
+        # Queued again, so a worker will hold it again: not clearable until
+        # that worker has returned (see clear_settled_downloads).
+        WORKER_SETTLED: False,
     })
 
 
@@ -419,9 +422,82 @@ def count_active_downloads(progress) -> int:
     if not isinstance(progress, dict):
         return 0
     return sum(
-        1 for entry in progress.values()
+        # A snapshot: the workers write the dict while /download_summary reads.
+        1 for entry in list(progress.values())
         if isinstance(entry, dict) and entry.get('status') in ACTIVE_STATUSES
     )
+
+
+# ---------------------------------------------------------------------------
+# Clearing finished downloads
+#
+# /clear_downloads and /clear_failed_downloads delete rows from the progress
+# dict. A row's status alone does not say its worker is done with it:
+#
+# * /cancel_download relabels a running download 'cancelled' at once, but the
+#   worker only notices the flag at its next chunk or mirror. Deleting the row
+#   in that window deletes the flag with it, so is_cancel_requested reads False
+#   and the worker carries on -- PixelDrain and ComicBookPlus even re-create
+#   the row with setdefault -- and the file the user cancelled lands in WATCH.
+# * A provider sets 'error' before re-raising, and process_download then fails
+#   over to the next mirror. Deleting that row stops the failover with a
+#   KeyError and reports the download as failed.
+#
+# So the worker marks the row settled once process_download has returned, and
+# only a settled row is cleared. A cancel during an auto-retry backoff is
+# clearable at once: that worker had already returned, and _fire_retry drops a
+# row that is no longer tracked.
+# ---------------------------------------------------------------------------
+
+WORKER_SETTLED = 'worker_settled'
+
+# Statuses a returning worker must not mark settled: they mean the download was
+# queued again (a hand-driven retry raced the worker's return) and another
+# worker holds it now.
+_HELD_BY_A_WORKER = frozenset({'queued', 'in_progress'})
+
+# What the two clear buttons remove from api.py's progress dict.
+CLEAR_COMPLETED_STATUSES = frozenset({'complete', 'cancelled'})
+CLEAR_FAILED_STATUSES = frozenset({'error'})
+
+
+def mark_worker_settled(progress, download_id) -> None:
+    """Record that no worker holds this download any more.
+
+    Called by api.py's worker after process_download returns, on every path.
+    Never re-creates a row that has gone.
+    """
+    entry = progress.get(download_id) if isinstance(progress, dict) else None
+    if isinstance(entry, dict) and entry.get('status') not in _HELD_BY_A_WORKER:
+        entry[WORKER_SETTLED] = True
+
+
+def _clearable(entry, statuses) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get('status') in statuses
+        and bool(entry.get(WORKER_SETTLED))
+    )
+
+
+def clear_settled_downloads(progress, statuses) -> int:
+    """Remove every settled download whose status is in ``statuses``.
+
+    Iterates a snapshot: three workers and the retry timers write the dict
+    while this runs, and iterating it live raises "dictionary changed size
+    during iteration". Each row is re-checked just before it is removed, and
+    removed only if it is still the same row. Returns how many were removed.
+    """
+    if not isinstance(progress, dict):
+        return 0
+    cleared = 0
+    for download_id, entry in list(progress.items()):
+        if not _clearable(entry, statuses):
+            continue
+        if progress.get(download_id) is entry and _clearable(entry, statuses):
+            progress.pop(download_id, None)
+            cleared += 1
+    return cleared
 
 
 def build_status_snapshot(progress, now=None) -> dict:

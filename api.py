@@ -74,13 +74,17 @@ from core.download_utils import (
     auto_retry_delay,
     begin_retry_wait,
     build_status_snapshot,
+    clear_settled_downloads,
     count_active_downloads,
+    mark_worker_settled,
     reset_for_retry,
     should_auto_retry,
     note_provider_rate_limited,
     provider_cooldown_remaining,
     clear_provider_cooldown,
     CANCELLABLE_STATUSES,
+    CLEAR_COMPLETED_STATUSES,
+    CLEAR_FAILED_STATUSES,
     RETRYABLE_STATUSES,
     monitor_enabled,
     post_download_action,
@@ -150,6 +154,8 @@ def _fire_retry(task):
             f"Failed to re-queue auto-retry for {download_id}: {e}", exc_info=True
         )
         set_error_status(download_id, e)
+        # Not re-queued, so no worker will ever settle it; leave it clearable.
+        mark_worker_settled(download_progress, download_id)
 
 
 def _schedule_auto_retry(task, last_error):
@@ -713,6 +719,9 @@ def worker():
                 exc_info=True,
             )
         finally:
+            # Only now may Clear remove the row: deleting it while this worker
+            # still runs would delete a pending cancel with it.
+            mark_worker_settled(download_progress, task.get('download_id'))
             download_queue.task_done()
 
 # Start a few worker threads for processing downloads.
@@ -1645,23 +1654,15 @@ def download_summary():
 
 @app.route('/clear_downloads', methods=['POST'])
 def clear_downloads():
-    keys_to_delete = [
-        download_id for download_id, details in download_progress.items() 
-        if details.get('status') in ['complete', 'cancelled']
-    ]
-    for download_id in keys_to_delete:
-        del download_progress[download_id]
-    return jsonify({'message': f'Cleared {len(keys_to_delete)} downloads'}), 200
+    # Skips a row whose worker is still running (a cancel it has not acted on
+    # yet) and iterates a snapshot; see core.download_utils.
+    cleared = clear_settled_downloads(download_progress, CLEAR_COMPLETED_STATUSES)
+    return jsonify({'message': f'Cleared {cleared} downloads'}), 200
 
 @app.route('/clear_failed_downloads', methods=['POST'])
 def clear_failed_downloads():
-    keys_to_delete = [
-        download_id for download_id, details in download_progress.items()
-        if details.get('status') == 'error'
-    ]
-    for download_id in keys_to_delete:
-        del download_progress[download_id]
-    return jsonify({'message': f'Cleared {len(keys_to_delete)} failed downloads'}), 200
+    cleared = clear_settled_downloads(download_progress, CLEAR_FAILED_STATUSES)
+    return jsonify({'message': f'Cleared {cleared} failed downloads'}), 200
 
 @app.route('/retry_download/<download_id>', methods=['POST'])
 def retry_download(download_id):
