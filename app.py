@@ -454,11 +454,15 @@ def scheduled_file_index_rebuild():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -3890,11 +3894,15 @@ def api_rebuild_file_index():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -4259,7 +4267,9 @@ def _build_file_index_locked():
     app_logger.info("Database empty, building file index from filesystem...")
     start_time = time.time()
 
-    file_index.clear()
+    # Walked into a local list and swapped in only once the walk finished, so
+    # a reader never sees a half-built index and a failed walk leaves none.
+    new_index = []
     excluded_extensions = {
         ".png",
         ".jpg",
@@ -4324,7 +4334,7 @@ def _build_file_index_locked():
                             if parent_rel
                             else library_root
                         )
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(dir_path),
@@ -4368,7 +4378,7 @@ def _build_file_index_locked():
                             else library_root
                         )
 
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(file_path),
@@ -4401,6 +4411,7 @@ def _build_file_index_locked():
         app_logger.error(f"Error building file index: {e}")
         return
 
+    file_index[:] = new_index
     build_time = time.time() - start_time
     app_logger.info(
         f"File index built successfully: {len(file_index)} items in {build_time:.2f} seconds"
