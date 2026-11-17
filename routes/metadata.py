@@ -421,6 +421,10 @@ def cbz_metadata():
 
         metadata = {
             "file_size": os.path.getsize(file_path),
+            # Changes whenever the archive is rewritten. The info modal puts
+            # it on its page-image URLs: a browser reuses an image it already
+            # loaded from the same URL, whatever the response headers say.
+            "modified": int(os.path.getmtime(file_path) * 1000),
             "total_files": 0,
             "image_files": 0,
             "comicinfo": None,

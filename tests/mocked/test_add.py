@@ -54,6 +54,27 @@ class TestHandleCbzFile:
         assert os.path.exists(cbz_path)
 
     @patch("cbz_ops.add.add_image_to_folder")
+    def test_regenerates_thumbnail(self, mock_add_image, create_cbz):
+        """The archive is rewritten, so the cached cover must be refreshed."""
+        from cbz_ops.add import handle_cbz_file
+
+        cbz_path = create_cbz("thumb_test.cbz", num_images=1)
+        with patch("cbz_ops.add.regenerate_thumbnail") as mock_regen:
+            handle_cbz_file(cbz_path)
+
+        mock_regen.assert_called_once_with(cbz_path)
+
+    @patch("cbz_ops.add.add_image_to_folder")
+    def test_thumbnail_failure_does_not_fail_the_add(self, mock_add_image, create_cbz):
+        from cbz_ops.add import handle_cbz_file
+
+        cbz_path = create_cbz("thumb_fail.cbz", num_images=1)
+        with patch("cbz_ops.add.regenerate_thumbnail", side_effect=OSError("cache")):
+            handle_cbz_file(cbz_path)
+
+        assert zipfile.is_zipfile(cbz_path)
+
+    @patch("cbz_ops.add.add_image_to_folder")
     def test_cleanup_on_success(self, mock_add_image, create_cbz):
         from cbz_ops.add import handle_cbz_file
 

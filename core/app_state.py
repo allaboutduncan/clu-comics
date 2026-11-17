@@ -253,7 +253,7 @@ def _visible(op_or_note, viewer_id, is_owner):
 
 
 def register_operation(op_type, label, total=0, op_id=None, user_id=None,
-                       status="running"):
+                       status="running", path=None):
     """Register a new long-running operation. Returns the operation ID.
 
     ``status="queued"`` registers an op that is waiting its turn in a job
@@ -264,6 +264,9 @@ def register_operation(op_type, label, total=0, op_id=None, user_id=None,
     token for synchronous endpoints that want polled progress). Defaults to a
     fresh uuid when omitted. The op is attributed to ``user_id`` (or the current
     request user / owner) so progress doesn't leak across accounts.
+
+    ``path`` names the one file the op is rewriting, when there is one. Pages
+    use it to mark that file as busy where it is listed.
     """
     if op_id is None:
         op_id = uuid.uuid4().hex
@@ -281,6 +284,7 @@ def register_operation(op_type, label, total=0, op_id=None, user_id=None,
             "updated_at": now,
             "completed_at": None,
             "user_id": _resolve_uid(user_id),
+            "path": path,
         }
     return op_id
 
