@@ -4699,64 +4699,66 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        # Strip "[3258]"-style provider IDs from credit columns before they
-        # reach either file_index or file_metadata_tags.
-        metadata_dict = _normalize_ci_metadata(metadata_dict)
+            # Strip "[3258]"-style provider IDs from credit columns before they
+            # reach either file_index or file_metadata_tags.
+            metadata_dict = _normalize_ci_metadata(metadata_dict)
 
-        c = conn.cursor()
-        c.execute(
-            """
-            UPDATE file_index
-            SET ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
-                ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
-                ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
-                ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                ci_metronid = ?, ci_provider = ?, ci_cvid = ?,
-                metadata_scanned_at = ?, has_comicinfo = ?
-            WHERE id = ?
-        """,
-            (
-                metadata_dict.get("ci_title", ""),
-                metadata_dict.get("ci_series", ""),
-                metadata_dict.get("ci_number", ""),
-                metadata_dict.get("ci_count", ""),
-                metadata_dict.get("ci_volume", ""),
-                metadata_dict.get("ci_year", ""),
-                metadata_dict.get("ci_writer", ""),
-                metadata_dict.get("ci_penciller", ""),
-                metadata_dict.get("ci_inker", ""),
-                metadata_dict.get("ci_colorist", ""),
-                metadata_dict.get("ci_letterer", ""),
-                metadata_dict.get("ci_coverartist", ""),
-                metadata_dict.get("ci_publisher", ""),
-                metadata_dict.get("ci_genre", ""),
-                metadata_dict.get("ci_characters", ""),
-                # This path has just read the XML, so it is the authority: 0
-                # records "read it, no MetronId there" and keeps the file out of
-                # the backfill queue.
-                _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
-                # '' = read, no recognisable provider (see the migration).
-                metadata_dict.get("ci_provider") or "",
-                _as_metron_id(metadata_dict.get("ci_cvid")) or 0,
-                scanned_at,
-                has_comicinfo if has_comicinfo is not None else 0,
-                file_id,
-            ),
-        )
+            c = conn.cursor()
+            c.execute(
+                """
+                UPDATE file_index
+                SET ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
+                    ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
+                    ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
+                    ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                    ci_metronid = ?, ci_provider = ?, ci_cvid = ?,
+                    metadata_scanned_at = ?, has_comicinfo = ?
+                WHERE id = ?
+            """,
+                (
+                    metadata_dict.get("ci_title", ""),
+                    metadata_dict.get("ci_series", ""),
+                    metadata_dict.get("ci_number", ""),
+                    metadata_dict.get("ci_count", ""),
+                    metadata_dict.get("ci_volume", ""),
+                    metadata_dict.get("ci_year", ""),
+                    metadata_dict.get("ci_writer", ""),
+                    metadata_dict.get("ci_penciller", ""),
+                    metadata_dict.get("ci_inker", ""),
+                    metadata_dict.get("ci_colorist", ""),
+                    metadata_dict.get("ci_letterer", ""),
+                    metadata_dict.get("ci_coverartist", ""),
+                    metadata_dict.get("ci_publisher", ""),
+                    metadata_dict.get("ci_genre", ""),
+                    metadata_dict.get("ci_characters", ""),
+                    # This path has just read the XML, so it is the authority: 0
+                    # records "read it, no MetronId there" and keeps the file out of
+                    # the backfill queue.
+                    _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
+                    # '' = read, no recognisable provider (see the migration).
+                    metadata_dict.get("ci_provider") or "",
+                    _as_metron_id(metadata_dict.get("ci_cvid")) or 0,
+                    scanned_at,
+                    has_comicinfo if has_comicinfo is not None else 0,
+                    file_id,
+                ),
+            )
 
-        # Refresh the normalised tag rows for the metadata browser.
-        c.execute("SELECT path FROM file_index WHERE id = ?", (file_id,))
-        row = c.fetchone()
-        if row and row[0]:
-            _sync_tags_for_file(conn, row[0], metadata_dict)
+            # Refresh the normalised tag rows for the metadata browser.
+            c.execute("SELECT path FROM file_index WHERE id = ?", (file_id,))
+            row = c.fetchone()
+            if row and row[0]:
+                _sync_tags_for_file(conn, row[0], metadata_dict)
 
-        conn.commit()
-        conn.close()
+            conn.commit()
         invalidate_metadata_browser_cache()
         return True
 
@@ -5139,111 +5141,113 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=Fa
         f"update_file_index_from_comicinfo: updating '{name}' (path={file_path})"
     )
 
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            app_logger.warning(
-                "update_file_index_from_comicinfo: no DB connection"
+        with db_conn() as conn:
+            if not conn:
+                app_logger.warning(
+                    "update_file_index_from_comicinfo: no DB connection"
+                )
+                return False
+
+            c = conn.cursor()
+
+            # Log the metadata values being written
+            ci_series = str(comicinfo_dict.get("Series", "") or "")
+            ci_number = str(comicinfo_dict.get("Number", "") or "")
+            ci_title = str(comicinfo_dict.get("Title", "") or "")
+            ci_count = str(comicinfo_dict.get("Count", "") or "")
+            ci_volume = str(comicinfo_dict.get("Volume", "") or "")
+            ci_year = str(comicinfo_dict.get("Year", "") or "")
+            # Credit/character/genre lists are provider-ID-stripped on the way in.
+            ci_writer = normalize_credit_list(comicinfo_dict.get("Writer", ""))
+            ci_penciller = normalize_credit_list(comicinfo_dict.get("Penciller", ""))
+            ci_inker = normalize_credit_list(comicinfo_dict.get("Inker", ""))
+            ci_colorist = normalize_credit_list(comicinfo_dict.get("Colorist", ""))
+            ci_letterer = normalize_credit_list(comicinfo_dict.get("Letterer", ""))
+            ci_coverartist = normalize_credit_list(comicinfo_dict.get("CoverArtist", ""))
+            ci_publisher = strip_provider_ids(comicinfo_dict.get("Publisher", ""))
+            ci_genre = normalize_credit_list(comicinfo_dict.get("Genre", ""))
+            ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
+            scanned_at = time.time()
+
+            # Every caller reaches here immediately after rewriting the archive, and
+            # writing ComicInfo rebuilds the whole file (open_zip_for_write assembles
+            # a new archive and moves it into place), so the on-disk mtime has just
+            # jumped to now. Nothing else recorded that: the file_watcher misses
+            # events on the data mount and a directory sync may be days away, which
+            # left modified_at holding the file's *pre-tagging* mtime. A back issue
+            # re-tagged today then looked months old to everything keying on
+            # recency -- the credit backfill's window (core/credit_backfill.py) and
+            # the scanner's metadata_scanned_at < modified_at rescan trigger both
+            # read it. Callers pass the path as stored in file_index; when that
+            # can't be stat'ed, COALESCE below leaves the column as it was rather
+            # than guessing.
+            try:
+                file_mtime = os.path.getmtime(file_path)
+            except (OSError, ValueError):
+                file_mtime = None
+
+            app_logger.info(
+                f"update_file_index_from_comicinfo: series={ci_series}, "
+                f"number={ci_number}, title={ci_title}, year={ci_year}, "
+                f"publisher={ci_publisher}, writer={ci_writer}"
             )
-            return False
 
-        c = conn.cursor()
+            c.execute(
+                """
+                UPDATE file_index
+                SET name = ?,
+                    ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
+                    ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
+                    ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
+                    ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                    has_comicinfo = 1, metadata_scanned_at = ?,
+                    modified_at = COALESCE(?, modified_at),
+                    ci_metronid = COALESCE(?, ci_metronid),
+                    ci_provider = COALESCE(?, ci_provider),
+                    ci_cvid = COALESCE(?, ci_cvid)
+                WHERE path = ?
+                """,
+                (
+                    name,
+                    ci_title, ci_series, ci_number, ci_count,
+                    ci_volume, ci_year, ci_writer, ci_penciller,
+                    ci_inker, ci_colorist, ci_letterer, ci_coverartist,
+                    ci_publisher, ci_genre, ci_characters,
+                    scanned_at,
+                    file_mtime,
+                    # COALESCE, not a plain write: a ComicVine re-tag of a
+                    # Metron-tagged file supplies no MetronId, but merge_comicinfo_bytes
+                    # carries the existing <MetronId> forward into the archive. Writing
+                    # 0 here would contradict the file. Left NULL, the scanner picks it
+                    # up and reads the truth out of the XML.
+                    _as_metron_id(comicinfo_dict.get("MetronId")) or (0 if authoritative else None),
+                    # Same COALESCE reasoning: no Notes in the dict means we do not
+                    # know, so leave the column for the scanner to read from the XML.
+                    _provider_for_index(comicinfo_dict.get("Notes")),
+                    # Same COALESCE reasoning as ci_metronid: a merge may carry an
+                    # existing CV id forward that this dict does not name.
+                    _cvid_for_index(comicinfo_dict, authoritative),
+                    file_path,
+                ),
+            )
 
-        # Log the metadata values being written
-        ci_series = str(comicinfo_dict.get("Series", "") or "")
-        ci_number = str(comicinfo_dict.get("Number", "") or "")
-        ci_title = str(comicinfo_dict.get("Title", "") or "")
-        ci_count = str(comicinfo_dict.get("Count", "") or "")
-        ci_volume = str(comicinfo_dict.get("Volume", "") or "")
-        ci_year = str(comicinfo_dict.get("Year", "") or "")
-        # Credit/character/genre lists are provider-ID-stripped on the way in.
-        ci_writer = normalize_credit_list(comicinfo_dict.get("Writer", ""))
-        ci_penciller = normalize_credit_list(comicinfo_dict.get("Penciller", ""))
-        ci_inker = normalize_credit_list(comicinfo_dict.get("Inker", ""))
-        ci_colorist = normalize_credit_list(comicinfo_dict.get("Colorist", ""))
-        ci_letterer = normalize_credit_list(comicinfo_dict.get("Letterer", ""))
-        ci_coverartist = normalize_credit_list(comicinfo_dict.get("CoverArtist", ""))
-        ci_publisher = strip_provider_ids(comicinfo_dict.get("Publisher", ""))
-        ci_genre = normalize_credit_list(comicinfo_dict.get("Genre", ""))
-        ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
-        scanned_at = time.time()
+            _sync_tags_for_file(conn, file_path, {
+                "ci_writer": ci_writer,
+                "ci_penciller": ci_penciller,
+                "ci_inker": ci_inker,
+                "ci_colorist": ci_colorist,
+                "ci_letterer": ci_letterer,
+                "ci_coverartist": ci_coverartist,
+                "ci_characters": ci_characters,
+                "ci_genre": ci_genre,
+            })
 
-        # Every caller reaches here immediately after rewriting the archive, and
-        # writing ComicInfo rebuilds the whole file (open_zip_for_write assembles
-        # a new archive and moves it into place), so the on-disk mtime has just
-        # jumped to now. Nothing else recorded that: the file_watcher misses
-        # events on the data mount and a directory sync may be days away, which
-        # left modified_at holding the file's *pre-tagging* mtime. A back issue
-        # re-tagged today then looked months old to everything keying on
-        # recency -- the credit backfill's window (core/credit_backfill.py) and
-        # the scanner's metadata_scanned_at < modified_at rescan trigger both
-        # read it. Callers pass the path as stored in file_index; when that
-        # can't be stat'ed, COALESCE below leaves the column as it was rather
-        # than guessing.
-        try:
-            file_mtime = os.path.getmtime(file_path)
-        except (OSError, ValueError):
-            file_mtime = None
-
-        app_logger.info(
-            f"update_file_index_from_comicinfo: series={ci_series}, "
-            f"number={ci_number}, title={ci_title}, year={ci_year}, "
-            f"publisher={ci_publisher}, writer={ci_writer}"
-        )
-
-        c.execute(
-            """
-            UPDATE file_index
-            SET name = ?,
-                ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
-                ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
-                ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
-                ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                has_comicinfo = 1, metadata_scanned_at = ?,
-                modified_at = COALESCE(?, modified_at),
-                ci_metronid = COALESCE(?, ci_metronid),
-                ci_provider = COALESCE(?, ci_provider),
-                ci_cvid = COALESCE(?, ci_cvid)
-            WHERE path = ?
-            """,
-            (
-                name,
-                ci_title, ci_series, ci_number, ci_count,
-                ci_volume, ci_year, ci_writer, ci_penciller,
-                ci_inker, ci_colorist, ci_letterer, ci_coverartist,
-                ci_publisher, ci_genre, ci_characters,
-                scanned_at,
-                file_mtime,
-                # COALESCE, not a plain write: a ComicVine re-tag of a
-                # Metron-tagged file supplies no MetronId, but merge_comicinfo_bytes
-                # carries the existing <MetronId> forward into the archive. Writing
-                # 0 here would contradict the file. Left NULL, the scanner picks it
-                # up and reads the truth out of the XML.
-                _as_metron_id(comicinfo_dict.get("MetronId")) or (0 if authoritative else None),
-                # Same COALESCE reasoning: no Notes in the dict means we do not
-                # know, so leave the column for the scanner to read from the XML.
-                _provider_for_index(comicinfo_dict.get("Notes")),
-                # Same COALESCE reasoning as ci_metronid: a merge may carry an
-                # existing CV id forward that this dict does not name.
-                _cvid_for_index(comicinfo_dict, authoritative),
-                file_path,
-            ),
-        )
-
-        _sync_tags_for_file(conn, file_path, {
-            "ci_writer": ci_writer,
-            "ci_penciller": ci_penciller,
-            "ci_inker": ci_inker,
-            "ci_colorist": ci_colorist,
-            "ci_letterer": ci_letterer,
-            "ci_coverartist": ci_coverartist,
-            "ci_characters": ci_characters,
-            "ci_genre": ci_genre,
-        })
-
-        conn.commit()
-        affected = c.rowcount
-        conn.close()
+            conn.commit()
+            affected = c.rowcount
         invalidate_metadata_browser_cache()
 
         if affected > 0:
@@ -6217,21 +6221,21 @@ def save_browse_cache(path, result):
 
     for attempt in range(max_retries):
         try:
-            conn = get_db_connection()
-            if not conn:
-                return False
+            # db_conn(): a failed write must not keep the WAL write lock (#723).
+            with db_conn() as conn:
+                if not conn:
+                    return False
 
-            c = conn.cursor()
-            c.execute(
-                """
-                INSERT OR REPLACE INTO browse_cache (path, result, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-                (path, json.dumps(result)),
-            )
+                c = conn.cursor()
+                c.execute(
+                    """
+                    INSERT OR REPLACE INTO browse_cache (path, result, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                    (path, json.dumps(result)),
+                )
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
             app_logger.debug(f"Saved browse cache for: {path}")
             return True
@@ -6262,27 +6266,29 @@ def invalidate_browse_cache(path):
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Delete the specific path
-        c.execute("DELETE FROM browse_cache WHERE path = ?", (path,))
+            # Delete the specific path
+            c.execute("DELETE FROM browse_cache WHERE path = ?", (path,))
 
-        # Also delete parent path (so parent sees new subdirectory)
-        parent = os.path.dirname(path)
-        if parent:
-            c.execute("DELETE FROM browse_cache WHERE path = ?", (parent,))
+            # Also delete parent path (so parent sees new subdirectory)
+            parent = os.path.dirname(path)
+            if parent:
+                c.execute("DELETE FROM browse_cache WHERE path = ?", (parent,))
 
-        # Delete any child paths
-        c.execute("DELETE FROM browse_cache WHERE path LIKE ?", (f"{path}/%",))
+            # Delete any child paths
+            c.execute("DELETE FROM browse_cache WHERE path LIKE ?", (f"{path}/%",))
 
-        conn.commit()
-        rows_affected = c.rowcount
-        conn.close()
+            conn.commit()
+            rows_affected = c.rowcount
 
         if rows_affected > 0:
             app_logger.debug(
@@ -10587,23 +10593,25 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        uid = _resolve_user_id(user_id)
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT OR REPLACE INTO reading_positions (user_id, comic_path, page_number, total_pages, updated_at, time_spent)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
-        """,
-            (uid, comic_path, page_number, total_pages, time_spent),
-        )
+            uid = _resolve_user_id(user_id)
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT OR REPLACE INTO reading_positions (user_id, comic_path, page_number, total_pages, updated_at, time_spent)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            """,
+                (uid, comic_path, page_number, total_pages, time_spent),
+            )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         app_logger.debug(f"Saved reading position: {comic_path} at page {page_number}")
         return True
