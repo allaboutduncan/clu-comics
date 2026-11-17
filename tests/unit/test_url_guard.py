@@ -403,6 +403,112 @@ class TestGuardSession:
 
 
 # ---------------------------------------------------------------------------
+# download_headers: the user's custom_headers, read per download
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def settings_db(tmp_path):
+    """A real settings store, written the way the settings page writes it."""
+    from unittest.mock import patch
+
+    import core.settings as cs
+    db_path = str(tmp_path / "headers.db")
+    with patch("core.database.get_db_path", return_value=db_path):
+        from core.database import init_db
+        init_db()
+        cs.invalidate()
+        yield cs
+        cs.invalidate()
+
+
+class TestDownloadHeaders:
+    def test_unset_is_basic_only(self, settings_db):
+        assert url_guard.download_headers(BASIC) == BASIC
+
+    def test_does_not_mutate_basic(self, settings_db):
+        settings_db.set_setting("HEADERS", '{"X-Token": "a"}')
+        basic = dict(BASIC)
+        url_guard.download_headers(basic)
+        assert basic == BASIC
+
+    def test_an_edit_reaches_the_next_download_without_reimport(self, settings_db):
+        settings_db.set_setting("HEADERS", '{"CF-Access-Client-Id": "id-1"}')
+        assert url_guard.download_headers(BASIC)["CF-Access-Client-Id"] == "id-1"
+        settings_db.set_setting("HEADERS", '{"CF-Access-Client-Id": "id-2"}')
+        assert url_guard.download_headers(BASIC)["CF-Access-Client-Id"] == "id-2"
+
+    def test_removing_a_header_removes_it(self, settings_db):
+        settings_db.set_setting("HEADERS", '{"X-Keep": "k", "X-Drop": "d"}')
+        assert "X-Drop" in url_guard.download_headers(BASIC)
+        settings_db.set_setting("HEADERS", '{"X-Keep": "k"}')
+        out = url_guard.download_headers(BASIC)
+        assert "X-Drop" not in out and out["X-Keep"] == "k"
+        settings_db.set_setting("HEADERS", "")
+        assert url_guard.download_headers(BASIC) == BASIC
+
+    def test_values_are_stripped(self, settings_db):
+        settings_db.set_setting("HEADERS", '{" X-Token ": " t "}')
+        assert url_guard.download_headers(BASIC)["X-Token"] == "t"
+
+    def test_a_custom_user_agent_overrides_basic(self, settings_db):
+        settings_db.set_setting("HEADERS", '{"User-Agent": "custom-ua"}')
+        assert url_guard.download_headers(BASIC) == {"User-Agent": "custom-ua"}
+
+    @pytest.mark.parametrize("raw", ["not json", "[1, 2]", '"a string"', '{"X": 1}'])
+    def test_bad_values_are_ignored(self, settings_db, raw):
+        settings_db.set_setting("HEADERS", raw)
+        assert url_guard.download_headers(BASIC) == BASIC
+
+    def test_a_bad_value_warns_once_not_per_download(self, settings_db, monkeypatch):
+        import logging
+        warnings = []
+        monkeypatch.setattr(logging.getLogger("monitor_logger"), "warning",
+                            lambda msg, *a, **k: warnings.append(msg))
+        monkeypatch.setattr(url_guard, "_last_rejected_custom_headers", None)
+        settings_db.set_setting("HEADERS", "{broken")
+        for _ in range(5):
+            url_guard.download_headers(BASIC)
+        assert len(warnings) == 1
+        settings_db.set_setting("HEADERS", "[]")
+        url_guard.download_headers(BASIC)
+        assert len(warnings) == 2
+
+    def test_a_failed_settings_read_sends_basic_only(self, monkeypatch):
+        import core.settings as settings
+
+        def boom(*_a, **_kw):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(settings, "get_setting", boom)
+        assert url_guard.download_headers(BASIC) == BASIC
+
+    def test_edits_and_removals_reach_the_wire_with_scoping_intact(self, settings_db, dns):
+        """Two downloads either side of a settings edit, through guard_session."""
+        dns["pixeldrain.com"] = [PUBLIC_V4]
+        dns["evil.example"] = [PUBLIC_V4]
+        routes = {"https://pixeldrain.com/x": (200, {}), "https://evil.example/x": (200, {})}
+
+        settings_db.set_setting("HEADERS", '{"X-Keep": "k", "X-Drop": "d"}')
+        first = url_guard.download_headers(BASIC)
+        s1, a1 = _session(routes, first, BASIC)
+        s1.get("https://pixeldrain.com/x")
+        s1.get("https://evil.example/x")
+        assert a1.seen[0][1]["X-Drop"] == "d"
+        # #744 scoping: custom headers never reach an unknown host.
+        assert "X-Keep" not in a1.seen[1][1] and "X-Drop" not in a1.seen[1][1]
+
+        settings_db.set_setting("HEADERS", '{"X-Keep": "k2"}')
+        second = url_guard.download_headers(BASIC)
+        s2, a2 = _session(routes, second, BASIC)
+        s2.get("https://pixeldrain.com/x")
+        s2.get("https://evil.example/x")
+        assert a2.seen[0][1]["X-Keep"] == "k2"
+        assert "X-Drop" not in a2.seen[0][1]
+        assert "X-Keep" not in a2.seen[1][1]
+        assert url_guard.scope_headers(second, "https://evil.example/x", BASIC) == BASIC
+
+
+# ---------------------------------------------------------------------------
 # api.py call sites (api.py cannot be imported in tests)
 # ---------------------------------------------------------------------------
 
@@ -463,3 +569,43 @@ class TestApiWiring:
     @pytest.mark.parametrize("name", ["download_getcomics", "_requests_session"])
     def test_download_sessions_are_guarded(self, name):
         assert _guard_calls(_function(name), "guard_session")
+
+
+class TestApiReadsCustomHeadersPerDownload:
+    """custom_headers used to be read once at import, before init_db()."""
+
+    def test_no_module_level_header_state(self):
+        for node in _api_tree().body:
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.If, ast.Try, ast.Expr)):
+                src = ast.unparse(node)
+                assert "custom_headers" not in src, src
+                assert "HEADERS" not in src, src
+            if isinstance(node, ast.Assign):
+                names = {t.id for t in node.targets if isinstance(t, ast.Name)}
+                assert not names & {"headers", "default_headers", "custom_headers_str"}
+
+    def test_full_headers_reads_through_url_guard(self):
+        src = ast.unparse(_function("_full_headers"))
+        assert "url_guard.download_headers(basic_headers)" in src
+
+    def test_process_download_reads_them_per_task(self):
+        src = ast.unparse(_function("process_download"))
+        assert "use_headers = basic_headers if internal else _full_headers()" in src
+
+    @pytest.mark.parametrize("name", [
+        "resolve_final_url", "download_getcomics", "download_pixeldrain",
+        "download_comicbookplus",
+    ])
+    def test_fallbacks_read_now(self, name):
+        fn = _function(name)
+        for default in fn.args.defaults + fn.args.kw_defaults:
+            if default is not None:
+                assert ast.unparse(default) != "headers"
+        assert "hdrs = _full_headers()" in ast.unparse(fn)
+
+    @pytest.mark.parametrize("name", ["download_getcomics", "_requests_session"])
+    def test_sessions_are_guarded_for_this_downloads_headers(self, name):
+        calls = _guard_calls(_function(name), "guard_session")
+        assert calls
+        for call in calls:
+            assert [ast.unparse(a) for a in call.args[1:]] == ["hdrs", "basic_headers"]
