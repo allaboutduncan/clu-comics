@@ -275,6 +275,16 @@ destination instead of nesting into it as `shutil.move` did. Tests:
   disk-full or NAS drop mid-copy lost it. A failed copy removes the sibling; a
   crash leftover is hidden (never indexed or moved) and reaped by the next
   cross-device move into that folder once a day old (`STALE_INCOMING_SECONDS`).
+  **The reaper takes only `move_file`'s own shape** (`_MOVE_FILE_STAGED`: `.` +
+  32 lowercase hex + `.clu_incoming`, fullmatch) and only regular files. The
+  fixed-name siblings of `core.problem_replacements` (`.<name>.clu_incoming`,
+  held across the trash step) and `core.comicvine_db_update` share the suffix
+  and must never be reaped; those modules clear their own. A `move_tree` stage
+  is a directory, so it is skipped too. **Age is `max(st_mtime, st_ctime)`**,
+  never mtime alone: `copystat` stamps the source's old mtime on a sibling
+  created a moment ago, so by mtime a live copy reads as a day stale. ctime is
+  recent for a just-staged file on both POSIX (inode change, which copystat
+  bumps) and Windows (creation time).
   The fallback refuses when `src` and `dst` are the same file (a case-only
   rename): the copy would land on it and `os.remove(src)` delete it.
   Tests: `tests/unit/test_move_file_atomic_overwrite.py`.

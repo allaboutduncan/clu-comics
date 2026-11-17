@@ -177,24 +177,92 @@ class TestSuccessfulCrossDeviceOverwrite:
 
 
 class TestCrashLeftovers:
-    def test_stale_sibling_is_reaped_and_a_live_one_kept(self, volumes):
-        staging, library = volumes
-        stale = library / (".%s.clu_incoming" % ("a" * 32))
-        live = library / (".%s.clu_incoming" % ("b" * 32))
-        other_hidden = library / ".keepme"
-        for p in (stale, live, other_hidden):
-            p.write_bytes(b"x")
+    """The reaper deletes only move_file's own leftovers, and only old ones.
+
+    "Old" is the newer of mtime and ctime: move_file copystat's its sibling
+    before the final os.replace, so a copy staged a moment ago carries the
+    source's (often months-old) mtime. ctime cannot be set from a test, so an
+    old leftover is made by moving the reaper's clock forward instead.
+    """
+
+    @staticmethod
+    def _shaped(folder, ch):
+        return folder / (".%s%s" % (ch * 32, helpers.INCOMING_SUFFIX))
+
+    @staticmethod
+    def _age_mtime(path):
         old = time.time() - helpers.STALE_INCOMING_SECONDS - 60
-        os.utime(str(stale), (old, old))
-        os.utime(str(other_hidden), (old, old))
+        os.utime(str(path), (old, old))
+
+    @staticmethod
+    def _clock_ahead(monkeypatch):
+        later = time.time() + helpers.STALE_INCOMING_SECONDS + 60
+        monkeypatch.setattr(helpers.time, "time", lambda: later)
+
+    def test_an_old_leftover_is_reaped(self, volumes, monkeypatch):
+        _, library = volumes
+        stale = self._shaped(library, "a")
+        stale.write_bytes(b"x")
+        self._age_mtime(stale)
+        self._clock_ahead(monkeypatch)
+
+        helpers._reap_stale_incoming(str(library))
+
+        assert not stale.exists()
+
+    def test_a_fresh_sibling_with_an_old_mtime_survives(self, volumes):
+        """Exactly what move_file leaves between copystat and os.replace."""
+        _, library = volumes
+        live = self._shaped(library, "b")
+        live.write_bytes(b"x")
+        self._age_mtime(live)
+
+        helpers._reap_stale_incoming(str(library))
+
+        assert live.exists(), "a copy staged a moment ago must not be reaped"
+
+    def test_a_cross_device_move_reaps_without_touching_live_copies(self, volumes):
+        staging, library = volumes
+        live = self._shaped(library, "c")
+        other_hidden = library / ".keepme"
+        for p in (live, other_hidden):
+            p.write_bytes(b"x")
+            self._age_mtime(p)
 
         src = staging / "new.cbz"
         src.write_bytes(b"new")
         helpers.move_file(str(src), str(library / "Series 001 (2020).cbz"))
 
-        assert not stale.exists()
-        assert live.exists(), "a sibling another writer may still be filling is kept"
+        assert live.exists()
         assert other_hidden.exists(), "only .clu_incoming files are reaped"
+
+    def test_a_problem_replacement_stage_is_never_reaped(self, volumes, monkeypatch):
+        """core.problem_replacements stages ``.<name>.clu_incoming`` with the
+        download's own mtime and holds it across the trash step."""
+        _, library = volumes
+        staged = library / ".Series 001 (2020).cbz.clu_incoming"
+        upper = library / (".%s%s" % ("A" * 32, helpers.INCOMING_SUFFIX))
+        for p in (staged, upper):
+            p.write_bytes(b"replacement")
+            self._age_mtime(p)
+        self._clock_ahead(monkeypatch)
+
+        helpers._reap_stale_incoming(str(library))
+
+        assert staged.exists()
+        assert upper.exists(), "only the exact uuid4-hex shape move_file writes"
+
+    def test_a_move_tree_stage_directory_is_never_reaped(self, volumes, monkeypatch):
+        _, library = volumes
+        stage = self._shaped(library, "d")
+        stage.mkdir()
+        (stage / "Series 001 (2020).cbz").write_bytes(b"being copied")
+        self._age_mtime(stage)
+        self._clock_ahead(monkeypatch)
+
+        helpers._reap_stale_incoming(str(library))
+
+        assert (stage / "Series 001 (2020).cbz").exists()
 
 
 class TestSameFileGuard:
