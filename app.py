@@ -5491,22 +5491,10 @@ def find_folder_thumbnails_batch(folder_paths):
 # ---------------------------------------------------------------------------
 # RAR full-archive extraction cache
 # ---------------------------------------------------------------------------
-_rar_extract_cache = {}   # {rar_path: {"dir": str, "time": float}}
-_RAR_CACHE_MAX = 3
-
-
-def _cleanup_rar_cache():
-    """Remove all cached RAR extraction temp directories."""
-    for entry in _rar_extract_cache.values():
-        try:
-            shutil.rmtree(entry["dir"], ignore_errors=True)
-        except Exception:
-            pass
-    _rar_extract_cache.clear()
-
-
-import atexit
-atexit.register(_cleanup_rar_cache)
+# Single-flight per archive, reference-counted eviction: see
+# core/rar_extract_cache.py. The extractor is defined below.
+from core.rar_extract_cache import RarExtractCache  # noqa: E402
+import atexit  # noqa: E402
 
 
 def _find_extracted_file(directory, filename):
@@ -5558,36 +5546,23 @@ def _try_full_extraction(tool_cmd, rar_path, tmp_dir):
     return False
 
 
-def _get_full_rar_extraction(rar_path):
-    """Return a directory containing the fully-extracted RAR, using a cache.
+def _extract_full_rar_into(rar_path, dest_dir):
+    """Extract the whole RAR into *dest_dir* (an empty folder the cache owns).
 
-    Tries unrar first (proprietary, best solid-archive support), then 7z, then unar.
-    Returns the directory path on success or None on total failure.
+    Tries unrar first (proprietary, best solid-archive support), then 7z, then
+    unar. Each attempt gets its own sub-folder, created and (on failure)
+    removed here, so a discarded attempt never mixes with the next one.
+    Returns True when an attempt produced files.
     """
-    rar_path = os.path.realpath(rar_path)
-
-    # Return cached extraction if available
-    if rar_path in _rar_extract_cache:
-        cached = _rar_extract_cache[rar_path]
-        if os.path.isdir(cached["dir"]):
-            return cached["dir"]
-        del _rar_extract_cache[rar_path]
-
-    # Evict oldest entry if at capacity
-    if len(_rar_extract_cache) >= _RAR_CACHE_MAX:
-        oldest_key = min(_rar_extract_cache, key=lambda k: _rar_extract_cache[k]["time"])
-        old = _rar_extract_cache.pop(oldest_key)
-        shutil.rmtree(old["dir"], ignore_errors=True)
-
-    # Try each tool in order: unrar (proprietary) → 7z → unar
     tools = [
         ["unrar", "x", "-y", "-o+", rar_path],       # unrar x -y -o+ archive.rar tmp_dir/
         ["7z", "x", f"-y", rar_path],                  # 7z x -y archive.rar -o{tmp_dir}
         ["unar", "-f", "-o", None, rar_path],           # unar -f -o tmp_dir archive.rar
     ]
 
-    for tool_cmd in tools:
-        tmp_dir = tempfile.mkdtemp(prefix="clu_rar_")
+    for attempt, tool_cmd in enumerate(tools):
+        tmp_dir = os.path.join(dest_dir, f"attempt{attempt}")
+        os.mkdir(tmp_dir)
         # Fix up output dir argument per tool
         tool_name = tool_cmd[0]
         if tool_name == "unrar":
@@ -5599,12 +5574,15 @@ def _get_full_rar_extraction(rar_path):
             cmd[3] = tmp_dir  # replace None placeholder
 
         if _try_full_extraction(cmd, rar_path, tmp_dir):
-            _rar_extract_cache[rar_path] = {"dir": tmp_dir, "time": time.time()}
-            return tmp_dir
+            return True
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     app_logger.error(f"All full extraction tools failed for {rar_path}")
-    return None
+    return False
+
+
+_rar_cache = RarExtractCache(_extract_full_rar_into, max_entries=3)
+atexit.register(_rar_cache.shutdown)
 
 
 def _extract_single_rar_entry(rar_path, entry_name):
@@ -5662,9 +5640,10 @@ def _extract_single_rar_entry(rar_path, entry_name):
     app_logger.info(
         f"Single-entry extraction failed for {entry_name}, trying full archive extraction"
     )
-    cache_dir = _get_full_rar_extraction(rar_path)
-    if cache_dir:
-        found = _find_extracted_file(cache_dir, safe_name)
+    # The folder stays in place for the whole block: the cache holds a
+    # reference until it exits, so eviction cannot remove it mid-read.
+    with _rar_cache.acquire(rar_path) as cache_dir:
+        found = _find_extracted_file(cache_dir, safe_name) if cache_dir else None
         if found:
             try:
                 with open(found, "rb") as f:
