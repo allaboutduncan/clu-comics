@@ -128,7 +128,9 @@ class TestApplyRoute:
 
     def test_valid_items_applied(self, client):
         fake = {"applied": 1, "failed": []}
-        with patch("models.library_automap.apply_and_sync", return_value=fake) as apply:
+        # Every folder must be inside a library (routes.series apply route).
+        with patch("models.library_automap.apply_and_sync", return_value=fake) as apply, \
+                patch("helpers.library.get_library_roots", return_value=["/data"]):
             resp = client.post(
                 "/api/pull-list/apply",
                 json={"items": [{"folder": "/data/Batman", "metron_id": 555}]},

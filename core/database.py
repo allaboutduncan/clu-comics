@@ -3386,7 +3386,7 @@ def get_recent_files(limit=100):
 RECENT_FILES_WINDOW_DAYS = 30
 
 
-def get_recent_files_paginated(offset=0, limit=50):
+def get_recent_files_paginated(offset=0, limit=50, allowed_prefixes=None):
     """
     Paginated sibling of get_recent_files — returns (rows, total).
 
@@ -3394,13 +3394,21 @@ def get_recent_files_paginated(offset=0, limit=50):
     days (currently 30). Same library/downloads filter as the unpaginated
     helper. SELECTs `id` too so the API can return file_index.id for
     client drill-through.
+
+    allowed_prefixes applies per-user folder scope, as in metadata_browse
+    (None = unrestricted, [] = nothing).
     """
+    if allowed_prefixes is not None and not allowed_prefixes:
+        return [], 0
     try:
         import time
 
         conn = get_db_connection()
         if not conn:
             return [], 0
+
+        prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+        scope_sql = f" AND {prefix_clause}" if prefix_clause else ""
 
         cutoff = time.time() - (RECENT_FILES_WINDOW_DAYS * 86400)
         c = conn.cursor()
@@ -3416,8 +3424,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 f"AND ({lib_clauses})"
+                f"{scope_sql}"
             )
-            params = [cutoff] + lib_params
+            params = [cutoff] + lib_params + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
@@ -3441,8 +3450,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 "AND parent NOT LIKE ? AND parent NOT LIKE ?"
+                f"{scope_sql}"
             )
-            params = [cutoff, f"{target}%", f"{watch}%"]
+            params = [cutoff, f"{target}%", f"{watch}%"] + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
@@ -4689,64 +4699,66 @@ def update_file_metadata(file_id, metadata_dict, scanned_at, has_comicinfo=None)
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        # Strip "[3258]"-style provider IDs from credit columns before they
-        # reach either file_index or file_metadata_tags.
-        metadata_dict = _normalize_ci_metadata(metadata_dict)
+            # Strip "[3258]"-style provider IDs from credit columns before they
+            # reach either file_index or file_metadata_tags.
+            metadata_dict = _normalize_ci_metadata(metadata_dict)
 
-        c = conn.cursor()
-        c.execute(
-            """
-            UPDATE file_index
-            SET ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
-                ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
-                ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
-                ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                ci_metronid = ?, ci_provider = ?, ci_cvid = ?,
-                metadata_scanned_at = ?, has_comicinfo = ?
-            WHERE id = ?
-        """,
-            (
-                metadata_dict.get("ci_title", ""),
-                metadata_dict.get("ci_series", ""),
-                metadata_dict.get("ci_number", ""),
-                metadata_dict.get("ci_count", ""),
-                metadata_dict.get("ci_volume", ""),
-                metadata_dict.get("ci_year", ""),
-                metadata_dict.get("ci_writer", ""),
-                metadata_dict.get("ci_penciller", ""),
-                metadata_dict.get("ci_inker", ""),
-                metadata_dict.get("ci_colorist", ""),
-                metadata_dict.get("ci_letterer", ""),
-                metadata_dict.get("ci_coverartist", ""),
-                metadata_dict.get("ci_publisher", ""),
-                metadata_dict.get("ci_genre", ""),
-                metadata_dict.get("ci_characters", ""),
-                # This path has just read the XML, so it is the authority: 0
-                # records "read it, no MetronId there" and keeps the file out of
-                # the backfill queue.
-                _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
-                # '' = read, no recognisable provider (see the migration).
-                metadata_dict.get("ci_provider") or "",
-                _as_metron_id(metadata_dict.get("ci_cvid")) or 0,
-                scanned_at,
-                has_comicinfo if has_comicinfo is not None else 0,
-                file_id,
-            ),
-        )
+            c = conn.cursor()
+            c.execute(
+                """
+                UPDATE file_index
+                SET ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
+                    ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
+                    ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
+                    ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                    ci_metronid = ?, ci_provider = ?, ci_cvid = ?,
+                    metadata_scanned_at = ?, has_comicinfo = ?
+                WHERE id = ?
+            """,
+                (
+                    metadata_dict.get("ci_title", ""),
+                    metadata_dict.get("ci_series", ""),
+                    metadata_dict.get("ci_number", ""),
+                    metadata_dict.get("ci_count", ""),
+                    metadata_dict.get("ci_volume", ""),
+                    metadata_dict.get("ci_year", ""),
+                    metadata_dict.get("ci_writer", ""),
+                    metadata_dict.get("ci_penciller", ""),
+                    metadata_dict.get("ci_inker", ""),
+                    metadata_dict.get("ci_colorist", ""),
+                    metadata_dict.get("ci_letterer", ""),
+                    metadata_dict.get("ci_coverartist", ""),
+                    metadata_dict.get("ci_publisher", ""),
+                    metadata_dict.get("ci_genre", ""),
+                    metadata_dict.get("ci_characters", ""),
+                    # This path has just read the XML, so it is the authority: 0
+                    # records "read it, no MetronId there" and keeps the file out of
+                    # the backfill queue.
+                    _as_metron_id(metadata_dict.get("ci_metronid")) or 0,
+                    # '' = read, no recognisable provider (see the migration).
+                    metadata_dict.get("ci_provider") or "",
+                    _as_metron_id(metadata_dict.get("ci_cvid")) or 0,
+                    scanned_at,
+                    has_comicinfo if has_comicinfo is not None else 0,
+                    file_id,
+                ),
+            )
 
-        # Refresh the normalised tag rows for the metadata browser.
-        c.execute("SELECT path FROM file_index WHERE id = ?", (file_id,))
-        row = c.fetchone()
-        if row and row[0]:
-            _sync_tags_for_file(conn, row[0], metadata_dict)
+            # Refresh the normalised tag rows for the metadata browser.
+            c.execute("SELECT path FROM file_index WHERE id = ?", (file_id,))
+            row = c.fetchone()
+            if row and row[0]:
+                _sync_tags_for_file(conn, row[0], metadata_dict)
 
-        conn.commit()
-        conn.close()
+            conn.commit()
         invalidate_metadata_browser_cache()
         return True
 
@@ -5129,111 +5141,113 @@ def update_file_index_from_comicinfo(file_path, comicinfo_dict, authoritative=Fa
         f"update_file_index_from_comicinfo: updating '{name}' (path={file_path})"
     )
 
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            app_logger.warning(
-                "update_file_index_from_comicinfo: no DB connection"
+        with db_conn() as conn:
+            if not conn:
+                app_logger.warning(
+                    "update_file_index_from_comicinfo: no DB connection"
+                )
+                return False
+
+            c = conn.cursor()
+
+            # Log the metadata values being written
+            ci_series = str(comicinfo_dict.get("Series", "") or "")
+            ci_number = str(comicinfo_dict.get("Number", "") or "")
+            ci_title = str(comicinfo_dict.get("Title", "") or "")
+            ci_count = str(comicinfo_dict.get("Count", "") or "")
+            ci_volume = str(comicinfo_dict.get("Volume", "") or "")
+            ci_year = str(comicinfo_dict.get("Year", "") or "")
+            # Credit/character/genre lists are provider-ID-stripped on the way in.
+            ci_writer = normalize_credit_list(comicinfo_dict.get("Writer", ""))
+            ci_penciller = normalize_credit_list(comicinfo_dict.get("Penciller", ""))
+            ci_inker = normalize_credit_list(comicinfo_dict.get("Inker", ""))
+            ci_colorist = normalize_credit_list(comicinfo_dict.get("Colorist", ""))
+            ci_letterer = normalize_credit_list(comicinfo_dict.get("Letterer", ""))
+            ci_coverartist = normalize_credit_list(comicinfo_dict.get("CoverArtist", ""))
+            ci_publisher = strip_provider_ids(comicinfo_dict.get("Publisher", ""))
+            ci_genre = normalize_credit_list(comicinfo_dict.get("Genre", ""))
+            ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
+            scanned_at = time.time()
+
+            # Every caller reaches here immediately after rewriting the archive, and
+            # writing ComicInfo rebuilds the whole file (open_zip_for_write assembles
+            # a new archive and moves it into place), so the on-disk mtime has just
+            # jumped to now. Nothing else recorded that: the file_watcher misses
+            # events on the data mount and a directory sync may be days away, which
+            # left modified_at holding the file's *pre-tagging* mtime. A back issue
+            # re-tagged today then looked months old to everything keying on
+            # recency -- the credit backfill's window (core/credit_backfill.py) and
+            # the scanner's metadata_scanned_at < modified_at rescan trigger both
+            # read it. Callers pass the path as stored in file_index; when that
+            # can't be stat'ed, COALESCE below leaves the column as it was rather
+            # than guessing.
+            try:
+                file_mtime = os.path.getmtime(file_path)
+            except (OSError, ValueError):
+                file_mtime = None
+
+            app_logger.info(
+                f"update_file_index_from_comicinfo: series={ci_series}, "
+                f"number={ci_number}, title={ci_title}, year={ci_year}, "
+                f"publisher={ci_publisher}, writer={ci_writer}"
             )
-            return False
 
-        c = conn.cursor()
+            c.execute(
+                """
+                UPDATE file_index
+                SET name = ?,
+                    ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
+                    ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
+                    ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
+                    ci_publisher = ?, ci_genre = ?, ci_characters = ?,
+                    has_comicinfo = 1, metadata_scanned_at = ?,
+                    modified_at = COALESCE(?, modified_at),
+                    ci_metronid = COALESCE(?, ci_metronid),
+                    ci_provider = COALESCE(?, ci_provider),
+                    ci_cvid = COALESCE(?, ci_cvid)
+                WHERE path = ?
+                """,
+                (
+                    name,
+                    ci_title, ci_series, ci_number, ci_count,
+                    ci_volume, ci_year, ci_writer, ci_penciller,
+                    ci_inker, ci_colorist, ci_letterer, ci_coverartist,
+                    ci_publisher, ci_genre, ci_characters,
+                    scanned_at,
+                    file_mtime,
+                    # COALESCE, not a plain write: a ComicVine re-tag of a
+                    # Metron-tagged file supplies no MetronId, but merge_comicinfo_bytes
+                    # carries the existing <MetronId> forward into the archive. Writing
+                    # 0 here would contradict the file. Left NULL, the scanner picks it
+                    # up and reads the truth out of the XML.
+                    _as_metron_id(comicinfo_dict.get("MetronId")) or (0 if authoritative else None),
+                    # Same COALESCE reasoning: no Notes in the dict means we do not
+                    # know, so leave the column for the scanner to read from the XML.
+                    _provider_for_index(comicinfo_dict.get("Notes")),
+                    # Same COALESCE reasoning as ci_metronid: a merge may carry an
+                    # existing CV id forward that this dict does not name.
+                    _cvid_for_index(comicinfo_dict, authoritative),
+                    file_path,
+                ),
+            )
 
-        # Log the metadata values being written
-        ci_series = str(comicinfo_dict.get("Series", "") or "")
-        ci_number = str(comicinfo_dict.get("Number", "") or "")
-        ci_title = str(comicinfo_dict.get("Title", "") or "")
-        ci_count = str(comicinfo_dict.get("Count", "") or "")
-        ci_volume = str(comicinfo_dict.get("Volume", "") or "")
-        ci_year = str(comicinfo_dict.get("Year", "") or "")
-        # Credit/character/genre lists are provider-ID-stripped on the way in.
-        ci_writer = normalize_credit_list(comicinfo_dict.get("Writer", ""))
-        ci_penciller = normalize_credit_list(comicinfo_dict.get("Penciller", ""))
-        ci_inker = normalize_credit_list(comicinfo_dict.get("Inker", ""))
-        ci_colorist = normalize_credit_list(comicinfo_dict.get("Colorist", ""))
-        ci_letterer = normalize_credit_list(comicinfo_dict.get("Letterer", ""))
-        ci_coverartist = normalize_credit_list(comicinfo_dict.get("CoverArtist", ""))
-        ci_publisher = strip_provider_ids(comicinfo_dict.get("Publisher", ""))
-        ci_genre = normalize_credit_list(comicinfo_dict.get("Genre", ""))
-        ci_characters = normalize_credit_list(comicinfo_dict.get("Characters", ""))
-        scanned_at = time.time()
+            _sync_tags_for_file(conn, file_path, {
+                "ci_writer": ci_writer,
+                "ci_penciller": ci_penciller,
+                "ci_inker": ci_inker,
+                "ci_colorist": ci_colorist,
+                "ci_letterer": ci_letterer,
+                "ci_coverartist": ci_coverartist,
+                "ci_characters": ci_characters,
+                "ci_genre": ci_genre,
+            })
 
-        # Every caller reaches here immediately after rewriting the archive, and
-        # writing ComicInfo rebuilds the whole file (open_zip_for_write assembles
-        # a new archive and moves it into place), so the on-disk mtime has just
-        # jumped to now. Nothing else recorded that: the file_watcher misses
-        # events on the data mount and a directory sync may be days away, which
-        # left modified_at holding the file's *pre-tagging* mtime. A back issue
-        # re-tagged today then looked months old to everything keying on
-        # recency -- the credit backfill's window (core/credit_backfill.py) and
-        # the scanner's metadata_scanned_at < modified_at rescan trigger both
-        # read it. Callers pass the path as stored in file_index; when that
-        # can't be stat'ed, COALESCE below leaves the column as it was rather
-        # than guessing.
-        try:
-            file_mtime = os.path.getmtime(file_path)
-        except (OSError, ValueError):
-            file_mtime = None
-
-        app_logger.info(
-            f"update_file_index_from_comicinfo: series={ci_series}, "
-            f"number={ci_number}, title={ci_title}, year={ci_year}, "
-            f"publisher={ci_publisher}, writer={ci_writer}"
-        )
-
-        c.execute(
-            """
-            UPDATE file_index
-            SET name = ?,
-                ci_title = ?, ci_series = ?, ci_number = ?, ci_count = ?,
-                ci_volume = ?, ci_year = ?, ci_writer = ?, ci_penciller = ?,
-                ci_inker = ?, ci_colorist = ?, ci_letterer = ?, ci_coverartist = ?,
-                ci_publisher = ?, ci_genre = ?, ci_characters = ?,
-                has_comicinfo = 1, metadata_scanned_at = ?,
-                modified_at = COALESCE(?, modified_at),
-                ci_metronid = COALESCE(?, ci_metronid),
-                ci_provider = COALESCE(?, ci_provider),
-                ci_cvid = COALESCE(?, ci_cvid)
-            WHERE path = ?
-            """,
-            (
-                name,
-                ci_title, ci_series, ci_number, ci_count,
-                ci_volume, ci_year, ci_writer, ci_penciller,
-                ci_inker, ci_colorist, ci_letterer, ci_coverartist,
-                ci_publisher, ci_genre, ci_characters,
-                scanned_at,
-                file_mtime,
-                # COALESCE, not a plain write: a ComicVine re-tag of a
-                # Metron-tagged file supplies no MetronId, but merge_comicinfo_bytes
-                # carries the existing <MetronId> forward into the archive. Writing
-                # 0 here would contradict the file. Left NULL, the scanner picks it
-                # up and reads the truth out of the XML.
-                _as_metron_id(comicinfo_dict.get("MetronId")) or (0 if authoritative else None),
-                # Same COALESCE reasoning: no Notes in the dict means we do not
-                # know, so leave the column for the scanner to read from the XML.
-                _provider_for_index(comicinfo_dict.get("Notes")),
-                # Same COALESCE reasoning as ci_metronid: a merge may carry an
-                # existing CV id forward that this dict does not name.
-                _cvid_for_index(comicinfo_dict, authoritative),
-                file_path,
-            ),
-        )
-
-        _sync_tags_for_file(conn, file_path, {
-            "ci_writer": ci_writer,
-            "ci_penciller": ci_penciller,
-            "ci_inker": ci_inker,
-            "ci_colorist": ci_colorist,
-            "ci_letterer": ci_letterer,
-            "ci_coverartist": ci_coverartist,
-            "ci_characters": ci_characters,
-            "ci_genre": ci_genre,
-        })
-
-        conn.commit()
-        affected = c.rowcount
-        conn.close()
+            conn.commit()
+            affected = c.rowcount
         invalidate_metadata_browser_cache()
 
         if affected > 0:
@@ -6207,21 +6221,21 @@ def save_browse_cache(path, result):
 
     for attempt in range(max_retries):
         try:
-            conn = get_db_connection()
-            if not conn:
-                return False
+            # db_conn(): a failed write must not keep the WAL write lock (#723).
+            with db_conn() as conn:
+                if not conn:
+                    return False
 
-            c = conn.cursor()
-            c.execute(
-                """
-                INSERT OR REPLACE INTO browse_cache (path, result, updated_at)
-                VALUES (?, ?, CURRENT_TIMESTAMP)
-            """,
-                (path, json.dumps(result)),
-            )
+                c = conn.cursor()
+                c.execute(
+                    """
+                    INSERT OR REPLACE INTO browse_cache (path, result, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                """,
+                    (path, json.dumps(result)),
+                )
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
             app_logger.debug(f"Saved browse cache for: {path}")
             return True
@@ -6252,27 +6266,29 @@ def invalidate_browse_cache(path):
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        # Delete the specific path
-        c.execute("DELETE FROM browse_cache WHERE path = ?", (path,))
+            # Delete the specific path
+            c.execute("DELETE FROM browse_cache WHERE path = ?", (path,))
 
-        # Also delete parent path (so parent sees new subdirectory)
-        parent = os.path.dirname(path)
-        if parent:
-            c.execute("DELETE FROM browse_cache WHERE path = ?", (parent,))
+            # Also delete parent path (so parent sees new subdirectory)
+            parent = os.path.dirname(path)
+            if parent:
+                c.execute("DELETE FROM browse_cache WHERE path = ?", (parent,))
 
-        # Delete any child paths
-        c.execute("DELETE FROM browse_cache WHERE path LIKE ?", (f"{path}/%",))
+            # Delete any child paths
+            c.execute("DELETE FROM browse_cache WHERE path LIKE ?", (f"{path}/%",))
 
-        conn.commit()
-        rows_affected = c.rowcount
-        conn.close()
+            conn.commit()
+            rows_affected = c.rowcount
 
         if rows_affected > 0:
             app_logger.debug(
@@ -9691,34 +9707,70 @@ def delete_user_setting(key, user_id=None):
 # =============================================================================
 
 
-def get_api_token():
-    """Return the stored API token, or None if not generated yet."""
-    return get_user_preference("api_token", default=None)
+# The legacy global token is stored as ``sha256:<hex digest>``, never as the
+# token itself, exactly like the per-user api_tokens rows. The prefix is what
+# makes the one-time migration idempotent: a stored value without it is a
+# plaintext token from an older release (or written straight to the
+# preference), and is hashed on read as well, so it keeps working before the
+# migration has run.
+LEGACY_TOKEN_DIGEST_PREFIX = "sha256:"
+
+
+def _legacy_digest_of(stored):
+    """The sha256 hex digest for a stored ``api_token`` value, or None."""
+    if not stored or not isinstance(stored, str):
+        return None
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return stored[len(LEGACY_TOKEN_DIGEST_PREFIX):] or None
+    return _hash_token(stored)
+
+
+def get_api_token_digest():
+    """The sha256 digest of the legacy global API token, or None when unset.
+
+    The token itself is not stored and cannot be read back: compare a
+    presented token by hashing it (``_hash_token``).
+    """
+    return _legacy_digest_of(get_user_preference("api_token", default=None))
 
 
 def rotate_api_token():
     """
-    Generate a fresh API token, persist it under user_preferences, and return it.
-    Overwrites any existing token (used to revoke old clients).
+    Generate a fresh API token, persist only its digest, and return the token.
+    Overwrites any existing token (used to revoke old clients). The return
+    value is the one and only time the token is available in plain text.
     """
     import secrets
 
     token = secrets.token_urlsafe(32)
-    set_user_preference("api_token", token, category="security")
+    if not set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(token),
+        category="security",
+    ):
+        raise RuntimeError("could not save the API token")
     return token
 
 
-def ensure_api_token():
+def migrate_legacy_api_token_to_digest():
+    """Replace a plaintext legacy ``api_token`` with its digest, once.
+
+    Idempotent: a value already carrying ``LEGACY_TOKEN_DIGEST_PREFIX`` is
+    left alone, so it can never be hashed twice. Clients holding the token
+    keep working, because the bearer check hashes what they present. Returns
+    True when a value was converted.
     """
-    Return the existing API token, generating one on first call.
-    Use this in places where the token must exist (e.g. tests / first-run).
-    For runtime auth checks prefer get_api_token() so an unset token reports
-    'API disabled' rather than silently bootstrapping.
-    """
-    existing = get_api_token()
-    if existing:
-        return existing
-    return rotate_api_token()
+    stored = get_user_preference("api_token", default=None)
+    if not stored or not isinstance(stored, str):
+        return False
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return False
+    if set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(stored),
+        category="security",
+    ):
+        app_logger.info("Stored the legacy API token as a hash")
+        return True
+    return False
 
 
 _API_BROWSE_MODES = ("metadata", "filesystem")
@@ -9848,6 +9900,54 @@ def count_users():
             pass
 
 
+# The last answer accounts_require_login() actually read from the database.
+# Process-local on purpose: it is only a fallback for a read that failed, never
+# a cache, so nothing has to invalidate it -- every successful read replaces it.
+_accounts_require_login_last = False
+
+
+def accounts_require_login():
+    """Whether the ``users`` table alone turns login on.
+
+    True when any account holds a password (``password_hash`` neither NULL nor
+    empty -- the first-run placeholder owner is stored with NULL), or when more
+    than one account exists. A password means login: an owner who set one is
+    asked for it even while theirs is the only account.
+
+    This runs on every request (core.auth.is_login_required), so it is one
+    aggregate over a table of a handful of rows -- the same single query the
+    old ``count_users() > 1`` made. It is deliberately not cached: a stale
+    "open" answer after a password is set is exactly the hole being closed,
+    and the users table is also replaced wholesale by a database restore.
+
+    Never raises. A missing ``users`` table means no accounts (open, as
+    before). Any other failure -- the database unavailable, locked or corrupt
+    -- answers with the last value this process read, so an install with a
+    password does not fall open for the length of a corruption episode.
+    """
+    global _accounts_require_login_last
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return _accounts_require_login_last
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN password_hash IS NOT "
+                "NULL AND password_hash != '' THEN 1 ELSE 0 END), 0) FROM users"
+            )
+            row = c.fetchone()
+        total, with_password = (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return False
+        return _accounts_require_login_last
+    except Exception:
+        return _accounts_require_login_last
+    answer = total > 1 or with_password > 0
+    _accounts_require_login_last = answer
+    return answer
+
+
 def count_owners_who_can_sign_in():
     """Return how many Store Owners could actually satisfy a login prompt.
 
@@ -9937,19 +10037,52 @@ def current_user_id():
     return _resolve_user_id(None)
 
 
+_DUMMY_PASSWORD_HASH = None
+_DUMMY_PASSWORD_HASH_LOCK = threading.Lock()
+
+
+def _dummy_password_hash():
+    """A hash of a random secret, made once with the same method and cost
+    ``create_user`` / ``set_user_password`` use (werkzeug's default), so
+    checking a password against it costs what checking a real one does.
+
+    Made lazily rather than at import: hashing is deliberately slow, and import
+    time is inside gunicorn's worker boot budget.
+    """
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        import secrets
+        from werkzeug.security import generate_password_hash
+
+        with _DUMMY_PASSWORD_HASH_LOCK:
+            if _DUMMY_PASSWORD_HASH is None:
+                _DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_urlsafe(32))
+    return _DUMMY_PASSWORD_HASH
+
+
 def verify_password(username, password):
     """Return the user dict if the credentials are valid and the account is
-    active, else None. Constant-time via werkzeug's check_password_hash."""
+    active, else None.
+
+    Every path does one password-hash check, so the response time does not
+    say whether the username exists: an unknown user, or an account with no
+    password yet (the first-run placeholder), is checked against a dummy hash.
+    A disabled account is checked against its real hash and then refused, so
+    it looks exactly like a wrong password.
+    """
     from werkzeug.security import check_password_hash
 
+    password = password or ""
     user = get_user_by_username(username)
-    if not user or not user.get("is_active"):
+    stored = user.get("password_hash") if user else None
+    if not stored:
+        check_password_hash(_dummy_password_hash(), password)
         return None
-    if not user.get("password_hash"):
-        return None  # placeholder/needs-setup account can't log in yet
-    if check_password_hash(user["password_hash"], password):
-        return user
-    return None
+    if not check_password_hash(stored, password):
+        return None
+    if not user.get("is_active"):
+        return None
+    return user
 
 
 def set_user_password(user_id, password):
@@ -10311,7 +10444,7 @@ def adopt_env_credentials_for_placeholder_owner():
     password = os.environ.get("CLU_PASSWORD", "")
     if not username or not password:
         # Report the actual lock-out, not a proxy for it. "Login is on" is
-        # is_login_required(): count_users() > 1 misses the env gate, which can
+        # is_login_required(): the users table alone misses the env gate, which can
         # be on with a single user, and which reads the raw env values rather
         # than the stripped ones above. "No owner can get in" is a count of
         # *owners* holding a usable password — get_owner_user() returns the
@@ -10410,8 +10543,8 @@ def seed_owner_if_needed():
         return
 
     # Migrate the legacy global API token so the existing client keeps working.
-    legacy_token = get_api_token()
-    if legacy_token:
+    legacy_digest = get_api_token_digest()
+    if legacy_digest:
         conn = get_db_connection()
         if conn:
             try:
@@ -10419,7 +10552,7 @@ def seed_owner_if_needed():
                 c.execute(
                     "INSERT OR IGNORE INTO api_tokens (user_id, token_hash, name) "
                     "VALUES (?, ?, ?)",
-                    (owner_id, _hash_token(legacy_token), "Migrated global token"),
+                    (owner_id, legacy_digest, "Migrated global token"),
                 )
                 conn.commit()
                 app_logger.info("Migrated global API token to the Store Owner account")
@@ -10460,23 +10593,25 @@ def save_reading_position(comic_path, page_number, total_pages=None, time_spent=
     Returns:
         True if successful, False otherwise
     """
+    # db_conn(), not close() inside the try: an exception after the first
+    # write would abandon the connection with its implicit transaction open,
+    # holding the WAL write lock until the cyclic GC runs (#723).
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        uid = _resolve_user_id(user_id)
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT OR REPLACE INTO reading_positions (user_id, comic_path, page_number, total_pages, updated_at, time_spent)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
-        """,
-            (uid, comic_path, page_number, total_pages, time_spent),
-        )
+            uid = _resolve_user_id(user_id)
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT OR REPLACE INTO reading_positions (user_id, comic_path, page_number, total_pages, updated_at, time_spent)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+            """,
+                (uid, comic_path, page_number, total_pages, time_spent),
+            )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         app_logger.debug(f"Saved reading position: {comic_path} at page {page_number}")
         return True

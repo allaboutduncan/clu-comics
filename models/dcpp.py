@@ -914,6 +914,10 @@ def translate_remote_path(path, remote_root, local_root):
         matched = path.lower().startswith(r_root.lower())
     else:
         matched = path.startswith(r_root)
+    # Only on a separator: a remote root of /downloads must not translate
+    # /downloads2/x into <local root>/2/x.
+    if matched and len(path) > len(r_root) and path[len(r_root)] not in "/\\":
+        matched = False
     if not matched:
         return path
 

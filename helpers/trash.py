@@ -236,6 +236,25 @@ def _cleanup_empty_parent(folder_path):
         app_logger.error(f"Error cleaning up empty parent folder {folder_path}: {e}")
 
 
+def _acting_user_id():
+    """The id of the user whose request is trashing something, or None.
+
+    None outside a request (scheduled and background work), and on any failure
+    to resolve: recording who trashed an item must never stop it being trashed.
+    """
+    try:
+        from flask import has_request_context
+
+        if not has_request_context():
+            return None
+        from core.auth import current_user
+
+        user = current_user()
+        return user.get("id") if user else None
+    except Exception:
+        return None
+
+
 def move_to_trash(source_path):
     """
     Move a file or directory to the trash.
@@ -292,12 +311,17 @@ def move_to_trash(source_path):
         shutil.move(source_path, dest_path)
         app_logger.info(f"Moved to trash: {source_path} -> {dest_path}")
 
-        # Record original path in manifest for restore
+        # Record original path in manifest for restore, and who trashed it:
+        # the trash routes show a non-owner only what they may act on.
         manifest = _load_manifest()
-        manifest[os.path.basename(dest_path)] = {
+        entry = {
             "original_path": source_path,
             "deleted_at": time.time(),
         }
+        trashed_by = _acting_user_id()
+        if trashed_by is not None:
+            entry["trashed_by"] = trashed_by
+        manifest[os.path.basename(dest_path)] = entry
         _save_manifest(manifest)
 
         _cleanup_empty_parent(parent_dir)
@@ -446,7 +470,16 @@ def restore_from_trash(item_name):
     os.makedirs(parent_dir, exist_ok=True)
 
     try:
-        shutil.move(item_path, original_path)
+        # The trash is on /cache and the library on another mount, so this is
+        # a copy. move_file/move_tree rather than shutil.move: a library mount
+        # that refuses utime/chmod must not fail a restore whose bytes all
+        # arrived, leaving the item both restored and still in the trash (#582).
+        from helpers import match_parent_permissions, move_file, move_tree
+        if os.path.isdir(item_path) and not os.path.islink(item_path):
+            move_tree(item_path, original_path)
+        else:
+            move_file(item_path, original_path)
+            match_parent_permissions(original_path)
         app_logger.info(f"Restored from trash: {item_name} -> {original_path}")
 
         # Remove from manifest

@@ -8,6 +8,7 @@ and downloading comics from OPDS-compatible readers like Panels, Chunky, etc.
 from flask import Blueprint, render_template, request, url_for, Response
 from core.database import get_to_read_items, get_libraries
 from core.app_logging import app_logger
+from core.auth_throttle import SCOPE_OPDS, client_address, throttle as auth_throttle
 import os
 import hashlib
 from datetime import datetime
@@ -24,13 +25,27 @@ def _opds_unauthorized():
     )
 
 
+def _opds_throttled(wait):
+    """429 while this address is throttled (core/auth_throttle.py).
+
+    Deliberately no ``WWW-Authenticate``: OPDS readers re-prompt (or resend
+    the same stored password) on a challenge, and this is not one.
+    """
+    return Response(
+        "Too many failed sign-in attempts. Try again later.", status=429,
+        headers={"Retry-After": str(int(wait))},
+        mimetype="text/plain",
+    )
+
+
 @opds_bp.before_request
 def _opds_auth():
     """Identify the OPDS client so feeds scope to their account.
 
-    In implicit-owner mode (single-user) no auth is required and the request
-    runs as the owner — unchanged behaviour. Once real accounts exist, OPDS
-    requires HTTP Basic Auth validated against the users table.
+    In implicit-owner mode (no account has a password) no auth is required and
+    the request runs as the owner — unchanged behaviour. Once login is required
+    (any password, even on the only account), OPDS requires HTTP Basic Auth
+    validated against the users table.
     """
     from flask import g
     from core.auth import is_login_required
@@ -42,10 +57,20 @@ def _opds_auth():
 
     auth = request.authorization
     if not auth or not auth.username:
+        # No credential at all is not a failed guess: readers ask without
+        # one first and send it after the 401 challenge.
         return _opds_unauthorized()
+
+    address = client_address()
+    wait = auth_throttle.retry_after(SCOPE_OPDS, address, auth.username)
+    if wait:
+        return _opds_throttled(wait)
+
     user = verify_password(auth.username, auth.password or "")
     if not user:
+        auth_throttle.record_failure(SCOPE_OPDS, address, auth.username)
         return _opds_unauthorized()
+    auth_throttle.record_success(SCOPE_OPDS, address, auth.username)
     g.current_user = user
     update_last_login(user["id"])
     return None
@@ -63,15 +88,16 @@ def get_library_roots():
 
 
 def is_valid_library_path(path):
-    """Check if a path is within any enabled library."""
+    """Check if a path is within any enabled library.
+
+    Realpath and separator-bounded (``helpers.library.is_within_roots``), so
+    a symlink out of a library is refused.
+    """
+    from helpers.library import is_within_roots
+
     if not path:
         return False
-    normalized = os.path.normpath(path)
-    for root in get_library_roots():
-        root_normalized = os.path.normpath(root)
-        if normalized == root_normalized or normalized.startswith(root_normalized + os.sep):
-            return True
-    return False
+    return is_within_roots(path, get_library_roots())
 
 # MIME types for comic files
 COMIC_MIME_TYPES = {

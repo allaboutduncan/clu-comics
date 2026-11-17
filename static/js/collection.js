@@ -2170,23 +2170,15 @@ function renderGrid(items) {
                 // Set placeholder initially, real source in data-src for lazy loading
                 img.src = '/static/images/loading.svg';
                 img.dataset.src = item.thumbnailUrl;
-                img.dataset.thumbnailPath = item.thumbnailUrl; // Store for polling
+                img.dataset.thumbnailPath = item.thumbnailUrl; // loadThumbnail's probe URL
                 img.classList.add('lazy');
-                img.classList.add('polling'); // Always poll thumbnails until confirmed loaded
+                img.classList.add('polling'); // not resolved yet; loadThumbnail clears it
 
                 // Handle error loading thumbnail
                 img.onerror = function () {
                     this.src = '/static/images/error.svg';
                     this.classList.remove('lazy');
                     this.classList.remove('polling'); // Stop polling on error
-                };
-
-                // Handle successful load
-                img.onload = function () {
-                    // If we are polling, check status
-                    if (this.classList.contains('polling')) {
-                        pollThumbnail(this);
-                    }
                 };
             } else {
                 // Generic file icon
@@ -3226,64 +3218,107 @@ function filterItems(letter) {
     syncNavUrl();
 }
 
+// Covers refreshed in this page view (thumbnail URLs). The document's image
+// cache can still hold the old bytes under the same URL for max-age, so any
+// later card for one of these keeps fetching with cache: 'reload'.
+const _refreshedCovers = new Set();
+
+/** 5xx answers a cover may get before it is shown as an error (~1 min at 5s). */
+const THUMBNAIL_5XX_RETRIES = 12;
+
+/** True when a fetch was redirected to /static/images/<name>. */
+function _redirectedTo(response, name) {
+    if (!response.redirected) return false;
+    try {
+        return new URL(response.url).pathname.endsWith('/images/' + name);
+    } catch (e) {
+        return false;
+    }
+}
+
 /**
- * Poll a thumbnail URL to check if it's ready.
- * @param {HTMLImageElement} imgElement - The image element to update
+ * Load a cover with one cacheable request, polling only while it is generated.
+ *
+ * The probe *is* the load: a plain fetch of /api/thumbnail, which the server
+ * answers with the cover (private, max-age=300), a redirect to loading.svg
+ * (still generating: ask again in 2s) or a redirect to error.svg (terminal for
+ * this page view: stop). An <img> cannot see whether its request was
+ * redirected, which is why this goes through fetch. Never add a timestamp to
+ * the URL: the cover would then never come from the HTTP cache.
+ *
+ * A reload supersedes a probe already in flight: each call takes a generation
+ * number, and a continuation from an older generation does nothing.
+ * @param {HTMLImageElement} img - Image with data-thumbnail-path and class 'polling'
+ * @param {{reload?: boolean}} [opts] - reload: bypass and overwrite the HTTP cache
  */
-function pollThumbnail(imgElement) {
-    if (!imgElement.classList.contains('polling')) {
-        return; // Stop if polling was cancelled
-    }
+function loadThumbnail(img, opts) {
+    const url = img.dataset.thumbnailPath;
+    if (!url || !img.classList.contains('polling')) return;
+    const reload = !!(opts && opts.reload) || _refreshedCovers.has(url);
+    // one in-flight probe per image, unless this one is a reload
+    if (img.dataset.isPolling === 'true' && !(opts && opts.reload)) return;
+    if (opts && opts.reload) _refreshedCovers.add(url);
+    const gen = String((parseInt(img.dataset.loadGen || '0', 10) || 0) + 1);
+    img.dataset.loadGen = gen;
+    img.dataset.isPolling = 'true';
+    const current = () => img.dataset.loadGen === gen;
+    const retry = (delay) => {
+        img.dataset.isPolling = 'false';
+        // a card removed by a re-render stops here; its replacement probes itself
+        if (img.isConnected && img.classList.contains('polling')) {
+            setTimeout(() => loadThumbnail(img, opts), delay);
+        }
+    };
 
-    // Avoid multiple concurrent polls for the same image
-    if (imgElement.dataset.isPolling === 'true') return;
-    imgElement.dataset.isPolling = 'true';
-
-    const thumbnailUrl = imgElement.dataset.thumbnailPath;
-    if (!thumbnailUrl) {
-        imgElement.dataset.isPolling = 'false';
-        return;
-    }
-
-    // Add a cache-busting parameter to force a fresh check
-    const checkUrl = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_check=' + Date.now();
-
-    fetch(checkUrl, { method: 'HEAD' })
+    fetch(url, { credentials: 'same-origin', cache: reload ? 'reload' : 'default' })
         .then(response => {
-            imgElement.dataset.isPolling = 'false';
-
-            // Check if we were redirected to the loading image or error image
-            const isRedirectedToLoading = response.url.includes('loading.svg');
-            const isRedirectedToError = response.url.includes('error.svg');
-
-            // If we get a 200 AND it's not the loading/error image
-            if (response.ok && response.status === 200 && !isRedirectedToLoading && !isRedirectedToError) {
-                // Thumbnail is ready! 
-                const newSrc = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_t=' + Date.now();
-
-                // We found it's ready. Stop polling.
-                imgElement.classList.remove('polling');
-
-                // Update the image to the new version
-                imgElement.src = newSrc;
-
-            } else if (imgElement.classList.contains('polling')) {
-                // Still generating, poll again in 2 seconds
-                setTimeout(() => pollThumbnail(imgElement), 2000);
+            if (!current()) return;
+            if (_redirectedTo(response, 'loading.svg')) {
+                // Still generating
+                retry(2000);
+                return;
             }
+            if (response.status >= 500
+                    && (parseInt(img.dataset.serverErrors || '0', 10) || 0) < THUMBNAIL_5XX_RETRIES) {
+                // Transient: "database is locked", or a proxy 502/503 while the
+                // worker restarts. Retry like a network error, but not forever.
+                img.dataset.serverErrors = String((parseInt(img.dataset.serverErrors || '0', 10) || 0) + 1);
+                retry(5000);
+                return;
+            }
+            if (!response.ok || _redirectedTo(response, 'error.svg')) {
+                // Terminal for this page view (a 4xx such as a 403, error.svg,
+                // or a 5xx that outlasted its retries)
+                img.dataset.isPolling = 'false';
+                img.classList.remove('polling', 'lazy');
+                img.src = '/static/images/error.svg';
+                return;
+            }
+            img.dataset.serverErrors = '0';
+            // Drain the body so the HTTP cache entry is complete
+            return response.blob().then(blob => {
+                if (!current()) return;
+                img.dataset.isPolling = 'false';
+                img.classList.remove('polling');
+                if (reload) {
+                    // The old cover may sit in the document's image cache under
+                    // the same URL, so show the bytes we just fetched.
+                    const objectUrl = URL.createObjectURL(blob);
+                    img.addEventListener('load', () => URL.revokeObjectURL(objectUrl), { once: true });
+                    img.addEventListener('error', () => URL.revokeObjectURL(objectUrl), { once: true });
+                    img.src = objectUrl;
+                } else {
+                    img.src = url; // served from the HTTP cache
+                }
+            });
         })
-        .catch(error => {
-            console.error('Error polling thumbnail:', error);
-            imgElement.dataset.isPolling = 'false';
-            // Retry after a longer delay on error
-            if (imgElement.classList.contains('polling')) {
-                setTimeout(() => pollThumbnail(imgElement), 5000);
-            }
+        .catch(() => {
+            if (current()) retry(5000);
         });
 }
 
 /**
- * Wire up poll-based thumbnail loading for dashboard swiper cards.
+ * Wire up cover loading for dashboard swiper cards.
  *
  * Swiper cards are rendered via innerHTML strings, so (unlike the main grid)
  * they don't get the polling behaviour automatically. Without it, a newly added
@@ -3292,7 +3327,7 @@ function pollThumbnail(imgElement) {
  * nothing re-checks until a full page refresh.
  *
  * Each target img is rendered with src=loading.svg and data-thumbnail holding
- * the real /api/thumbnail URL; this attaches the same polling used by the grid.
+ * the real /api/thumbnail URL; this loads it the same way as the grid.
  * @param {HTMLElement} container - Element containing img.thumbnail[data-thumbnail] nodes
  */
 function initSwiperThumbnails(container) {
@@ -3307,18 +3342,7 @@ function initSwiperThumbnails(container) {
             this.src = '/static/images/error.svg';
             this.classList.remove('polling');
         };
-        img.onload = function () {
-            if (this.classList.contains('polling')) {
-                pollThumbnail(this);
-            }
-        };
-
-        // The loading.svg placeholder may already be cached/complete before these
-        // handlers were attached (in which case onload won't fire again), so kick
-        // off polling immediately to be safe.
-        if (img.complete) {
-            pollThumbnail(img);
-        }
+        loadThumbnail(img);
     });
 }
 
@@ -3471,7 +3495,11 @@ function initLazyLoading() {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     const img = entry.target;
-                    if (img.dataset.src) {
+                    if (img.dataset.thumbnailPath) {
+                        img.classList.remove('lazy');
+                        observer.unobserve(img);
+                        loadThumbnail(img);
+                    } else if (img.dataset.src) {
                         img.src = img.dataset.src;
                         img.classList.remove('lazy');
                         observer.unobserve(img);
@@ -3488,8 +3516,12 @@ function initLazyLoading() {
         // Fallback for older browsers
         const lazyImages = document.querySelectorAll('img.lazy');
         lazyImages.forEach(img => {
-            img.src = img.dataset.src;
             img.classList.remove('lazy');
+            if (img.dataset.thumbnailPath) {
+                loadThumbnail(img);
+            } else {
+                img.src = img.dataset.src;
+            }
         });
     }
 }
@@ -3748,11 +3780,11 @@ function refreshThumbnail(filePath) {
         if (nameEl && nameEl.textContent === filePath.split('/').pop()) {
             const img = item.querySelector('.thumbnail');
             if (img && img.dataset.thumbnailPath) {
-                // Force reload with cache busting
-                const thumbnailUrl = img.dataset.thumbnailPath;
-                const newSrc = thumbnailUrl + (thumbnailUrl.includes('?') ? '&' : '?') + '_refresh=' + Date.now();
-                img.src = newSrc;
-                console.log('Refreshed thumbnail for:', filePath);
+                // cache: 'reload' bypasses the cached cover and overwrites it,
+                // so the next page view gets the new one too.
+                img.classList.add('polling');
+                img.src = '/static/images/loading.svg';
+                loadThumbnail(img, { reload: true });
             }
         }
     });
@@ -3852,7 +3884,11 @@ function initEditMode(filePath) {
                                 </button>
                             </div>`;
 
-    fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
+    fetch('/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: filePath })
+    })
         .then(response => {
             if (!response.ok) {
                 throw new Error("Failed to load edit content.");
@@ -3987,7 +4023,11 @@ function initEditMode(filePath) {
     CLU.setupEditModalDropZone();
 
     // Load CBZ contents
-    fetch(`/edit?file_path=${encodeURIComponent(filePath)}`)
+    fetch('/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: filePath })
+    })
         .then(response => {
             if (!response.ok) {
                 throw new Error("Failed to load edit content.");
@@ -4373,23 +4413,27 @@ async function loadFavoritePublishers() {
         });
 
         // Render slides with same structure as grid-item folders
+        // Paths and names come from the filesystem: they are escaped into
+        // attributes/text and the clicks are handled by onDashboardClick via
+        // data-dash-action, never by an onclick string (a folder named
+        // "Devil's Due" used to end the JS string literal).
         swiper.innerHTML = publisherDetails.map(pub => {
-            // Escape name for use in onclick handler
-            const escapedName = pub.name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const path = CLU.escapeHtml(pub.path);
+            const name = CLU.escapeHtml(pub.name);
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card${pub.hasThumbnail ? ' has-thumbnail' : ''}" data-path="${pub.path}" onclick="loadDirectory('${pub.path}')">
+                <div class="dashboard-card${pub.hasThumbnail ? ' has-thumbnail' : ''}" data-path="${path}" data-dash-action="open-folder">
                     <div class="dashboard-card-img-container">
-                        <img src="${pub.thumbnailUrl || ''}" alt="${pub.name}" class="thumbnail" style="${pub.hasThumbnail ? '' : 'display: none;'}">
+                        <img src="${CLU.escapeHtml(pub.thumbnailUrl || '')}" alt="${name}" class="thumbnail" style="${pub.hasThumbnail ? '' : 'display: none;'}">
                         <div class="icon-overlay" style="${pub.hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button aria-label="Remove from Favorites" class="favorite-button favorited" onclick="event.stopPropagation(); removeFavoriteFromDashboard('${pub.path}', '${escapedName}', this)" title="Remove from Favorites">
+                        <button aria-label="Remove from Favorites" class="favorite-button favorited" data-dash-action="remove-favorite" data-path="${path}" data-name="${name}" title="Remove from Favorites">
                             <i class="bi bi-bookmark-heart-fill"></i>
                         </button>
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate item-name" title="${pub.name}">${pub.name}</div>
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
                         <small class="item-meta${pub.folderCount === null ? ' metadata-loading' : ''}">${pub.folderCount === null ? 'Loading...' :
                     [
                         pub.folderCount > 0 ? `${pub.folderCount} folder${pub.folderCount !== 1 ? 's' : ''}` : '',
@@ -4511,8 +4555,8 @@ async function loadDashboardMetadata(paths) {
  * the collection tree.
  */
 function renderWantToReadListSlide(list) {
-    const name = list.name || 'Untitled list';
-    const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const name = CLU.escapeHtml(list.name || 'Untitled list');
+    const listId = Number(list.id);
     const cover = (list.covers && list.covers.length) ? list.covers[0] : null;
     const thumbnailUrl = cover ? `/api/thumbnail?path=${encodeURIComponent(cover)}` : '';
     const total = list.entry_count || 0;
@@ -4521,10 +4565,10 @@ function renderWantToReadListSlide(list) {
 
     return `
     <div class="swiper-slide">
-        <div class="dashboard-card${cover ? ' has-thumbnail' : ''}" data-reading-list-id="${list.id}"
-             onclick="window.location.href='/reading-lists/${list.id}'">
+        <div class="dashboard-card${cover ? ' has-thumbnail' : ''}" data-reading-list-id="${listId}"
+             data-dash-action="open-reading-list">
             <div class="dashboard-card-img-container">
-                <img src="${thumbnailUrl}" alt="${escapedName}" class="thumbnail" style="${cover ? '' : 'display: none;'}">
+                <img src="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail" style="${cover ? '' : 'display: none;'}">
                 <div class="icon-overlay" style="${cover ? 'display: none;' : ''}">
                     <i class="bi bi-journal-album"></i>
                 </div>
@@ -4533,13 +4577,13 @@ function renderWantToReadListSlide(list) {
                          aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"></div>
                 </div>
                 <button aria-label="Remove from Want to Read" class="to-read-button marked"
-                        onclick="event.stopPropagation(); removeReadingListFromWantToRead(${list.id}, '${escapedName}', this)"
+                        data-dash-action="remove-reading-list" data-reading-list-id="${listId}" data-name="${name}"
                         title="Remove from Want to Read">
                     <i class="bi bi-bookmark"></i>
                 </button>
             </div>
             <div class="dashboard-card-body">
-                <div class="text-truncate item-name" title="${escapedName}">${name}</div>
+                <div class="text-truncate item-name" title="${name}">${name}</div>
                 <small class="text-muted">Reading List &bull; ${read}/${total}</small>
             </div>
         </div>
@@ -4613,9 +4657,9 @@ async function loadWantToRead() {
 
         // Render slides — reading lists first, then the path-based items
         swiper.innerHTML = listSlides + data.items.map(item => {
-            const name = item.name || item.path.split('/').pop();
-            const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            const escapedPath = item.path.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const name = CLU.escapeHtml(item.name || item.path.split('/').pop());
+            const path = CLU.escapeHtml(item.path);
+            const type = item.type === 'file' ? 'file' : 'folder';
             const isFile = item.type === 'file';
 
             let thumbnailUrl = '';
@@ -4635,13 +4679,13 @@ async function loadWantToRead() {
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card${hasThumbnail ? ' has-thumbnail' : ''}" data-path="${item.path}" onclick="navigateToItem('${escapedPath}', '${item.type}')">
+                <div class="dashboard-card${hasThumbnail ? ' has-thumbnail' : ''}" data-path="${path}" data-type="${type}" data-dash-action="open-item">
                     <div class="dashboard-card-img-container">
-                        <img src="${thumbnailUrl}" alt="${name}" class="thumbnail" style="${hasThumbnail ? '' : 'display: none;'}">
+                        <img src="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail" style="${hasThumbnail ? '' : 'display: none;'}">
                         <div class="icon-overlay" style="${hasThumbnail ? 'display: none;' : ''}">
                             <i class="bi bi-folder-fill"></i>
                         </div>
-                        <button aria-label="Remove from To Read" class="to-read-button marked" onclick="event.stopPropagation(); removeFromWantToRead('${escapedPath}', '${escapedName}', this)" title="Remove from To Read">
+                        <button aria-label="Remove from To Read" class="to-read-button marked" data-dash-action="remove-to-read" data-path="${path}" data-name="${name}" title="Remove from To Read">
                             <i class="bi bi-bookmark"></i>
                         </button>
                     </div>
@@ -4700,16 +4744,16 @@ async function loadRecentlyAddedSwiper() {
 
         // Render slides
         swiper.innerHTML = data.files.map(file => {
-            const name = file.file_name;
-            const path = file.file_path;
-            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(path)}`;
+            const name = CLU.escapeHtml(file.file_name);
+            const path = CLU.escapeHtml(file.file_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(file.file_path)}`;
             const timeAgo = formatTimeAgo(file.added_at);
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${name}">${name}</div>
@@ -4764,22 +4808,22 @@ async function loadContinueReadingSwiper() {
 
         // Render slides
         swiper.innerHTML = data.items.map(item => {
-            const name = item.file_name;
-            const path = item.comic_path;
-            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(path)}`;
+            const name = CLU.escapeHtml(item.file_name);
+            const path = CLU.escapeHtml(item.comic_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.comic_path)}`;
             const timeAgo = formatReadTimeAgo(item.updated_at);
-            const progress = item.progress_percent || 0;
-            const pageInfo = item.total_pages ? `Page ${item.page_number + 1} of ${item.total_pages}` : `${progress}%`;
+            const progress = Number(item.progress_percent) || 0;
+            const pageInfo = item.total_pages ? `Page ${Number(item.page_number) + 1} of ${Number(item.total_pages)}` : `${progress}%`;
 
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${path}" onclick="openReaderForFile('${path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
-                        <button aria-label="Mark as Unread" class="mark-unread-btn" onclick="event.stopPropagation(); markAsUnread('${path.replace(/'/g, "\\'")}')" title="Mark as Unread">
+                        <button aria-label="Mark as Unread" class="mark-unread-btn" data-dash-action="mark-unread" data-path="${path}" title="Mark as Unread">
                             <i class="bi bi-x-circle-fill"></i>
                         </button>
                     </div>
@@ -4841,19 +4885,21 @@ async function loadOnTheStackSwiper() {
             const timeAgo = formatReadTimeAgo(item.last_read_at);
             // Make it obvious when a next-up issue came from a bookmarked
             // reading list rather than a series subscription.
+            const listName = CLU.escapeHtml(item.reading_list_name);
+            const fileName = CLU.escapeHtml(item.file_name);
             const listBadge = item.source === 'reading_list'
-                ? `<span class="badge bg-warning text-dark mt-1 text-truncate mw-100 d-inline-block" title="${item.reading_list_name}"><i class="bi bi-journal-bookmark me-1"></i>${item.reading_list_name}</span>`
+                ? `<span class="badge bg-warning text-dark mt-1 text-truncate mw-100 d-inline-block" title="${listName}"><i class="bi bi-journal-bookmark me-1"></i>${listName}</span>`
                 : '';
             return `
             <div class="swiper-slide">
-                <div class="dashboard-card has-thumbnail" data-path="${item.file_path}"
-                     onclick="openReaderForFile('${item.file_path.replace(/'/g, "\\'")}')">
+                <div class="dashboard-card has-thumbnail" data-path="${CLU.escapeHtml(item.file_path)}"
+                     data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${thumbnailUrl}" alt="${item.file_name}" class="thumbnail">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
-                        <div class="text-truncate item-name" title="${item.file_name}">${item.file_name}</div>
-                        <small class="text-muted">${item.series_name} #${item.issue_number}<br/>${timeAgo}</small>
+                        <div class="text-truncate item-name" title="${fileName}">${fileName}</div>
+                        <small class="text-muted">${CLU.escapeHtml(item.series_name)} #${CLU.escapeHtml(item.issue_number)}<br/>${timeAgo}</small>
                         ${listBadge}
                     </div>
                 </div>
@@ -5190,6 +5236,50 @@ function togglePublisherFavorite(path, name, button) {
             CLU.showError('Failed to update favorite');
         });
 }
+
+/**
+ * One delegated click handler for every dashboard swiper card and button.
+ *
+ * The cards carry their path/name in data-* attributes (escaped with
+ * CLU.escapeHtml, so the parser hands back the raw value) and say what a click
+ * does in data-dash-action. The nearest action wins, so a button inside a card
+ * acts instead of the card, which is what event.stopPropagation() did inline.
+ */
+function onDashboardClick(event) {
+    const el = event.target.closest('[data-dash-action]');
+    if (!el || !el.closest('.swiper-slide')) return;
+    const d = el.dataset;
+    switch (d.dashAction) {
+        case 'open-folder':
+            loadDirectory(d.path);
+            break;
+        case 'open-item':
+            navigateToItem(d.path, d.type);
+            break;
+        case 'open-reader':
+            openReaderForFile(d.path);
+            break;
+        case 'open-reading-list':
+            window.location.href = '/reading-lists/' + encodeURIComponent(d.readingListId);
+            break;
+        case 'remove-favorite':
+            removeFavoriteFromDashboard(d.path, d.name, el);
+            break;
+        case 'remove-to-read':
+            removeFromWantToRead(d.path, d.name, el);
+            break;
+        case 'remove-reading-list':
+            removeReadingListFromWantToRead(Number(d.readingListId), d.name, el);
+            break;
+        case 'mark-unread':
+            markAsUnread(d.path);
+            break;
+        default:
+            return;
+    }
+    event.stopPropagation();
+}
+document.addEventListener('click', onDashboardClick);
 
 /**
  * Remove a publisher from favorites via the dashboard swiper

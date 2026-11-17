@@ -8,6 +8,7 @@ and extracts only the issue number from each filename. Values are then fed
 through the existing custom-pattern + filename-cleanup pipeline.
 """
 
+import errno
 import os
 from typing import Dict, List, Optional
 
@@ -515,19 +516,164 @@ def plan_smart_rename(
     return result
 
 
+# --- No-clobber rename -------------------------------------------------------
+#
+# The plan is computed when the preview opens, and applied whenever the user
+# clicks Apply -- or from a client-supplied plan. A comic that lands at a
+# planned name in between (a download, another rename, a second tab) would be
+# silently replaced by ``os.rename`` on POSIX. Checking ``os.path.exists`` first
+# only narrows that window, so the rename itself refuses an existing
+# destination wherever the platform lets it:
+#
+#   1. Windows: ``os.rename`` already refuses (``FileExistsError``).
+#   2. Linux: ``renameat2(RENAME_NOREPLACE)`` -- atomic, no hard link needed.
+#   3. Elsewhere, or where the filesystem rejects that flag: ``os.link`` +
+#      ``os.unlink``. ``link`` fails with EEXIST rather than replacing.
+#   4. A filesystem with neither (CIFS, some FUSE, mergerfs across branches):
+#      check, then ``os.rename``. Still a race, but a window of microseconds
+#      instead of however long the preview modal stayed open.
+
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+_UNSUPPORTED_ERRNOS = {
+    getattr(errno, name)
+    for name in ("EINVAL", "ENOSYS", "EOPNOTSUPP", "ENOTSUP")
+    if hasattr(errno, name)
+}
+_renameat2_fn = None  # None = not looked up yet, False = unavailable
+
+
+def _load_renameat2():
+    """glibc's ``renameat2`` via ctypes, or None where there is none."""
+    global _renameat2_fn
+    if _renameat2_fn is None:
+        _renameat2_fn = False
+        if os.name == "posix":
+            try:
+                import ctypes
+
+                libc = ctypes.CDLL(None, use_errno=True)
+                fn = libc.renameat2
+                fn.argtypes = [
+                    ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
+                ]
+                fn.restype = ctypes.c_int
+                _renameat2_fn = fn
+            except (OSError, AttributeError):
+                pass
+    return _renameat2_fn or None
+
+
+def _renameat2_noreplace(src: str, dst: str) -> bool:
+    """Rename with RENAME_NOREPLACE. True if renamed, False if this platform or
+    filesystem does not offer it. Raises ``FileExistsError`` if *dst* exists."""
+    fn = _load_renameat2()
+    if fn is None:
+        return False
+    import ctypes
+
+    ctypes.set_errno(0)
+    if fn(_AT_FDCWD, os.fsencode(src), _AT_FDCWD, os.fsencode(dst), _RENAME_NOREPLACE) == 0:
+        return True
+    err = ctypes.get_errno()
+    if err in _UNSUPPORTED_ERRNOS:
+        return False
+    # OSError() picks the subclass from the errno: EEXIST -> FileExistsError.
+    raise OSError(err, os.strerror(err), src, None, dst)
+
+
+def _destination_exists(dst: str) -> FileExistsError:
+    return FileExistsError(errno.EEXIST, "A file already exists at the destination", dst)
+
+
+def _link_then_unlink(src: str, dst: str) -> bool:
+    """Rename via a hard link. True if renamed, False if the filesystem cannot
+    hard-link. Raises ``FileExistsError`` if *dst* exists."""
+    try:
+        os.link(src, dst, follow_symlinks=False)
+    except FileExistsError:
+        raise
+    except (OSError, NotImplementedError):
+        return False
+    try:
+        os.unlink(src)
+    except OSError:
+        # Do not leave the comic under two names; *dst* is the link we just made.
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def _rename_no_clobber(src: str, dst: str) -> None:
+    """Rename *src* to *dst*, raising ``FileExistsError`` instead of replacing
+    a different file already at *dst*.
+
+    A case-only rename (``Foo.cbz`` -> ``foo.cbz``) on a case-insensitive mount
+    finds *dst* "existing" because it is *src* itself; that is not a collision.
+    """
+    if os.path.lexists(dst):
+        if _same_file(src, dst):
+            os.rename(src, dst)
+            return
+        raise _destination_exists(dst)
+    if os.name == "nt":
+        os.rename(src, dst)  # refuses an existing destination on Windows
+        return
+    if _renameat2_noreplace(src, dst):
+        return
+    if _link_then_unlink(src, dst):
+        return
+    if os.path.lexists(dst):
+        raise _destination_exists(dst)
+    os.rename(src, dst)
+
+
 def apply_smart_rename(plan: Dict) -> Dict:
     """
     Apply a plan produced by `plan_smart_rename`.
 
-    Returns a summary dict with counts and per-file errors.
+    Never replaces a file. An item whose destination is taken -- by a file that
+    appeared after the preview, or by an earlier item of this same batch -- is
+    left untouched, counted as skipped and listed in ``conflicts`` with the
+    reason. An item whose destination is the source of another item in the
+    batch (A -> B while B -> C) waits until that one has moved; a cycle is
+    refused.
+
+    Returns a summary dict with counts, per-file errors and conflicts.
     """
-    summary = {"renamed": 0, "skipped": 0, "failed": 0, "errors": [], "directories": []}
+    summary = {
+        "renamed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "errors": [],
+        "conflicts": [],
+        "directories": [],
+    }
 
     try:
         from app import update_index_on_move
     except Exception:
         update_index_on_move = None
 
+    def conflict(old_path, new_path, reason):
+        summary["skipped"] += 1
+        summary["conflicts"].append(
+            {
+                "old_path": old_path,
+                "new_path": new_path,
+                "old_name": os.path.basename(old_path or ""),
+                "new_name": os.path.basename(new_path or ""),
+                "reason": reason,
+            }
+        )
+        app_logger.warning(f"smart_rename: not renaming {old_path} -> {new_path}: {reason}")
+
+    # Collect every rename first, so the batch can be checked as a whole.
+    queue = []
+    claimed = {}
     for dir_entry in plan.get("directories", []):
         if dir_entry.get("status") != "ok":
             summary["skipped"] += 1
@@ -540,29 +686,70 @@ def apply_smart_rename(plan: Dict) -> Dict:
             if f.get("status") != "ok":
                 summary["skipped"] += 1
                 continue
-            old_path = f["old_path"]
-            new_path = f["new_path"]
+            old_path = f.get("old_path")
+            new_path = f.get("new_path")
+            if not isinstance(old_path, str) or not isinstance(new_path, str) or not new_path:
+                summary["failed"] += 1
+                summary["errors"].append(
+                    {"old_path": old_path, "new_path": new_path, "error": "Malformed plan entry"}
+                )
+                continue
+            if old_path == new_path:
+                summary["skipped"] += 1
+                continue
+            key = os.path.normcase(os.path.abspath(new_path))
+            if key in claimed:
+                conflict(
+                    old_path,
+                    new_path,
+                    f"{os.path.basename(claimed[key])} is also being renamed to this name",
+                )
+                continue
+            claimed[key] = old_path
+            queue.append((old_path, new_path))
+
+        summary["directories"].append({"dir": dir_entry.get("dir"), "status": "ok"})
+
+    pending_sources = {old for old, _ in queue}
+    while queue:
+        deferred = []
+        for old_path, new_path in queue:
+            # A -> B while B -> C: B has to move first, or A would find B taken.
+            if new_path in pending_sources and not _same_file(old_path, new_path):
+                deferred.append((old_path, new_path))
+                continue
+            pending_sources.discard(old_path)
             try:
-                os.rename(old_path, new_path)
-                summary["renamed"] += 1
-                if update_index_on_move:
-                    try:
-                        update_index_on_move(old_path, new_path)
-                    except Exception as e:
-                        app_logger.warning(
-                            f"smart_rename: index update failed for {old_path} -> {new_path}: {e}"
-                        )
+                _rename_no_clobber(old_path, new_path)
+            except FileExistsError:
+                conflict(
+                    old_path,
+                    new_path,
+                    "a file already exists with that name (it appeared after the preview)",
+                )
+                continue
             except Exception as e:
                 summary["failed"] += 1
                 summary["errors"].append(
                     {"old_path": old_path, "new_path": new_path, "error": str(e)}
                 )
-                app_logger.error(
-                    f"smart_rename: rename failed {old_path} -> {new_path}: {e}"
-                )
+                app_logger.error(f"smart_rename: rename failed {old_path} -> {new_path}: {e}")
+                continue
 
-        summary["directories"].append(
-            {"dir": dir_entry.get("dir"), "status": "ok"}
-        )
+            summary["renamed"] += 1
+            if update_index_on_move:
+                try:
+                    update_index_on_move(old_path, new_path)
+                except Exception as e:
+                    app_logger.warning(
+                        f"smart_rename: index update failed for {old_path} -> {new_path}: {e}"
+                    )
+
+        if len(deferred) == len(queue):
+            # Nothing moved this pass: what is left is a cycle (A -> B -> A).
+            for old_path, new_path in deferred:
+                conflict(old_path, new_path, "the target is part of a rename cycle in this batch")
+            break
+        queue = deferred
 
     return summary

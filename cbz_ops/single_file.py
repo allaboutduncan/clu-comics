@@ -65,26 +65,31 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir,
         
         # Step 1: Extract RAR file
         app_logger.info(f"Step 1/3: Extracting {os.path.basename(rar_path)}...")
-        extraction_success, failed_count = extract_rar_with_unar(rar_path, temp_extraction_dir)
+        extraction_success, missing = extract_rar_with_unar(rar_path, temp_extraction_dir)
 
         if not extraction_success:
-            app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
-            _record_convert_problem(
-                rar_path, problem_source,
-                error_message=(
-                    f"Nothing could be extracted from "
-                    f"{os.path.basename(rar_path)}"
-                ),
-            )
+            # All or nothing: a CBZ built from part of the archive would be
+            # reported as converted and the original deleted behind it.
+            if missing:
+                app_logger.error(
+                    f"Failed to convert {os.path.basename(rar_path)}: {missing} file(s) "
+                    f"could not be extracted. The original has been kept."
+                )
+                _record_convert_problem(
+                    rar_path, problem_source,
+                    error_class=_partial_extract_class(),
+                    error_message=incomplete_extraction_message(missing),
+                )
+            else:
+                app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
+                _record_convert_problem(
+                    rar_path, problem_source,
+                    error_message=(
+                        f"Nothing could be extracted from "
+                        f"{os.path.basename(rar_path)}"
+                    ),
+                )
             return False
-
-        if failed_count > 0:
-            app_logger.warning(f"Partial extraction: {failed_count} file(s) skipped in {os.path.basename(rar_path)}")
-            try:
-                from core.app_state import add_notification
-                add_notification(f"{os.path.basename(rar_path)}: {failed_count} file(s) could not be extracted (corrupt archive)")
-            except Exception:
-                pass
 
         # Flatten wrapper directory so ComicInfo.xml stays at archive root
         _flatten_single_wrapper_dir(temp_extraction_dir)
@@ -149,6 +154,22 @@ def convert_single_rar_file(rar_path, cbz_path, temp_extraction_dir,
         app_logger.error(f"Failed to convert {os.path.basename(rar_path)}: {e}")
         _record_convert_problem(rar_path, problem_source, exc=e)
         return False
+
+
+def incomplete_extraction_message(missing):
+    """Library Health text for an archive that would not extract in full."""
+    return (
+        f"{missing} file(s) could not be extracted, so no CBZ was written "
+        f"and the original was kept"
+    )
+
+
+def _partial_extract_class():
+    try:
+        from core.problem_files import CLASS_RAR_PARTIAL
+        return CLASS_RAR_PARTIAL
+    except Exception:
+        return None
 
 
 def _record_convert_problem(path, source, exc=None, error_class=None,
@@ -565,4 +586,7 @@ if __name__ == "__main__":
         app_logger.error("No file provided!")
     else:
         file_path = sys.argv[1]
-        convert_to_cbz(file_path)
+        # The exit status is how /stream tells the browser what happened. It
+        # used to be 0 whatever the result, so a failed conversion ended in
+        # an "Operation completed successfully!" toast.
+        sys.exit(0 if convert_to_cbz(file_path) else 1)

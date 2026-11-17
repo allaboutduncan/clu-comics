@@ -337,5 +337,5 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/index.js') }}?v={{ range(1000, 9999) | random }}&t=202510"></script>
+<script src="{{ asset('js/index.js') }}"></script>
 {% endblock %}

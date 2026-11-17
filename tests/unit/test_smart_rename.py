@@ -642,6 +642,269 @@ class TestApplySmartRename:
         assert summary["skipped"] >= 1
 
 
+def _plan(directory, *pairs):
+    """A hand-built apply plan renaming each (old_name, new_name) in *directory*."""
+    return {
+        "root": str(directory),
+        "directories": [
+            {
+                "dir": str(directory),
+                "status": "ok",
+                "files": [
+                    {
+                        "status": "ok",
+                        "old_path": str(directory / old),
+                        "old_name": old,
+                        "new_path": str(directory / new),
+                        "new_name": new,
+                    }
+                    for old, new in pairs
+                ],
+            }
+        ],
+    }
+
+
+@pytest.fixture
+def index_hook():
+    """Stand in for ``app.update_index_on_move`` (app.py cannot be imported in
+    tests), recording every bookkeeping call apply_smart_rename makes."""
+    import sys
+    import types
+
+    calls = []
+    fake_app = types.ModuleType("app")
+    fake_app.update_index_on_move = lambda old, new: calls.append((old, new))
+    with patch.dict(sys.modules, {"app": fake_app}):
+        yield calls
+
+
+class TestApplyNeverOverwrites:
+    """The preview is computed when the modal opens and applied whenever the
+    user clicks Apply. A comic that lands at a planned name in between used to
+    be silently replaced by os.rename on POSIX."""
+
+    def test_destination_that_appeared_after_preview_is_left_alone(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import plan_smart_rename, apply_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        (d / "Sandman 1.cbz").write_bytes(b"source bytes")
+        (d / "Sandman 2.cbz").write_bytes(b"second issue")
+
+        with _enable_custom_rename():
+            plan = plan_smart_rename(str(d), recursive=False)
+        # A download lands at the planned name between preview and apply.
+        (d / "Sandman v2 001 (1989).cbz").write_bytes(b"newcomer bytes")
+
+        summary = apply_smart_rename(plan)
+
+        assert (d / "Sandman 1.cbz").read_bytes() == b"source bytes"
+        assert (d / "Sandman v2 001 (1989).cbz").read_bytes() == b"newcomer bytes"
+        assert summary["renamed"] == 1
+        assert summary["failed"] == 0
+        assert summary["skipped"] == 1
+        [c] = summary["conflicts"]
+        assert c["old_name"] == "Sandman 1.cbz"
+        assert c["new_name"] == "Sandman v2 001 (1989).cbz"
+        assert "already exists" in c["reason"]
+        # The other item still renamed, and only it had its references moved.
+        assert (d / "Sandman v2 002 (1989).cbz").read_bytes() == b"second issue"
+        assert index_hook == [
+            (str(d / "Sandman 2.cbz"), str(d / "Sandman v2 002 (1989).cbz"))
+        ]
+
+    def test_duplicate_targets_in_one_batch(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import apply_smart_rename
+        (tmp_path / "a.cbz").write_bytes(b"A")
+        (tmp_path / "b.cbz").write_bytes(b"B")
+
+        summary = apply_smart_rename(
+            _plan(tmp_path, ("a.cbz", "Same 001.cbz"), ("b.cbz", "Same 001.cbz"))
+        )
+
+        assert (tmp_path / "Same 001.cbz").read_bytes() == b"A"
+        assert (tmp_path / "b.cbz").read_bytes() == b"B"
+        assert summary["renamed"] == 1
+        [c] = summary["conflicts"]
+        assert c["old_name"] == "b.cbz"
+        assert "a.cbz" in c["reason"]
+        assert index_hook == [(str(tmp_path / "a.cbz"), str(tmp_path / "Same 001.cbz"))]
+
+    def test_chain_is_renamed_in_a_safe_order(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import apply_smart_rename
+        (tmp_path / "A.cbz").write_bytes(b"A")
+        (tmp_path / "B.cbz").write_bytes(b"B")
+
+        # A -> B is listed first, while B still occupies its target.
+        summary = apply_smart_rename(
+            _plan(tmp_path, ("A.cbz", "B.cbz"), ("B.cbz", "C.cbz"))
+        )
+
+        assert summary["renamed"] == 2
+        assert summary["conflicts"] == []
+        assert (tmp_path / "B.cbz").read_bytes() == b"A"
+        assert (tmp_path / "C.cbz").read_bytes() == b"B"
+        assert not (tmp_path / "A.cbz").exists()
+        assert index_hook == [
+            (str(tmp_path / "B.cbz"), str(tmp_path / "C.cbz")),
+            (str(tmp_path / "A.cbz"), str(tmp_path / "B.cbz")),
+        ]
+
+    def test_cycle_is_refused_without_touching_either_file(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import apply_smart_rename
+        (tmp_path / "A.cbz").write_bytes(b"A")
+        (tmp_path / "B.cbz").write_bytes(b"B")
+
+        summary = apply_smart_rename(
+            _plan(tmp_path, ("A.cbz", "B.cbz"), ("B.cbz", "A.cbz"))
+        )
+
+        assert summary["renamed"] == 0
+        assert len(summary["conflicts"]) == 2
+        assert (tmp_path / "A.cbz").read_bytes() == b"A"
+        assert (tmp_path / "B.cbz").read_bytes() == b"B"
+        assert index_hook == []
+
+    def test_case_only_rename_still_succeeds(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import apply_smart_rename
+        (tmp_path / "sandman 001.cbz").write_bytes(b"S")
+
+        summary = apply_smart_rename(_plan(tmp_path, ("sandman 001.cbz", "Sandman 001.cbz")))
+
+        assert summary["renamed"] == 1
+        assert summary["conflicts"] == []
+        assert os.listdir(tmp_path) == ["Sandman 001.cbz"]
+        assert (tmp_path / "Sandman 001.cbz").read_bytes() == b"S"
+        assert index_hook == [
+            (str(tmp_path / "sandman 001.cbz"), str(tmp_path / "Sandman 001.cbz"))
+        ]
+
+    def test_normal_rename_runs_bookkeeping(self, tmp_path, index_hook):
+        from cbz_ops.smart_rename import plan_smart_rename, apply_smart_rename
+        d = tmp_path / "Sandman"
+        d.mkdir()
+        _write_cvinfo(d)
+        _write_series_json(d, name="Sandman", volume=2, year=1989)
+        (d / "Sandman 1.cbz").write_bytes(b"one")
+
+        with _enable_custom_rename():
+            plan = plan_smart_rename(str(d), recursive=False)
+        summary = apply_smart_rename(plan)
+
+        assert summary["renamed"] == 1
+        assert summary["conflicts"] == []
+        assert (d / "Sandman v2 001 (1989).cbz").read_bytes() == b"one"
+        assert index_hook == [(str(d / "Sandman 1.cbz"), str(d / "Sandman v2 001 (1989).cbz"))]
+
+
+class TestRenameNoClobberPrimitives:
+    """Each tier of _rename_no_clobber. Windows (where the suite runs locally)
+    takes the os.rename branch, so the POSIX tiers are exercised directly."""
+
+    def test_link_then_unlink_renames(self, tmp_path):
+        from cbz_ops.smart_rename import _link_then_unlink
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        assert _link_then_unlink(str(src), str(dst)) is True
+        assert not src.exists()
+        assert dst.read_bytes() == b"A"
+
+    def test_link_then_unlink_refuses_existing(self, tmp_path):
+        from cbz_ops.smart_rename import _link_then_unlink
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        dst.write_bytes(b"B")
+        with pytest.raises(FileExistsError):
+            _link_then_unlink(str(src), str(dst))
+        assert src.read_bytes() == b"A"
+        assert dst.read_bytes() == b"B"
+
+    def test_link_unsupported_reports_false(self, tmp_path):
+        from cbz_ops.smart_rename import _link_then_unlink
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        with patch("cbz_ops.smart_rename.os.link",
+                   side_effect=PermissionError(1, "Operation not permitted")):
+            assert _link_then_unlink(str(src), str(dst)) is False
+        assert src.read_bytes() == b"A"
+        assert not dst.exists()
+
+    def test_failed_unlink_removes_the_new_link(self, tmp_path):
+        from cbz_ops.smart_rename import _link_then_unlink
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        real_unlink = os.unlink
+
+        def unlink(path):
+            if path == str(src):
+                raise PermissionError(13, "Permission denied")
+            real_unlink(path)
+
+        with patch("cbz_ops.smart_rename.os.unlink", side_effect=unlink):
+            with pytest.raises(PermissionError):
+                _link_then_unlink(str(src), str(dst))
+        assert src.read_bytes() == b"A"
+        assert not dst.exists()
+
+    def _posix(self):
+        """Run _rename_no_clobber's POSIX path on any platform."""
+        import cbz_ops.smart_rename as sr
+        fake_os = MagicMock(wraps=os)
+        fake_os.name = "posix"
+        fake_os.path = os.path
+        return patch.object(sr, "os", fake_os)
+
+    def test_posix_falls_back_to_link_when_renameat2_unavailable(self, tmp_path):
+        import cbz_ops.smart_rename as sr
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        with self._posix(), patch.object(sr, "_renameat2_noreplace", return_value=False), \
+             patch.object(sr, "_link_then_unlink", wraps=sr._link_then_unlink) as link:
+            sr._rename_no_clobber(str(src), str(dst))
+        link.assert_called_once()
+        assert dst.read_bytes() == b"A"
+
+    def test_posix_without_hard_links_falls_back_to_rename(self, tmp_path):
+        import cbz_ops.smart_rename as sr
+        src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
+        src.write_bytes(b"A")
+        with self._posix(), patch.object(sr, "_renameat2_noreplace", return_value=False), \
+             patch.object(sr, "_link_then_unlink", return_value=False):
+            sr._rename_no_clobber(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_bytes() == b"A"
+
+    def test_renameat2_eexist_raises_file_exists(self, tmp_path):
+        import errno
+        import cbz_ops.smart_rename as sr
+
+        fake = MagicMock(return_value=-1)
+        with patch.object(sr, "_load_renameat2", return_value=fake), \
+             patch("ctypes.get_errno", return_value=errno.EEXIST):
+            with pytest.raises(FileExistsError):
+                sr._renameat2_noreplace(str(tmp_path / "a"), str(tmp_path / "b"))
+
+    def test_renameat2_unsupported_by_filesystem_reports_false(self, tmp_path):
+        import errno
+        import cbz_ops.smart_rename as sr
+
+        fake = MagicMock(return_value=-1)
+        with patch.object(sr, "_load_renameat2", return_value=fake), \
+             patch("ctypes.get_errno", return_value=errno.EINVAL):
+            assert sr._renameat2_noreplace(str(tmp_path / "a"), str(tmp_path / "b")) is False
+
+    def test_renameat2_success(self, tmp_path):
+        import cbz_ops.smart_rename as sr
+
+        fake = MagicMock(return_value=0)
+        with patch.object(sr, "_load_renameat2", return_value=fake):
+            assert sr._renameat2_noreplace(str(tmp_path / "a"), str(tmp_path / "b")) is True
+        args = fake.call_args.args
+        assert args[4] == sr._RENAME_NOREPLACE
+
+
 def _client(library):
     """A real ComicVineClient over a mock Simyan, so the guard runs."""
     from models.comicvine import ComicVineClient

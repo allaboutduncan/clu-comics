@@ -40,6 +40,11 @@ services:
             ## user not in the share group) can write into CLU-created files/folders. Use 002 for
             ## group-writable (775/664, needs PGID = your NAS share group), or 022 for owner-only.
             # - UMASK=000
+            ## Only if a reverse proxy rewrites the Host header (and sends no
+            ## X-Forwarded-Host) so that changes in the UI fail with "Cross-site
+            ## request refused": your public address(es), comma-separated.
+            ## See "Running behind a reverse proxy" in README.md.
+            # - CLU_TRUSTED_ORIGINS=https://comics.example.com
             # GCD Database: download the SQLite dump from https://www.comics.org/download/,
             # mount it into the container, and point CLU at it (or set the path in
             # Config -> Metadata Providers instead of using this env var).

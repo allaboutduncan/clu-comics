@@ -109,6 +109,35 @@ class TestConvertRarDirectory:
         mock_convert.assert_called_once()
 
     @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
+    def test_incomplete_extraction_keeps_the_original(self, tmp_path, caplog):
+        """A bulk run must not delete a .cbr it only partly extracted.
+
+        It also has to say so: the folder-level toast is built from the
+        "Not converted:" line, and Library Health from the recorded row.
+        """
+        import logging
+        from cbz_ops.convert import convert_rar_directory
+        from core.problem_files import CLASS_RAR_PARTIAL, SOURCE_CONVERT
+
+        cbr = tmp_path / "issue1.cbr"
+        cbr.write_bytes(b"fake rar data")
+        recorded = []
+
+        with patch("cbz_ops.convert.extract_rar_with_unar",
+                   return_value=(False, 65)),                 patch("core.problem_files.record_problem",
+                      side_effect=lambda *a, **k: recorded.append((a, k))),                 caplog.at_level(logging.WARNING):
+            result = convert_rar_directory(str(tmp_path))
+
+        assert result == []
+        assert cbr.exists()
+        assert not (tmp_path / "issue1.cbz").exists()
+        assert not (tmp_path / ".temp_issue1").exists()
+        assert [(a, k["error_class"]) for a, k in recorded] == [
+            ((str(cbr), SOURCE_CONVERT), CLASS_RAR_PARTIAL)
+        ]
+        assert "Not converted: issue1.cbr" in caplog.text
+
+    @patch("cbz_ops.convert._convert_subdirectories", lambda: False)
     def test_empty_directory(self, tmp_path):
         from cbz_ops.convert import convert_rar_directory
 

@@ -5,7 +5,7 @@
 {% block title %}{{ series.name }} - Series{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/files.css') }}">
+<link rel="stylesheet" href="{{ asset('css/files.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -355,15 +355,15 @@
                             <td class="issue-date-cell">{{ issue.store_date or '-' }}</td>
                             <td class="text-end pe-4 issue-action-cell">
                                 {% if mapped_path and status.get('found') and status.get('file_path') %}
-                                <!-- Found in collection - show file actions -->
-                                <div class="btn-group" role="group">
+                                <!-- Found in collection - show file actions. The path rides in data-* (a fixed handler reads it back): inside a JS string literal an apostrophe in a folder name ended the string. -->
+                                <div class="btn-group" role="group" data-issue-path="{{ status.get('file_path')|replace('\\', '/')|e }}" data-issue-num="{{ issue.number }}">
                                     <button aria-label="View CBZ Info" type="button" class="btn btn-sm btn-outline-info text-info"
-                                        onclick="viewIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}', '{{ issue.number }}')"
+                                        onclick="const g = this.closest('[data-issue-path]').dataset; viewIssueFile(g.issuePath, g.issueNum)"
                                         title="View CBZ Info">
                                         <i class="bi bi-eye"></i>
                                     </button>
                                     <button aria-label="Edit CBZ" type="button" class="btn btn-sm btn-outline-primary"
-                                        onclick="editIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}')"
+                                        onclick="editIssueFile(this.closest('[data-issue-path]').dataset.issuePath)"
                                         title="Edit CBZ">
                                         <i class="bi bi-pencil"></i>
                                     </button>
@@ -374,30 +374,30 @@
                                         </button>
                                         <ul class="dropdown-menu dropdown-menu-end shadow">
                                             <li><a class="dropdown-item" href="#"
-                                                    onclick="executeIssueScript('crop', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
+                                                    onclick="executeIssueScript('crop', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-crop me-2"></i>Crop Cover
                                                 </a></li>
                                             <li><a class="dropdown-item" href="#"
-                                                    onclick="executeIssueScript('remove', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
+                                                    onclick="executeIssueScript('remove', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-file-minus me-2"></i>Remove 1st Image
                                                 </a></li>
                                             <li><a class="dropdown-item" href="#"
-                                                    onclick="executeIssueScript('single_file', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
+                                                    onclick="executeIssueScript('single_file', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-hammer me-2"></i>Rebuild
                                                 </a></li>
                                             <li><a class="dropdown-item" href="#"
-                                                    onclick="executeIssueScript('enhance_single', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
+                                                    onclick="executeIssueScript('enhance_single', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-stars me-2"></i>Enhance
                                                 </a></li>
                                             <li><a class="dropdown-item" href="#"
-                                                    onclick="executeIssueScript('add', '{{ status.get('file_path')|replace('\\', '/')|e }}'); return false;">
+                                                    onclick="executeIssueScript('add', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-file-plus me-2"></i>Add Blank to End
                                                 </a></li>
                                             <li>
                                                 <hr class="dropdown-divider">
                                             </li>
                                             <li><a class="dropdown-item text-danger" href="#"
-                                                    onclick="deleteIssueFile('{{ status.get('file_path')|replace('\\', '/')|e }}', '{{ issue.number }}'); return false;">
+                                                    onclick="const g = this.closest('[data-issue-path]').dataset; deleteIssueFile(g.issuePath, g.issueNum); return false;">
                                                     <i class="bi bi-trash me-2"></i>Delete Issue
                                                 </a></li>
                                         </ul>
@@ -406,13 +406,13 @@
                                 {% elif mapped_path and has_manual %}
                                 <!-- Manually marked as owned/skipped - show clear button -->
                                 <button aria-label="Clear {{ manual.status }} status" class="btn btn-sm btn-outline-dark"
-                                    onclick="clearManualStatus('{{ issue.number }}')"
+                                    data-issue-num="{{ issue.number }}" onclick="clearManualStatus(this.dataset.issueNum)"
                                     title="Clear {{ manual.status }} status">
                                     <i class="bi bi-x-circle"></i>
                                 </button>
                                 {% else %}
                                 <!-- Not found - show search with mark dropdown -->
-                                <div class="btn-group" role="group">
+                                <div class="btn-group" role="group" data-issue-num="{{ issue.number }}">
                                     <button aria-label="Search GetComics" class="btn btn-sm btn-outline-primary"
                                         data-series="{{ series.name }}"
                                         data-issue="{{ issue.number }}"
@@ -428,11 +428,11 @@
                                     </button>
                                     <ul class="dropdown-menu dropdown-menu-end shadow">
                                         <li><a class="dropdown-item" href="#"
-                                                onclick="markIssue('{{ issue.number }}', 'owned'); return false;">
+                                                onclick="markIssue(this.closest('[data-issue-num]').dataset.issueNum, 'owned'); return false;">
                                                 <i class="bi bi-bookmark-check me-2"></i>Mark as Owned
                                             </a></li>
                                         <li><a class="dropdown-item" href="#"
-                                                onclick="markIssue('{{ issue.number }}', 'skipped'); return false;">
+                                                onclick="markIssue(this.closest('[data-issue-num]').dataset.issueNum, 'skipped'); return false;">
                                                 <i class="bi bi-skip-forward-circle me-2"></i>Mark as Skipped
                                             </a></li>
                                     </ul>
@@ -929,7 +929,7 @@
 {% block scripts %}
 {{ super() }}
 {% include 'partials/modal_series_json.html' %}
-<script src="{{ url_for('static', filename='js/clu-series-json.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-series-json.js') }}"></script>
 <script>
     // Refresh the series.json badge once the file has been written.
     window._cluSeriesJson = { onComplete: function () { setTimeout(function () { window.location.reload(); }, 1200); } };
@@ -1316,10 +1316,10 @@
         const container = CLU.toastContainer();
 
         const toastId = 'manual-toast-' + Date.now();
-        const label = filename ? escapeHtmlGC(filename) : 'this file';
-        // manualUrl is placed in an href attribute; escapeHtmlGC() safely encodes
+        const label = filename ? CLU.escapeHtml(filename) : 'this file';
+        // manualUrl is placed in an href attribute; CLU.escapeHtml() safely encodes
         // quotes/angle brackets so it can't break out of the attribute.
-        const safeUrl = escapeHtmlGC(manualUrl);
+        const safeUrl = CLU.escapeHtml(manualUrl);
         const toastHtml = `
         <div id="${toastId}" class="toast align-items-center text-bg-warning border-0" role="alert"
              data-bs-autohide="false">
@@ -1343,12 +1343,6 @@
         const toast = new bootstrap.Toast(toastEl, { autohide: false });
         toast.show();
         toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
-    }
-
-    function escapeHtmlGC(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     // GetComics Search Aliases
@@ -1382,7 +1376,7 @@
             container.innerHTML = '<em class="text-muted">No aliases set</em>';
             return;
         }
-        container.innerHTML = list.map(a => `<span class="badge bg-secondary me-1">${escapeHtml(a.trim())}</span>`).join('');
+        container.innerHTML = list.map(a => `<span class="badge bg-secondary me-1">${CLU.escapeHtml(a.trim())}</span>`).join('');
     }
 
     function openAliasesModal() {
@@ -1394,8 +1388,15 @@
         const candidatesList = document.getElementById('aliasesCandidates');
         if (candidateAliases.length > 0) {
             candidatesList.innerHTML = candidateAliases.map(a =>
-                `<button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1" onclick="addCandidateAlias('${escapeHtml(a)}')">${escapeHtml(a)}</button>`
+                `<button type="button" class="btn btn-sm btn-outline-secondary me-1 mb-1" data-candidate-alias="${CLU.escapeHtml(a)}">${CLU.escapeHtml(a)}</button>`
             ).join('');
+            if (!candidatesList.dataset.bound) {
+                candidatesList.dataset.bound = '1';
+                candidatesList.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-candidate-alias]');
+                    if (btn) addCandidateAlias(btn.dataset.candidateAlias);
+                });
+            }
         } else {
             candidatesList.innerHTML = '<small class="text-muted">No candidates from sitemap</small>';
         }
@@ -1445,22 +1446,15 @@
         }
     }
 
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     // Load aliases on page load
     document.addEventListener('DOMContentLoaded', loadAliases);
 </script>
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-source-search.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-streaming.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-crop.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-edit.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-delete.js') }}?v={{ range(1000, 9999) | random }}"></script>
-<script src="{{ url_for('static', filename='js/files.js') }}?v={{ range(1000, 9999) | random }}&t=202502"></script>
-<script src="{{ url_for('static', filename='js/series.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-source-search.js') }}"></script>
+<script src="{{ asset('js/clu-streaming.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-crop.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-edit.js') }}"></script>
+<script src="{{ asset('js/clu-cbz-info.js') }}"></script>
+<script src="{{ asset('js/clu-delete.js') }}"></script>
+<script src="{{ asset('js/files.js') }}"></script>
+<script src="{{ asset('js/series.js') }}"></script>
 {% endblock %}

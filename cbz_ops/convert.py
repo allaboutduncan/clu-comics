@@ -7,11 +7,30 @@ import time
 from core.app_logging import app_logger
 from core.settings import get_bool, get_int
 from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
-from cbz_ops.single_file import _flatten_single_wrapper_dir
+from cbz_ops.single_file import (
+    _clear_convert_problem,
+    _flatten_single_wrapper_dir,
+    _partial_extract_class,
+    _record_convert_problem,
+    incomplete_extraction_message,
+)
 
 
 def _convert_subdirectories():
     return get_bool("CONVERT_SUBDIRECTORIES")
+
+
+def _convert_source():
+    """Library Health source for a failed conversion, or None if unavailable.
+
+    Lazy and defensive: this module runs as a /stream subprocess, and a
+    diagnostic must never break the operation it describes.
+    """
+    try:
+        from core.problem_files import SOURCE_CONVERT
+        return SOURCE_CONVERT
+    except Exception:
+        return None
 
 
 
@@ -82,19 +101,31 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         
         # Step 1: Extract RAR file
         app_logger.info(f"Step 1/3: Extracting {os.path.basename(rar_path)}...")
-        extraction_success, failed_count = extract_rar_with_unar(rar_path, temp_extraction_dir)
+        extraction_success, missing = extract_rar_with_unar(rar_path, temp_extraction_dir)
 
         if not extraction_success:
-            app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
+            # All or nothing: the caller deletes the source on True, so a CBZ
+            # built from part of the archive is never an acceptable result.
+            if missing:
+                app_logger.error(
+                    f"Failed to convert {os.path.basename(rar_path)}: {missing} file(s) "
+                    f"could not be extracted. The original has been kept."
+                )
+                _record_convert_problem(
+                    rar_path, _convert_source(),
+                    error_class=_partial_extract_class(),
+                    error_message=incomplete_extraction_message(missing),
+                )
+            else:
+                app_logger.error(f"Failed to extract any files from {os.path.basename(rar_path)}")
+                _record_convert_problem(
+                    rar_path, _convert_source(),
+                    error_message=(
+                        f"Nothing could be extracted from "
+                        f"{os.path.basename(rar_path)}"
+                    ),
+                )
             return False
-
-        if failed_count > 0:
-            app_logger.warning(f"Partial extraction: {failed_count} file(s) skipped in {os.path.basename(rar_path)}")
-            try:
-                from core.app_state import add_notification
-                add_notification(f"{os.path.basename(rar_path)}: {failed_count} file(s) could not be extracted (corrupt archive)")
-            except Exception:
-                pass
 
         # Flatten wrapper directory so ComicInfo.xml stays at archive root
         _flatten_single_wrapper_dir(temp_extraction_dir)
@@ -135,10 +166,12 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
                         app_logger.info(f"Compression progress: {progress_percent:.1f}% ({processed_files}/{total_files} files)")
         
         app_logger.info(f"Successfully converted: {os.path.basename(rar_path)}")
+        _clear_convert_problem(rar_path)
         return True
-        
+
     except Exception as e:
         app_logger.error(f"Failed to convert {os.path.basename(rar_path)}: {e}")
+        _record_convert_problem(rar_path, _convert_source(), exc=e)
         return False
 
 
@@ -160,6 +193,7 @@ def convert_rar_directory(directory, force_recursive=False):
     # Count total files first for progress tracking
     total_files = count_convertable_files(directory, force_recursive=force_recursive)
     processed_files = 0
+    failed_files = 0
 
     if total_files == 0:
         app_logger.info("No RAR or CBR files found to convert.")
@@ -193,6 +227,9 @@ def convert_rar_directory(directory, force_recursive=False):
                         converted_files.append(file_name[:-4])
                         # Delete the original RAR/CBR file.
                         os.remove(rar_path)
+                    else:
+                        failed_files += 1
+                        app_logger.warning(f"Not converted: {file_name} (original kept)")
                     
                     # Clean up temp directory
                     if os.path.exists(temp_extraction_dir):
@@ -218,10 +255,19 @@ def convert_rar_directory(directory, force_recursive=False):
                 if success:
                     converted_files.append(file_name[:-4])
                     os.remove(rar_path)
+                else:
+                    failed_files += 1
+                    app_logger.warning(f"Not converted: {file_name} (original kept)")
                 
                 # Clean up temp directory
                 if os.path.exists(temp_extraction_dir):
                     shutil.rmtree(temp_extraction_dir)
+
+    if failed_files:
+        app_logger.warning(
+            f"{failed_files} of {total_files} file(s) could not be converted and "
+            f"were left as they were. See the Library Health page."
+        )
 
     return converted_files
 

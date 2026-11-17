@@ -29,7 +29,10 @@ produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
 `status='error'` with no message — so the only user-facing surface was a generic
 `error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
 `cbz_ops/rebuild.py` and `cbz_ops/single_file.py` (`rebuild`),
-`cbz_ops/single_file.py` again for a failed CBR/RAR conversion (`convert`),
+`cbz_ops/single_file.py` again and `cbz_ops/convert.py` for a failed CBR/RAR
+conversion (`convert`; an incomplete extraction is `CLASS_RAR_PARTIAL`, whose
+advice is Rebuild first, because the same archive can extract fully on the
+next attempt, see **A RAR extraction is all or nothing** in `watch-pipeline.md`),
 `routes/metadata.py` (`metadata-write`), and `monitor.py` for an archive in
 WATCH that will not unpack (`unpack` — see **A damaged archive must be opened
 once, not once per sweep**). The metadata scanner and `core/bulk_metadata.py`

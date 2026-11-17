@@ -389,6 +389,34 @@ def test_process_file_rar_pack_extracts_and_deletes(handler, monkeypatch):
     assert not os.path.exists(rpath), "archive removed once extraction succeeded"
 
 
+def test_partial_rar_extraction_keeps_the_archive_and_leaks_nothing(handler, monkeypatch):
+    """A pack that gives up only some of its comics is not extracted at all.
+
+    The extraction is staged: it used to run straight into WATCH, where a
+    half-extracted pack left comics for the sweep to move on every pass.
+    """
+    import monitor
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Pack.rar")
+    _write(rpath)
+    recorded = []
+
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.PACKED_COMICS)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda *a, **k: recorded.append(k.get("error_class")))
+
+    def _extract(src, out_dir):
+        assert os.path.abspath(out_dir) != os.path.abspath(watch),             "must extract into a private staging dir, never WATCH itself"
+        _write(os.path.join(out_dir, "Batman 003.cbz"))
+        return False, 2
+    monkeypatch.setattr(monitor, "extract_rar_with_unar", _extract)
+
+    h._process_file(rpath)
+
+    assert os.listdir(watch) == ["Pack.rar"]
+    assert recorded == ["RarExtractPartial"]
+
+
 def test_failed_rar_extraction_keeps_the_archive(handler, monkeypatch):
     """A .rar that could not be opened stays put, so nothing is lost."""
     import monitor
@@ -402,6 +430,47 @@ def test_failed_rar_extraction_keeps_the_archive(handler, monkeypatch):
     h._process_file(rpath)
 
     assert os.path.exists(rpath)
+
+
+def test_a_rar_whose_tools_all_hang_fails_once_and_backs_off(handler, monkeypatch):
+    """A hanging unrar/7z/unar used to block the whole WATCH pipeline forever.
+
+    Every tool runs with a timeout now, so the attempt fails like any other:
+    nothing is left in WATCH but the archive, the failure is on the Library
+    Health page, and the backoff stops the next sweep from opening it again.
+    """
+    import subprocess
+    import helpers
+    import monitor
+
+    h, watch, target = handler
+    rpath = os.path.join(watch, "Hangs.rar")
+    _write(rpath, b"not really a rar")
+    recorded = []
+
+    monkeypatch.setattr("helpers.library.is_allowed_path", lambda p: True)
+    monkeypatch.setattr(monitor, "classify_archive", lambda p: monitor.PACKED_COMICS)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda *a, **k: recorded.append((a, k.get("error_class"))))
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: None)
+
+    def hang(cmd, **kwargs):
+        assert kwargs.get("timeout"), f"{cmd[0]} run without a timeout"
+        if cmd[0] == "lsar" or cmd[1] in ("lb", "l"):
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        dest = {"unrar": lambda: cmd[-1].rstrip("/"),
+                "7z": lambda: cmd[2][2:],
+                "unar": lambda: cmd[3]}[cmd[0]]()
+        _write(os.path.join(dest, "Batman 001.cbz"), b"half")
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+    monkeypatch.setattr(helpers.subprocess, "run", hang)
+
+    assert h._process_file(rpath) is False
+    assert os.listdir(watch) == ["Hangs.rar"], "no partial output, archive kept"
+    assert recorded == [((rpath, monitor.SOURCE_UNPACK), "RarExtractFailed")]
+
+    h._handle_file_if_complete(rpath)
+    assert os.path.abspath(rpath) in h._failed_files
 
 
 def test_rar_in_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch):

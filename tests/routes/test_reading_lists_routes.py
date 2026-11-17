@@ -381,6 +381,34 @@ class TestImportStatus:
         # Clean up
         del import_tasks["test-task"]
 
+    def test_store_prunes_finished_tasks(self):
+        from core.task_registry import TaskRegistry
+        from routes.reading_lists import import_tasks
+
+        assert isinstance(import_tasks, TaskRegistry)
+
+    def test_polling_a_finished_task_keeps_it(self, client, monkeypatch):
+        from routes.reading_lists import import_tasks
+
+        now = [1000.0]
+        monkeypatch.setattr(import_tasks, "_clock", lambda: now[0])
+        monkeypatch.setattr(import_tasks, "_retention", 60)
+        import_tasks["polled"] = {"status": "complete", "message": "Done"}
+        try:
+            import_tasks.prune()                   # retention starts at 1000
+            now[0] = 1050
+            assert client.get(
+                "/api/reading-lists/import-status/polled").get_json()["success"]
+            now[0] = 1100                          # 100s since finished, 50s since poll
+            import_tasks.prune()
+            assert "polled" in import_tasks
+            now[0] = 1110
+            import_tasks.prune()
+            data = client.get("/api/reading-lists/import-status/polled").get_json()
+            assert data["success"] is False
+        finally:
+            import_tasks.pop("polled", None)
+
 
 class TestSearchFile:
 

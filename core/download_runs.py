@@ -35,6 +35,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from core.app_logging import app_logger
+from core.log_redact import redact_url
 
 KIND_GETCOMICS = "getcomics"
 KIND_WEEKLY_PACKS = "weekly_packs"
@@ -185,7 +186,7 @@ class RunRecorder:
         self._item_total += 1
         self._pending.append((
             self.run_id, series_id, _clip(series_name, 200),
-            _clip(issue_number, 40), source, provider, outcome, _clip(detail),
+            _clip(issue_number, 40), source, provider, outcome, _clip(redact_url(detail)),
             download_id, OUTCOME_QUEUED if download_id else None, _now(),
         ))
         if len(self._pending) >= FLUSH_EVERY:
@@ -216,7 +217,7 @@ class RunRecorder:
                     args.append(self._scope)
                 if status:
                     sets += ["status = ?", "finished_at = ?", "error = ?"]
-                    args += [status, _now(), _clip(error)]
+                    args += [status, _now(), _clip(redact_url(error))]
                 conn.execute(
                     f"UPDATE download_runs SET {', '.join(sets)} WHERE id = ?",
                     args + [self.run_id],
@@ -274,7 +275,7 @@ def set_download_outcome(download_id, status, detail=None):
                 conn.execute(
                     "UPDATE download_run_items SET download_status = ?, detail = ?, "
                     "updated_at = ? WHERE download_id = ?",
-                    (status, _clip(detail), _now(), download_id),
+                    (status, _clip(redact_url(detail)), _now(), download_id),
                 )
             else:
                 conn.execute(

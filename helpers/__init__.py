@@ -2,10 +2,13 @@
 # so that `from helpers import is_hidden` etc. continues to work
 # now that helpers/ is a package directory.
 
+import errno
 import os
 import re
 import stat
 import tempfile
+import time
+import uuid
 import zipfile
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import math
@@ -284,6 +287,19 @@ def move_file(src, dst):
     for the two failures a caller genuinely has to act on -- the contents could
     not be copied, or the source could not be removed.
 
+    The copy never writes onto *dst* itself. It goes to a hidden
+    ``.<32 hex>.clu_incoming`` sibling in *dst*'s folder (the shape
+    ``core.problem_replacements`` and ``core.comicvine_db_update`` stage with),
+    which is then ``os.replace``'d over *dst* -- a rename within one directory,
+    so atomic. Copying straight onto *dst* truncated an existing comic first:
+    every in-place CBZ rewrite is staged in ``CACHE_DIR/tmp`` and lands here
+    cross-device, so a disk-full, a NAS drop or a container stop mid-copy left
+    the original truncated and the staged copy deleted -- the comic was gone.
+    A failed copy now removes the sibling and leaves *dst* untouched. A sibling
+    left by a crash is hidden (``is_hidden``: never indexed, moved or matched)
+    and reaped by the next cross-device move into that folder once it is
+    ``STALE_INCOMING_SECONDS`` old.
+
     Not for directories: ``dst`` is always a full file path here.
     """
     try:
@@ -293,17 +309,163 @@ def move_file(src, dst):
         os.replace(src, dst)
         return
     except OSError:
-        pass  # cross-device (EXDEV), or a destination we must copy onto
+        # Cross-device (EXDEV), or a destination we must copy onto. A
+        # case-only rename on a case-insensitive mount is the same file: the
+        # copy below would land on it and the os.remove(src) would delete it.
+        if _same_file(src, dst):
+            raise
 
-    shutil.copyfile(src, dst)
+    dst_dir = os.path.dirname(os.path.abspath(dst))
+    _reap_stale_incoming(dst_dir)
+    # Fixed length, independent of dst's name: a filename component is capped
+    # at 255 *bytes* (less on eCryptfs), so deriving the sibling from a long or
+    # non-ASCII comic name would make the move fail with ENAMETOOLONG.
+    staged = os.path.join(dst_dir, f".{uuid.uuid4().hex}{INCOMING_SUFFIX}")
     try:
-        shutil.copystat(src, dst)
+        shutil.copyfile(src, staged)
+        try:
+            shutil.copystat(src, staged)
+        except OSError as e:
+            app_logger.debug(
+                f"Kept {dst} without its source timestamps/mode ({e}); "
+                "the mount refuses utime/chmod"
+            )
+        # Same directory, so this cannot be cross-device; until it runs the
+        # original at dst is untouched.
+        os.replace(staged, dst)
+    except BaseException:
+        try:
+            os.remove(staged)
+        except OSError:
+            pass
+        raise
+    os.remove(src)
+
+
+def move_tree(src, dst):
+    """Move the directory *src* to *dst*, which must not exist yet.
+
+    The directory counterpart of ``move_file``. ``shutil.move`` of a folder
+    across devices is ``copytree(copy_function=copy2)``, and both the per-file
+    ``copystat`` and copytree's own per-directory ``copystat`` turn a refused
+    ``utime``/``chmod`` into ``shutil.Error`` *after* every byte was copied --
+    so the source is never removed, the caller reports a failure, and a full
+    second copy sits at the destination (#582). Here a refused metadata copy is
+    a DEBUG line, as in ``move_file``.
+
+    The copy goes to a hidden ``.<32 hex>.clu_incoming`` sibling of *dst* and
+    is renamed into place only once complete, so a failed copy leaves nothing
+    at *dst* (the partial sibling is removed). The source is removed last; if
+    that fails the call raises with the complete copy already at *dst*, which
+    is what ``shutil.move`` does too.
+
+    ``shutil.move`` would move *src* **into** *dst* when *dst* is an existing
+    directory. Callers here pass the full destination path, so that silent
+    nesting is refused instead (``FileExistsError``) -- except a case-only
+    rename, where *dst* "exists" only because it is *src*.
+    """
+    if os.path.lexists(dst) and not _same_file(src, dst):
+        raise FileExistsError(errno.EEXIST, "Destination already exists", dst)
+    try:
+        os.rename(src, dst)
+        return
+    except OSError:
+        if _same_file(src, dst):
+            raise
+
+    dst_dir = os.path.dirname(os.path.abspath(dst))
+    staged = os.path.join(dst_dir, f".{uuid.uuid4().hex}{INCOMING_SUFFIX}")
+    try:
+        _copy_tree_tolerant(src, staged)
+        os.rename(staged, dst)
+    except BaseException:
+        shutil.rmtree(staged, ignore_errors=True)
+        raise
+    shutil.rmtree(src)
+
+
+def _copystat_tolerant(src, dst):
+    try:
+        shutil.copystat(src, dst, follow_symlinks=False)
     except OSError as e:
         app_logger.debug(
             f"Kept {dst} without its source timestamps/mode ({e}); "
             "the mount refuses utime/chmod"
         )
-    os.remove(src)
+
+
+def _copy_tree_tolerant(src, dst):
+    """``copytree(symlinks=True)`` whose metadata copies may fail."""
+    os.mkdir(dst)
+    with os.scandir(src) as it:
+        entries = list(it)
+    for entry in entries:
+        target = os.path.join(dst, entry.name)
+        if entry.is_symlink():
+            os.symlink(os.readlink(entry.path), target)
+        elif entry.is_dir(follow_symlinks=False):
+            _copy_tree_tolerant(entry.path, target)
+        else:
+            shutil.copyfile(entry.path, target)
+            _copystat_tolerant(entry.path, target)
+    _copystat_tolerant(src, dst)
+
+
+# Suffix of a file staged beside its destination before an atomic os.replace.
+# Shared with core.problem_replacements and core.comicvine_db_update.
+INCOMING_SUFFIX = ".clu_incoming"
+# A staged sibling this old belongs to a writer that died (a crash, a container
+# stop): a live copy keeps its mtime fresh. A day is far beyond any real copy.
+STALE_INCOMING_SECONDS = 24 * 3600
+# The exact name move_file and move_tree stage under (".<uuid4 hex>.clu_incoming").
+# Only this shape is ever reaped; see _reap_stale_incoming.
+_MOVE_FILE_STAGED = re.compile(r"\.[0-9a-f]{32}" + re.escape(INCOMING_SUFFIX))
+
+
+def _same_file(a, b):
+    try:
+        return os.path.exists(b) and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
+def _reap_stale_incoming(folder):
+    """Remove staged copies in *folder* that a dead ``move_file`` left behind.
+
+    Only names ``move_file`` itself creates are candidates
+    (``_MOVE_FILE_STAGED``: a dot, 32 lowercase hex, ``.clu_incoming``). The
+    fixed-name siblings ``core.problem_replacements`` and
+    ``core.comicvine_db_update`` stage with share the suffix but not the shape,
+    and are never touched here: a replacement sits staged beside the damaged
+    file across the whole trash step, and those modules clear their own
+    leftovers. Directories are skipped too, which keeps a ``move_tree`` stage
+    being filled out of reach.
+
+    Age is the newer of ``st_mtime`` and ``st_ctime``, never mtime alone.
+    ``move_file`` runs ``copystat`` on its sibling just before the final
+    ``os.replace``, which stamps the *source's* mtime -- often months old -- on
+    a file created a moment ago, so by mtime alone a live copy reads as a day
+    stale. ctime is recent for a file just staged either way: on POSIX it is
+    the inode-change time, which copystat itself bumps; on Windows it is the
+    creation time. Best-effort; never raises.
+    """
+    cutoff = time.time() - STALE_INCOMING_SECONDS
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if not _MOVE_FILE_STAGED.fullmatch(entry.name):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    if max(st.st_mtime, st.st_ctime) < cutoff:
+                        os.remove(entry.path)
+                        app_logger.info(f"Removed stale staged copy {entry.path}")
+                except OSError as e:
+                    app_logger.debug(f"Could not remove stale {entry.path}: {e}")
+    except OSError:
+        pass
 
 
 def _zip_assembly_dir():
@@ -364,7 +526,9 @@ def open_zip_for_write(dest_path, compression=zipfile.ZIP_DEFLATED,
         # when the temp and destination live on different devices. move_file
         # rather than shutil.move: a mount that refuses utime/chmod must not
         # turn a complete archive into a reported failure -- and the next line
-        # sets the mode we actually want anyway.
+        # sets the mode we actually want anyway. It also copies to a hidden
+        # sibling and renames that over dest_path, so an in-place rewrite that
+        # fails mid-copy leaves the original comic intact.
         move_file(tmp_path, dest_path)
         moved = True
         if set_permissions:
@@ -501,6 +665,83 @@ def unzip_file(file_path):
     return base_dir
 
 
+# External archive tools (unrar, 7z, unar, lsar) run with a timeout, always.
+# Without one a tool that hangs -- a damaged archive, a password prompt, a NAS
+# read that stalls -- blocks its caller forever, and for monitor.py that is the
+# whole WATCH pipeline. A timed-out attempt is a failed attempt: the extractor
+# discards it and tries the next tool, exactly as for a partial extraction.
+#
+# A listing reads headers only, so it gets a fixed, short budget. An extraction
+# scales with the size of the archive *set* (every volume of a multipart RAR):
+# a floor for small comics on a slow mount, a rate well below what a NAS
+# sustains so a legitimate multi-GB release is not cut off, and a ceiling so a
+# truly stuck tool is given up on within the hour.
+ARCHIVE_LIST_TIMEOUT = 60
+ARCHIVE_EXTRACT_TIMEOUT_MIN = 180
+ARCHIVE_EXTRACT_TIMEOUT_MAX = 3600
+ARCHIVE_EXTRACT_BYTES_PER_SECOND = 4 * 1024 * 1024
+
+# The name an archive set shares once its volume suffix is removed:
+# "X.part01.rar", "X.r00", "X.z01" and "X.001" all belong to "X".
+_ARCHIVE_VOLUME_SUFFIX_RE = re.compile(
+    r"(?:\.part\d+)?\.(?:rar|r\d{2,3}|zip|z\d{2}|7z|cbr|cbz|cb7|\d{3})$",
+    re.IGNORECASE,
+)
+
+
+def _archive_set_size(archive_path):
+    """Bytes in *archive_path* plus every sibling volume of the same set."""
+    try:
+        own = os.path.getsize(archive_path)
+    except OSError:
+        own = 0
+    name = os.path.basename(archive_path)
+    stem = _ARCHIVE_VOLUME_SUFFIX_RE.sub("", name).lower()
+    if stem == name.lower():
+        return own
+    folder = os.path.dirname(archive_path) or "."
+    total = 0
+    try:
+        with os.scandir(folder) as it:
+            for entry in it:
+                if _ARCHIVE_VOLUME_SUFFIX_RE.sub("", entry.name).lower() != stem:
+                    continue
+                try:
+                    if entry.is_file():
+                        total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return own
+    return max(total, own)
+
+
+def archive_extract_timeout(archive_path):
+    """Seconds one extraction attempt of *archive_path* may take."""
+    by_size = _archive_set_size(archive_path) / ARCHIVE_EXTRACT_BYTES_PER_SECOND
+    return int(min(max(by_size, ARCHIVE_EXTRACT_TIMEOUT_MIN), ARCHIVE_EXTRACT_TIMEOUT_MAX))
+
+
+def run_archive_tool(cmd, timeout):
+    """Run an external archive tool and capture its output.
+
+    ``stdin`` is ``/dev/null`` and the tool gets a session of its own, so it
+    has neither a stdin nor a controlling terminal to ask a password on: a
+    prompt reads EOF and the tool fails at once instead of waiting forever.
+    On timeout ``subprocess.run`` kills the tool and reaps it, then raises
+    ``subprocess.TimeoutExpired``; the caller treats that as a failed attempt.
+    (The tools are executed directly, never through a shell, and p7zip's
+    ``7z`` wrapper ``exec``s the binary, so the killed process is the tool.)
+    """
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        timeout=timeout,
+    )
+
+
 def _count_unar_failures(stdout_bytes):
     """Count files that failed during unar extraction from its stdout."""
     try:
@@ -512,23 +753,95 @@ def _count_unar_failures(stdout_bytes):
         return 0
 
 
-def _try_extract_with_tool(tool_name, rar_path, output_dir):
+def _try_extract_with_tool(tool_name, rar_path, output_dir, timeout):
     """Attempt full extraction with a single tool.
 
-    Returns (has_files, failed_count) or raises FileNotFoundError if tool missing.
+    Returns (returncode, has_files, failed_count, output_tail) or raises
+    FileNotFoundError if the tool is missing and ``subprocess.TimeoutExpired``
+    if it ran past *timeout* seconds (it has been killed by then).
     """
     if tool_name == "unrar":
-        cmd = ["unrar", "x", "-y", "-o+", rar_path, output_dir + "/"]
+        # -p-: never ask for a password.
+        cmd = ["unrar", "x", "-y", "-o+", "-p-", rar_path, output_dir + "/"]
     elif tool_name == "7z":
         cmd = ["7z", "x", f"-o{output_dir}", "-y", rar_path]
     else:
         cmd = ["unar", "-f", "-o", output_dir, rar_path]
 
-    result = subprocess.run(cmd, capture_output=True)
+    result = run_archive_tool(cmd, timeout)
     has_files = os.path.exists(output_dir) and any(os.listdir(output_dir))
     failed_count = _count_unar_failures(result.stdout) if tool_name == "unar" and result.stdout else 0
 
-    return result.returncode, has_files, failed_count
+    return result.returncode, has_files, failed_count, _tool_output_tail(result)
+
+
+def _tool_output_tail(result, limit=400):
+    """The end of a tool's stderr (else stdout), on one line, for a log line.
+
+    The tail rather than the head: unrar and 7z print their error summary last.
+    """
+    for stream in (getattr(result, "stderr", None), getattr(result, "stdout", None)):
+        if not stream:
+            continue
+        try:
+            text = " ".join(stream.decode("utf-8", errors="replace").split())
+        except Exception:
+            continue
+        if text:
+            return text[-limit:]
+    return ""
+
+
+def _count_page_images(root):
+    """Number of page images under *root* (recursive)."""
+    from helpers.unwrap import PAGE_IMAGE_EXTS
+
+    count = 0
+    for _dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            if os.path.splitext(name)[1].lower() in PAGE_IMAGE_EXTS:
+                count += 1
+    return count
+
+
+def _expected_page_count(rar_path):
+    """Page images the archive says it holds, or ``None`` when it cannot say.
+
+    ``None`` is "unknown" and must never be read as zero: an archive no tool
+    can list is still judged on the extractor's own exit status.
+    """
+    try:
+        from helpers.unwrap import PAGE_IMAGE_EXTS
+
+        names = list_rar_entries(rar_path)
+    except Exception:
+        return None
+    if names is None:
+        return None
+    return sum(
+        1 for name in names
+        if os.path.splitext(name)[1].lower() in PAGE_IMAGE_EXTS
+    )
+
+
+def _reset_dir(path):
+    shutil.rmtree(path, ignore_errors=True)
+    os.makedirs(path, exist_ok=True)
+
+
+def _promote_extraction(stage, output_dir):
+    """Move a completed extraction out of its private stage into *output_dir*.
+
+    Overwrites, like the ``-o+``/``-y``/``-f`` the tools are run with.
+    """
+    for entry in os.listdir(stage):
+        src = os.path.join(stage, entry)
+        dst = os.path.join(output_dir, entry)
+        if os.path.isdir(src) and os.path.isdir(dst):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            shutil.rmtree(src, ignore_errors=True)
+        else:
+            os.replace(src, dst)
 
 
 def extract_rar_with_unar(rar_path, output_dir):
@@ -536,12 +849,29 @@ def extract_rar_with_unar(rar_path, output_dir):
     Extract a RAR file, trying tools in order: unrar (proprietary) → 7z → unar.
 
     The proprietary unrar handles all RAR features including solid archives.
-    7z and unar are used as fallbacks if unrar is not installed.
+    7z and unar are tried when unrar is missing **or did not extract
+    everything**.
+
+    All or nothing. An attempt counts only when the tool exited 0, reported no
+    failed member, and left at least as many page images as the archive lists.
+    Anything less is discarded and the next tool is tried; when none extracts
+    the whole archive the result is a failure and *output_dir* gains nothing.
+
+    It used to return ``(True, 0)`` for any non-zero exit that left one file
+    behind, which every caller read as a clean extraction: a CBR that yielded
+    39 of its 104 pages was packed into a CBZ, reported as converted, and the
+    original deleted. A caller must never be handed a partial payload to
+    decide about -- every one of them deletes the source on success.
 
     :param rar_path: Path to the RAR file.
     :param output_dir: Directory to extract the contents into.
-    :return: tuple(bool, int): (success, failed_file_count)
+    :return: tuple(bool, int): ``(True, 0)`` on a complete extraction.
+        ``(False, n)`` otherwise, where ``n`` is how many files the best
+        attempt was short by (at least 1 when it extracted something) and 0
+        means nothing could be extracted at all.
     """
+    stage = None
+    output_dir_real = None
     try:
         # Resolve to real paths to prevent path traversal
         rar_path = os.path.realpath(rar_path)
@@ -560,45 +890,91 @@ def extract_rar_with_unar(rar_path, output_dir):
             raise RuntimeError(f"Input file does not exist: {rar_path}")
 
         os.makedirs(output_dir, exist_ok=True)
+        output_dir_real = output_dir
+
+        # A discarded attempt is wiped before the next tool runs, and only a
+        # directory this call owns may be wiped. A caller's empty scratch dir
+        # is used as-is; anything else (it has been WATCH itself) gets a
+        # hidden stage inside it, so nothing that was already there is touched.
+        if os.listdir(output_dir):
+            stage = tempfile.mkdtemp(prefix=".clu_rar_", dir=output_dir)
+        else:
+            stage = output_dir
+
+        expected_pages = _expected_page_count(rar_path)
+        timeout = archive_extract_timeout(rar_path)
 
         # Try each tool in order of capability
         tools = ["unrar", "7z", "unar"]
         last_error = None
+        best_missing = 0    # shortfall of the best partial attempt; 0 = none
 
         for tool_name in tools:
             try:
                 app_logger.info(f"Extracting {rar_path} to {output_dir} using {tool_name}")
-                returncode, has_files, failed_count = _try_extract_with_tool(
-                    tool_name, rar_path, output_dir
+                returncode, has_files, failed_count, output_tail = _try_extract_with_tool(
+                    tool_name, rar_path, stage, timeout
                 )
 
-                if returncode == 0 and has_files:
+                if not has_files:
+                    app_logger.warning(
+                        f"{tool_name} produced no files (rc={returncode})"
+                        + (f": {output_tail}" if output_tail else "")
+                    )
+                    _reset_dir(stage)
+                    continue
+
+                extracted_pages = _count_page_images(stage)
+                short_by = (
+                    max(expected_pages - extracted_pages, 0)
+                    if expected_pages is not None else 0
+                )
+                if returncode == 0 and not failed_count and not short_by:
+                    if stage != output_dir:
+                        _promote_extraction(stage, output_dir)
                     app_logger.info(f"Extraction completed with {tool_name}. Output directory: {output_dir}")
                     return True, 0
-                elif returncode != 0 and has_files:
-                    app_logger.warning(
-                        f"{tool_name} partial extraction (rc={returncode}), "
-                        f"continuing with extracted files"
-                    )
-                    return True, failed_count
-                else:
-                    app_logger.warning(f"{tool_name} produced no files (rc={returncode})")
-                    # Clean output_dir for next tool attempt
-                    import shutil
-                    shutil.rmtree(output_dir, ignore_errors=True)
-                    os.makedirs(output_dir, exist_ok=True)
+
+                missing = max(short_by, failed_count, 1)
+                if not best_missing or missing < best_missing:
+                    best_missing = missing
+                of_expected = (
+                    f"{extracted_pages} of {expected_pages} pages"
+                    if expected_pages is not None
+                    else f"{extracted_pages} pages, expected count unknown"
+                )
+                app_logger.warning(
+                    f"{tool_name} did not extract all of {os.path.basename(rar_path)} "
+                    f"(rc={returncode}, {of_expected}); discarding the partial result"
+                    + (f". Tool output: {output_tail}" if output_tail else "")
+                )
+                _reset_dir(stage)
 
             except FileNotFoundError:
                 app_logger.debug(f"{tool_name} not found, trying next tool")
                 continue
+            except subprocess.TimeoutExpired:
+                # The tool has been killed; whatever it wrote is incomplete.
+                last_error = f"{tool_name} timed out after {timeout}s"
+                app_logger.warning(
+                    f"{tool_name} timed out after {timeout}s extracting "
+                    f"{os.path.basename(rar_path)}; discarding its output"
+                )
+                _reset_dir(stage)
+                continue
             except Exception as e:
                 last_error = e
                 app_logger.warning(f"{tool_name} failed: {e}, trying next tool")
-                # Clean output_dir for next tool attempt
-                import shutil
-                shutil.rmtree(output_dir, ignore_errors=True)
-                os.makedirs(output_dir, exist_ok=True)
+                _reset_dir(stage)
                 continue
+
+        if best_missing:
+            app_logger.error(
+                f"No extraction tool could extract all of {rar_path} "
+                f"(best attempt was short by {best_missing} file(s)); "
+                f"the archive has been left untouched"
+            )
+            return False, best_missing
 
         # All tools failed
         msg = f"No extraction tool could extract {rar_path}"
@@ -612,6 +988,10 @@ def extract_rar_with_unar(rar_path, output_dir):
     except Exception as e:
         app_logger.error(f"Unexpected error extracting {rar_path}: {str(e)}")
         raise RuntimeError(f"Unexpected error extracting {rar_path}: {str(e)}")
+    finally:
+        # Only ever the private stage; never the caller's directory.
+        if stage and stage != output_dir_real:
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 def _parse_rar_listing(tool_name, stdout_bytes):
@@ -656,15 +1036,21 @@ def list_rar_entries(rar_path):
             return None
 
         commands = [
-            ("unrar", ["unrar", "lb", "-y", "--", rar_path]),
+            ("unrar", ["unrar", "lb", "-p-", "-y", "--", rar_path]),
             ("7z", ["7z", "l", "-ba", "-slt", rar_path]),
             ("lsar", ["lsar", rar_path]),
         ]
         for tool_name, cmd in commands:
             try:
-                result = subprocess.run(cmd, capture_output=True)
+                result = run_archive_tool(cmd, ARCHIVE_LIST_TIMEOUT)
             except FileNotFoundError:
                 app_logger.debug(f"{tool_name} not found, trying next listing tool")
+                continue
+            except subprocess.TimeoutExpired:
+                app_logger.warning(
+                    f"{tool_name} timed out after {ARCHIVE_LIST_TIMEOUT}s listing "
+                    f"{os.path.basename(rar_path)}; trying next listing tool"
+                )
                 continue
             except Exception as e:
                 app_logger.warning(f"{tool_name} listing failed: {e}, trying next tool")

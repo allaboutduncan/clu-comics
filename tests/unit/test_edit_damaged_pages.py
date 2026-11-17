@@ -7,6 +7,7 @@ zipfile and Pillow really do with a damaged entry.
 
 import io
 import json
+import os
 import zipfile
 from unittest.mock import patch
 
@@ -39,6 +40,22 @@ def _corrupt(path, entry, offset):
 @pytest.fixture
 def flask_app():
     return Flask(__name__)
+
+
+@pytest.fixture(autouse=True)
+def _tmp_path_is_the_library(tmp_path, monkeypatch):
+    """/save only acts inside a library root; make tmp_path that root.
+
+    Containment itself is covered in test_cbz_edit_save_containment.py.
+    """
+    from cbz_ops import edit_paths
+
+    monkeypatch.setattr(edit_paths, "get_library_roots", lambda: [str(tmp_path)])
+    monkeypatch.setattr(edit_paths, "get_watch_dir", lambda: "")
+    monkeypatch.setattr(edit_paths, "get_target_dir", lambda: "")
+    monkeypatch.setattr(edit_paths, "get_protected_roots", lambda: {os.path.realpath(str(tmp_path))})
+    monkeypatch.setattr(edit_paths, "is_critical_path", lambda p: False)
+    monkeypatch.setattr(edit_paths, "file_op_refusal", lambda *paths: None)
 
 
 @pytest.fixture

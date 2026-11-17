@@ -129,6 +129,109 @@ def test_unwrap_release_depth_guard(tmp_path, monkeypatch):
     assert result.comics == []
 
 
+# ------------------------- external tools that hang ---------------------------
+
+class _HangingTools:
+    """``subprocess.run`` stand-in for 7z / unar on a zip zipfile cannot open.
+
+    ``outcomes`` maps a tool to ``"timeout"`` (writes a partial file, then
+    times out, as a killed tool leaves it) or ``"ok"`` (writes a comic).
+    """
+
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+        self.calls = []
+
+    def __call__(self, cmd, **kwargs):
+        import subprocess
+        from types import SimpleNamespace
+
+        tool = cmd[0]
+        self.calls.append((tool, kwargs))
+        outcome = self.outcomes.get(tool)
+        if outcome is None:
+            raise FileNotFoundError(tool)
+        dest = cmd[2][2:] if tool == "7z" else cmd[3]
+        if outcome == "timeout":
+            _write(os.path.join(dest, "half-written.rar"), b"partial")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        _write(os.path.join(dest, "TheComic.cbz"), b"PK\x03\x04comic")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+
+def test_a_timed_out_zip_tool_leaves_nothing_and_the_next_tool_is_tried(
+        tmp_path, monkeypatch):
+    import subprocess
+    import helpers
+
+    tools = _HangingTools({"7z": "timeout", "unar": "ok"})
+    monkeypatch.setattr(helpers.subprocess, "run", tools)
+    zpath = tmp_path / "spanned.zip"
+    _write(str(zpath), b"not a zip zipfile can read")
+    out = tmp_path / "L1"
+    out.mkdir()
+    # An earlier primary of the same layer already extracted here.
+    _write(str(out / "Other Part.cbz"), b"keep me")
+
+    assert U._extract_zip(str(zpath), str(out)) == (True, 0)
+
+    assert sorted(os.listdir(out)) == ["Other Part.cbz", "TheComic.cbz"]
+    assert [t for t, _ in tools.calls] == ["7z", "unar"]
+    for _tool, kwargs in tools.calls:
+        assert kwargs.get("timeout")
+        assert kwargs.get("stdin") is subprocess.DEVNULL
+
+
+def test_every_zip_tool_timing_out_is_a_failure_with_nothing_left(
+        tmp_path, monkeypatch):
+    import helpers
+
+    monkeypatch.setattr(helpers.subprocess, "run",
+                        _HangingTools({"7z": "timeout", "unar": "timeout"}))
+    zpath = tmp_path / "spanned.zip"
+    _write(str(zpath), b"not a zip zipfile can read")
+    out = tmp_path / "L1"
+    out.mkdir()
+    _write(str(out / "Other Part.cbz"), b"keep me")
+
+    assert U._extract_zip(str(zpath), str(out)) == (False, 0)
+    assert os.listdir(out) == ["Other Part.cbz"]
+
+
+def test_an_earlier_primary_is_not_mistaken_for_this_tools_output(
+        tmp_path, monkeypatch):
+    """``out_dir`` is shared by a layer; testing it for files said "success"."""
+    import helpers
+
+    monkeypatch.setattr(helpers.subprocess, "run", _HangingTools({}))
+    zpath = tmp_path / "spanned.zip"
+    _write(str(zpath), b"not a zip zipfile can read")
+    out = tmp_path / "L1"
+    out.mkdir()
+    _write(str(out / "Other Part.cbz"), b"keep me")
+
+    assert U._extract_zip(str(zpath), str(out)) == (False, 0)
+
+
+def test_a_release_whose_tools_all_hang_keeps_its_source(tmp_path, monkeypatch):
+    import helpers
+
+    monkeypatch.setattr(U, "is_allowed_path", lambda p: True)
+    monkeypatch.setattr(helpers.subprocess, "run",
+                        _HangingTools({"7z": "timeout", "unar": "timeout"}))
+    rel = tmp_path / "release"
+    rel.mkdir()
+    _write(str(rel / "--bbyvt3ga.zip"), b"not a zip")
+    _write(str(rel / "--bbyvt3gb.zip"), b"not a zip")
+
+    result = U.unwrap_release(str(rel), str(tmp_path / "work"))
+
+    assert not result.ok and result.comics == []
+    assert sorted(os.listdir(rel)) == ["--bbyvt3ga.zip", "--bbyvt3gb.zip"]
+    for dirpath, _dirs, files in os.walk(result.work_dir):
+        assert "half-written.rar" not in files, dirpath
+
+
 def test_unwrap_release_no_archives(tmp_path, monkeypatch):
     monkeypatch.setattr(U, "is_allowed_path", lambda p: True)
     rel = tmp_path / "release"

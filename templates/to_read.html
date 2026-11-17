@@ -7,7 +7,7 @@
 {% block page_shell %}container-fluid clu-shell-wide{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="{{ url_for('static', filename='css/collection.css') }}">
+<link rel="stylesheet" href="{{ asset('css/collection.css') }}">
 <style>
   .to-read-grid {
     display: grid;
@@ -188,7 +188,7 @@
       card.className = 'to-read-card';
       card.dataset.path = item.path;
 
-      const name = item.path.split('/').pop() || item.path.split('\\').pop();
+      const name = CLU.escapeHtml(item.path.split('/').pop() || item.path.split('\\').pop());
       const isFolder = item.type === 'folder';
 
       // Build thumbnail HTML
@@ -198,7 +198,7 @@
       } else {
         // Try to get thumbnail for files
         const thumbnailUrl = `/thumbnail?path=${encodeURIComponent(item.path)}`;
-        thumbnailHtml = `<img src="${thumbnailUrl}" alt="${name}" onerror="this.parentElement.innerHTML='<i class=\\'bi bi-file-earmark-text folder-icon\\'></i>'">`;
+        thumbnailHtml = `<img src="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" onerror="this.parentElement.innerHTML='<i class=\\'bi bi-file-earmark-text folder-icon\\'></i>'">`;
       }
 
       card.innerHTML = `
@@ -212,10 +212,11 @@
             <span>${isFolder ? 'Folder' : 'File'}</span>
           </div>
         </div>
-        <button aria-label="Remove from To Read" class="remove-btn" title="Remove from To Read" onclick="removeFromToRead(event, '${item.path.replace(/'/g, "\\'")}')">
+        <button aria-label="Remove from To Read" class="remove-btn" title="Remove from To Read">
           <i class="bi bi-x-lg"></i>
         </button>
       `;
+      card.querySelector('.remove-btn').addEventListener('click', (e) => removeFromToRead(e, item.path));
 
       // Navigate to item on click
       card.onclick = (e) => {

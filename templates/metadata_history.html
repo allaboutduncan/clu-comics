@@ -96,8 +96,7 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
-<script src="{{ url_for('static', filename='js/clu-cbz-info.js') }}?v={{ range(1, 10000) | random }}"></script>
+<script src="{{ asset('js/clu-cbz-info.js') }}"></script>
 <script>
 (function () {
   const tbody = document.getElementById('auditTbody');
@@ -151,10 +150,6 @@
     if (!ts) return '';
     const d = new Date(ts * 1000);
     return d.toLocaleString();
-  }
-  function esc(s) {
-    return (s == null ? '' : String(s))
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
   function basename(p) {
     if (!p) return '';
@@ -265,7 +260,7 @@
       renderPagination();
     } catch (e) {
       if (seq !== loadSeq) return;
-      tbody.innerHTML = `<tr><td colspan="8" class="text-danger text-center">Error: ${esc(e.message)}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="text-danger text-center">Error: ${CLU.escapeHtml(e.message)}</td></tr>`;
       notifyError('Failed to load audit history: ' + (e.message || 'unknown error'));
     }
   }
@@ -305,20 +300,20 @@
         <td>
           ${isReverted ? '' : `<input type="checkbox" class="form-check-input audit-row-check" data-id="${item.id}">`}
         </td>
-        <td class="small text-muted">${esc(fmtTime(item.written_at))}</td>
-        <td class="small"><code title="${esc(item.file_path)}">${esc(fileBase)}</code></td>
-        <td class="small">${esc(item.series_name || '')} ${item.issue_number ? '#' + esc(item.issue_number) : ''}</td>
-        <td class="small"><span class="badge bg-secondary">${esc(item.provider || '')}</span></td>
-        <td class="small text-muted">${esc(item.matched_via || '')}</td>
+        <td class="small text-muted">${CLU.escapeHtml(fmtTime(item.written_at))}</td>
+        <td class="small"><code title="${CLU.escapeHtml(item.file_path)}">${CLU.escapeHtml(fileBase)}</code></td>
+        <td class="small">${CLU.escapeHtml(item.series_name || '')} ${item.issue_number ? '#' + CLU.escapeHtml(item.issue_number) : ''}</td>
+        <td class="small"><span class="badge bg-secondary">${CLU.escapeHtml(item.provider || '')}</span></td>
+        <td class="small text-muted">${CLU.escapeHtml(item.matched_via || '')}</td>
         <td class="small">
           ${isReverted
-            ? `<span class="badge bg-warning text-dark">reverted ${esc(fmtTime(item.reverted_at))}</span>`
+            ? `<span class="badge bg-warning text-dark">reverted ${CLU.escapeHtml(fmtTime(item.reverted_at))}</span>`
             : '<span class="badge bg-success">written</span>'}
         </td>
         <td class="text-end">
           <div class="btn-group btn-group-sm" role="group">
             <button aria-label="View CBZ info" class="btn btn-outline-info action-info" type="button"
-                    data-file="${esc(item.file_path)}" data-name="${esc(fileBase)}"
+                    data-file="${CLU.escapeHtml(item.file_path)}" data-name="${CLU.escapeHtml(fileBase)}"
                     title="View CBZ info">
               <i class="bi bi-info-circle"></i>
             </button>

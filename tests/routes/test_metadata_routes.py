@@ -15,6 +15,32 @@ from unittest.mock import patch, MagicMock, call
 # is the same object.
 
 
+@pytest.fixture
+def real_write_gate(tmp_path_library):
+    """Opt in to the real library/grant gate on the metadata write routes,
+    with ``tmp_path`` as the one library."""
+    return tmp_path_library
+
+
+@pytest.fixture(autouse=True)
+def _write_gate_off_unless_requested(request):
+    """Most tests here are about provider cascades and ComicInfo writes, not
+    access, and post made-up paths such as ``/data/Batman 001.cbz`` (which is
+    not even absolute on Windows). The gate in front of every write route
+    (``routes.metadata.metadata_write_refusal``) has its own tests -- the ones
+    here that request ``real_write_gate`` and
+    tests/routes/test_metadata_write_grants.py -- so it is switched off for
+    the rest, which behave exactly as they did before the gate existed.
+    (/cbz-update-comicinfo resolves through ``resolve_metadata_write_path``
+    instead, so its tests always run with the real gate.)
+    """
+    if "client" not in request.fixturenames or "real_write_gate" in request.fixturenames:
+        yield
+        return
+    with patch("routes.metadata.metadata_write_refusal", return_value=None):
+        yield
+
+
 def _make_cbz(path, with_comicinfo=True):
     """Helper to create a minimal CBZ file for testing."""
     with zipfile.ZipFile(path, 'w') as zf:
@@ -272,6 +298,11 @@ class TestRemoveComicInfoBatchJob:
 class TestCbzUpdateComicinfo:
     """POST /cbz-update-comicinfo -- hand edits from the CBZ Info modal."""
 
+    @pytest.fixture(autouse=True)
+    def _real_gate(self, real_write_gate):
+        """These build real comics under tmp_path (the library), so the route
+        runs with its real gate: it writes through the path that gate checked."""
+
     def _cbz(self, tmp_path, name="issue.cbz", xml=None, with_comicinfo=True):
         d = tmp_path / "data" / "comics"
         os.makedirs(str(d), exist_ok=True)
@@ -393,9 +424,17 @@ class TestCbzUpdateComicinfo:
         resp = client.post('/cbz-update-comicinfo', json={"path": path, "updates": {}})
         assert resp.status_code == 400
 
-    @patch("routes.metadata.is_valid_library_path", return_value=False)
-    def test_rejects_path_outside_library(self, _valid, client, tmp_path):
-        path = self._cbz(tmp_path)
+    def test_rejects_path_outside_library(self, client, tmp_path, real_write_gate,
+                                          data_dir_library):
+        # The only library is tmp/data (data_dir_library replaces tmp_path);
+        # the comic sits beside it, outside it and outside TARGET (tmp/processed).
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        path = str(outside / "issue.cbz")
+        with zipfile.ZipFile(path, 'w') as zf:
+            zf.writestr("page_001.png", b"fake image data")
+            zf.writestr("ComicInfo.xml",
+                        "<ComicInfo><Series>Test</Series><Year>1986</Year></ComicInfo>")
         resp = client.post('/cbz-update-comicinfo', json={
             "path": path, "updates": {"Series": "X"},
         })
@@ -441,40 +480,46 @@ def _png(width, height):
 class TestCbzMetadataDimensions:
     """/cbz-metadata?dimensions=1 -- image resolution for the duplicate compare."""
 
-    def _make(self, tmp_path, pages):
-        path = str(tmp_path / "Dims 001.cbz")
+    @pytest.fixture
+    def lib_dir(self, data_dir_library):
+        # /cbz-metadata serves library files only, so build the CBZs inside
+        # the test's one library rather than a bare tmp dir.
+        return data_dir_library
+
+    def _make(self, lib_dir, pages):
+        path = os.path.join(lib_dir, "Dims 001.cbz")
         with zipfile.ZipFile(path, "w") as zf:
             for name, data in pages:
                 zf.writestr(name, data)
         return path
 
-    def test_omitted_unless_requested(self, client, tmp_path):
-        path = self._make(tmp_path, [("p01.png", _png(10, 20))])
+    def test_omitted_unless_requested(self, client, lib_dir):
+        path = self._make(lib_dir, [("p01.png", _png(10, 20))])
         resp = client.get("/cbz-metadata", query_string={"path": path})
         assert resp.status_code == 200
         assert "image_dimensions" not in resp.get_json()
 
-    def test_cover_reported_apart_from_interior_median(self, client, tmp_path):
+    def test_cover_reported_apart_from_interior_median(self, client, lib_dir):
         pages = [("p01.png", _png(400, 600))]          # cover, a different size
         pages += [(f"p{n:02d}.png", _png(100, 150)) for n in range(2, 8)]
         pages.append(("p08.png", _png(300, 450)))      # one odd page out
-        path = self._make(tmp_path, pages)
+        path = self._make(lib_dir, pages)
         resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
         dims = resp.get_json()["image_dimensions"]
         assert dims["cover"] == [400, 600]
         assert dims["pages"] == [100, 150]
         assert dims["sampled"] == 5
 
-    def test_natural_order_picks_the_real_cover(self, client, tmp_path):
+    def test_natural_order_picks_the_real_cover(self, client, lib_dir):
         # "p10" sorts before "p2" lexically; the reader's natural order does not.
-        path = self._make(tmp_path, [
+        path = self._make(lib_dir, [
             ("p10.png", _png(50, 50)), ("p2.png", _png(50, 50)), ("p1.png", _png(80, 120)),
         ])
         resp = client.get("/cbz-metadata", query_string={"path": path, "dimensions": "1"})
         assert resp.get_json()["image_dimensions"]["cover"] == [80, 120]
 
-    def test_unreadable_images_and_single_page(self, client, tmp_path):
-        path = self._make(tmp_path, [
+    def test_unreadable_images_and_single_page(self, client, lib_dir):
+        path = self._make(lib_dir, [
             ("p1.png", _png(80, 120)), ("p2.jpg", b"not an image"),
             ("__MACOSX/._p3.png", b"junk"),
         ])

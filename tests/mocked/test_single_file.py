@@ -208,6 +208,25 @@ class TestConvertToCbz:
         txt.write_text("not a comic")
         convert_to_cbz(str(txt))
 
+    def test_a_failed_conversion_exits_non_zero(self, tmp_path):
+        """/stream reads the subprocess exit code to choose its last event.
+
+        It was always 0, so a failed conversion ended in a success toast.
+        """
+        import inspect
+        import runpy
+        import sys
+
+        import cbz_ops.single_file as sf
+
+        with patch.object(sys, "argv", ["single_file.py", str(tmp_path / "gone.cbr")]):
+            with pytest.raises(SystemExit) as exc:
+                runpy.run_module("cbz_ops.single_file", run_name="__main__")
+        assert exc.value.code == 1
+
+        # ...and 0 only when convert_to_cbz says so.
+        assert "sys.exit(0 if convert_to_cbz(file_path) else 1)" in inspect.getsource(sf)
+
     @patch("core.database.add_file_index_entry")
     @patch("core.database.delete_file_index_entry")
     @patch("core.database.invalidate_browse_cache")

@@ -1437,7 +1437,10 @@
     $('users-shared').classList.toggle('d-none', !shared);
     // Login with a passwordless owner would lock everyone out, so the second
     // account waits for the owner's password (admin.create_user_route agrees).
-    $('users-owner-box').classList.toggle('d-none', !d.needs_setup);
+    // The owner box shows for either answer: a password turns login on even
+    // for one person.
+    const answered = shared || $('users-others-no').checked;
+    $('users-owner-box').classList.toggle('d-none', !d.needs_setup || !answered);
     $('users-add').disabled = !!d.needs_setup;
     if (d.needs_setup && !$('users-owner-name').value) $('users-owner-name').value = d.username || '';
   }
@@ -1456,7 +1459,7 @@
     try {
       await api(URLS.setupOwner, { method: 'POST', body: { username: username, password: password } });
       $('users-owner-pass').value = '';
-      showSuccess('Owner account saved.');
+      showSuccess('Owner account saved. Login is now on; you stay logged in on this browser.');
     } catch (err) {
       showError('Could not save the owner account: ' + err.message);
     } finally {
@@ -1477,7 +1480,7 @@
       $('users-new-name').value = '';
       $('users-new-pass').value = '';
       showSuccess('Account ' + ((data.user && data.user.username) || username) +
-        ' added. Login is now on; you stay logged in on this browser.');
+        ' added. Each person logs in with their own account.');
     } catch (err) {
       showError('Could not add the account: ' + err.message);
     }

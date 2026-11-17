@@ -1675,7 +1675,11 @@ function openEditFile(path) {
     editModal.show();
     CLU.setupEditModalDropZone();
 
-    fetch('/edit?file_path=' + encodeURIComponent(path))
+    fetch('/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_path: path })
+    })
         .then(function (r) {
             if (!r.ok) throw new Error('Failed to load edit content.');
             return r.json();

@@ -234,12 +234,15 @@ def users_status():
                     "message": "Login is required but the owner has no password yet.",
                     "details": details}
         return {"status": UNCONFIGURED,
-                "message": "Single user, login-free. No owner password is set.",
+                "message": "Single user and unauthenticated: no owner password "
+                           "is set. Setting one turns on login.",
                 "details": details}
     if login_required:
         message = f"{n} account{'' if n == 1 else 's'}; login is required."
     else:
-        message = "Single user, login-free. The owner has a password."
+        # A password means login, so this is only reachable when the users
+        # table could not be read; say what the request saw.
+        message = "Login is not required."
     return {"status": CONFIGURED, "message": message, "details": details}
 
 

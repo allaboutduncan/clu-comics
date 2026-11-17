@@ -1,10 +1,4 @@
 (function () {
-    function escapeHtml(str) {
-        return String(str ?? '').replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-    }
-
     function formatBytes(n) {
         if (typeof n !== 'number' || isNaN(n)) return '–';
         if (n < 1024) return `${n} B`;
@@ -168,10 +162,10 @@
         }
         tbody.innerHTML = errors.map(e => `
             <tr class="${e.kind === 'corruption' ? 'table-danger' : ''}">
-                <td class="text-nowrap">${escapeHtml(formatTimestamp(e.ts))}</td>
-                <td>${escapeHtml(e.kind)}</td>
-                <td><code>${escapeHtml(e.context || '–')}</code></td>
-                <td class="small">${escapeHtml(e.message)}</td>
+                <td class="text-nowrap">${CLU.escapeHtml(formatTimestamp(e.ts))}</td>
+                <td>${CLU.escapeHtml(e.kind)}</td>
+                <td><code>${CLU.escapeHtml(e.context || '–')}</code></td>
+                <td class="small">${CLU.escapeHtml(e.message)}</td>
             </tr>
         `).join('');
     }
@@ -198,7 +192,7 @@
         } else {
             tbody.innerHTML = tables.map(t => `
                 <tr>
-                    <td><code>${escapeHtml(t.name)}</code></td>
+                    <td><code>${CLU.escapeHtml(t.name)}</code></td>
                     <td class="text-end">${t.rows === null ? '<span class="text-muted">err</span>' : formatNumber(t.rows)}</td>
                 </tr>
             `).join('');
@@ -216,11 +210,11 @@
             return;
         }
         tbody.innerHTML = backups.map(b => {
-            const fn = escapeHtml(b.filename);
+            const fn = CLU.escapeHtml(b.filename);
             return `
             <tr>
                 <td><code>${fn}</code></td>
-                <td>${escapeHtml(formatTimestamp(b.modified_at))}</td>
+                <td>${CLU.escapeHtml(formatTimestamp(b.modified_at))}</td>
                 <td class="text-end">${formatBytes(b.size)}</td>
                 <td class="text-end">
                     <a aria-label="Download" class="btn btn-sm btn-outline-secondary me-1"
@@ -251,8 +245,8 @@
         wrap.classList.remove('d-none');
         tbody.innerHTML = snapshots.map(q => `
             <tr>
-                <td><code>${escapeHtml(q.filename)}</code></td>
-                <td>${escapeHtml(formatTimestamp(q.modified_at))}</td>
+                <td><code>${CLU.escapeHtml(q.filename)}</code></td>
+                <td>${CLU.escapeHtml(formatTimestamp(q.modified_at))}</td>
                 <td class="text-end">${formatBytes(q.size)}</td>
                 <td class="text-end">
                     <a aria-label="Download" class="btn btn-sm btn-outline-secondary"
@@ -313,7 +307,7 @@
             ? '<tr><td colspan="4" class="text-muted text-center">No tables</td></tr>'
             : rows.map(r => `
                 <tr>
-                    <td><code>${escapeHtml(r.name)}</code></td>
+                    <td><code>${CLU.escapeHtml(r.name)}</code></td>
                     <td class="text-end">${r.before === null ? '<span class="text-muted" title="This table could not be counted in the damaged database">unknown</span>' : formatNumber(r.before)}</td>
                     <td class="text-end">${r.after === null ? '<span class="text-muted">—</span>' : formatNumber(r.after)}</td>
                     <td class="text-end">${deltaCell(r)}</td>
@@ -426,7 +420,7 @@
         showConfirm({
             title: 'Restore this database?',
             bodyHtml: `
-                <p>Restore the database from <code>${escapeHtml(filename)}</code>?</p>
+                <p>Restore the database from <code>${CLU.escapeHtml(filename)}</code>?</p>
                 <p class="mb-0">This replaces your current database. A safety snapshot of
                 the current one is taken automatically first. Restart the app afterwards so
                 background workers reload their state.</p>`,
@@ -450,7 +444,7 @@
     function onDeleteClick(filename) {
         showConfirm({
             title: 'Delete this backup?',
-            bodyHtml: `<p class="mb-0">Delete <code>${escapeHtml(filename)}</code>? This cannot be undone.</p>`,
+            bodyHtml: `<p class="mb-0">Delete <code>${CLU.escapeHtml(filename)}</code>? This cannot be undone.</p>`,
             confirmLabel: 'Delete',
         }, async () => {
             hideConfirm();
@@ -472,7 +466,7 @@
                 showResult('<i class="bi bi-check-circle me-1"></i>Quick integrity check passed.', 'success');
             } else {
                 showResult(
-                    `<i class="bi bi-exclamation-octagon me-1"></i>Integrity check FAILED: ${escapeHtml(data.message || data.error || 'unknown')}`,
+                    `<i class="bi bi-exclamation-octagon me-1"></i>Integrity check FAILED: ${CLU.escapeHtml(data.message || data.error || 'unknown')}`,
                     'danger'
                 );
             }
@@ -484,7 +478,7 @@
         await withBusy(document.getElementById('dbIntegrityFullBtn'), 'Checking…', async () => {
             const { data } = await postJson('/api/database/integrity', { full: true });
             if (!data.op_id) {
-                showResult(`Could not start: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                showResult(`Could not start: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
                 return;
             }
             showResult('<span class="spinner-border spinner-border-sm me-1"></span>Running a full integrity check…', 'info');
@@ -492,10 +486,10 @@
             if (result.ok) {
                 showResult('<i class="bi bi-check-circle me-1"></i>Full integrity check passed — every page read cleanly.', 'success');
             } else {
-                const lines = (result.lines || []).map(l => `<li><code>${escapeHtml(l)}</code></li>`).join('');
+                const lines = (result.lines || []).map(l => `<li><code>${CLU.escapeHtml(l)}</code></li>`).join('');
                 showResult(
                     `<i class="bi bi-exclamation-octagon me-1"></i><strong>Full integrity check FAILED.</strong>` +
-                    (lines ? `<ul class="mb-0 mt-2">${lines}</ul>` : ` ${escapeHtml(result.message || result.error || '')}`),
+                    (lines ? `<ul class="mb-0 mt-2">${lines}</ul>` : ` ${CLU.escapeHtml(result.message || result.error || '')}`),
                     'danger'
                 );
             }
@@ -507,7 +501,7 @@
         await withBusy(document.getElementById('dbCheckpointBtn'), 'Checkpointing…', async () => {
             const { data } = await postJson('/api/database/checkpoint');
             if (!data.success) {
-                showResult(`Checkpoint failed: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                showResult(`Checkpoint failed: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
             } else if (data.busy) {
                 showResult(
                     `<i class="bi bi-info-circle me-1"></i>Checkpoint ran but could not truncate the log: ` +
@@ -532,7 +526,7 @@
             if (data.success) {
                 showResult('<i class="bi bi-check-circle me-1"></i>Statistics refreshed.', 'success');
             } else {
-                showResult(`Optimize failed: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                showResult(`Optimize failed: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
             }
         });
     }
@@ -553,14 +547,14 @@
             await withBusy(document.getElementById('dbCompactBtn'), 'Compacting…', async () => {
                 const { data } = await postJson('/api/database/compact');
                 if (!data.op_id) {
-                    showResult(`Could not start: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                    showResult(`Could not start: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
                     return;
                 }
                 showResult('<span class="spinner-border spinner-border-sm me-1"></span>Compacting…', 'info');
                 const result = await followOperation(data.op_id, op => {
                     if (op.detail) {
                         showResult(
-                            `<span class="spinner-border spinner-border-sm me-1"></span>${escapeHtml(op.detail)}…`,
+                            `<span class="spinner-border spinner-border-sm me-1"></span>${CLU.escapeHtml(op.detail)}…`,
                             'info'
                         );
                     }
@@ -570,11 +564,11 @@
                         `<i class="bi bi-check-circle me-1"></i>Compacted: ` +
                         `${formatBytes(result.size_before)} → ${formatBytes(result.size_after)} ` +
                         `(reclaimed ${formatBytes(result.reclaimed)}). ` +
-                        `Snapshot: <code>${escapeHtml(result.pre_swap_backup || 'n/a')}</code>.`,
+                        `Snapshot: <code>${CLU.escapeHtml(result.pre_swap_backup || 'n/a')}</code>.`,
                         'success'
                     );
                 } else {
-                    showResult(`Compact failed: ${escapeHtml(result.error || 'unknown error')}`, 'danger');
+                    showResult(`Compact failed: ${CLU.escapeHtml(result.error || 'unknown error')}`, 'danger');
                 }
                 await refresh();
             });
@@ -585,14 +579,14 @@
         await withBusy(document.getElementById('dbSalvageBtn'), 'Salvaging…', async () => {
             const { data } = await postJson('/api/database/salvage');
             if (!data.op_id) {
-                showResult(`Could not start salvage: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                showResult(`Could not start salvage: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
                 return;
             }
             showResult('<span class="spinner-border spinner-border-sm me-1"></span>Salvaging…', 'info');
             const result = await followOperation(data.op_id, op => {
                 if (op.detail) {
                     showResult(
-                        `<span class="spinner-border spinner-border-sm me-1"></span>Salvaging: ${escapeHtml(op.detail)}`,
+                        `<span class="spinner-border spinner-border-sm me-1"></span>Salvaging: ${CLU.escapeHtml(op.detail)}`,
                         'info'
                     );
                 }
@@ -605,7 +599,7 @@
                 );
                 renderSalvageCandidate(result.candidate);
             } else {
-                showResult(`Salvage failed: ${escapeHtml(result.error || 'unknown error')}`, 'danger');
+                showResult(`Salvage failed: ${CLU.escapeHtml(result.error || 'unknown error')}`, 'danger');
             }
             await refresh();
         });
@@ -623,7 +617,7 @@
             title: 'Install the salvaged database?',
             bodyHtml: `
                 <p>This replaces your current database with the recovered copy.</p>
-                <p><strong>${escapeHtml(rowsLost)}</strong> rows were not recovered and will be
+                <p><strong>${CLU.escapeHtml(rowsLost)}</strong> rows were not recovered and will be
                 lost. Review the per-table breakdown before continuing.</p>
                 <p class="mb-0">A snapshot of the current database is taken first, so this can
                 be undone from the Backups list. Restart the app afterwards.</p>`,
@@ -634,13 +628,13 @@
             if (data.success) {
                 showResult(
                     '<i class="bi bi-check-circle me-1"></i>Salvaged database installed. ' +
-                    `Snapshot of the old one: <code>${escapeHtml(data.pre_swap_backup || 'n/a')}</code>. ` +
+                    `Snapshot of the old one: <code>${CLU.escapeHtml(data.pre_swap_backup || 'n/a')}</code>. ` +
                     '<strong>Restart the app</strong> so background workers reload their state.',
                     'success'
                 );
                 renderSalvageCandidate(null);
             } else {
-                showResult(`Install failed: ${escapeHtml(data.error || 'unknown error')}`, 'danger');
+                showResult(`Install failed: ${CLU.escapeHtml(data.error || 'unknown error')}`, 'danger');
             }
             await refresh();
         });

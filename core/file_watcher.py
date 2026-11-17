@@ -1,8 +1,18 @@
+import logging
 import os
 import time
 import threading
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from watchdog.events import (
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileSystemEventHandler,
+)
 from core.database import (
     add_file_index_entry,
     forget_deleted_path,
@@ -16,6 +26,133 @@ from helpers.library import is_valid_library_path
 
 
 COMIC_EXTENSIONS = ('.cbz', '.cbr')
+
+# The only events DebouncedFileHandler acts on, passed to schedule() as the
+# event_filter. Without a filter watchdog subscribes to every inotify event,
+# IN_OPEN and IN_CLOSE_NOWRITE included, so every *read* of a comic queues
+# events. On a large library a read-only pass (thumbnails, metadata scan)
+# overflows the kernel queue, and watchdog >= 7.1 recovers from an overflow by
+# re-walking the tree -- which opens every directory, overflows the queue again
+# and never stops: 100% CPU with nothing touching the library (#732).
+# Keep this in step with the handler's on_* methods; never add the opened or
+# closed-without-write events. tests/unit/test_file_watcher_event_filter.py
+# is the ratchet.
+WATCHED_EVENTS = [
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+    FileDeletedEvent,
+    DirCreatedEvent,
+    DirMovedEvent,
+    DirDeletedEvent,
+]
+
+
+# --- inotify queue overflow --------------------------------------------------
+#
+# The filter above stops reads from overflowing the queue, but a genuine mass
+# write (a big import, an rsync into the library) still can. The kernel then
+# drops events, and watchdog says so through its own logger -- two WARNING
+# lines per overflow, on stderr only, and nothing in CLU ever reacted: the
+# dropped files stayed unindexed until the next scheduled index sync, which is
+# opt-in. watchdog has no public overflow hook, so the log record is the only
+# signal there is. OverflowGate swallows those records, says it once per
+# episode in app.log, and asks for one index sync when the episode ends.
+
+OVERFLOW_MARKER = "Inotify queue overflowed"
+# Loggers the two overflow lines are emitted on (a filter on a logger does not
+# see records from its children, so each one is named).
+OVERFLOW_LOGGERS = ("watchdog.observers.inotify_c", "watchdog.observers.inotify")
+# How long after the first overflow of an episode the index sync runs. Long
+# enough for a burst to finish, so the sync sees what the burst wrote.
+OVERFLOW_SETTLE_SECONDS = 60
+# A sync walks every library root. Under a sustained storm, one per interval.
+OVERFLOW_RESYNC_MIN_INTERVAL = 900
+
+
+class OverflowGate(logging.Filter):
+    """Collapse watchdog's overflow warnings and schedule one recovery sync."""
+
+    def __init__(self, settle_seconds=OVERFLOW_SETTLE_SECONDS,
+                 min_interval=OVERFLOW_RESYNC_MIN_INTERVAL):
+        super().__init__()
+        self.settle_seconds = settle_seconds
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._recovery = None
+        self._count = 0
+        self._timer = None
+        self._last_recovery = None
+
+    def set_recovery(self, callback):
+        """``callback()`` runs once per overflow episode, off the watcher thread."""
+        self._recovery = callback
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if OVERFLOW_MARKER not in message:
+            return True
+        # watchdog logs "events were lost" once per overflow and "reconciling"
+        # once per recursive watch; only the first is an overflow to count.
+        if "events were lost" in message:
+            self.note_overflow()
+        return False
+
+    def note_overflow(self):
+        with self._lock:
+            self._count += 1
+            if self._timer is not None:
+                return
+            delay = self.settle_seconds
+            if self._last_recovery is not None:
+                since = time.monotonic() - self._last_recovery
+                delay = max(delay, self.min_interval - since)
+            self._timer = threading.Timer(delay, self._recover)
+            self._timer.daemon = True
+            self._timer.start()
+        app_logger.warning(
+            "Library watcher: the inotify queue overflowed and file events were "
+            "lost. A file index sync will run in about "
+            f"{int(round(delay))}s to pick up what was missed. If this keeps "
+            "happening, raise fs.inotify.max_queued_events on the host."
+        )
+
+    def _recover(self):
+        with self._lock:
+            count, self._count = self._count, 0
+            self._timer = None
+            self._last_recovery = time.monotonic()
+            callback = self._recovery
+        app_logger.warning(
+            f"Library watcher: {count} inotify queue overflow(s) since the last "
+            "report; " + ("syncing the file index." if callback else
+                          "no index sync is registered.")
+        )
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception as e:
+            app_logger.error(f"Index sync after inotify overflow failed: {e}")
+
+
+_overflow_gate = OverflowGate()
+
+
+def install_overflow_gate():
+    """Attach the gate to watchdog's loggers. Safe to call more than once."""
+    for name in OVERFLOW_LOGGERS:
+        logger = logging.getLogger(name)
+        if _overflow_gate not in logger.filters:
+            logger.addFilter(_overflow_gate)
+
+
+def set_overflow_recovery(callback):
+    """Register what recovers the events an overflow dropped (an index sync)."""
+    _overflow_gate.set_recovery(callback)
 
 
 def _in_trash(path):
@@ -265,7 +402,13 @@ class FileWatcher:
                 app_logger.error(f"Watch path does not exist: {self.watch_path}")
                 return False
 
-            self.observer.schedule(self.event_handler, self.watch_path, recursive=True)
+            install_overflow_gate()
+            self.observer.schedule(
+                self.event_handler,
+                self.watch_path,
+                recursive=True,
+                event_filter=WATCHED_EVENTS,
+            )
             self.observer.start()
             app_logger.info(f"File watcher started for: {self.watch_path}")
             return True

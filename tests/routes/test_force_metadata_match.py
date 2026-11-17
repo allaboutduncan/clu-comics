@@ -7,6 +7,14 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _tmp_path_is_the_library(request):
+    """The route refuses a file outside every library root before it opens it,
+    and these tests build their comics directly under ``tmp_path``."""
+    if "client" in request.fixturenames:
+        request.getfixturevalue("tmp_path_library")
+
+
 def _make_cbz(path, with_comicinfo=False):
     with zipfile.ZipFile(path, 'w') as zf:
         zf.writestr("page_001.png", b"fake image data")
@@ -85,13 +93,19 @@ class TestForceMetadataValidation:
             'file_path': str(cbz), 'provider': 'metron', 'issue_id': 'batman'})
         assert resp.status_code == 400
 
-    def test_path_outside_allowed_roots(self, client, tmp_path):
-        cbz = tmp_path / "Batman 001.cbz"
+    def test_path_outside_allowed_roots(self, client, tmp_path, data_dir_library):
+        # data_dir_library makes tmp/data the only library; this comic sits
+        # outside it and outside TARGET/WATCH.
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        cbz = outside / "Batman 001.cbz"
         _make_cbz(str(cbz))
-        with patch("helpers.library.is_allowed_path", return_value=False):
+        write = MagicMock()
+        with patch("routes.metadata.add_comicinfo_to_cbz", write):
             resp = client.post('/api/force-metadata-match', json={
                 'file_path': str(cbz), 'provider': 'metron', 'issue_id': '1'})
         assert resp.status_code == 403
+        write.assert_not_called()
 
 
 class TestForceMetadataMetron:

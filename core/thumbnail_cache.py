@@ -111,6 +111,28 @@ def thumbnail_cache_path(file_path, cache_dir=None):
     return os.path.join(thumbnails_root(cache_dir), path_hash[:2], f"{path_hash}.jpg")
 
 
+# How long a browser may reuse a cover cache hit without asking again. Short
+# and private on purpose: the cache is keyed on the comic's *path*, so while a
+# browser holds a response it never reaches is_thumbnail_stale -- a rewritten
+# comic whose op forgot regenerate_thumbnail shows its old cover for at most
+# this long. Private because covers are access-checked per user.
+THUMBNAIL_MAX_AGE = 300
+
+
+def apply_cache_hit_headers(response):
+    """Make a cover cache-hit response ``private, max-age=THUMBNAIL_MAX_AGE``.
+
+    Not ``send_from_directory(..., max_age=...)``: werkzeug marks that public.
+    ETag/Last-Modified and conditional 304s stay as werkzeug sets them.
+    """
+    cc = response.cache_control
+    cc.no_cache = None
+    cc.public = None
+    cc.private = True
+    cc.max_age = THUMBNAIL_MAX_AGE
+    return response
+
+
 def is_thumbnail_stale(file_path, cache_path=None):
     """True when the comic has been rewritten since its thumbnail was made.
 
@@ -319,6 +341,88 @@ def set_job_status(file_path, status):
             conn.close()
     except Exception as e:
         app_logger.error(f"Could not record thumbnail job for {file_path}: {e}")
+
+
+# SQLite's historical host-parameter limit is 999; stay well under it so one
+# IN (...) list never needs splitting on any build.
+_MAX_IN_PARAMS = 500
+
+
+def get_job_rows(paths):
+    """Return ``{path: (status, file_mtime)}`` for the rows of ``paths`` that
+    exist. One short read on its own connection, closed on every path.
+
+    Raises what SQLite raises (a corrupt or locked database), so the caller can
+    tell "no row" from "could not ask". Returns ``None`` when no connection
+    could be opened, for the same reason.
+    """
+    from core.database import db_conn
+
+    paths = list(paths)
+    found = {}
+    with db_conn() as conn:
+        if conn is None:
+            return None
+        for i in range(0, len(paths), _MAX_IN_PARAMS):
+            chunk = paths[i:i + _MAX_IN_PARAMS]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                "SELECT path, status, file_mtime FROM thumbnail_jobs "
+                f"WHERE path IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                found[row["path"]] = (row["status"], row["file_mtime"])
+    return found
+
+
+def mark_processing_batch(rows):
+    """Record ``processing`` for many ``(path, file_mtime)`` pairs in ONE short
+    write transaction, committed before this returns.
+
+    The batch counterpart of :func:`set_job_status`, for the startup scan. Two
+    differences, both deliberate:
+
+    - **The caller supplies the mtime.** The scan has just stat'd every file,
+      and stat'ing again here would put file I/O back inside the transaction --
+      on a slow NAS that held the WAL write lock for a whole directory and every
+      other writer failed with "database is locked".
+    - **It raises instead of swallowing.** The caller must not submit jobs whose
+      rows were not written. The ordering it protects is the route's: the
+      ``processing`` row is committed *before* the job can run, so a fast
+      worker's terminal write is never overwritten by it.
+
+    An upsert, never ``INSERT OR REPLACE``: it stamps ``file_mtime`` from the
+    caller's value and keeps the row's identity. Returns the number of rows
+    written; ``0`` for an empty batch. Raises ``RuntimeError`` when no
+    connection could be opened.
+    """
+    rows = list(rows)
+    if not rows:
+        return 0
+    from core.database import db_conn
+
+    with db_conn() as conn:
+        if conn is None:
+            raise RuntimeError("could not open the database")
+        try:
+            conn.executemany(
+                "INSERT INTO thumbnail_jobs (path, status, file_mtime, updated_at) "
+                "VALUES (?, 'processing', ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "status='processing', "
+                "file_mtime=excluded.file_mtime, "
+                "updated_at=CURRENT_TIMESTAMP",
+                rows,
+            )
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+    return len(rows)
 
 
 def regenerate_thumbnail(file_path, cache_path=None, record_job=True):

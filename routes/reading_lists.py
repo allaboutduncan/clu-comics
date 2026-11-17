@@ -71,11 +71,29 @@ from models.comicvine import (
 )
 from core.app_logging import app_logger
 import core.app_state as app_state
+from core.task_registry import TaskRegistry
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
 
-# In-memory store for background import tasks
-import_tasks = {}
+
+@reading_lists_bp.app_template_filter('sanitize_description')
+def sanitize_description_filter(value):
+    """Render a reading-list description as allow-listed HTML.
+
+    The only way a description reaches a template as markup: the result is
+    the sanitizer's output wrapped in ``Markup``, so templates never need (and
+    must not use) ``|safe`` on a description. Sanitizing on read as well as on
+    write covers rows stored by older versions.
+    """
+    from markupsafe import Markup
+    from core.description_html import sanitize_description_html
+    # The argument is the allow-list sanitizer's own output (rebuilt tag by
+    # tag, all text escaped), never the stored value itself.
+    return Markup(sanitize_description_html(value))  # nosec B704
+
+# In-memory store for background import tasks. Finished tasks are dropped an
+# hour after their last poll; it used to keep every task for the process's life.
+import_tasks = TaskRegistry()
 
 # GitHub tree cache (memory + disk-backed with TTL)
 _github_tree_cache = {"tree": None, "fetched_at": 0}
@@ -507,6 +525,7 @@ def import_status(task_id):
     task = import_tasks.get(task_id)
     if not task:
         return jsonify({'success': False, 'message': 'Task not found'})
+    import_tasks.touch(task_id)
 
     return jsonify({
         'success': True,

@@ -87,6 +87,31 @@ class DownloadClientConfig:
         )
 
 
+def build_base_url(cfg: DownloadClientConfig) -> str:
+    """Build the base URL ``scheme://host:port[/url_base]`` every client uses.
+
+    If the user already embedded a scheme and/or ``:port`` in the host field,
+    those are honored and not duplicated. A module function rather than only
+    a method so the test route can ask where a config would connect without
+    building a client.
+    """
+    host = (cfg.host or "localhost").strip().rstrip("/")
+
+    # Honor a scheme embedded in the host field, else derive from use_ssl.
+    if "://" in host:
+        scheme, host = host.split("://", 1)
+    else:
+        scheme = "https" if cfg.use_ssl else "http"
+
+    base = f"{scheme}://{host}"
+    # Only append the port if the host does not already carry one.
+    if cfg.port and ":" not in host:
+        base = f"{base}:{cfg.port}"
+    if cfg.url_base:
+        base = f"{base}/{cfg.url_base.strip('/')}"
+    return base
+
+
 @dataclass
 class NZBSubmitResult:
     """Result of submitting an NZB to a download client (PR 2 seam)."""
@@ -163,27 +188,8 @@ class BaseDownloadClient(ABC):
         self.last_error: Optional[str] = None
 
     def _base_url(self) -> str:
-        """Build the base URL ``scheme://host:port[/url_base]`` from config.
-
-        If the user already embedded a scheme and/or ``:port`` in the host
-        field, those are honored and not duplicated.
-        """
-        cfg = self.config or DownloadClientConfig()
-        host = (cfg.host or "localhost").strip().rstrip("/")
-
-        # Honor a scheme embedded in the host field, else derive from use_ssl.
-        if "://" in host:
-            scheme, host = host.split("://", 1)
-        else:
-            scheme = "https" if cfg.use_ssl else "http"
-
-        base = f"{scheme}://{host}"
-        # Only append the port if the host does not already carry one.
-        if cfg.port and ":" not in host:
-            base = f"{base}:{cfg.port}"
-        if cfg.url_base:
-            base = f"{base}/{cfg.url_base.strip('/')}"
-        return base
+        """Build the base URL ``scheme://host:port[/url_base]`` from config."""
+        return build_base_url(self.config or DownloadClientConfig())
 
     @abstractmethod
     def test_connection(self) -> bool:

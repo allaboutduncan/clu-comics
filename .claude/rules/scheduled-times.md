@@ -49,6 +49,14 @@ Things that look arbitrary and are not:
   time in the input box — indistinguishable, to a user, from this bug being
   unfixed. If the thundering-herd concern is real it comes back as
   `CronTrigger(..., jitter=)` plus wording on the page.
+- **A one-off run derived from a schedule time is built aware, in UTC.**
+  `schedule_weekly_packs_retry` used to apply the UTC "HH:MM" to a naive local
+  `datetime.now()`, and a naive `DateTrigger(run_date=)` is read in the
+  scheduler's (host) zone, so the retry fired off by the host offset — and near
+  midnight on the host's "tomorrow". `core.user_time.next_utc_day_at` is the
+  calculation (tested in `tests/unit/test_weekly_packs_retry_time.py`). A naive
+  `datetime.now() + timedelta(...)` for a *relative* delay is fine: both sides
+  are host time.
 - **`last_successful_pack` is not converted.** It is a pack *date*, not a
   timestamp; shifting it by an offset would name a different week.
 - **Conversion happens at the route boundary, never in

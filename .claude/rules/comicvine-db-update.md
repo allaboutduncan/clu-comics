@@ -85,10 +85,12 @@ Things that look arbitrary and are not:
   destination directory. Whoever is second stands down; the work is idempotent.
 - **The routes are under `/api/providers/comicvine_sqlite/`, not
   `/api/preferences/<key>`.** `core/auth.py` gates `/api/providers` as
-  owner-only; `/api/preferences/` is *not* on that list, so as a POST it falls
-  through to the `clerk` default — and a Clerk must not be able to switch on a
-  site-wide 541 MB download. `gcd_metadata_languages` uses the generic route
-  because it sets a string; this one spends bandwidth and disk.
+  owner-only; `/api/preferences/` is *not* on that list — it gates each key
+  itself against `core.settings.PREFERENCE_WRITE_ROLES` (deny by default, the
+  keys the Settings and Schedules pages save, owner-only) — and a Clerk must not
+  be able to switch on a site-wide 541 MB download. `gcd_metadata_languages`
+  uses the generic route because it sets a string; this one spends bandwidth
+  and disk, and a setting with its own route stays off that allow-list.
 
 The run is off-request on a daemon thread reporting through the operations
 registry — it far outlasts gunicorn's 120s timeout — and the page polls

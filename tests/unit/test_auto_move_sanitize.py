@@ -30,7 +30,7 @@ def _run(series, publisher, cmap, pattern="{publisher}/{series_name}/v{start_yea
          patch("models.comicvine.os.path.isdir", return_value=root_exists), \
          patch("models.comicvine.os.makedirs") as makedirs, \
          patch("models.comicvine.os.path.exists", side_effect=lambda p: p == src), \
-         patch("models.comicvine.shutil.move") as move:
+         patch("helpers.match_parent_permissions"),          patch("helpers.move_file") as move:
         new_path = auto_move_file(src, volume, config)
     target_dir = makedirs.call_args[0][0] if makedirs.called else None
     return new_path, target_dir, move

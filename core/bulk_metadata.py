@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Tuple
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
+from core.path_access import filter_buckets
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
     evaluate_series as evaluate_series_year,
@@ -160,8 +161,15 @@ def _enumerate_folder_recursive(root: str, only_missing: bool) -> Dict[str, List
     if only_missing:
         try:
             rows = get_files_missing_comicinfo(root) or []
+            # That lookup is a bare LIKE 'root%' prefix, so /data/X also
+            # returned /data/X-Men. Keep it to root's own subtree (compared
+            # case-insensitively, as SQLite's LIKE matched).
+            norm_root = os.path.normpath(root)
+            prefix = (norm_root if norm_root.endswith(os.sep) else norm_root + os.sep).lower()
             for r in rows:
                 p = r["path"]
+                if not os.path.normpath(p).lower().startswith(prefix):
+                    continue
                 parent = os.path.dirname(p)
                 buckets.setdefault(parent, []).append(p)
             if buckets:
@@ -1135,8 +1143,15 @@ def start_bulk_job(
     provider: Optional[str] = None,
     replace: bool = False,
     only_from: Optional[List[str]] = None,
+    allowed=None,
 ) -> str:
     """Kick off a bulk metadata job in the background.
+
+    ``allowed`` is the requester's write scope captured in the request
+    (``core.path_access.capture_write_scope``; None = unrestricted). The scope
+    expansion runs here, before the job is queued, and is narrowed to it: a
+    folder outside the grants is dropped with its files, so the runner -- which
+    has no request user -- only ever sees paths the request was authorised for.
 
     ``provider`` forces a re-tag from that single provider (the library's
     order is ignored and there is no fallback to another source -- a miss goes
@@ -1157,6 +1172,11 @@ def start_bulk_job(
     if provider:
         overwrite_existing = True
     buckets = _expand_scope(scope, paths, overwrite_existing)
+    buckets, dropped = filter_buckets(buckets, allowed)
+    if dropped:
+        app_logger.info(
+            f"Bulk metadata job {job_id}: {dropped} file(s) outside the "
+            f"requester's folder grants left out")
     if provider:
         buckets = _filter_by_provider(buckets, only_from, provider)
     total_folders = len(buckets)

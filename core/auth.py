@@ -2,10 +2,11 @@
 Multi-user identity & role-based access control (RBAC).
 
 This module owns the notion of "who is the current user" and "may they do
-this". It is deliberately additive: when no real user accounts have been
-created the app runs in *implicit-owner* mode — every request is treated as
-the Store Owner and no login is required — so existing single-user installs
-behave exactly as before.
+this". It is deliberately additive: until a password is set on any account
+(and while only one account exists) the app runs in *implicit-owner* mode —
+every request is treated as the Store Owner and no login is required — so a
+single-user install that never set a password behaves exactly as before. A
+password means login (see is_login_required).
 
 Role hierarchy (ascending privilege):
 
@@ -24,7 +25,7 @@ import os
 from flask import g, request, redirect, url_for, jsonify, flash
 
 from core.database import (
-    count_users,
+    accounts_require_login,
     get_owner_user,
     get_user_by_id,
 )
@@ -48,13 +49,16 @@ def get_owner():
 def is_login_required():
     """Whether the app should force login.
 
-    True when more than one account exists, or when the legacy
-    ``CLU_USERNAME``/``CLU_PASSWORD`` env gate is configured. Otherwise the app
-    stays login-free and everyone is the owner (backward-compat guarantee).
+    A password means login. True as soon as any account has a password (the
+    owner setting one on a single-account install included), when more than
+    one account exists, or when the legacy ``CLU_USERNAME``/``CLU_PASSWORD``
+    env gate is configured. Only an install where no password was ever set
+    stays login-free, with everyone acting as the owner
+    (core.database.accounts_require_login).
     """
     if os.environ.get("CLU_USERNAME") and os.environ.get("CLU_PASSWORD"):
         return True
-    return count_users() > 1
+    return accounts_require_login()
 
 
 def resolve_current_user():
@@ -90,12 +94,56 @@ def current_user():
     return user
 
 
+def bearer_token_from_header(auth_header):
+    """The token in an ``Authorization: Bearer <token>`` value, or None.
+
+    None means *no credential was presented* (no header, another scheme, or an
+    empty token), which is an unauthenticated request rather than a failed
+    guess and is never counted by the throttle.
+    """
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    presented = auth_header[len("Bearer "):].strip()
+    return presented or None
+
+
+def user_for_bearer_token(presented, legacy_digest=None):
+    """``(matched, user)`` for a presented API token.
+
+    ``matched`` is False when the token is unknown. The legacy global token
+    matches as the Store Owner, which may be None on a database with no owner
+    row; that is still a match, as it always was.
+
+    Both kinds are stored only as a sha256 digest, so the presented token is
+    hashed and the digests compared; no secret is compared directly. The
+    legacy digest is compared with ``hmac.compare_digest`` over bytes.
+    """
+    import hmac
+    from core.database import (
+        _hash_token, get_api_token_digest, get_user_by_token_hash,
+    )
+
+    if not presented:
+        return False, None
+    presented_digest = _hash_token(presented)
+    user = get_user_by_token_hash(presented_digest)
+    if user:
+        return True, user
+    if legacy_digest is None:
+        legacy_digest = get_api_token_digest()
+    if legacy_digest and hmac.compare_digest(
+        presented_digest.encode("utf-8"), str(legacy_digest).encode("utf-8")
+    ):
+        return True, get_owner()
+    return False, None
+
+
 def resolve_optional_bearer_user(auth_header):
     """Resolve an optional ``Authorization: Bearer <token>`` header to a user.
 
     For endpoints that are public by default but can be *personalised* with an
     API token (e.g. ``/api/insights`` for a Homepage widget). Returns a
-    ``(status, user)`` tuple:
+    ``(status, value)`` tuple:
 
         ("anonymous", None)  no Bearer credentials — the caller should fall
                              back to its default identity (the Store Owner).
@@ -105,33 +153,35 @@ def resolve_optional_bearer_user(auth_header):
                              the caller should reject with 401 so a
                              misconfigured token isn't silently served as the
                              owner's data.
+        ("throttled", secs)  this client address failed too many token checks
+                             (core/auth_throttle.py); the token was NOT
+                             checked. The caller answers 429 with
+                             ``Retry-After: secs``.
 
     Unlike the ``/api/v1`` gate this never 503s: a missing token is a valid
     anonymous state, not an error. The per-user tokens are the same ones minted
     in Settings → Users and used by ``/api/v1``.
     """
-    import hmac
-    from core.database import (
-        _hash_token,
-        get_api_token,
-        get_user_by_token_hash,
+    from core.auth_throttle import (
+        SCOPE_TOKEN, client_address, throttle, token_account_key,
     )
 
-    if not auth_header or not auth_header.startswith("Bearer "):
+    presented = bearer_token_from_header(auth_header)
+    if presented is None:
         return "anonymous", None
 
-    presented = auth_header[len("Bearer "):].strip()
-    if not presented:
-        return "anonymous", None
+    address = client_address()
+    token_key = token_account_key(presented)
+    wait = throttle.retry_after(SCOPE_TOKEN, address, token_key)
+    if wait:
+        return "throttled", wait
 
-    user = get_user_by_token_hash(_hash_token(presented))
-    if user:
+    matched, user = user_for_bearer_token(presented)
+    if matched:
+        throttle.record_success(SCOPE_TOKEN, address, token_key)
         return "ok", user
 
-    legacy_token = get_api_token()
-    if legacy_token and hmac.compare_digest(presented, legacy_token):
-        return "ok", get_owner()
-
+    throttle.record_failure(SCOPE_TOKEN, address, token_key)
     return "invalid", None
 
 
@@ -144,7 +194,8 @@ def _deny(status=403):
     if _wants_json():
         return jsonify({"error": "forbidden" if status == 403 else "unauthorized"}), status
     if status == 401:
-        return redirect(url_for("auth.login", next=request.path))
+        from helpers.redirects import login_next_target
+        return redirect(url_for("auth.login", next=login_next_target()))
     flash("You don't have permission to do that.")
     # index is the app-level landing route; fall back to root if unavailable.
     try:
@@ -207,23 +258,44 @@ def _load_scope(user):
     return libraries, granted, grants
 
 
+def _under_root(norm, root):
+    """Separator-bounded: ``/data/X`` is under ``/data`` but not ``/data/X-Men``."""
+    if norm == root:
+        return True
+    prefix = root if root.endswith(os.sep) else root + os.sep
+    return norm.startswith(prefix)
+
+
+def _containing_library(norm, libraries):
+    """``(root, id)`` of the MOST SPECIFIC library containing ``norm``, or None.
+
+    Libraries can nest (a library root inside another). The innermost one owns
+    the path: its grants decide access, whichever order the libraries are
+    listed in. Taking the first match instead let an outer library listed first
+    shadow every grant on the inner one.
+    """
+    best = None
+    for lib in libraries:
+        root = os.path.normpath(lib["path"])
+        if _under_root(norm, root) and (best is None or len(root) > len(best[0])):
+            best = (root, lib["id"])
+    return best
+
+
 def _level_for(path, libraries, granted, grants):
     """Pure access-level computation against pre-loaded scope (see _load_scope)."""
     if not path:
         return "none"
     norm = os.path.normpath(path)
 
-    lib_root = None
-    lib_id = None
-    for lib in libraries:
-        root = os.path.normpath(lib["path"])
-        if norm == root or norm.startswith(root + os.sep):
-            lib_root, lib_id = root, lib["id"]
-            break
-    if lib_root is None or lib_id not in granted:
+    found = _containing_library(norm, libraries)
+    if found is None:
+        return "none"
+    lib_root, lib_id = found
+    if lib_id not in granted:
         return "none"
 
-    in_lib = [g for g in grants if g == lib_root or g.startswith(lib_root + os.sep)]
+    in_lib = [g for g in grants if _under_root(g, lib_root)]
     if not in_lib:
         return "none"  # granted library, no folder picks -> nothing
 
@@ -265,13 +337,13 @@ def accessible_folder_prefixes(user):
     if not user:
         return []
     libraries, granted, grants = _load_scope(user)
-    lib_roots = [(os.path.normpath(l["path"]), l["id"]) for l in libraries]
     out = []
     for g in grants:
-        for root, lid in lib_roots:
-            if (g == root or g.startswith(root + os.sep)) and lid in granted:
-                out.append(g)
-                break
+        # The grant belongs to the most specific library containing it, the
+        # same rule _level_for applies to the paths it is compared against.
+        found = _containing_library(g, libraries)
+        if found and found[1] in granted:
+            out.append(g)
     return out
 
 
@@ -324,7 +396,21 @@ _OWNER_PREFIXES = (
     "/api/import",
     "/api/setup",              # Guided Setup (preflight reads paths, uid, owner state)
     "/setup",                  # Guided Setup page (also covers /setup-owner above)
+    # Download client and indexer configuration holds credentials, and the
+    # only pages that manage it (/config, /setup) are owner-only. The two
+    # /api/download-clients routes Clerk pages use are listed just below.
+    "/api/download-clients",
+    "/api/indexers",
 )
+
+# Under an owner prefix but used by Clerk pages: the manual search modal reads
+# the source order, and the Status page clears finished Usenet/DC++ rows.
+# Neither reads or writes client configuration. Exact paths, so a new
+# /api/download-clients route is owner-only until someone decides otherwise.
+_CLERK_PATHS_UNDER_OWNER_PREFIXES = frozenset({
+    "/api/download-clients/sources",
+    "/api/download-clients/downloads/clear",
+})
 
 # GET is Reader (browsing), but creating/editing/deleting requires Owner.
 _OWNER_MUTATION_PREFIXES = (
@@ -361,9 +447,8 @@ _READER_READ_POST_PREFIXES = (
 # Clerk-level areas where even GET is a Clerk feature (not just Reader viewing).
 _CLERK_PREFIXES = (
     "/api/getcomics",
-    "/api/download-clients",
     "/api/download-runs",      # automatic download run reports (Status page)
-    "/api/indexers",
+    "/download_status",        # download queue rows (Status page): /download_status/<id>, /download_status_all
     "/api/usenet",
     "/api/dcpp",
     "/api/pull-list",
@@ -373,6 +458,7 @@ _CLERK_PREFIXES = (
     "/api/weekly-packs",
     "/logs/tail",              # raw app/monitor log content (can expose system info)
     "/stream/",                # runs delete/convert/rebuild scripts over GET (GHSA-4v7f-qm46-8fw4)
+    "/list-downloads",         # the File Manager's WATCH/TARGET listing
 )
 
 # Browser *pages* that are Clerk features (file management, pull list,
@@ -399,18 +485,40 @@ _CLERK_PAGE_PATHS = frozenset({
 })
 
 
+def path_matches_prefix(path, prefixes):
+    """True if ``path`` is one of ``prefixes`` or below one on a ``/`` boundary.
+
+    A prefix that already ends in ``/`` matches what follows it. Otherwise
+    ``/api/favorites`` matches ``/api/favorites`` and ``/api/favorites/x`` but
+    not ``/api/favorites-admin``. Used where a prefix *grants* (the Reader
+    tables, the login exemptions), so a future route whose name merely starts
+    the same way is not swept in.
+    """
+    for prefix in prefixes:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return True
+        elif path == prefix or path.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def required_role_for_request():
     """Return the minimum role required for the current request's path+method."""
     path = request.path
     mutating = request.method in _MUTATING_METHODS
 
+    if path in _CLERK_PATHS_UNDER_OWNER_PREFIXES:
+        return "clerk"
     if path.startswith(_OWNER_PREFIXES):
         return "owner"
     if mutating and path.startswith(_OWNER_MUTATION_PREFIXES):
         return "owner"
-    if path.startswith(_READER_WRITE_PREFIXES):
+    # The Reader tables lower the bar, so they match on a segment boundary.
+    # The Owner/Clerk tables raise it and keep plain prefix matching.
+    if path_matches_prefix(path, _READER_WRITE_PREFIXES):
         return "reader"
-    if path.startswith(_READER_READ_POST_PREFIXES):
+    if path_matches_prefix(path, _READER_READ_POST_PREFIXES):
         return "reader"
     if path in _CLERK_PAGE_PATHS:
         return "clerk"

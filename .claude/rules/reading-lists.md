@@ -98,6 +98,14 @@ list is syncable.
 under their original names, so the import workers and the sync build entries
 through the *same* function and cannot drift.
 
+**A description is rendered only through the `sanitize_description` filter**
+(`routes/reading_lists.py`, returns `Markup`), never `|safe`. `_sanitize_html`
+is an alias of `core.description_html.sanitize_description_html`, an
+allow-list re-serialiser over a BeautifulSoup tree; it runs on write *and* on
+read, because rows stored by older versions went through a regex sanitizer.
+The arc pickers in `reading_list.js` show provider descriptions as escaped
+text (`arcDescriptionSnippet`). Asserted in `tests/unit/test_description_html.py`.
+
 ### Reading-List Matching
 
 `CBLLoader.match_file` (`models/cbl.py`) tries identity before names:

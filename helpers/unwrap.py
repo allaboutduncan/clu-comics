@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid
 import zipfile
 from collections import defaultdict, namedtuple
@@ -26,7 +27,14 @@ from core.app_logging import app_logger
 # that module's policy mirror (monitor_claims) and the monitor itself can never
 # disagree about what counts as an archive.
 from core.download_utils import ARCHIVE_EXTS  # noqa: F401
-from helpers import is_hidden, match_parent_permissions, extract_rar_with_unar
+from helpers import (
+    _promote_extraction,
+    archive_extract_timeout,
+    extract_rar_with_unar,
+    is_hidden,
+    match_parent_permissions,
+    run_archive_tool,
+)
 from helpers.library import is_allowed_path
 
 # Comic containers that end the recursion — hand these back to the pipeline.
@@ -326,19 +334,37 @@ def _extract_zip(zip_path, out_dir):
     except Exception as e:
         app_logger.warning(f"unwrap: zipfile error on {zip_path}: {e}")
 
-    for cmd in (
-        ["7z", "x", f"-o{out_dir}", "-y", zip_path],
-        ["unar", "-f", "-o", out_dir, zip_path],
-    ):
+    # Each tool writes into a private hidden stage, promoted only when it
+    # produced something. ``out_dir`` is shared by every primary of a layer, so
+    # a timed-out or failed attempt cannot be discarded by emptying it -- and
+    # testing ``out_dir`` itself for files would count an earlier primary's
+    # output as this tool's success.
+    timeout = archive_extract_timeout(zip_path)
+    for tool in ("7z", "unar"):
+        stage = tempfile.mkdtemp(prefix=".clu_zip_", dir=out_dir)
         try:
-            subprocess.run(cmd, capture_output=True)
-        except FileNotFoundError:
-            continue
-        except Exception as e:
-            app_logger.warning(f"unwrap: {cmd[0]} error on {zip_path}: {e}")
-            continue
-        if os.path.isdir(out_dir) and any(os.listdir(out_dir)):
-            return True, 0
+            if tool == "7z":
+                cmd = ["7z", "x", f"-o{stage}", "-y", zip_path]
+            else:
+                cmd = ["unar", "-f", "-o", stage, zip_path]
+            try:
+                run_archive_tool(cmd, timeout)
+            except FileNotFoundError:
+                continue
+            except subprocess.TimeoutExpired:
+                app_logger.warning(
+                    f"unwrap: {tool} timed out after {timeout}s extracting "
+                    f"{os.path.basename(zip_path)}; discarding its output"
+                )
+                continue
+            except Exception as e:
+                app_logger.warning(f"unwrap: {tool} error on {zip_path}: {e}")
+                continue
+            if any(os.listdir(stage)):
+                _promote_extraction(stage, out_dir)
+                return True, 0
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
     return False, 0
 
 

@@ -26,7 +26,7 @@ B_FILE = "/data/LibB/Spider-Man_001.cbz"
 
 class TestLibraryAccessMultiUser:
     @pytest.fixture(autouse=True)
-    def _setup(self, db_connection, monkeypatch):
+    def _setup(self, db_connection, no_host_data_library, monkeypatch):
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         create_user("owner", password="ownerpass", role="owner")
@@ -104,7 +104,7 @@ class TestLibraryAccessImplicitOwner:
     """With no real accounts, enforcement is a no-op (single-user install)."""
 
     @pytest.fixture(autouse=True)
-    def _libs(self, db_connection, monkeypatch):
+    def _libs(self, db_connection, no_host_data_library, monkeypatch):
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         create_library(name="Library A", path="/data/LibA")

@@ -728,6 +728,15 @@ def import_pull_list():
     skipped = 0
     errors = []
     for entry in series_list:
+        # A mapped folder receives downloaded issues: an imported mapping must
+        # point into a library, the same rule as /api/series/<id>/map.
+        mapped = entry.get("mapped_path") if isinstance(entry, dict) else None
+        if mapped and _mapped_folder_refusal(mapped):
+            errors.append({
+                "id": entry.get("id"),
+                "error": "mapped_path is not inside a library",
+            })
+            continue
         try:
             result = import_series_row(entry)
             if result == "inserted":
@@ -833,6 +842,20 @@ def apply_library_automap():
     if not clean:
         return jsonify({"success": False, "error": "No valid items provided"}), 400
 
+    # The folders come back from the browser. Sidecars are written into each
+    # and downloads filed into it: every one must be inside a library, for
+    # every user, and a non-owner needs a full grant on it. One refusal
+    # refuses the batch.
+    from core.path_access import grant_refusal
+    from helpers.library import is_valid_library_path
+    if not all(isinstance(it["folder"], str) and is_valid_library_path(it["folder"])
+               for it in clean):
+        return jsonify({"success": False,
+                        "error": "Every folder must be inside a library"}), 400
+    refusal = grant_refusal(*[it["folder"] for it in clean])
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+
     result = library_automap.apply_and_sync(clean)
     return jsonify({
         "success": True,
@@ -865,6 +888,12 @@ def add_folder_to_pull_list():
     folder = data.get("folder")
     if not folder:
         return jsonify({"success": False, "error": "Missing folder"}), 400
+
+    # Sidecars are written into the folder: a non-owner needs a full grant.
+    from core.path_access import grant_refusal
+    refusal = grant_refusal(folder)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     try:
         result = library_automap.add_folder_to_pull_list(
@@ -1377,6 +1406,29 @@ def api_search_series():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _mapped_folder_refusal(path):
+    """`(message, status)` if `path` may not become a series' mapped folder.
+
+    A mapped folder is written into (cvinfo, series.json) and receives every
+    downloaded issue of the series (`process_incoming_wanted_issues`), so it
+    must lie inside an enabled library -- judged on the realpath, the nearest
+    existing parent for a folder that does not exist yet -- whoever asks. A
+    non-owner also needs a `'full'` grant on it. An existing mapping outside
+    the libraries is not touched; it simply cannot be saved again.
+    """
+    from core.path_access import grant_refusal
+    from helpers.library import is_valid_library_path
+
+    # Rooted, never relative (a relative path would resolve against the
+    # process's working directory). "/data/x" counts on Windows too.
+    if not isinstance(path, str) or not (
+            os.path.isabs(path) or path.startswith(("/", "\\"))):
+        return "The folder must be an absolute path inside a library", 400
+    if not is_valid_library_path(path):
+        return "The folder must be inside a library", 400
+    return grant_refusal(path)
+
+
 @series_bp.route("/api/series/<int:series_id>/map", methods=["POST"])
 def map_series(series_id):
     """Map a series to a local directory and save to database."""
@@ -1391,6 +1443,14 @@ def map_series(series_id):
 
     if not mapped_path or not series_data:
         return jsonify({"error": "Missing mapped_path or series data"}), 400
+
+    # cvinfo and series.json are written into the folder and downloaded issues
+    # are later moved into it, so it must be inside a library for everyone,
+    # owners included (containment is not a permission question), and a
+    # non-owner needs a full grant on it.
+    refusal = _mapped_folder_refusal(mapped_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     try:
         publisher = series_data.get("publisher")
@@ -1546,6 +1606,13 @@ def subscribe_series(series_id):
 
     if not path or path == "/":
         return jsonify({"success": False, "error": "Path required"}), 400
+
+    # The folder is created, cvinfo/series.json are written into it and
+    # downloads are filed into it: inside a library for everyone, plus a full
+    # grant for a non-owner. Checked before the folder is created.
+    refusal = _mapped_folder_refusal(path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     try:
         series = get_series_by_id(series_id)

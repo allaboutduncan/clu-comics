@@ -93,6 +93,10 @@ CLASS_NO_PAGES = "NoPagesInArchive"
 CLASS_CACHE_WRITE = "ThumbnailCacheUnwritable"
 CLASS_CORRUPT_ENTRIES = "PartialCRCSalvage"
 CLASS_RAR_FAILED = "RarConversionFailed"
+# The archive opened and gave up only some of its files. Kept apart from
+# CLASS_RAR_FAILED because the advice differs: the same .cbr has extracted 39
+# pages on one run and 80 on the next, so a retry is worth offering first.
+CLASS_RAR_PARTIAL = "RarExtractIncomplete"
 CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
@@ -596,6 +600,16 @@ _RULES = (
         "damaged, or it needs a password.",
         "Replace the file.",
         ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_RAR_PARTIAL.lower(),),
+        "Only part of this RAR archive could be extracted, so it was not "
+        "converted. Nothing was written and the original is untouched.",
+        "Rebuild to try again: an incomplete read can be a passing storage "
+        "or network problem rather than damage. If it fails every time, the "
+        "archive itself is damaged; replace the file.",
+        ACTION_REBUILD, True, False,
     ),
     (
         (),

@@ -12,7 +12,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from flask_cors import CORS
+from core.cors import configure_cors
 from werkzeug.utils import secure_filename
 from typing import Optional
 from http.client import IncompleteRead
@@ -37,6 +37,7 @@ from core.settings import get_bool, get_int, get_list, get_setting
 from core.download_utils import download_notification_body
 from core.download_runs import set_download_outcome
 from core import flaresolverr
+from core import url_guard
 
 # Load config and initialize Flask app.
 app = Flask(__name__)
@@ -66,20 +67,24 @@ from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
     claim_download_path,
     release_download_claim,
-    replace_session,
+    SharedSession,
     close_quietly,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
     auto_retry_delay,
     begin_retry_wait,
     build_status_snapshot,
+    clear_settled_downloads,
     count_active_downloads,
+    mark_worker_settled,
     reset_for_retry,
     should_auto_retry,
     note_provider_rate_limited,
     provider_cooldown_remaining,
     clear_provider_cooldown,
     CANCELLABLE_STATUSES,
+    CLEAR_COMPLETED_STATUSES,
+    CLEAR_FAILED_STATUSES,
     RETRYABLE_STATUSES,
     monitor_enabled,
     post_download_action,
@@ -149,6 +154,8 @@ def _fire_retry(task):
             f"Failed to re-queue auto-retry for {download_id}: {e}", exc_info=True
         )
         set_error_status(download_id, e)
+        # Not re-queued, so no worker will ever settle it; leave it clearable.
+        mark_worker_settled(download_progress, download_id)
 
 
 def _schedule_auto_retry(task, last_error):
@@ -181,8 +188,6 @@ def _schedule_auto_retry(task, last_error):
 
 # Setup the download directory from config.
 watch = get_watch_dir() or "/downloads/temp"
-from core.database import get_user_preference
-custom_headers_str = get_user_preference("custom_headers", "")
 
 # Import-time bootstrap only -- WATCH is editable at runtime from Settings, so
 # every download must resolve it through _download_dir() instead of this constant.
@@ -217,29 +222,6 @@ def _download_dir():
             return DOWNLOAD_DIR
     return resolved or DOWNLOAD_DIR
 
-# Default headers for HTTP requests.
-default_headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/112.0.0.0 Safari/537.36"
-    )
-}
-
-if custom_headers_str:
-    try:
-        custom_headers = json.loads(custom_headers_str)
-        if isinstance(custom_headers, dict):
-            custom_headers = {k.strip(): v.strip() for k, v in custom_headers.items()}
-            default_headers.update(custom_headers)
-            monitor_logger.info("Custom headers from settings applied.")
-        else:
-            monitor_logger.warning("Custom headers from settings are not a valid dictionary. Ignoring.")
-    except Exception as e:
-        monitor_logger.warning(f"Failed to parse custom headers: {e}. Ignoring.")
-
-headers = default_headers
-
 # Basic headers for internal downloads (no custom headers required)
 # Used when downloads are initiated from within the app (Pull List, Weekly Packs)
 basic_headers = {
@@ -249,6 +231,18 @@ basic_headers = {
         "Chrome/112.0.0.0 Safari/537.36"
     )
 }
+
+
+def _full_headers():
+    """Basic headers plus the user's custom_headers, read per download.
+
+    Never a module constant: this module is imported before init_db(), and a
+    snapshot taken here ignored every later edit (and every removal) of the
+    custom headers until a restart. Which hosts may receive them is still
+    decided per request by url_guard.scope_headers / guard_session.
+    """
+    return url_guard.download_headers(basic_headers)
+
 
 def _make_gc_scraper():
     """Build a fresh cloudscraper session for getcomics.org.
@@ -268,8 +262,11 @@ def _make_gc_scraper():
     )
 
 
-# Cloudscraper instance for bypassing Cloudflare protection on getcomics.org
-gc_scraper = _make_gc_scraper()
+# Cloudscraper session for bypassing Cloudflare protection on getcomics.org,
+# shared by the download workers. Take a local reference per hop and replace it
+# through the holder: rebinding a global from each worker let two of them
+# rebuild it at once, or swap out a session another had just cleared.
+gc_session = SharedSession(_make_gc_scraper)
 
 
 def _is_cloudflare_challenge(resp) -> bool:
@@ -280,13 +277,13 @@ def _is_cloudflare_challenge(resp) -> bool:
     return 'cloudflare' in server
 
 
-# Allow cross-origin requests.
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Cross-origin access: the browser extension's POST to /download only.
+configure_cors(app)
 
 # -------------------------------
 # URL Resolver
 # -------------------------------
-def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
+def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
     """
     Follow every ordinary 3xx redirect **and** the HTML *meta-refresh* pages
     that GetComics sometimes serves, stopping once we reach the real file
@@ -299,76 +296,89 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
     that no provider branch matches, so the caller would mislabel and misroute
     the download.
     """
-    global gc_scraper
-
+    if hdrs is None:
+        hdrs = _full_headers()
     current = url
     for _ in range(max_hops):
+        # Every hop is checked before anything is sent to it, outside the try
+        # below so a refusal fails the download instead of returning the URL.
+        url_guard.check_url(current)
+        hop_hdrs = url_guard.scope_headers(hdrs, current, basic_headers, origin=url)
         is_gc = 'getcomics.org' in current.lower()
         r = None
         cleared = False
+        # Every attempt of this hop uses this one reference, so a clearance put
+        # on it is what the retry is sent with, whatever the other workers do.
+        gc_scraper = gc_session.get() if is_gc else None
 
-        for attempt in (1, 2):
-            try:
-                if is_gc:
-                    # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
-                    r = gc_scraper.get(current, allow_redirects=False, timeout=30)
-                    if _is_cloudflare_challenge(r) and attempt == 1:
-                        # Prefer real clearance from the bundled FlareSolverr;
-                        # a fresh scraper is the fallback when it is off or fails.
-                        if flaresolverr.clear_challenge(current, gc_scraper, context="resolve"):
-                            cleared = True
-                            monitor_logger.info(
-                                f"Cloudflare challenge resolving {current} — retrying with FlareSolverr clearance"
+        # A fallback GET is streamed, and a redirect hop or a non-HTML answer
+        # never reads its body, so its connection stayed checked out of the
+        # pool until the garbage collector found it. Close every hop's response.
+        try:
+            for attempt in (1, 2):
+                try:
+                    if is_gc:
+                        # Use cloudscraper for getcomics.org URLs to bypass Cloudflare
+                        r = gc_scraper.get(current, allow_redirects=False, timeout=30)
+                        if _is_cloudflare_challenge(r) and attempt == 1:
+                            # Prefer real clearance from the bundled FlareSolverr;
+                            # a fresh scraper is the fallback when it is off or fails.
+                            if flaresolverr.clear_challenge(current, gc_scraper, context="resolve"):
+                                cleared = True
+                                monitor_logger.info(
+                                    f"Cloudflare challenge resolving {current} — retrying with FlareSolverr clearance"
+                                )
+                                continue
+                            monitor_logger.warning(
+                                f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
                             )
+                            gc_scraper = gc_session.replace(gc_scraper)
                             continue
+                    else:
+                        try:
+                            r = requests.head(current, headers=hop_hdrs,
+                                              allow_redirects=False, timeout=15)
+                        except requests.RequestException:
+                            # some hosts block HEAD → fall back to a very small GET
+                            r = requests.get(current, headers=hop_hdrs, stream=True,
+                                             allow_redirects=False, timeout=15)
+                    break
+                except Exception as e:
+                    if is_gc and attempt == 1:
                         monitor_logger.warning(
-                            f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
+                            f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
                         )
-                        gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                        gc_scraper = gc_session.replace(gc_scraper)
                         continue
-                else:
-                    try:
-                        r = requests.head(current, headers=hdrs,
-                                          allow_redirects=False, timeout=15)
-                    except requests.RequestException:
-                        # some hosts block HEAD → fall back to a very small GET
-                        r = requests.get(current, headers=hdrs, stream=True,
-                                         allow_redirects=False, timeout=15)
-                break
-            except Exception as e:
-                if is_gc and attempt == 1:
-                    monitor_logger.warning(
-                        f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
-                    )
-                    gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
-                    continue
-                monitor_logger.warning(f"Error resolving URL {current}: {e}")
+                    monitor_logger.warning(f"Error resolving URL {current}: {e}")
+                    return current
+
+            if r is None:
+                monitor_logger.warning(f"Could not resolve URL {current}")
                 return current
 
-        if r is None:
-            monitor_logger.warning(f"Could not resolve URL {current}")
-            return current
-
-        # Ordinary HTTP 3xx
-        if 300 <= r.status_code < 400 and 'location' in r.headers:
-            current = urljoin(current, r.headers['location'])
-            continue
-        # Meta-refresh (GetComics' /dlds pages). Skip on a Cloudflare
-        # interstitial, whose markup can carry a bogus url= we'd chase.
-        if (not _is_cloudflare_challenge(r) and
-                'text/html' in r.headers.get('content-type', '') and
-                b'<meta' in r.content[:2048]):
-            m = re.search(br'url=([^">]+)', r.content[:2048], flags=re.I)
-            if m:
-                current = urljoin(current, m.group(1).decode().strip())
+            # Ordinary HTTP 3xx
+            if 300 <= r.status_code < 400 and 'location' in r.headers:
+                current = urljoin(current, r.headers['location'])
                 continue
-        if _is_cloudflare_challenge(r):
-            if cleared:
-                flaresolverr.note_still_challenged(current, "resolve")
-            monitor_logger.warning(
-                f"Cloudflare still blocking {current} (HTTP {r.status_code}) — returning unresolved"
-            )
-        return current
+            # Meta-refresh (GetComics' /dlds pages). Skip on a Cloudflare
+            # interstitial, whose markup can carry a bogus url= we'd chase.
+            if (not _is_cloudflare_challenge(r) and
+                    'text/html' in r.headers.get('content-type', '') and
+                    b'<meta' in r.content[:2048]):
+                m = re.search(br'url=([^">]+)', r.content[:2048], flags=re.I)
+                if m:
+                    current = urljoin(current, m.group(1).decode().strip())
+                    continue
+            if _is_cloudflare_challenge(r):
+                if cleared:
+                    flaresolverr.note_still_challenged(current, "resolve")
+                monitor_logger.warning(
+                    f"Cloudflare still blocking {current} (HTTP {r.status_code}) — returning unresolved"
+                )
+            return current
+        finally:
+            close_quietly(r)
     return current        # give up after max_hops
 
 # -------------------------------
@@ -459,8 +469,10 @@ def process_download(task):
     source_page_url = task.get('page_url')
 
     # Use basic headers for internal downloads (Pull List, Weekly Packs, UI searches)
-    # Use full headers (with custom_headers_str) for external downloads (browser extension)
-    use_headers = basic_headers if internal else headers
+    # Use full headers (with the user's custom_headers, read now) for external
+    # downloads (browser extension). Read once per task so every mirror and
+    # retry attempt of this download sends the same set.
+    use_headers = basic_headers if internal else _full_headers()
 
     # If cancelled while queued, don't start at all
     if is_cancel_requested(download_id):
@@ -505,6 +517,8 @@ def process_download(task):
                 download_progress[download_id]['bytes_downloaded'] = 0
                 download_progress[download_id]['bytes_total'] = 0
                 download_progress[download_id]['error'] = None
+
+            url_guard.check_url(try_url)
 
             # Skip URL resolution for known provider domains — their download
             # functions handle URL construction internally
@@ -715,6 +729,9 @@ def worker():
                 exc_info=True,
             )
         finally:
+            # Only now may Clear remove the row: deleting it while this worker
+            # still runs would delete a pending cancel with it.
+            mark_worker_settled(download_progress, task.get('download_id'))
             download_queue.task_done()
 
 # Start a few worker threads for processing downloads.
@@ -736,7 +753,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     Args:
         url: The (resolved) download URL to fetch
         download_id: Unique identifier for progress tracking
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
         source_url: The original getcomics link to surface as the manual-download
             link on a Cloudflare failure (preferably the post page). The resolved
             mirror URL — and even the tokenized /dls/ link — 403 in a browser;
@@ -744,7 +761,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
             mirrors require. Defaults to ``url``.
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
 
     retries = 3
     delay = 2  # base delay in seconds
@@ -754,7 +771,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     # Use cloudscraper so Cloudflare-fronted mirrors (e.g. comicfiles.ru) are
     # fetched with a solved challenge instead of getting a 403. cloudscraper
     # returns a requests.Session subclass, so the Retry adapter below still
-    # applies. A fresh instance (not the shared gc_scraper) avoids mutating the
+    # applies. A fresh instance (not the shared gc_session) avoids mutating the
     # module-level scraper with our custom Retry adapter.
     session = cloudscraper.create_scraper(
         browser={
@@ -788,6 +805,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     if scraper_ua:
         session.headers["User-Agent"] = scraper_ua
     session.headers["Referer"] = "https://getcomics.org/"
+    # Check every request and redirect hop; keep custom headers on known hosts.
+    url_guard.guard_session(session, hdrs, basic_headers)
 
     # The destination name is reserved once and held for every attempt. Taking
     # it per attempt is what let two of the three workers agree on the same
@@ -799,6 +818,9 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     flaresolverr_cleared = False
 
     for attempt in range(retries):
+        # Closed in the finally below: a 403/404, an HTML answer or a failed
+        # read leaves the streamed body unread, and its connection checked out.
+        response = None
         try:
             # A stalled read can sit on the socket for the full 300s timeout, so
             # a cancel often only becomes actionable once the attempt unwinds.
@@ -1014,6 +1036,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
                 while remaining_sleep > 0 and not is_cancel_requested(download_id):
                     time.sleep(min(1, remaining_sleep))
                     remaining_sleep -= 1
+        finally:
+            close_quietly(response)
 
     # All retries failed - cleanup
     session.close()
@@ -1051,7 +1075,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
 def _pd_id(url: str) -> str:
     return urlparse(url).path.rstrip("/").split("/")[-1]
 
-def _requests_session() -> requests.Session:
+def _requests_session(hdrs) -> requests.Session:
+    """A retrying session guarded for *hdrs* (the headers this download sends)."""
     s = requests.Session()
     retries = Retry(
         total=5,
@@ -1063,7 +1088,8 @@ def _requests_session() -> requests.Session:
     )
     s.mount("https://", HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
     s.mount("http://",  HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
-    return s
+    # Check every request and redirect hop; keep custom headers on known hosts.
+    return url_guard.guard_session(s, hdrs, basic_headers)
 
 def _parse_total_from_headers(hdrs, default_size=None):
     # Prefer Content-Range when resuming, else Content-Length
@@ -1093,10 +1119,10 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
         url: The PixelDrain URL
         download_id: Unique identifier for progress tracking
         dest_name: Optional destination filename
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
 
     file_id = _pd_id(url)
 
@@ -1108,7 +1134,7 @@ def download_pixeldrain(url: str, download_id: str, dest_name: Optional[str] = N
     #    which is faster + works for both modes; if it fails, fall back to library/info.
     is_folder = False
     original_name = dest_name
-    session = _requests_session()
+    session = _requests_session(hdrs)
 
     # Build the *download* endpoints up-front
     file_dl_url   = f"https://pixeldrain.com/api/file/{file_id}?download"
@@ -1307,10 +1333,10 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
         url: The ComicBookPlus download URL
         download_id: Unique identifier for progress tracking
         dest_name: Optional destination filename
-        hdrs: Optional headers dict. If None, uses global headers (with custom_headers_str)
+        hdrs: Optional headers dict. If None, uses basic + custom headers read now (_full_headers)
     """
     if hdrs is None:
-        hdrs = headers
+        hdrs = _full_headers()
     parsed = urlparse(url)
     query_params = dict(param.split('=') for param in parsed.query.split('&') if '=' in param)
 
@@ -1339,7 +1365,7 @@ def download_comicbookplus(url: str, download_id: str, dest_name: Optional[str] 
     })
 
     # Setup session with retries
-    session = _requests_session()
+    session = _requests_session(hdrs)
 
     # Choose output path. O_EXCL reservation, not a bare exists() scan -- see
     # claim_download_path; three workers share this directory.
@@ -1579,6 +1605,11 @@ def download():
         return jsonify({'error': 'Missing "link" in request data'}), 400
 
     url = data['link']
+    try:
+        url_guard.check_url(url)
+    except url_guard.BlockedURLError as e:
+        monitor_logger.warning(f"Refused download link: {e}")
+        return jsonify({'error': f'Link refused: {e}'}), 400
     download_id = str(uuid.uuid4())
     download_progress[download_id] = {
          'url': url,
@@ -1638,23 +1669,15 @@ def download_summary():
 
 @app.route('/clear_downloads', methods=['POST'])
 def clear_downloads():
-    keys_to_delete = [
-        download_id for download_id, details in download_progress.items() 
-        if details.get('status') in ['complete', 'cancelled']
-    ]
-    for download_id in keys_to_delete:
-        del download_progress[download_id]
-    return jsonify({'message': f'Cleared {len(keys_to_delete)} downloads'}), 200
+    # Skips a row whose worker is still running (a cancel it has not acted on
+    # yet) and iterates a snapshot; see core.download_utils.
+    cleared = clear_settled_downloads(download_progress, CLEAR_COMPLETED_STATUSES)
+    return jsonify({'message': f'Cleared {cleared} downloads'}), 200
 
 @app.route('/clear_failed_downloads', methods=['POST'])
 def clear_failed_downloads():
-    keys_to_delete = [
-        download_id for download_id, details in download_progress.items()
-        if details.get('status') == 'error'
-    ]
-    for download_id in keys_to_delete:
-        del download_progress[download_id]
-    return jsonify({'message': f'Cleared {len(keys_to_delete)} failed downloads'}), 200
+    cleared = clear_settled_downloads(download_progress, CLEAR_FAILED_STATUSES)
+    return jsonify({'message': f'Cleared {cleared} failed downloads'}), 200
 
 @app.route('/retry_download/<download_id>', methods=['POST'])
 def retry_download(download_id):

@@ -319,7 +319,6 @@
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/clu-utils.js') }}?v={{ range(1, 10000) | random }}"></script>
 <script>
     document.addEventListener('DOMContentLoaded', function () {
         // ── Auto-Map Library ──
@@ -327,12 +326,6 @@
         const automapModal = automapModalEl ? new bootstrap.Modal(automapModalEl) : null;
         let automapPoll = null;
         let reviewItems = [];
-
-        function esc(s) {
-            const d = document.createElement('div');
-            d.textContent = (s == null ? '' : String(s));
-            return d.innerHTML;
-        }
 
         function resetAutomapUI() {
             document.getElementById('automapProgress').classList.remove('d-none');
@@ -453,8 +446,8 @@
                     shownNote(errors, errorN, result.errors_truncated)
                     + '<ul class="list-group list-group-flush small">' + errors.map(it => `
                         <li class="list-group-item px-0 bg-transparent">
-                            <span class="text-danger">${esc(it.folder)}</span>
-                            — ${esc(it.reason)}
+                            <span class="text-danger">${CLU.escapeHtml(it.folder)}</span>
+                            — ${CLU.escapeHtml(it.reason)}
                         </li>`).join('') + '</ul>';
                 errWrap.classList.remove('d-none');
             } else {
@@ -471,9 +464,9 @@
                 body.innerHTML = reviewItems.map((it, i) => `
                     <tr>
                         <td><input class="form-check-input automap-review-cb" type="checkbox" data-idx="${i}"></td>
-                        <td>${esc(it.series_name)}${it.year ? ' <span class="text-muted">(' + esc(it.year) + ')</span>' : ''}</td>
-                        <td><small class="text-muted">${esc(it.folder)}</small></td>
-                        <td><small>${esc(it.reason)}</small></td>
+                        <td>${CLU.escapeHtml(it.series_name)}${it.year ? ' <span class="text-muted">(' + CLU.escapeHtml(it.year) + ')</span>' : ''}</td>
+                        <td><small class="text-muted">${CLU.escapeHtml(it.folder)}</small></td>
+                        <td><small>${CLU.escapeHtml(it.reason)}</small></td>
                         <td class="text-center"><span class="badge bg-info">${it.comic_count || 0}</span></td>
                     </tr>`).join('');
                 reviewWrap.classList.remove('d-none');
@@ -490,8 +483,8 @@
                     shownNote(skipped, skippedN, result.skipped_truncated)
                     + '<ul class="list-group list-group-flush small">' + skipped.map(it => `
                         <li class="list-group-item px-0">
-                            <span class="text-muted">${esc(it.folder)}</span>
-                            — ${esc(it.reason)}
+                            <span class="text-muted">${CLU.escapeHtml(it.folder)}</span>
+                            — ${CLU.escapeHtml(it.reason)}
                         </li>`).join('') + '</ul>';
                 skWrap.classList.remove('d-none');
             } else {

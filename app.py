@@ -79,7 +79,7 @@ from core.settings import all_settings, get_bool, get_int, get_list, get_setting
 from core.auth import enforce_path_access, current_user, filter_paths_for_user, file_op_refusal
 from helpers.library import is_allowed_path
 from cbz_ops.edit import (
-    get_edit_modal,
+    edit_cbz,
     save_cbz,
 )
 from core.memory_utils import (
@@ -88,7 +88,6 @@ from core.memory_utils import (
     get_global_monitor,
 )
 from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
-from core.metadata_normalize import normalize_credit_list, strip_provider_ids
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from core.version import __version__
@@ -104,6 +103,7 @@ from core.user_time import (
     describe_age,
     format_user_time,
     host_offset_label,
+    next_utc_day_at,
     user_offset_label,
     utc_now_iso,
 )
@@ -111,10 +111,10 @@ from core.download_utils import issue_number_to_int, monitor_enabled
 from core.thumbnail_cache import (
     thumbnail_cache_path,
     is_thumbnail_stale,
+    apply_cache_hit_headers,
     file_changed_since,
     regenerate_thumbnail,
     set_job_status,
-    prune_hidden_jobs,
     is_in_flight,
     submit_thumbnail_job,
 )
@@ -127,6 +127,7 @@ from packaging import version as pkg_version
 from core.database import (
     init_db,
     get_db_connection,
+    db_conn,
     log_recent_file,
     invalidate_browse_cache,
     get_file_index_from_db,
@@ -170,7 +171,7 @@ from models.stats import (
 from models.timeline import get_reading_timeline
 
 # Add URL encoding support for template filters
-from core.file_watcher import FileWatcher
+from core.file_watcher import FileWatcher, set_overflow_recovery
 from apscheduler.triggers.cron import CronTrigger
 
 
@@ -242,11 +243,15 @@ from core.config import seed_monitor_from_env  # noqa: E402
 
 seed_monitor_from_env()
 
-# Multi-user: ensure a Store Owner account exists (implicit-owner mode for
-# single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
-from core.database import seed_owner_if_needed
+# Multi-user: ensure a Store Owner account exists (implicit-owner mode until
+# a password is set; seeded from CLU_USERNAME/CLU_PASSWORD when present).
+from core.database import migrate_legacy_api_token_to_digest, seed_owner_if_needed
 
 seed_owner_if_needed()
+
+# The legacy global API token used to be stored in plain text. Keep only its
+# hash (idempotent; existing clients keep working).
+migrate_legacy_api_token_to_digest()
 
 # Upgrade the provisional per-process secret key (set in load_flask_config
 # before the DB existed) to a stable, persisted one so browser sessions survive
@@ -448,11 +453,15 @@ def scheduled_file_index_rebuild():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -2602,14 +2611,17 @@ def schedule_weekly_packs_retry():
         if not config:
             return
 
-        # Parse time
-        time_parts = config["time"].split(":")
-        hour = int(time_parts[0])
-        minute = int(time_parts[1])
-
-        # Calculate tomorrow's date/time
-        tomorrow = datetime.now() + timedelta(days=1)
-        run_time = tomorrow.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # The stored time is UTC, like every schedule time, so "tomorrow at the
+        # same time" is computed in UTC and handed to the trigger *aware*. It
+        # used to be applied to a naive local datetime.now(), which a
+        # DateTrigger reads in the scheduler's zone (the host's), so on a
+        # non-UTC host the retry fired off by the host offset.
+        run_time = next_utc_day_at(config["time"])
+        if run_time is None:
+            app_logger.error(
+                f"Weekly packs retry not scheduled: unreadable time {config['time']!r}"
+            )
+            return
 
         # Add a one-time job (DateTrigger)
         from apscheduler.triggers.date import DateTrigger
@@ -2625,7 +2637,8 @@ def schedule_weekly_packs_retry():
         )
 
         app_logger.info(
-            f"📅 Scheduled weekly packs retry for {run_time.strftime('%Y-%m-%d %H:%M')}"
+            f"📅 Scheduled weekly packs retry for "
+            f"{run_time.strftime('%Y-%m-%d %H:%M')} UTC"
         )
 
     except Exception as e:
@@ -2956,144 +2969,36 @@ thumbnail_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def scan_library_task():
-    """Background task to scan library for new/changed files and generate thumbnails."""
+    """Background task to scan library for new/changed files and generate thumbnails.
+
+    A thin caller: the walk, the decision and the short per-chunk transactions
+    live in core.thumbnail_scan, which tests can import. Never hold a write
+    transaction across file I/O -- see that module's docstring.
+    """
     app_logger.info("Starting background library scan for thumbnails...")
 
-    # Local import on purpose. This function is defined *above* app.py's
-    # module-level `from helpers import is_hidden`, and it is reached from a
-    # thread started at import time (start_background_scanner), so a
-    # module-level reference resolves only because that thread sleeps first.
-    # A local import cannot be broken by reordering. Same pattern as the
-    # prune_empty_dirs import further down.
-    from helpers import is_hidden
+    # Local import on purpose. This function is reached from a thread started
+    # at import time (start_background_scanner), so a module-level reference
+    # resolves only because that thread sleeps first. A local import cannot be
+    # broken by reordering.
+    from core.thumbnail_scan import scan_library_thumbnails
 
-    conn = get_db_connection()
-    if not conn:
-        app_logger.error("Could not connect to DB for library scan")
-        return
-
-    try:
-        # Clear the rows the pre-filter walk recorded -- see
-        # core.thumbnail_cache.prune_hidden_jobs. Done before the map below is
-        # built so they cannot be considered one last time. Inside this try, so
-        # a corrupt database is still reported via app_state.set_db_integrity.
-        prune_hidden_jobs(conn)
-
-        # Get all existing jobs to minimize DB queries in loop
-        # Map path -> (status, file_mtime)
-        cursor = conn.execute("SELECT path, status, file_mtime FROM thumbnail_jobs")
-        existing_jobs = {
-            row["path"]: (row["status"], row["file_mtime"]) for row in cursor.fetchall()
-        }
-
-        count_queued = 0
-        count_skipped = 0
-
-        # Iterate over all configured library roots
-        library_roots = get_library_roots()
-        if not library_roots:
-            app_logger.warning("No libraries configured, skipping scan")
-            return
-
-        for library_root in library_roots:
-            if not os.path.exists(library_root):
-                app_logger.warning(f"Library path not found, skipping: {library_root}")
-                continue
-            app_logger.info(f"Scanning library: {library_root}")
-            for root, dirs, files in os.walk(library_root):
-                # Enumerate exactly what build_file_index enumerates (the
-                # is_hidden prune and the '.'/'_' guard further down this
-                # file). This scan is the only library walker whose output
-                # never reaches file_index, so nothing downstream catches its
-                # mistakes: a macOS AppleDouble sidecar
-                # ("._X-Force 005 (2020).cbz") is a 4KB resource fork, not an
-                # archive, so it failed with "File is not a zip file", recorded
-                # an error row, and -- once #548 made errored rows retryable on
-                # every restart -- a Mac-copied library re-queued thousands of
-                # them at every boot against a two-worker executor. None of
-                # them are in the file index, so nothing could have displayed
-                # the result even if it had worked.
-                dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
-
-                for file in files:
-                    if file.startswith(".") or file.startswith("_"):
-                        continue
-                    if file.lower().endswith((".cbz", ".cbr", ".zip", ".rar", ".pdf")):
-                        full_path = os.path.join(root, file)
-                        try:
-                            stat = os.stat(full_path)
-                            current_mtime = stat.st_mtime
-
-                            should_process = False
-
-                            if full_path not in existing_jobs:
-                                should_process = True  # New file
-                            else:
-                                status, stored_mtime = existing_jobs[full_path]
-                                # Check if file modified since last scan
-                                # stored_mtime might be None if migrated
-                                if stored_mtime is None or current_mtime > stored_mtime:
-                                    should_process = True
-                                elif status == "error":
-                                    # Retry. A thumbnail fails for transient
-                                    # reasons far more often than permanent
-                                    # ones -- an unwritable /cache, a full
-                                    # disk, a file still being copied -- and
-                                    # treating the first failure as final left
-                                    # those comics showing error.svg forever
-                                    # with no way back (#548). This scan runs
-                                    # once per startup, so the retry is bounded
-                                    # to one attempt per restart.
-                                    should_process = True
-                                elif status == "processing" and not is_in_flight(
-                                    full_path
-                                ):
-                                    # Orphaned: the job was queued by an
-                                    # earlier process and died with it (a
-                                    # restart, a worker kill). Nothing else
-                                    # will ever settle this row.
-                                    should_process = True
-
-                            if should_process:
-                                # Update DB to mark as pending/processing and update mtime
-                                conn.execute(
-                                    """
-                                    INSERT INTO thumbnail_jobs (path, status, file_mtime, updated_at)
-                                    VALUES (?, 'processing', ?, CURRENT_TIMESTAMP)
-                                    ON CONFLICT(path) DO UPDATE SET
-                                        status='processing',
-                                        file_mtime=excluded.file_mtime,
-                                        updated_at=CURRENT_TIMESTAMP
-                                """,
-                                    (full_path, current_mtime),
-                                )
-
-                                # Queue the job
-                                cache_path = thumbnail_cache_path(full_path)
-
-                                submit_thumbnail_job(
-                                    thumbnail_executor,
-                                    generate_thumbnail_task,
-                                    full_path,
-                                    cache_path,
-                                )
-                                count_queued += 1
-                            else:
-                                count_skipped += 1
-
-                        except OSError as e:
-                            app_logger.error(f"Error accessing file {full_path}: {e}")
-
-                # Commit batches or at end? At end is fine for single thread scan
-                conn.commit()
-
-        app_logger.info(
-            f"Library scan complete. Queued {count_queued} thumbnails, skipped {count_skipped}."
+    def submit(full_path):
+        # Through the registry, so is_in_flight sees it; called only after the
+        # job's 'processing' row is committed.
+        return submit_thumbnail_job(
+            thumbnail_executor,
+            generate_thumbnail_task,
+            full_path,
+            thumbnail_cache_path(full_path),
         )
 
+    try:
+        scan_library_thumbnails(get_library_roots(), submit)
     except sqlite3.DatabaseError as e:
-        # Corruption ("database disk image is malformed") — record and surface it
+        # Corruption ("database disk image is malformed") -- record and surface it
         # once via app_state instead of logging an opaque error every scan cycle.
+        # The scan re-raises only corruption; a busy database costs a chunk.
         app_state.set_db_integrity(False, str(e))
         app_logger.error(
             f"Library scan aborted: database is corrupt ({e}). "
@@ -3101,8 +3006,6 @@ def scan_library_task():
         )
     except Exception as e:
         app_logger.error(f"Error during library scan: {e}")
-    finally:
-        conn.close()
 
 
 # Start background scanner
@@ -3276,6 +3179,7 @@ from helpers.library import (
     get_default_library,
     get_default_library_root,
     is_valid_library_path,
+    is_within_roots,
     get_library_for_path,
     watch_target_verdict,
     is_root_mounted,
@@ -3881,11 +3785,15 @@ def api_rebuild_file_index():
         if queued:
             app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Refresh in-memory index from DB
-        file_index.clear()
-        db_index = get_file_index_from_db()
-        if db_index:
-            file_index.extend(db_index)
+        # Refresh in-memory index from DB: read it aside and swap it in, so a
+        # reader never sees it empty and a failed read keeps the old one.
+        from core.file_index_memory import replace_index_contents
+
+        replace_index_contents(
+            file_index,
+            get_file_index_from_db(),
+            sync_result["added"] + sync_result["unchanged"],
+        )
         index_built = True
 
         # Update last rebuild timestamp
@@ -4250,7 +4158,9 @@ def _build_file_index_locked():
     app_logger.info("Database empty, building file index from filesystem...")
     start_time = time.time()
 
-    file_index.clear()
+    # Walked into a local list and swapped in only once the walk finished, so
+    # a reader never sees a half-built index and a failed walk leaves none.
+    new_index = []
     excluded_extensions = {
         ".png",
         ".jpg",
@@ -4315,7 +4225,7 @@ def _build_file_index_locked():
                             if parent_rel
                             else library_root
                         )
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(dir_path),
@@ -4359,7 +4269,7 @@ def _build_file_index_locked():
                             else library_root
                         )
 
-                        file_index.append(
+                        new_index.append(
                             {
                                 "name": sanitize_filename(name),
                                 "path": sanitize_filename(file_path),
@@ -4392,6 +4302,7 @@ def _build_file_index_locked():
         app_logger.error(f"Error building file index: {e}")
         return
 
+    file_index[:] = new_index
     build_time = time.time() - start_time
     app_logger.info(
         f"File index built successfully: {len(file_index)} items in {build_time:.2f} seconds"
@@ -4453,7 +4364,11 @@ def scan_filesystem_for_sync(walked_roots=None):
             common_path = os.path.commonpath([normalized_path, normalized_target_dir])
             return os.path.samefile(common_path, normalized_target_dir)
         except (ValueError, OSError):
-            return normalized_path.startswith(normalized_target_dir)
+            # On a separator boundary: a bare prefix test put a sibling such
+            # as /downloads/processed2 inside TARGET /downloads/processed.
+            return normalized_path == normalized_target_dir or normalized_path.startswith(
+                normalized_target_dir.rstrip(os.sep) + os.sep
+            )
 
     # Folder art lives in the cache (core/folder_art.py); a legacy folder.* on
     # disk still counts. The cached set is read once for the whole walk rather
@@ -4589,8 +4504,11 @@ def update_index_on_move(old_path, new_path, reconcile=True):
                 common_path = os.path.commonpath([path, normalized_target_dir])
                 return os.path.samefile(common_path, normalized_target_dir)
             except (ValueError, OSError):
-                # Fallback: Check if normalized path starts with TARGET folder
-                return path.startswith(normalized_target_dir)
+                # Fallback: the path is TARGET or under it, on a separator
+                # boundary so a sibling like /downloads/processed2 is not.
+                return path == normalized_target_dir or path.startswith(
+                    normalized_target_dir.rstrip(os.sep) + os.sep
+                )
 
         # "In the library" means under ANY enabled library root, not a
         # hard-coded /data: a library at /comics made every move look like
@@ -5483,22 +5401,10 @@ def find_folder_thumbnails_batch(folder_paths):
 # ---------------------------------------------------------------------------
 # RAR full-archive extraction cache
 # ---------------------------------------------------------------------------
-_rar_extract_cache = {}   # {rar_path: {"dir": str, "time": float}}
-_RAR_CACHE_MAX = 3
-
-
-def _cleanup_rar_cache():
-    """Remove all cached RAR extraction temp directories."""
-    for entry in _rar_extract_cache.values():
-        try:
-            shutil.rmtree(entry["dir"], ignore_errors=True)
-        except Exception:
-            pass
-    _rar_extract_cache.clear()
-
-
-import atexit
-atexit.register(_cleanup_rar_cache)
+# Single-flight per archive, reference-counted eviction: see
+# core/rar_extract_cache.py. The extractor is defined below.
+from core.rar_extract_cache import RarExtractCache  # noqa: E402
+import atexit  # noqa: E402
 
 
 def _find_extracted_file(directory, filename):
@@ -5508,8 +5414,8 @@ def _find_extracted_file(directory, filename):
         for f in files:
             if f.lower() == target:
                 full = os.path.join(root, f)
-                # Path traversal guard
-                if os.path.realpath(full).startswith(os.path.realpath(directory)):
+                # Path traversal guard (realpath, separator-bounded)
+                if is_within_roots(full, [directory]):
                     return full
     return None
 
@@ -5550,36 +5456,23 @@ def _try_full_extraction(tool_cmd, rar_path, tmp_dir):
     return False
 
 
-def _get_full_rar_extraction(rar_path):
-    """Return a directory containing the fully-extracted RAR, using a cache.
+def _extract_full_rar_into(rar_path, dest_dir):
+    """Extract the whole RAR into *dest_dir* (an empty folder the cache owns).
 
-    Tries unrar first (proprietary, best solid-archive support), then 7z, then unar.
-    Returns the directory path on success or None on total failure.
+    Tries unrar first (proprietary, best solid-archive support), then 7z, then
+    unar. Each attempt gets its own sub-folder, created and (on failure)
+    removed here, so a discarded attempt never mixes with the next one.
+    Returns True when an attempt produced files.
     """
-    rar_path = os.path.realpath(rar_path)
-
-    # Return cached extraction if available
-    if rar_path in _rar_extract_cache:
-        cached = _rar_extract_cache[rar_path]
-        if os.path.isdir(cached["dir"]):
-            return cached["dir"]
-        del _rar_extract_cache[rar_path]
-
-    # Evict oldest entry if at capacity
-    if len(_rar_extract_cache) >= _RAR_CACHE_MAX:
-        oldest_key = min(_rar_extract_cache, key=lambda k: _rar_extract_cache[k]["time"])
-        old = _rar_extract_cache.pop(oldest_key)
-        shutil.rmtree(old["dir"], ignore_errors=True)
-
-    # Try each tool in order: unrar (proprietary) → 7z → unar
     tools = [
         ["unrar", "x", "-y", "-o+", rar_path],       # unrar x -y -o+ archive.rar tmp_dir/
         ["7z", "x", f"-y", rar_path],                  # 7z x -y archive.rar -o{tmp_dir}
         ["unar", "-f", "-o", None, rar_path],           # unar -f -o tmp_dir archive.rar
     ]
 
-    for tool_cmd in tools:
-        tmp_dir = tempfile.mkdtemp(prefix="clu_rar_")
+    for attempt, tool_cmd in enumerate(tools):
+        tmp_dir = os.path.join(dest_dir, f"attempt{attempt}")
+        os.mkdir(tmp_dir)
         # Fix up output dir argument per tool
         tool_name = tool_cmd[0]
         if tool_name == "unrar":
@@ -5591,12 +5484,15 @@ def _get_full_rar_extraction(rar_path):
             cmd[3] = tmp_dir  # replace None placeholder
 
         if _try_full_extraction(cmd, rar_path, tmp_dir):
-            _rar_extract_cache[rar_path] = {"dir": tmp_dir, "time": time.time()}
-            return tmp_dir
+            return True
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     app_logger.error(f"All full extraction tools failed for {rar_path}")
-    return None
+    return False
+
+
+_rar_cache = RarExtractCache(_extract_full_rar_into, max_entries=3)
+atexit.register(_rar_cache.shutdown)
 
 
 def _extract_single_rar_entry(rar_path, entry_name):
@@ -5654,9 +5550,10 @@ def _extract_single_rar_entry(rar_path, entry_name):
     app_logger.info(
         f"Single-entry extraction failed for {entry_name}, trying full archive extraction"
     )
-    cache_dir = _get_full_rar_extraction(rar_path)
-    if cache_dir:
-        found = _find_extracted_file(cache_dir, safe_name)
+    # The folder stays in place for the whole block: the cache holds a
+    # reference until it exits, so eviction cannot remove it mid-read.
+    with _rar_cache.acquire(rar_path) as cache_dir:
+        found = _find_extracted_file(cache_dir, safe_name) if cache_dir else None
         if found:
             try:
                 with open(found, "rb") as f:
@@ -6014,97 +5911,6 @@ def api_reading_trends(field):
     return jsonify(trends)
 
 
-@app.route("/api/backfill-reading-metadata", methods=["POST"])
-def api_backfill_reading_metadata():
-    """Re-read ComicInfo.xml for all issues_read entries and update metadata fields."""
-    from core.comicinfo import read_comicinfo_from_zip
-
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({"error": "Database connection failed"}), 500
-
-        c = conn.cursor()
-        c.execute("SELECT id, issue_path FROM issues_read")
-        rows = c.fetchall()
-
-        updated_count = 0
-        skipped_count = 0
-        skipped_issues = []
-
-        for row in rows:
-            issue_id = row[0]
-            issue_path = row[1]
-            filename = os.path.basename(issue_path)
-
-            # Skip if file doesn't exist
-            if not os.path.exists(issue_path):
-                skipped_count += 1
-                skipped_issues.append({"file": filename, "reason": "File not found"})
-                continue
-
-            # Skip if not a CBZ/ZIP
-            if not issue_path.lower().endswith((".cbz", ".zip")):
-                skipped_count += 1
-                skipped_issues.append(
-                    {"file": filename, "reason": "Not a CBZ/ZIP file"}
-                )
-                continue
-
-            try:
-                comic_info = read_comicinfo_from_zip(issue_path)
-                if comic_info:
-                    # Strip "[3258]"-style provider IDs, or this route would
-                    # re-dirty issues_read after the migration cleaned it.
-                    writer = normalize_credit_list(comic_info.get("Writer", ""))
-                    penciller = normalize_credit_list(comic_info.get("Penciller", ""))
-                    characters = normalize_credit_list(comic_info.get("Characters", ""))
-                    publisher = strip_provider_ids(comic_info.get("Publisher", ""))
-
-                    c.execute(
-                        """
-                        UPDATE issues_read
-                        SET writer = ?, penciller = ?, characters = ?, publisher = ?
-                        WHERE id = ?
-                    """,
-                        (writer, penciller, characters, publisher, issue_id),
-                    )
-                    updated_count += 1
-                else:
-                    skipped_count += 1
-                    skipped_issues.append(
-                        {"file": filename, "reason": "No ComicInfo.xml"}
-                    )
-            except Exception as e:
-                app_logger.warning(
-                    f"Could not read ComicInfo.xml for {issue_path}: {e}"
-                )
-                skipped_count += 1
-                skipped_issues.append({"file": filename, "reason": f"Error: {str(e)}"})
-
-        conn.commit()
-        conn.close()
-
-        # Clear stats cache
-        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
-
-        app_logger.info(
-            f"Backfill complete: {updated_count} updated, {skipped_count} skipped"
-        )
-        return jsonify(
-            {
-                "success": True,
-                "updated": updated_count,
-                "skipped": skipped_count,
-                "skipped_issues": skipped_issues,
-            }
-        )
-
-    except Exception as e:
-        app_logger.error(f"Error during backfill: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/recently-read")
 def api_recently_read():
     """Get recently read issues with metadata for display."""
@@ -6178,7 +5984,7 @@ def _serve_cached_thumbnail(shard_dir, filename):
     permission on the shard *directory* and never on the file it replaces.
     """
     try:
-        return send_from_directory(shard_dir, filename)
+        return apply_cache_hit_headers(send_from_directory(shard_dir, filename))
     except OSError:
         app_logger.warning(
             f"Cached thumbnail {filename} is not readable; regenerating over it"
@@ -6211,14 +6017,15 @@ def get_thumbnail():
         if served is not None:
             return served
 
-    # Check DB status
-    conn = get_db_connection()
+    # Check DB status. db_conn() closes on every path: this route runs once per
+    # cover on every grid page, so a leaked read connection here pins a WAL
+    # read mark on the hottest path in the app.
     job = None
-    if conn:
-        job = conn.execute(
-            "SELECT * FROM thumbnail_jobs WHERE path = ?", (file_path,)
-        ).fetchone()
-        conn.close()
+    with db_conn() as conn:
+        if conn:
+            job = conn.execute(
+                "SELECT * FROM thumbnail_jobs WHERE path = ?", (file_path,)
+            ).fetchone()
 
     if job and job["status"] == "completed" and os.path.exists(cache_path) and not stale:
         served = _serve_cached_thumbnail(shard_dir, filename)
@@ -6248,18 +6055,18 @@ def get_thumbnail():
         # (CBR/RAR) -- and a type cannot change without the path changing,
         # which makes a new row. Left to fall through, this request re-inserts
         # 'processing' and submits another doomed job; the grid re-polls every
-        # 2s, so one such card is a permanent load on a two-worker executor.
+        # 2s while it is answered loading.svg, so one such card would be a
+        # permanent load on a two-worker executor.
         return redirect(url_for("static", filename="images/error.svg"))
 
-    # Insert 'processing' status synchronously to prevent race conditions
-    conn = get_db_connection()
-    if conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO thumbnail_jobs (path, status) VALUES (?, ?)",
-            (file_path, "processing"),
-        )
-        conn.commit()
-        conn.close()
+    # Record 'processing' synchronously, before the job is queued, so a fast
+    # worker's 'completed' cannot be overwritten by it. Through set_job_status,
+    # never a raw upsert: that is what stamps file_mtime, and a bare
+    # (path, status) INSERT OR REPLACE left it NULL -- wiping any value already
+    # there -- which scan_library_task reads as "mtime unknown" and re-queues
+    # whenever the job dies before its own terminal write. It opens and closes its own connection; the read
+    # connection above is already closed, so nothing here holds a second one.
+    set_job_status(file_path, "processing")
 
     # Submit task
     submit_thumbnail_job(
@@ -6272,11 +6079,19 @@ def get_thumbnail():
 @app.route("/api/generate-folder-thumbnail", methods=["POST"])
 def generate_folder_thumbnail():
     """Generate a fanned stack thumbnail for a folder using cached thumbnails."""
-    data = request.get_json()
+    from core.path_access import folder_art_write_refusal
+
+    data = request.get_json(silent=True) or {}
     folder_path = data.get("folder_path")
 
     if not folder_path:
         return jsonify({"error": "Missing folder_path"}), 400
+
+    # Containment and the folder grant, before anything is read or written
+    # (tests/unit/test_folder_thumbnail_route_grants.py pins this order).
+    refusal = folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
@@ -6410,10 +6225,11 @@ def download_file():
         return jsonify({"error": "Missing path parameter"}), 400
 
     # Security: Ensure the file path is within allowed directories
+    # Realpath and separator-bounded on both arms (helpers.library).
     normalized_path = os.path.normpath(file_path)
     if not (
         is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
+        or is_within_roots(normalized_path, [get_target_dir_live()])
     ):
         return jsonify({"error": "Access denied"}), 403
 
@@ -6436,26 +6252,23 @@ def download_file():
 
 @app.route("/api/read-text-file")
 def read_text_file():
-    """Read and return the contents of a text file."""
+    """Read and return the contents of a .txt file in a library (or TARGET).
+
+    Containment, the per-user folder grant, the extension and the size cap
+    are all decided by core.path_access.resolve_text_file before the file is
+    opened.
+    """
+    from core.path_access import resolve_text_file
+
     file_path = request.args.get("path")
 
     if not file_path:
-        return "Missing path parameter", 400
+        return jsonify({"error": "Missing path parameter"}), 400
 
-    # Security: Ensure the file path is within allowed directories
-    normalized_path = os.path.normpath(file_path)
-    if not (
-        is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
-    ):
-        return "Access denied", 403
-
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        return "File not found", 404
-
-    # Check if file is a text file
-    if not file_path.lower().endswith(".txt"):
-        return "Only .txt files are supported", 400
+    served, refusal = resolve_text_file(file_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    file_path = served.path
 
     try:
         # Read the file with UTF-8 encoding, falling back to latin-1 if needed
@@ -6478,11 +6291,6 @@ def read_text_file():
 #########################
 STATIC_DIR = "static"
 os.makedirs(STATIC_DIR, exist_ok=True)
-
-
-@app.route("/static/<path:filename>")
-def serve_static(filename):
-    return send_from_directory(STATIC_DIR, filename)
 
 
 @app.route("/manifest.json")
@@ -6897,18 +6705,32 @@ def save_download_api_config():
         # page cannot switch the bundled solver off.
         if "flaresolverrEnabled" in data:
             set_setting("FLARESOLVERR_ENABLED", bool(data.get("flaresolverrEnabled")))
+        if "downloadAllowPrivateHosts" in data:
+            set_setting("DOWNLOAD_ALLOW_PRIVATE_HOSTS", bool(data.get("downloadAllowPrivateHosts")))
 
-        # Save API credentials to DB (provider_credentials)
-        try:
-            from core.database import save_provider_credentials
+        # Save API credentials to DB (provider_credentials). A failed save
+        # (unreadable encryption key, locked database) must reach the page:
+        # it used to be swallowed here and the page reported success.
+        from core.database import save_provider_credentials
 
-            cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
-            if cv_key:
-                save_provider_credentials("comicvine", {"api_key": cv_key})
-        except Exception:
-            pass
+        cv_key_error = None
+        cv_key = sanitize_config_value(data.get("comicvineApiKey", ""))
+        if cv_key:
+            try:
+                cv_saved = save_provider_credentials("comicvine", {"api_key": cv_key})
+            except Exception as e:
+                app_logger.error(f"Error saving ComicVine API key: {e}")
+                cv_saved = False
+            if not cv_saved:
+                app_logger.error("ComicVine API key was not saved")
+                cv_key_error = (
+                    "The ComicVine API key could not be saved; "
+                    "the other settings were saved. See the app log for the cause."
+                )
 
         load_flask_config(app)
+        if cv_key_error:
+            return jsonify({"success": False, "error": cv_key_error}), 500
         return jsonify({"success": True, "message": "Download & API settings saved"})
     except Exception as e:
         app_logger.error(f"Error saving download/API config: {e}")
@@ -6917,8 +6739,16 @@ def save_download_api_config():
 
 @app.route("/api/preferences/<key>", methods=["GET"])
 def api_get_preference(key):
-    """Get a user preference value."""
+    """Get a preference value, if it is on the read allow-list for this role."""
+    from core.auth import current_user
     from core.database import get_user_preference
+    from core.settings import preference_read_status
+
+    status = preference_read_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
 
     value = get_user_preference(key)
     return jsonify({"success": True, "value": value})
@@ -6926,13 +6756,22 @@ def api_get_preference(key):
 
 @app.route("/api/preferences/<key>", methods=["POST"])
 def api_save_preference(key):
-    """Save a user preference value."""
-    from core.database import set_user_preference
+    """Save a preference value, if it is on the write allow-list for this role."""
+    from core.auth import current_user
+    from core.settings import preference_write_status, save_preference
 
-    data = request.get_json()
-    if not data or "value" not in data:
+    status = preference_write_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "value" not in data:
         return jsonify({"success": False, "error": "No value provided"}), 400
-    set_user_preference(key, data["value"], category=data.get("category", "general"))
+    status, error = save_preference(key, data["value"])
+    if status != 200:
+        return jsonify({"success": False, "error": error}), status
     return jsonify({"success": True})
 
 
@@ -7174,6 +7013,7 @@ def config_page():
         oneshotFolders=st["ONESHOT_FOLDERS"],
         downloadPacks=is_download_packs_enabled(),
         flaresolverrEnabled=st["FLARESOLVERR_ENABLED"],
+        downloadAllowPrivateHosts=st["DOWNLOAD_ALLOW_PRIVATE_HOSTS"],
         enableDebugLogging=st["ENABLE_DEBUG_LOGGING"],
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         pageWidth=st["PAGE_WIDTH"],
@@ -7570,30 +7410,12 @@ def logs_tail():
 
 
 #########################
-#    Edit CBZ Route     #
+#    Edit CBZ Routes    #
 #########################
-@app.route("/edit", methods=["GET"])
-def edit_cbz():
-    """
-    Processes the provided CBZ file (via 'file_path' query parameter) and returns a JSON
-    object containing:
-      - modal_body: HTML snippet for inline editing,
-      - folder_name, zip_file_path, original_file_path for the hidden form fields.
-    """
-    file_path = request.args.get("file_path")
-    if not file_path:
-        return jsonify({"error": "Missing file path parameter"}), 400
-    try:
-        result = get_edit_modal(
-            file_path
-        )  # Reuse existing logic for generating modal content
-        return jsonify(result)
-    except Exception as e:
-        app_logger.error(f"Error in /edit route: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# Register the save route using the imported save_cbz function.
+# Opening renames and extracts the archive, so /edit is a POST (a write, Clerk
+# under core.auth's policy) and validates its path in cbz_ops.edit.edit_cbz
+# before touching anything -- the same containment /save applies.
+app.add_url_rule("/edit", view_func=edit_cbz, methods=["POST"])
 app.add_url_rule("/save", view_func=save_cbz, methods=["POST"])
 
 #########################
@@ -7832,11 +7654,14 @@ def api_insights():
     silently surface the owner's stats.
     """
     from core.auth import resolve_optional_bearer_user
+    from core.auth_throttle import too_many_attempts_json
     from models.stats import get_insights_stats
 
     status, user = resolve_optional_bearer_user(
         request.headers.get("Authorization", "")
     )
+    if status == "throttled":
+        return too_many_attempts_json(user)
     if status == "invalid":
         return jsonify({"error": "unauthorized"}), 401
 
@@ -8122,8 +7947,22 @@ def prebuild_browse_cache():
             app_logger.error(f"❌ Error pre-building browse cache for {root}: {e}")
 
 
+def resync_index_after_watcher_overflow():
+    """Recover the file events an inotify queue overflow dropped (#732).
+
+    Handed to the scheduler rather than run here: this is called on the
+    watcher's timer thread, and the sync walks every library root.
+    """
+    app_state.scheduler.add_job(
+        scheduled_file_index_rebuild,
+        id="file_index_overflow_sync",
+        replace_existing=True,
+    )
+
+
 # Start a file watcher for each library root in background
 def start_file_watcher_background():
+    set_overflow_recovery(resync_index_after_watcher_overflow)
     for root in get_library_roots():
         try:
             app_logger.info(f"Initializing file watcher for {root}...")
