@@ -542,11 +542,6 @@ def apply_automap(items, api=None):
         if not os.path.isdir(folder):
             failed.append({"folder": folder, "error": "Folder no longer exists"})
             continue
-        # The folder comes back from the browser: sidecars are written into it
-        # and downloads filed into it, so it must really be a library folder.
-        if not is_valid_library_path(folder):
-            failed.append({"folder": folder, "error": "Folder is not inside a configured library"})
-            continue
 
         try:
             series_dict, authoritative = _fetch_series_dict(api, metron_id, item)

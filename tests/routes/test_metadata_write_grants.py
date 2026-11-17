@@ -726,17 +726,16 @@ class TestSeriesMappingWrites:
         assert resp.status_code == 403
         apply.assert_not_called()
 
-    def test_apply_automap_refuses_folder_outside_every_library(self, multi_user):
-        from models import library_automap
-
-        with patch.object(library_automap, "get_library_roots",
-                          return_value=[multi_user.root]), \
-                patch("core.database.save_series_mapping") as save:
-            result = library_automap.apply_automap(
-                [{"folder": multi_user.outside, "metron_id": 7}], api=MagicMock())
-        assert result["applied"] == 0
-        assert "not inside" in result["failed"][0]["error"]
-        save.assert_not_called()
+    def test_apply_automap_refuses_folder_outside_every_library(self, client, multi_user):
+        _as_owner(client)
+        with patch("models.library_automap.apply_and_sync") as apply:
+            resp = client.post("/api/pull-list/apply", json={"items": [
+                {"folder": multi_user.grant, "metron_id": 1},
+                {"folder": multi_user.outside, "metron_id": 7},
+            ]})
+        assert resp.status_code == 400
+        assert "inside a library" in resp.get_json()["error"]
+        apply.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -842,10 +842,16 @@ def apply_library_automap():
     if not clean:
         return jsonify({"success": False, "error": "No valid items provided"}), 400
 
-    # Sidecars are written into each folder: a non-owner needs a full grant on
-    # every one (one refusal refuses the batch). Library containment for
-    # everyone is checked per item by apply_automap.
+    # The folders come back from the browser. Sidecars are written into each
+    # and downloads filed into it: every one must be inside a library, for
+    # every user, and a non-owner needs a full grant on it. One refusal
+    # refuses the batch.
     from core.path_access import grant_refusal
+    from helpers.library import is_valid_library_path
+    if not all(isinstance(it["folder"], str) and is_valid_library_path(it["folder"])
+               for it in clean):
+        return jsonify({"success": False,
+                        "error": "Every folder must be inside a library"}), 400
     refusal = grant_refusal(*[it["folder"] for it in clean])
     if refusal:
         return jsonify({"success": False, "error": refusal[0]}), refusal[1]
