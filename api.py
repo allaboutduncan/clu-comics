@@ -67,7 +67,7 @@ from core.download_utils import (
     is_cancel_requested as _is_cancel_requested,
     claim_download_path,
     release_download_claim,
-    replace_session,
+    SharedSession,
     close_quietly,
     mark_cancelled as _mark_cancelled,
     set_error_status as _set_error_status,
@@ -262,8 +262,11 @@ def _make_gc_scraper():
     )
 
 
-# Cloudscraper instance for bypassing Cloudflare protection on getcomics.org
-gc_scraper = _make_gc_scraper()
+# Cloudscraper session for bypassing Cloudflare protection on getcomics.org,
+# shared by the download workers. Take a local reference per hop and replace it
+# through the holder: rebinding a global from each worker let two of them
+# rebuild it at once, or swap out a session another had just cleared.
+gc_session = SharedSession(_make_gc_scraper)
 
 
 def _is_cloudflare_challenge(resp) -> bool:
@@ -293,8 +296,6 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
     that no provider branch matches, so the caller would mislabel and misroute
     the download.
     """
-    global gc_scraper
-
     if hdrs is None:
         hdrs = _full_headers()
     current = url
@@ -306,6 +307,9 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
         is_gc = 'getcomics.org' in current.lower()
         r = None
         cleared = False
+        # Every attempt of this hop uses this one reference, so a clearance put
+        # on it is what the retry is sent with, whatever the other workers do.
+        gc_scraper = gc_session.get() if is_gc else None
 
         for attempt in (1, 2):
             try:
@@ -324,7 +328,7 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
                         monitor_logger.warning(
                             f"Cloudflare challenge resolving {current} — retrying on a fresh scraper"
                         )
-                        gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                        gc_scraper = gc_session.replace(gc_scraper)
                         continue
                 else:
                     try:
@@ -340,7 +344,7 @@ def resolve_final_url(url: str, *, hdrs=None, max_hops: int = 6) -> str:
                     monitor_logger.warning(
                         f"Error resolving URL {current}: {e} — retrying on a fresh scraper"
                     )
-                    gc_scraper = replace_session(gc_scraper, _make_gc_scraper)
+                    gc_scraper = gc_session.replace(gc_scraper)
                     continue
                 monitor_logger.warning(f"Error resolving URL {current}: {e}")
                 return current
@@ -761,7 +765,7 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     # Use cloudscraper so Cloudflare-fronted mirrors (e.g. comicfiles.ru) are
     # fetched with a solved challenge instead of getting a 403. cloudscraper
     # returns a requests.Session subclass, so the Retry adapter below still
-    # applies. A fresh instance (not the shared gc_scraper) avoids mutating the
+    # applies. A fresh instance (not the shared gc_session) avoids mutating the
     # module-level scraper with our custom Retry adapter.
     session = cloudscraper.create_scraper(
         browser={
