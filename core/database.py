@@ -9894,6 +9894,54 @@ def count_users():
             pass
 
 
+# The last answer accounts_require_login() actually read from the database.
+# Process-local on purpose: it is only a fallback for a read that failed, never
+# a cache, so nothing has to invalidate it -- every successful read replaces it.
+_accounts_require_login_last = False
+
+
+def accounts_require_login():
+    """Whether the ``users`` table alone turns login on.
+
+    True when any account holds a password (``password_hash`` neither NULL nor
+    empty -- the first-run placeholder owner is stored with NULL), or when more
+    than one account exists. A password means login: an owner who set one is
+    asked for it even while theirs is the only account.
+
+    This runs on every request (core.auth.is_login_required), so it is one
+    aggregate over a table of a handful of rows -- the same single query the
+    old ``count_users() > 1`` made. It is deliberately not cached: a stale
+    "open" answer after a password is set is exactly the hole being closed,
+    and the users table is also replaced wholesale by a database restore.
+
+    Never raises. A missing ``users`` table means no accounts (open, as
+    before). Any other failure -- the database unavailable, locked or corrupt
+    -- answers with the last value this process read, so an install with a
+    password does not fall open for the length of a corruption episode.
+    """
+    global _accounts_require_login_last
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return _accounts_require_login_last
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN password_hash IS NOT "
+                "NULL AND password_hash != '' THEN 1 ELSE 0 END), 0) FROM users"
+            )
+            row = c.fetchone()
+        total, with_password = (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return False
+        return _accounts_require_login_last
+    except Exception:
+        return _accounts_require_login_last
+    answer = total > 1 or with_password > 0
+    _accounts_require_login_last = answer
+    return answer
+
+
 def count_owners_who_can_sign_in():
     """Return how many Store Owners could actually satisfy a login prompt.
 
@@ -10390,7 +10438,7 @@ def adopt_env_credentials_for_placeholder_owner():
     password = os.environ.get("CLU_PASSWORD", "")
     if not username or not password:
         # Report the actual lock-out, not a proxy for it. "Login is on" is
-        # is_login_required(): count_users() > 1 misses the env gate, which can
+        # is_login_required(): the users table alone misses the env gate, which can
         # be on with a single user, and which reads the raw env values rather
         # than the stripped ones above. "No owner can get in" is a count of
         # *owners* holding a usable password — get_owner_user() returns the

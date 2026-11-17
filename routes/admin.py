@@ -110,6 +110,33 @@ def _user_payload(user):
     return user
 
 
+def _keep_acting_owner_signed_in():
+    """Keep this browser signed in across a write that may have turned login on.
+
+    Login turns on when any account gets a password or a second account is
+    created (core.auth.is_login_required). In implicit-owner mode the owner
+    never logged in, so they hold no session and would be anonymous on their
+    very next request: the page reports a failure and bounces them to /login
+    moments after a successful save. Persist the identity this browser was
+    already acting under so the flip is invisible to it. Only the browser that
+    made the call is stamped, and only when it was already the owner, so it
+    gains no privilege it did not have a moment ago.
+
+    The session is compared against the resolved identity rather than merely
+    tested for emptiness. A browser can hold a user_id that no longer
+    resolves: an install can return to implicit-owner mode (the accounts that
+    had passwords deleted, an env gate removed), where resolve_current_user()
+    falls through to the owner and that browser acts as the owner with a stale
+    id still in its cookie. Treating that truthy-but-dead value as "already
+    stamped" would skip the stamp and reproduce the very lock-out this
+    guards against.
+    """
+    acting = current_user()
+    if acting and acting.get("role") == "owner" and session.get("user_id") != acting["id"]:
+        session["user_id"] = acting["id"]
+        session["authenticated"] = True  # legacy flag, kept for compatibility
+
+
 @admin_bp.route("/setup-owner", methods=["POST"])
 @require_role("owner")
 def setup_owner_route():
@@ -117,7 +144,9 @@ def setup_owner_route():
 
     Reachable in implicit-owner mode (require_role short-circuits when login
     isn't required) so a fresh install can bootstrap its owner before any login
-    is enforced.
+    is enforced. Setting the password turns login on (a password means login),
+    so this browser is signed in as the owner in the same request, and the
+    password it just chose is what every other browser is asked for.
     """
     owner = get_owner_user()
     if not owner:
@@ -137,8 +166,14 @@ def setup_owner_route():
                 "success": False,
                 "error": "username unavailable",
             }), 409
-    set_user_password(owner["id"], password)  # also clears needs_setup
-    return jsonify({"success": True, "user": _user_payload(get_user_by_id(owner["id"]))})
+    if not set_user_password(owner["id"], password):  # also clears needs_setup
+        return jsonify({"success": False, "error": "could not save the password"}), 500
+    _keep_acting_owner_signed_in()
+    return jsonify({
+        "success": True,
+        "login_required": is_login_required(),
+        "user": _user_payload(get_user_by_id(owner["id"])),
+    })
 
 
 @admin_bp.route("/users", methods=["GET"])
@@ -147,7 +182,10 @@ def list_users_route():
     """List all accounts (no password hashes) with their library grants."""
     users = [_user_payload(u) for u in list_users()]
     libraries = get_libraries()
-    return jsonify({"success": True, "users": users, "libraries": libraries})
+    # The page says plainly when the install is open: no account has a
+    # password, so anyone who can reach it is the Store Owner.
+    return jsonify({"success": True, "users": users, "libraries": libraries,
+                    "login_required": is_login_required()})
 
 
 @admin_bp.route("/users", methods=["POST"])
@@ -170,8 +208,8 @@ def create_user_route():
     if role not in VALID_ROLES:
         return jsonify({"success": False, "error": "invalid role"}), 400
 
-    # A second account ends implicit-owner mode and turns login on for
-    # everyone (core.auth.is_login_required). A placeholder owner has no
+    # A second account (it always has a password) ends implicit-owner mode
+    # and turns login on for everyone (core.auth.is_login_required). A placeholder owner has no
     # password and cannot authenticate, so that flip would lock every user out
     # of the install permanently. Refuse until first-run setup has given the
     # owner real credentials.
@@ -200,26 +238,7 @@ def create_user_route():
     if folder_paths:
         set_user_folders(user_id, folder_paths)
 
-    # This account may have just turned login on. In implicit-owner mode the
-    # owner never logged in, so they hold no session and would be anonymous on
-    # their very next request — the page reports a failure and bounces them to
-    # /login moments after a successful create. Persist the identity this
-    # browser was already acting under so the flip is invisible to it. Only the
-    # browser that made the call is stamped, and only when it was already the
-    # owner, so it gains no privilege it did not have a moment ago.
-    #
-    # The session is compared against the resolved identity rather than merely
-    # tested for emptiness. A browser can hold a user_id that no longer
-    # resolves: deleting or deactivating the only other account drops the
-    # install back to implicit-owner mode, where resolve_current_user() falls
-    # through to the owner and that browser acts as the owner with a stale id
-    # still in its cookie. Treating that truthy-but-dead value as "already
-    # stamped" would skip the stamp and reproduce the very lock-out this
-    # guards against.
-    acting = current_user()
-    if acting and acting.get("role") == "owner" and session.get("user_id") != acting["id"]:
-        session["user_id"] = acting["id"]
-        session["authenticated"] = True  # legacy flag, kept for compatibility
+    _keep_acting_owner_signed_in()
 
     return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))}), 201
 
@@ -277,14 +296,24 @@ def update_user_route(user_id):
         email=email,
         is_active=is_active,
     )
+    login_was_required = is_login_required()
     if password:
         set_user_password(user_id, password)
+        # The first password on an open install turns login on: keep the
+        # owner who set it signed in on this browser.
+        _keep_acting_owner_signed_in()
     if library_ids is not None:
         set_user_libraries(user_id, library_ids)
     if folder_paths is not None:
         set_user_folders(user_id, folder_paths)
 
-    return jsonify({"success": True, "user": _user_payload(get_user_by_id(user_id))})
+    login_required = is_login_required()
+    return jsonify({
+        "success": True,
+        "login_required": login_required,
+        "login_turned_on": login_required and not login_was_required,
+        "user": _user_payload(get_user_by_id(user_id)),
+    })
 
 
 @admin_bp.route("/users/<int:user_id>", methods=["DELETE"])

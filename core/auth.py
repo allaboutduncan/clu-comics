@@ -2,10 +2,11 @@
 Multi-user identity & role-based access control (RBAC).
 
 This module owns the notion of "who is the current user" and "may they do
-this". It is deliberately additive: when no real user accounts have been
-created the app runs in *implicit-owner* mode — every request is treated as
-the Store Owner and no login is required — so existing single-user installs
-behave exactly as before.
+this". It is deliberately additive: until a password is set on any account
+(and while only one account exists) the app runs in *implicit-owner* mode —
+every request is treated as the Store Owner and no login is required — so a
+single-user install that never set a password behaves exactly as before. A
+password means login (see is_login_required).
 
 Role hierarchy (ascending privilege):
 
@@ -24,7 +25,7 @@ import os
 from flask import g, request, redirect, url_for, jsonify, flash
 
 from core.database import (
-    count_users,
+    accounts_require_login,
     get_owner_user,
     get_user_by_id,
 )
@@ -48,13 +49,16 @@ def get_owner():
 def is_login_required():
     """Whether the app should force login.
 
-    True when more than one account exists, or when the legacy
-    ``CLU_USERNAME``/``CLU_PASSWORD`` env gate is configured. Otherwise the app
-    stays login-free and everyone is the owner (backward-compat guarantee).
+    A password means login. True as soon as any account has a password (the
+    owner setting one on a single-account install included), when more than
+    one account exists, or when the legacy ``CLU_USERNAME``/``CLU_PASSWORD``
+    env gate is configured. Only an install where no password was ever set
+    stays login-free, with everyone acting as the owner
+    (core.database.accounts_require_login).
     """
     if os.environ.get("CLU_USERNAME") and os.environ.get("CLU_PASSWORD"):
         return True
-    return count_users() > 1
+    return accounts_require_login()
 
 
 def resolve_current_user():

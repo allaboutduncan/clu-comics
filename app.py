@@ -243,8 +243,8 @@ from core.config import seed_monitor_from_env  # noqa: E402
 
 seed_monitor_from_env()
 
-# Multi-user: ensure a Store Owner account exists (implicit-owner mode for
-# single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
+# Multi-user: ensure a Store Owner account exists (implicit-owner mode until
+# a password is set; seeded from CLU_USERNAME/CLU_PASSWORD when present).
 from core.database import migrate_legacy_api_token_to_digest, seed_owner_if_needed
 
 seed_owner_if_needed()

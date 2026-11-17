@@ -1,10 +1,11 @@
 """
 Browser login gate + per-request identity resolution.
 
-Authentication is *opt-in*: while only the implicit Store Owner exists (and no
-CLU_USERNAME/CLU_PASSWORD env gate is configured) the app requires no login and
-runs as the owner, exactly as the single-user app did. Login/RBAC activate once
-a second account exists or the env gate is set (see core.auth.is_login_required).
+Authentication is *opt-in*: while only the implicit Store Owner exists, has no
+password, and no CLU_USERNAME/CLU_PASSWORD env gate is configured, the app
+requires no login and runs as the owner, exactly as the single-user app did.
+Login/RBAC activate as soon as any account has a password, a second account
+exists, or the env gate is set (see core.auth.is_login_required).
 
 Credentials are validated against the ``users`` table (werkzeug-hashed
 passwords); the legacy CLU_USERNAME/CLU_PASSWORD are migrated into a hashed

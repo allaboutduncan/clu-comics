@@ -210,7 +210,9 @@ Optional AI-powered reading recommendations based on your library and reading hi
 ## Multi-User Accounts & Permissions
 
 - **Three roles** — Reader, Clerk and Store Owner — enforced by a central path-and-method policy, so mutating requests default to Clerk and reads to Reader.
-- **Single-user installs need no login.** CLU runs in implicit-owner mode by default; multi-user activates the moment you create a second account. Existing `CLU_USERNAME` / `CLU_PASSWORD` credentials are migrated into a hashed owner account.
+- **A password means login.** A fresh install runs unauthenticated in implicit-owner mode: anyone who can reach it is the Store Owner. As soon as the Store Owner (or any account) has a password, CLU asks for it, even while it is the only account; creating more accounts always means login. Existing `CLU_USERNAME` / `CLU_PASSWORD` credentials are migrated into a hashed owner account.
+- **Once login is on, every client needs credentials.** The browser is sent to the login page, OPDS reading apps must send the username and password (HTTP Basic Auth), and `/api/v1` clients need an API token. The browser extension's `POST /download` stays credential-free by design.
+- **Forgotten owner password.** Another Store Owner can reset it from Settings → Users. If there is none, use shell access to the container to clear the first owner's password, running as your `PUID:PGID` so the database files keep their owner: `docker exec -u PUID:PGID comic-utils sqlite3 /config/comic_utils.db "UPDATE users SET password_hash = NULL, needs_setup = 1 WHERE id = (SELECT id FROM users WHERE role = 'owner' ORDER BY id LIMIT 1);"` (use your own IDs and container name), then restart the container. With no other accounts that returns CLU to unauthenticated mode, and **Settings → Users → Needs setup** sets a new password. With other accounts, set `CLU_USERNAME` and `CLU_PASSWORD` before that restart: on startup CLU gives them to an owner that has no password (remove them again afterwards if you do not want the env login gate).
 - **Per-library and per-folder access grants** with nested inheritance and default-deny for new accounts. Enforced at listing *and* path-resolution level, so a hand-typed URL to a folder a user cannot see returns 403 — across browse, search, thumbnails, covers, the reader, downloads, the metadata browser, OPDS and the token API.
 - **Per-user data isolation** — reading history, reading positions, Want to Read, On the Stack, favorites, reading lists, Insights, Timeline and Wrapped are all scoped to the individual user.
 - **Per-user theme and dashboard layout.**
@@ -220,7 +222,7 @@ Optional AI-powered reading recommendations based on your library and reading hi
 - **`/api/v1`** — a token-authenticated external API for companion reading apps: publishers, series, issues, favorites, to-read, recent, issue detail, cover, download, reading progress (including a `progress/since` delta sync) and mark-read.
 - **`/api/v1/docs`** — the API documents itself in-app.
 - **Per-user API tokens** — created and revoked from My Account, stored hashed and shown only once.
-- **OPDS feeds** — `/opds`, `/opds/browse` and `/opds/to-read` for third-party comic reader apps, with HTTP Basic Auth in multi-user mode and library scoping per user.
+- **OPDS feeds** — `/opds`, `/opds/browse` and `/opds/to-read` for third-party comic reader apps, with HTTP Basic Auth whenever login is on (any account has a password) and library scoping per user.
 - **Komga reading sync** — pull reading history and in-progress books from a [Komga](https://komga.org/) server.
 - **`/health`** — a health endpoint for container orchestration and uptime monitoring.
 

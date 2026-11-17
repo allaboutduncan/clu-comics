@@ -46,7 +46,8 @@ class TestSingleUserMode:
 
     @pytest.fixture(autouse=True)
     def _owner(self, db_connection):
-        create_user("owner", password="ownerpass", role="owner")
+        # An open install: no password anywhere (a password means login).
+        create_user("owner", password=None, role="owner", needs_setup=1)
 
     def test_cross_site_post_refused_and_changes_nothing(self, client):
         r = _set_width(client, headers=EVIL)
