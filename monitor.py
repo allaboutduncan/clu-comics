@@ -13,7 +13,7 @@ from cbz_ops.rename import rename_file, clean_directory_name
 from cbz_ops.single_file import convert_to_cbz
 from core.config import load_config, get_watch_dir, get_target_dir
 from core.settings import get_bool, get_int, get_list
-from helpers import is_hidden, extract_rar_with_unar, match_parent_permissions
+from helpers import is_hidden, extract_rar_with_unar, match_parent_permissions, mislabelled_cbz_format
 from helpers.unwrap import (
     classify_release_folder, unwrap_release, MULTIPART_ARCHIVE, COMIC_EXTS,
     ARCHIVE_EXTS, classify_archive,
@@ -1081,6 +1081,33 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             # Track the final file path (may change after conversion)
             final_target_path = target_path
+
+            # A RAR or 7-Zip archive named .cbz is renamed .cbr here, so the
+            # CBR branch below converts it (its tools read content, so 7z
+            # works too). Every decision in this method was made on the name
+            # alone, and such a file reached the library as a "CBZ" nothing
+            # could preview, tag or edit. A 7z is only renamed when it will
+            # be converted: .cbr would be one more wrong label for it.
+            real_format = mislabelled_cbz_format(target_path)
+            if real_format == 'rar' or (real_format and self.autoconvert):
+                relabelled = get_unique_filepath(os.path.splitext(target_path)[0] + '.cbr')
+                try:
+                    os.replace(target_path, relabelled)
+                    monitor_logger.warning(
+                        f"'{os.path.basename(target_path)}' is a {real_format} archive "
+                        f"named .cbz; renamed to '{os.path.basename(relabelled)}'"
+                    )
+                    target_path = final_target_path = relabelled
+                except OSError as e:
+                    monitor_logger.error(
+                        f"'{target_path}' is a {real_format} archive named .cbz and "
+                        f"could not be renamed to .cbr: {e}"
+                    )
+            elif real_format:
+                monitor_logger.warning(
+                    f"'{target_path}' is a {real_format} archive named .cbz and "
+                    f"auto-conversion is disabled; Rebuild it to make it a real CBZ."
+                )
 
             if os.path.exists(target_path):
                 monitor_logger.info(f"Checking if '{target_path}' is a CBR file")

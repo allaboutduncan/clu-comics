@@ -250,6 +250,25 @@ class TestDoMoveBatch:
         assert job["user_id"] == 7
         r["state"].complete_operation.assert_called_once_with("op1", error=False)
 
+    def test_rar_named_cbz_is_listed_on_library_health(self, tmp_path):
+        """The move phase is the one step that always runs, so it is what
+        reports the file; the row's advice is Rebuild."""
+        dest = tmp_path / "X-Force 001 (2004).cbz"
+        dest.write_bytes(b"7z\xbc\xaf\x27\x1c\x00\x04" + b"\x00" * 32)
+        good =tmp_path / "X-Force 002 (2004).cbz"
+        good.write_bytes(b"PK\x03\x04zip")
+        items = [{"source": "/t/a.cbz", "destination": str(dest)},
+                 {"source": "/t/b.cbz", "destination": str(good)}]
+        with patch("core.problem_files.record_problem") as rec:
+            self._run(items)
+        assert rec.call_count == 1
+        args, kwargs = rec.call_args
+        assert args[0] == str(dest)
+        from core.problem_files import classify, SOURCE_CONVERT
+        assert args[1] == SOURCE_CONVERT
+        verdict = classify(kwargs["error_class"], kwargs["error_message"])
+        assert verdict["repairable"] and verdict["action"] == "rebuild"
+
     def test_no_metadata_job_when_auto_metadata_disabled(self):
         logged = []
         r = self._run(self._items(2), auto_meta=False,
@@ -336,6 +355,37 @@ class TestDoTagBatch:
         moved = [("/data/lib/b0.cbz", True), ("/data/lib/b1.cbz", True)]
         self._run(["metron"], moved=moved, auto_fetch_metron_metadata=boom)
         assert seen == ["/data/lib/b0.cbz", "/data/lib/b1.cbz"]
+
+    RAR = b"Rar!\x1a\x07\x00" + b"\x00" * 32
+
+    def test_rar_named_cbz_is_converted_before_tagging(self, tmp_path):
+        comic = tmp_path / "X-Force 001 (2004).cbz"
+        comic.write_bytes(self.RAR)
+
+        def fake_convert(path):
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("001.jpg", b"page")
+            return True
+
+        with patch("core.settings.get_bool", return_value=True), \
+             patch("cbz_ops.single_file.convert_to_cbz", side_effect=fake_convert) as conv:
+            calls, _ = self._run(["metron"], moved=[(str(comic), True)])
+        conv.assert_called_once_with(str(comic))
+        assert calls == [("metron", str(comic))]
+
+    def test_rar_named_cbz_is_not_sent_to_providers_when_unconverted(self, tmp_path):
+        """Autoconvert off, or the conversion failed: no provider lookups are
+        spent on an archive none of them can write to."""
+        comic = tmp_path / "X-Force 002 (2004).cbz"
+        comic.write_bytes(self.RAR)
+        logged = []
+        for autoconvert in (False, True):
+            with patch("core.settings.get_bool", return_value=autoconvert), \
+                 patch("cbz_ops.single_file.convert_to_cbz", return_value=False):
+                calls, _ = self._run(["metron"], moved=[(str(comic), True)],
+                                     log_file_if_in_data=lambda p: logged.append(p))
+            assert calls == []
+        assert logged == [str(comic), str(comic)]
 
     def test_renamed_file_logged_under_final_path(self):
         logged = []
