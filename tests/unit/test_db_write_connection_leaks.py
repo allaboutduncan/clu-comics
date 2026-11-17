@@ -33,7 +33,7 @@ DATABASE_PY = os.path.join(
 )
 
 # Leak-shaped writers on the day this test was written. Only ever lower it.
-BASELINE = 99
+BASELINE = 94
 
 # Converted for #723 -- they are on the TARGET -> library path, which runs once
 # per completed download, and must never regress.
@@ -54,6 +54,13 @@ MUST_BE_LEAK_FREE = {
     "update_reading_list_source_version",
     "sync_reading_list_entries",
     "update_reading_list_entry_match",
+    # Per-file across the whole library: the metadata scan, ComicInfo writes,
+    # the browse cache and the reader's position saves.
+    "update_file_metadata",
+    "update_file_index_from_comicinfo",
+    "save_browse_cache",
+    "invalidate_browse_cache",
+    "save_reading_position",
 }
 
 
