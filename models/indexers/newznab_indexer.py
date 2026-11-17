@@ -9,6 +9,7 @@ API reference: https://newznab.readthedocs.io/en/latest/misc/api/
 from typing import List, Optional
 
 from core.app_logging import app_logger
+from core.log_redact import redact_url
 from .base import BaseIndexer, IndexerType, NZBSearchResult
 from . import register_indexer
 
@@ -51,7 +52,7 @@ class NewznabIndexer(BaseIndexer):
                 timeout=_TIMEOUT,
             )
             if resp.status_code != 200:
-                self.last_error = f"HTTP {resp.status_code} from {url}"
+                self.last_error = f"HTTP {resp.status_code} from {redact_url(url)}"
                 return False
 
             root = ElementTree.fromstring(resp.content)
@@ -63,14 +64,14 @@ class NewznabIndexer(BaseIndexer):
                 return False
             return True
         except requests.exceptions.ConnectionError:
-            self.last_error = f"Could not connect to {url}"
+            self.last_error = f"Could not connect to {redact_url(url)}"
             return False
         except requests.exceptions.Timeout:
-            self.last_error = f"Timed out connecting to {url}"
+            self.last_error = f"Timed out connecting to {redact_url(url)}"
             return False
         except Exception as e:
-            self.last_error = str(e)
-            app_logger.error(f"Newznab connection test failed: {e}")
+            self.last_error = redact_url(e)
+            app_logger.error(f"Newznab connection test failed: {self.last_error}")
             return False
 
     def search(
@@ -109,7 +110,7 @@ class NewznabIndexer(BaseIndexer):
 
             resp = requests.get(url, params=params, timeout=_TIMEOUT)
             if resp.status_code != 200:
-                self.last_error = f"HTTP {resp.status_code} from {url}"
+                self.last_error = f"HTTP {resp.status_code} from {redact_url(url)}"
                 app_logger.warning(
                     f"Newznab '{cfg.name}': q='{query}' -> {self.last_error}"
                 )
@@ -134,8 +135,8 @@ class NewznabIndexer(BaseIndexer):
                 )
             return results
         except Exception as e:
-            self.last_error = str(e)
-            app_logger.error(f"Newznab search failed for '{cfg.name}': {e}")
+            self.last_error = redact_url(e)
+            app_logger.error(f"Newznab search failed for '{cfg.name}': {self.last_error}")
             return []
 
     def _parse_items(self, root, indexer_id: int):

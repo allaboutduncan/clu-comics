@@ -36,6 +36,36 @@ if not app_logger.handlers:  # Prevent adding multiple handlers in case of multi
     # Log the log file location
     app_logger.info(f"📋 Log files location: {LOG_DIR}")
 
+class UrlCredentialFilter(logging.Filter):
+    """Mask credentials in URLs inside a log message (core.log_redact).
+
+    The log sites CLU owns redact explicitly. This is the backstop for the
+    ones it cannot edit (api.py) and for a ``{e}`` from ``requests``, whose
+    exception text carries the full URL, query string included. It is a
+    *logger* filter, so it holds whichever handlers get attached later.
+    Never raises: a log line must not fail because it could not be scrubbed.
+    """
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+            if "=" in message or "@" in message:
+                from core.log_redact import redact_url
+                redacted = redact_url(message)
+                if redacted != message:
+                    record.msg = redacted
+                    record.args = None
+        except Exception:
+            pass
+        return True
+
+
+_url_credential_filter = UrlCredentialFilter()
+for _logger_name in ("app_logger", "monitor_logger"):
+    _logger = logging.getLogger(_logger_name)
+    if not any(isinstance(f, UrlCredentialFilter) for f in _logger.filters):
+        _logger.addFilter(_url_credential_filter)
+
 # Suppress noisy pyrate_limiter logs (Mokkari already handles rate limits internally)
 logging.getLogger("pyrate_limiter").setLevel(logging.CRITICAL)
 

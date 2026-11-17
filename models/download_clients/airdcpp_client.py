@@ -30,6 +30,7 @@ import time
 from typing import List, Optional, Tuple
 
 from core.app_logging import app_logger
+from core.log_redact import redact_url
 from .base import BaseDownloadClient, ClientType, DownloadStatus, NZBSubmitResult
 from . import register_download_client
 
@@ -233,17 +234,17 @@ class AirDCPPClient(BaseDownloadClient):
             )
         except requests.exceptions.ConnectionError:
             self.last_error = (
-                f"Could not connect to {url} — check the host/port are reachable "
+                f"Could not connect to {redact_url(url)} — check the host/port are reachable "
                 f"from the CLU container (localhost inside Docker is the container "
                 f"itself, not your homeserver)"
             )
             return None
         except requests.exceptions.Timeout:
-            self.last_error = f"Timed out connecting to {url}"
+            self.last_error = f"Timed out connecting to {redact_url(url)}"
             return None
         except Exception as e:
-            self.last_error = str(e)
-            app_logger.error(f"AirDC++ request to {url} failed: {e}")
+            self.last_error = redact_url(e)
+            app_logger.error(f"AirDC++ request to {redact_url(url)} failed: {redact_url(e)}")
             return None
 
         if resp.status_code == 401:
@@ -252,7 +253,7 @@ class AirDCPPClient(BaseDownloadClient):
         if resp.status_code == 404 and allow_missing:
             return resp
         if resp.status_code >= 400:
-            self.last_error = f"HTTP {resp.status_code} from {url}"
+            self.last_error = f"HTTP {resp.status_code} from {redact_url(url)}"
             return None
         return resp
 
@@ -553,7 +554,7 @@ class AirDCPPClient(BaseDownloadClient):
                 and _normalize_airdcpp_status(b.get("status") or {}) == "downloading"
             ]
         except Exception as e:
-            app_logger.error(f"AirDC++ get_queue failed: {e}")
+            app_logger.error(f"AirDC++ get_queue failed: {redact_url(e)}")
             return []
 
     def get_history(self) -> List[DownloadStatus]:
@@ -571,7 +572,7 @@ class AirDCPPClient(BaseDownloadClient):
                 and _normalize_airdcpp_status(b.get("status") or {}) != "downloading"
             ]
         except Exception as e:
-            app_logger.error(f"AirDC++ get_history failed: {e}")
+            app_logger.error(f"AirDC++ get_history failed: {redact_url(e)}")
             return []
 
     def get_bundle_state(self, client_id: str):
@@ -606,5 +607,5 @@ class AirDCPPClient(BaseDownloadClient):
             state, status = self.get_bundle_state(client_id)
             return status if state == "found" else None
         except Exception as e:
-            app_logger.error(f"AirDC++ get_status failed: {e}")
+            app_logger.error(f"AirDC++ get_status failed: {redact_url(e)}")
             return None

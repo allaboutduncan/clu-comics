@@ -12,6 +12,8 @@ import sys
 import time
 import threading
 
+from core.log_redact import redact_url
+
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
 # maps to itself and is filtered out before any write, so a genuinely queued
 # download never causes DB churn.
@@ -182,7 +184,8 @@ def set_error_status(progress, download_id, error=None) -> None:
         return
     entry['status'] = 'error'
     if error is not None:
-        entry['error'] = str(error)
+        # Shown on /status; a requests error carries the full URL.
+        entry['error'] = redact_url(error)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +336,7 @@ def begin_retry_wait(progress, download_id, attempt, delay, error=None) -> None:
     entry['retry_count'] = int(attempt) + 1
     entry['retry_at'] = time.time() + delay
     if error is not None:
-        entry['error'] = str(error)
+        entry['error'] = redact_url(error)
 
 
 def reset_for_retry(progress, download_id) -> None:
@@ -769,7 +772,7 @@ def download_notification_body(dest_filename, file_path=None, provider=None,
     if provider:
         lines.append(f"Source: {provider}")
     if error:
-        lines.append(f"Error: {error}")
+        lines.append(f"Error: {redact_url(error)}")
     try:
         attempts = int(attempts)
     except (TypeError, ValueError):

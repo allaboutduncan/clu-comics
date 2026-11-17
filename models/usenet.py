@@ -19,6 +19,7 @@ import time
 import uuid
 
 from core.app_logging import app_logger
+from core.log_redact import redact_url
 
 # Comic/container extensions we hand off to the WATCH pipeline.
 _COMIC_EXTS = {".cbz", ".cbr", ".cbt", ".pdf", ".zip", ".rar"}
@@ -142,10 +143,10 @@ def search_usenet_for_issue(
                     raw_results.append(r)
                     found_any = True
             if not found_any and getattr(impl, "last_error", None):
-                errors.append(f"{name}: {impl.last_error}")
+                errors.append(f"{name}: {redact_url(impl.last_error)}")
         except Exception as e:
-            app_logger.error(f"Indexer search failed for {name}: {e}")
-            errors.append(f"{name}: {e}")
+            app_logger.error(f"Indexer search failed for {name}: {redact_url(e)}")
+            errors.append(f"{name}: {redact_url(e)}")
 
     app_logger.info(
         f"Usenet search {series_name} #{issue_num}: tried {queries} -> "
@@ -226,17 +227,17 @@ def _fetch_nzb(url):
 
         resp = requests.get(url, timeout=30)
         if resp.status_code != 200 or not resp.content:
-            app_logger.warning(f"Usenet: NZB fetch HTTP {resp.status_code} for {url}")
+            app_logger.warning(f"Usenet: NZB fetch HTTP {resp.status_code} for {redact_url(url)}")
             return None
         head = resp.content.lstrip()[:256].lower()
         if b"<?xml" in head or b"<nzb" in head:
             return resp.content
         app_logger.warning(
-            f"Usenet: fetched URL did not return an NZB (looks like a page): {url}"
+            f"Usenet: fetched URL did not return an NZB (looks like a page): {redact_url(url)}"
         )
         return None
     except Exception as e:
-        app_logger.error(f"Usenet: NZB fetch failed for {url}: {e}")
+        app_logger.error(f"Usenet: NZB fetch failed for {redact_url(url)}: {redact_url(e)}")
         return None
 
 
@@ -359,7 +360,7 @@ def grab_nzb(nzb_url, filename, series=None, issue=None):
 
     result = client.add_nzb(payload, _job_name(filename))
     if not result.success:
-        app_logger.error(f"Usenet grab failed ({client_type}): {result.error}")
+        app_logger.error(f"Usenet grab failed ({client_type}): {redact_url(result.error)}")
         return None
 
     download_id = str(uuid.uuid4())
@@ -494,7 +495,7 @@ def _statuses_for(client_type):
             merged[h.client_id] = h
         return merged
     except Exception as e:
-        app_logger.error(f"Usenet status fetch failed for {client_type}: {e}")
+        app_logger.error(f"Usenet status fetch failed for {client_type}: {redact_url(e)}")
         return {}
 
 

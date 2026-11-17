@@ -275,7 +275,8 @@ def notify_download_terminal(status, filename, error=None, source=None):
             )
         elif status == "failed":
             if error:
-                lines.append(f"Error: {error}")
+                from core.log_redact import redact_url
+                lines.append(f"Error: {redact_url(error)}")
             notify_async(
                 EVENT_DOWNLOAD_FAILED, "Download failed", "\n".join(lines)
             )
