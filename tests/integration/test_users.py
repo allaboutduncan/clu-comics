@@ -14,7 +14,7 @@ from core.database import (
     count_users,
     create_api_token,
     create_user,
-    get_api_token,
+    get_api_token_digest,
     get_owner_user,
     get_user_by_id,
     get_user_by_token_hash,
@@ -262,12 +262,28 @@ class TestSeedOwner:
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         from core.database import set_user_preference
         set_user_preference("api_token", "legacy-token-123", category="security")
-        assert get_api_token() == "legacy-token-123"
+        assert get_api_token_digest() == _hash_token("legacy-token-123")
 
         seed_owner_if_needed()
         owner = get_owner_user()
         # The old global token now resolves to the owner via api_tokens.
         user = get_user_by_token_hash(_hash_token("legacy-token-123"))
+        assert user and user["id"] == owner["id"]
+
+    def test_hashed_legacy_token_migrated_to_owner(self, db_connection, monkeypatch):
+        """A legacy token already stored as a digest seeds the same owner row."""
+        monkeypatch.delenv("CLU_USERNAME", raising=False)
+        monkeypatch.delenv("CLU_PASSWORD", raising=False)
+        from core.database import (
+            LEGACY_TOKEN_DIGEST_PREFIX, set_user_preference,
+        )
+        value = "fake-" + "legacy"
+        set_user_preference("api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(value),
+                            category="security")
+
+        seed_owner_if_needed()
+        owner = get_owner_user()
+        user = get_user_by_token_hash(_hash_token(value))
         assert user and user["id"] == owner["id"]
 
 

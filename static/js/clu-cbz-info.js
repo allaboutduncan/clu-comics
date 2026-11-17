@@ -294,7 +294,7 @@
         if (data.success) {
           var fn = data.file_name || ('Page ' + (pageNum + 1));
           var fs = data.file_size ? CLU.formatFileSize(data.file_size) : '';
-          el.innerHTML = '<div><strong>' + fn + '</strong></div>' +
+          el.innerHTML = '<div><strong>' + CLU.escapeHtml(fn) + '</strong></div>' +
             '<div>' + width + ' \u00d7 ' + height + (fs ? ' \u2022 ' + fs : '') + '</div>';
         } else {
           el.innerHTML = '<div>' + width + ' \u00d7 ' + height + '</div>';
@@ -468,10 +468,6 @@
       ? _pendingEdits[key] : _originalValue(key);
   }
 
-  function _escapeAttr(text) {
-    return CLU.escapeHtml(String(text)).replace(/"/g, '&quot;');
-  }
-
   /** Display HTML for one value (never the editor's seed -- that stays raw). */
   function _formatValue(field, value) {
     if (field.key === 'PageCount') {
@@ -516,7 +512,7 @@
     return '<li class="cbz-ci-row' + (dirty ? ' cbz-ci-dirty' : '') + '" data-key="' + field.key + '">' +
       '<strong>' + CLU.escapeHtml(field.label) + ':</strong> ' +
       '<span class="cbz-ci-value" data-key="' + field.key + '" tabindex="0" role="button" ' +
-        'title="Click to edit" aria-label="Edit ' + _escapeAttr(field.label) + '">' +
+        'title="Click to edit" aria-label="Edit ' + CLU.escapeHtml(field.label) + '">' +
         display + '<i class="bi bi-pencil cbz-ci-pencil" aria-hidden="true"></i>' +
       '</span>' +
       '</li>';
@@ -925,7 +921,7 @@
                   var w = pData.original_size ? pData.original_size.width : img.naturalWidth;
                   var h = pData.original_size ? pData.original_size.height : img.naturalHeight;
                   var extra = pData.total_images ? ' \u2022 ' + pData.total_images + ' images' : '';
-                  imgInfo.innerHTML = '<div><strong>' + fn + '</strong></div>' +
+                  imgInfo.innerHTML = '<div><strong>' + CLU.escapeHtml(fn) + '</strong></div>' +
                     '<div>' + w + ' \u00d7 ' + h + extra + '</div>';
                 }
               };
@@ -950,7 +946,7 @@
           });
       })
       .catch(function (err) {
-        content.innerHTML = '<div class="alert alert-danger">Error loading CBZ information: ' + err.message + '</div>';
+        content.innerHTML = '<div class="alert alert-danger">Error loading CBZ information: ' + CLU.escapeHtml(err.message) + '</div>';
       });
   };
 

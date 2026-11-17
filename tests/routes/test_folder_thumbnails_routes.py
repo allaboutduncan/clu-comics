@@ -39,9 +39,15 @@ def _wait_for_operations(timeout=5.0):
 
 
 @pytest.fixture
-def library(tmp_path):
-    """A small library: two series folders, each with one comic."""
+def library(tmp_path, data_dir_library):
+    """A small library: two series folders, each with one comic.
+
+    ``tmp_path/data`` is the app's DATA_DIR and, through ``data_dir_library``,
+    the one enabled library: pin/unpin write folder art and refuse a folder
+    outside every library.
+    """
     root = tmp_path / "data"
+    assert os.path.normpath(str(root)) == os.path.normpath(data_dir_library)
     for series in ("Batman", "Superman"):
         folder = root / series
         folder.mkdir(parents=True)
@@ -154,6 +160,61 @@ class TestPinFolderThumbnail:
         assert get_folder_pin(str(library / "Batman")) == comic
 
 
+class TestPinContainment:
+    """Pinning reads the comic and writes the folder's art, so both must lie
+    inside a library on the realpath, for every user (the owner included)."""
+
+    def _outside(self, tmp_path, name="elsewhere"):
+        folder = tmp_path / name / "Series"
+        folder.mkdir(parents=True)
+        comic = folder / "Series 001.cbz"
+        comic.write_bytes(b"comic")
+        return folder, comic
+
+    def test_pin_outside_every_library_is_refused(self, client, library, tmp_path):
+        folder, comic = self._outside(tmp_path)
+        with patch("app.generate_folder_thumbnail_internal") as gen:
+            response = client.post("/api/folder-thumbnail/pin",
+                                   json={"comic_path": str(comic)})
+        assert response.status_code == 403
+        gen.assert_not_called()
+        assert get_folder_pin(str(folder)) is None
+
+    def test_pin_in_a_name_prefix_lookalike_of_the_root_is_refused(
+            self, client, library, tmp_path):
+        """``data2`` starts with ``data`` but is not inside it."""
+        folder, comic = self._outside(tmp_path, name="data2")
+        with patch("app.generate_folder_thumbnail_internal") as gen:
+            response = client.post("/api/folder-thumbnail/pin",
+                                   json={"comic_path": str(comic)})
+        assert response.status_code == 403
+        gen.assert_not_called()
+
+    def test_unpin_outside_every_library_is_refused(self, client, library, tmp_path):
+        folder, comic = self._outside(tmp_path)
+        set_folder_pin(str(folder), str(comic))
+        with patch("app.generate_folder_thumbnail_internal") as gen:
+            response = client.post("/api/folder-thumbnail/unpin",
+                                   json={"folder_path": str(folder)})
+        assert response.status_code == 403
+        gen.assert_not_called()
+        assert get_folder_pin(str(folder)) == str(comic)
+
+    def test_pin_through_a_symlink_out_of_the_library_is_refused(
+            self, client, library, tmp_path):
+        folder, comic = self._outside(tmp_path)
+        link = library / "Linked"
+        try:
+            os.symlink(str(folder), str(link), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are not available here")
+        with patch("app.generate_folder_thumbnail_internal") as gen:
+            response = client.post("/api/folder-thumbnail/pin",
+                                   json={"comic_path": str(link / "Series 001.cbz")})
+        assert response.status_code == 403
+        gen.assert_not_called()
+
+
 class TestPinnedCoverInBrowse:
 
     def test_browse_reports_the_pin(self, client, library):
@@ -220,6 +281,11 @@ class TestThumbnailConfig:
 
 
 class TestThumbnailSweeps:
+
+    @pytest.fixture(autouse=True)
+    def _tmp_path_is_the_library(self, tmp_path_library):
+        """A sweep's starting folder must be inside a library (and granted);
+        these tests build their folders under tmp_path."""
 
     def test_generate_missing_skips_folders_that_have_art(self, client, library):
         (library / "Batman" / "folder.png").write_bytes(b"existing")

@@ -34,7 +34,7 @@ This started as a set of utilities built while moving a 70,000+ issue comic libr
 - **[Comic downloads](FEATURES.md#downloads)** — search and download from Direct Download Source, Usenet via Newznab indexers with SABnzbd or NZBGet, and DC++/AirDC++, with configurable source priority and a browser extension for one-click sends.
 - **[Folder monitoring](FEATURES.md#folder-monitoring)** — watch a downloads folder and automatically unpack, convert to CBZ, rename and file new comics into your library.
 - **[Insights, Timeline and CLU Wrapped](FEATURES.md#insights-timeline--clu-wrapped)** — collection size and reading stats, a full timeline of what you have read, and shareable year-in-review images.
-- **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. Single-user installs need no login at all.
+- **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. A single-user install with no password needs no login; once you set an owner password, CLU asks for it.
 - **[API and OPDS](FEATURES.md#api--integrations)** — a token-authenticated `/api/v1` for companion apps, self-documenting at `/api/v1/docs`, plus OPDS feeds for comic reader apps and optional Komga reading sync.
 
 See **[FEATURES.md](FEATURES.md)** for the complete breakdown.
@@ -98,6 +98,9 @@ services:
             ## File creation mask. 000 -> world-writable folders (drwxrwsrwx) and files
             ## (-rw-rw-rw-). Use 002 for group-writable (775/664) or 022 for owner-only writes.
             - UMASK=000
+            ## Only if a reverse proxy rewrites the Host header and changes in the UI fail
+            ## with "Cross-site request refused" (see "Running behind a reverse proxy").
+            # - CLU_TRUSTED_ORIGINS=https://comics.example.com
 volumes:
   config-volume: # Now required for Database Storage and Backups
 ```
@@ -114,6 +117,19 @@ Windows and WSL users hitting file permission errors should read **[docs/WINDOWS
 ### Mapping your library volumes
 
 Map your main library to `/data`, the default library path on a new install. Any other path works too (for example `/comics`): map it, then add it or point the default library at it under Settings → Libraries. Additional libraries are mapped and added the same way. Full install walkthrough: **[clucomics.org quickstart](https://clucomics.org/getting-started/quickstart/)**.
+
+### Running behind a reverse proxy
+
+CLU honours `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-Prefix` (one proxy hop), so it works on its own hostname or on a subpath such as `https://example.com/clu/`.
+
+To protect against cross-site request forgery, CLU refuses any POST, PUT, PATCH or DELETE that a browser reports as coming from another site. It accepts a request when the browser says it is same-origin, or when the `Origin` (or `Referer`) host matches the `Host` header or an `X-Forwarded-Host` value. Clients that send none of these headers (scripts, curl, OPDS readers, API tokens) are not affected. Most proxies (Nginx Proxy Manager, Traefik, Caddy, SWAG, and Nginx with `proxy_set_header Host $host;`) need nothing extra.
+
+If a proxy rewrites `Host` to the container's address and sends no `X-Forwarded-Host`, saving or changing anything in the UI fails with *"Cross-site request refused"*. Fix the proxy to pass the original host, or list your public address in `CLU_TRUSTED_ORIGINS` (comma-separated origins or `host:port`) and restart the container:
+
+```yaml
+        environment:
+            - CLU_TRUSTED_ORIGINS=https://comics.example.com
+```
 
 ## Integrations
 
@@ -182,7 +198,9 @@ Yes. CLU operates directly on the files on disk, so anything you fix or tag in C
 
 ### Can multiple people use one CLU install?
 
-Yes. CLU supports multiple accounts across three roles — Reader, Clerk and Store Owner — with per-library and per-folder access grants. Reading history, favorites and reading lists are kept separate per user. A single-user install requires no login at all.
+Yes. CLU supports multiple accounts across three roles — Reader, Clerk and Store Owner — with per-library and per-folder access grants. Reading history, favorites and reading lists are kept separate per user. A single-user install where no password has been set requires no login, and anyone who can reach it is the owner.
+
+**A password means login.** If you set an owner password, CLU asks for it, even when yours is the only account. OPDS reading apps then need your username and password, and `/api/v1` clients need an API token (My Account → API Tokens). Forgot the owner password? See [Multi-User Accounts & Permissions](FEATURES.md#multi-user-accounts--permissions) for the recovery steps.
 
 ### Is there a mobile app or OPDS support?
 

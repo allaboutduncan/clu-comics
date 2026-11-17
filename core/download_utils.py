@@ -12,6 +12,8 @@ import sys
 import time
 import threading
 
+from core.log_redact import redact_url
+
 # Live api.download_progress status -> weekly_packs_history status. 'queued'
 # maps to itself and is filtered out before any write, so a genuinely queued
 # download never causes DB churn.
@@ -182,7 +184,8 @@ def set_error_status(progress, download_id, error=None) -> None:
         return
     entry['status'] = 'error'
     if error is not None:
-        entry['error'] = str(error)
+        # Shown on /status; a requests error carries the full URL.
+        entry['error'] = redact_url(error)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +336,7 @@ def begin_retry_wait(progress, download_id, attempt, delay, error=None) -> None:
     entry['retry_count'] = int(attempt) + 1
     entry['retry_at'] = time.time() + delay
     if error is not None:
-        entry['error'] = str(error)
+        entry['error'] = redact_url(error)
 
 
 def reset_for_retry(progress, download_id) -> None:
@@ -769,7 +772,7 @@ def download_notification_body(dest_filename, file_path=None, provider=None,
     if provider:
         lines.append(f"Source: {provider}")
     if error:
-        lines.append(f"Error: {error}")
+        lines.append(f"Error: {redact_url(error)}")
     try:
         attempts = int(attempts)
     except (TypeError, ValueError):
@@ -810,15 +813,28 @@ def safe_download_filename(name):
     wherever the service account could create a file (GHSA-f7j2-w7wv-3xp4).
 
     Only the last segment survives, with either separator, a drive prefix,
-    control characters and ``.``/``..`` gone. The result is capped well under
-    NAME_MAX so a hostile length cannot push every candidate into ``OSError``.
-    Ordinary comic names ("Batman 001 (2024).cbz") come through unchanged --
-    the File Manager shows them, so this is not ``secure_filename``.
+    control characters and ``.``/``..`` gone. What is left goes through the
+    character map (``core.filename_chars``, the one sanitizer for a name CLU
+    writes to disk), exactly as a folder name does in
+    ``helpers.sanitize_path_segment``: a filesystem-hostile character such as
+    ``<``, ``>``, ``"`` or ``|`` is removed (``:`` becomes `` -`` under the
+    default map). The result is capped well under NAME_MAX so a hostile length
+    cannot push every candidate into ``OSError``. Ordinary comic names
+    ("Batman 001 (2024).cbz", "Devil's Due #1 & More.cbz") come through
+    unchanged -- the File Manager shows them, so this is not ``secure_filename``.
+
+    The segment is cut *before* the map runs: the map removes ``/`` and ``\\``,
+    so mapping first would fuse ``../../x.py`` into one name instead of
+    reducing it to ``x.py``.
     """
+    from core.filename_chars import apply_char_map, load_char_map
+
     name = "" if name is None else str(name)
     name = "".join(c for c in name if c >= " " and c != "\x7f")
     name = name.replace("\\", "/").rsplit("/", 1)[-1]
     name = os.path.splitdrive(name)[1].strip()
+    if name:
+        name = apply_char_map(name, load_char_map()).strip()
     if name in ("", ".", ".."):
         import uuid
         return f"download_{uuid.uuid4().hex}"

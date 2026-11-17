@@ -32,13 +32,6 @@
     var pending = null;         // row awaiting a modal confirmation
     var sourceSearch = null;    // lazily built CLU.createSourceSearch instance
 
-    function escapeHtml(str) {
-        return String(str === null || str === undefined ? '' : str)
-            .replace(/[&<>"']/g, function (c) {
-                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-            });
-    }
-
     function postJson(url, body) {
         return fetch(url, {
             method: 'POST',
@@ -221,14 +214,14 @@
 
     function renderRow(row) {
         var c = row.classification || {};
-        var addr = ' data-path="' + escapeHtml(row.path) + '"' +
-                   ' data-source="' + escapeHtml(row.source) + '"';
+        var addr = ' data-path="' + CLU.escapeHtml(row.path) + '"' +
+                   ' data-source="' + CLU.escapeHtml(row.source) + '"';
 
         var buttons = actionsFor(row).map(function (b) {
             return '<button class="btn btn-sm text-nowrap ' + b.cls + '" data-act="' + b.act + '"' +
-                addr + ' title="' + escapeHtml(b.title) + '">' +
+                addr + ' title="' + CLU.escapeHtml(b.title) + '">' +
                 '<i class="bi bi-' + b.icon + '"></i><span class="d-none d-xl-inline ms-1">' +
-                escapeHtml(b.label) + '</span></button>';
+                CLU.escapeHtml(b.label) + '</span></button>';
         }).join('');
 
         var badges = '';
@@ -257,17 +250,17 @@
         // two comics with the same name in different folders are told apart
         // only by it.
         return '<tr' + addr + (row.dismissed || !row.reachable ? ' class="opacity-50"' : '') + '>' +
-            '<td><div class="text-break"><strong>' + escapeHtml(title) + '</strong></div>' +
+            '<td><div class="text-break"><strong>' + CLU.escapeHtml(title) + '</strong></div>' +
                 '<div class="small text-muted text-break">' +
-                escapeHtml(row.folder) + '</div>' + badges + '</td>' +
+                CLU.escapeHtml(row.folder) + '</div>' + badges + '</td>' +
             '<td><span class="badge bg-light text-dark border">' +
-                escapeHtml(row.source_label) + '</span></td>' +
-            '<td><div>' + escapeHtml(c.cause || '') + '</div>' +
-                '<div class="small text-muted">' + escapeHtml(c.advice || '') + '</div></td>' +
+                CLU.escapeHtml(row.source_label) + '</span></td>' +
+            '<td><div>' + CLU.escapeHtml(c.cause || '') + '</div>' +
+                '<div class="small text-muted">' + CLU.escapeHtml(c.advice || '') + '</div></td>' +
             '<td class="text-nowrap small">' + (row.occurrences > 1
                     ? '<span class="badge bg-secondary">' + row.occurrences + '×</span><br>'
                     : '') +
-                '<span class="text-muted">' + escapeHtml(formatWhen(row.last_seen)) + '</span></td>' +
+                '<span class="text-muted">' + CLU.escapeHtml(formatWhen(row.last_seen)) + '</span></td>' +
             '<td class="text-end"><div class="pf-actions">' + buttons + '</div></td>' +
             '</tr>';
     }
@@ -377,14 +370,14 @@
     // the user dismisses it.
 
     function replacementCard(r) {
-        var addr = ' data-path="' + escapeHtml(r.target_path) + '"';
+        var addr = ' data-path="' + CLU.escapeHtml(r.target_path) + '"';
         if (r.status === 'applied') {
             return '<div class="alert alert-success d-flex align-items-start py-2" role="alert">' +
                 '<i class="bi bi-check-circle-fill me-2 mt-1"></i>' +
                 '<div class="flex-grow-1 small">' +
-                '<strong>Replaced ' + escapeHtml(r.filename) + '</strong>' +
+                '<strong>Replaced ' + CLU.escapeHtml(r.filename) + '</strong>' +
                 (r.new_filename ? ' with <span class="font-monospace">' +
-                    escapeHtml(r.new_filename) + '</span>' : '') + '.' +
+                    CLU.escapeHtml(r.new_filename) + '</span>' : '') + '.' +
                 (r.trashed_path ? ' The damaged copy is in the trash.' : '') +
                 '</div>' +
                 '<button class="btn btn-sm btn-outline-success ms-2" data-ack="1"' + addr +
@@ -394,8 +387,8 @@
             return '<div class="alert alert-danger d-flex align-items-start py-2" role="alert">' +
                 '<i class="bi bi-exclamation-octagon-fill me-2 mt-1"></i>' +
                 '<div class="flex-grow-1 small">' +
-                '<strong>Could not replace ' + escapeHtml(r.filename) + '</strong> — ' +
-                escapeHtml(r.detail || 'unknown reason') + '. ' +
+                '<strong>Could not replace ' + CLU.escapeHtml(r.filename) + '</strong> — ' +
+                CLU.escapeHtml(r.detail || 'unknown reason') + '. ' +
                 'The original is untouched.' +
                 '</div>' +
                 '<button class="btn btn-sm btn-outline-danger ms-2" data-ack="1"' + addr +
@@ -404,7 +397,7 @@
         return '<div class="alert alert-info d-flex align-items-start py-2" role="alert">' +
             '<span class="spinner-border spinner-border-sm me-2 mt-1"></span>' +
             '<div class="flex-grow-1 small">' +
-            '<strong>Replacement on the way for ' + escapeHtml(r.filename) + '</strong>' +
+            '<strong>Replacement on the way for ' + CLU.escapeHtml(r.filename) + '</strong>' +
             ' — it will be moved into place automatically when the download finishes.' +
             '</div>' +
             '<button class="btn btn-sm btn-outline-secondary ms-2" data-cancel="1"' + addr +
@@ -718,17 +711,17 @@
         var tone = failed.length ? 'warning' : 'success';
         var list = failed.length
             ? '<ul class="small mb-0 mt-2">' + failed.map(function (f) {
-                return '<li class="text-break"><strong>' + escapeHtml(f.folder) + '</strong> &mdash; ' +
-                    escapeHtml(f.reason) + '</li>';
+                return '<li class="text-break"><strong>' + CLU.escapeHtml(f.folder) + '</strong> &mdash; ' +
+                    CLU.escapeHtml(f.reason) + '</li>';
             }).join('') + '</ul>'
             : '';
         host.innerHTML =
             '<div class="alert alert-' + tone + ' alert-dismissible mb-3" role="alert">' +
             '<div><i class="bi bi-cloud-download me-2"></i><strong>series.json refresh</strong>' +
-            (when ? ' <span class="text-muted small">' + escapeHtml(when) + '</span>' : '') + '</div>' +
+            (when ? ' <span class="text-muted small">' + CLU.escapeHtml(when) + '</span>' : '') + '</div>' +
             '<div>' + result.fixed + ' of ' + result.total + ' corrected' +
             (failed.length ? ', <strong>' + failed.length + ' still need attention</strong>' : '.') +
-            (result.error ? ' (' + escapeHtml(result.error) + ')' : '') + '</div>' +
+            (result.error ? ' (' + CLU.escapeHtml(result.error) + ')' : '') + '</div>' +
             list +
             '<button type="button" class="btn-close" id="pf-sj-result-close" aria-label="Dismiss"></button>' +
             '</div>';
@@ -846,7 +839,7 @@
             ? 'This is the case rebuild is good at — a RAR archive with a ' +
               '<code>.cbz</code> name. It should come back as a working comic.'
             : 'Rebuilding is <strong>unlikely to fix this</strong>. ' +
-              escapeHtml(c.advice || '') +
+              CLU.escapeHtml(c.advice || '') +
               ' If it fails, the file is left exactly as it is now.';
         showModal('pf-rebuild-modal');
     }
@@ -897,12 +890,16 @@
         }
         container.innerHTML = '<div class="d-flex justify-content-center my-3">' +
             '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>' +
-            'Unpacking ' + escapeHtml(row.filename) + '…</div>';
+            'Unpacking ' + CLU.escapeHtml(row.filename) + '…</div>';
         document.getElementById('editCBZModalText').textContent = 'Editing ' + row.filename;
         bootstrap.Modal.getOrCreateInstance(modalEl).show();
         if (typeof CLU.setupEditModalDropZone === 'function') CLU.setupEditModalDropZone();
 
-        fetch('/edit?file_path=' + encodeURIComponent(row.path))
+        fetch('/edit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: row.path })
+        })
             .then(function (res) {
                 return res.json().catch(function () { return {}; }).then(function (data) {
                     if (!res.ok) throw new Error(data.error || 'Could not open the file for editing.');
@@ -919,7 +916,7 @@
             })
             .catch(function (err) {
                 container.innerHTML = '<div class="alert alert-danger" role="alert"><strong>Error:</strong> ' +
-                    escapeHtml(err.message) + '</div>';
+                    CLU.escapeHtml(err.message) + '</div>';
                 CLU.showError(err.message);
                 // A failed open puts the file back, but it may have changed.
                 refresh();

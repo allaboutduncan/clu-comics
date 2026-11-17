@@ -1,7 +1,16 @@
 """POST /api/series-json/refresh -- explicit create/update of series.json (#618)."""
 from unittest.mock import patch
 
-OK = {"success": True, "provider": "comicvine", "description_from": "comicvine", "tried": ["comicvine"]}
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _tmp_path_is_the_library(tmp_path_library):
+    """The route also checks the folder's realpath against the library roots
+    (and its grant), so the folders built under tmp_path must be in one."""
+
+
+OK ={"success": True, "provider": "comicvine", "description_from": "comicvine", "tried": ["comicvine"]}
 
 
 def _post(client, **body):

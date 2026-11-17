@@ -34,6 +34,13 @@ and could never be mapped (#588).
   never keep one, and `normalise_char_map` strips hostile characters out of a
   replacement, because `str.translate` is one pass and a hostile character
   inside a replacement would reach the disk.
+- **A download's name goes through the map too.**
+  `core.download_utils.safe_download_filename` (every downloader reserves its
+  name through it via `claim_download_path`) first cuts the remote name to its
+  last segment and only then applies `apply_char_map(name, load_char_map())`,
+  the same call as `helpers.sanitize_path_segment`. The order matters: the map
+  removes `/` and `\`, so mapping first would fuse `../../x.py` into one name.
+  A name the map empties gets a generated `download_<hex>`.
 - **Do not pre-sanitize a value before it reaches the map.** The metadata
   renamer and Smart Rename used to turn `:` into ` -` and strip `/` first, so
   the user's setting for those two never applied on the commonest rename path.

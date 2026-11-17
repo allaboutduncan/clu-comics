@@ -519,9 +519,9 @@ class TestSearchFiles:
 
 class TestCountFiles:
 
-    def test_count_files(self, client, tmp_path):
-        # Create some files in the tmp dir
-        d = tmp_path / "comics"
+    def test_count_files(self, client, data_dir_library):
+        # Create some files inside the (only) library
+        d = Path(data_dir_library) / "comics"
         d.mkdir()
         (d / "a.cbz").write_bytes(b"fake")
         (d / "b.cbz").write_bytes(b"fake")
@@ -531,9 +531,18 @@ class TestCountFiles:
         data = resp.get_json()
         assert data["file_count"] == 2
 
-    def test_count_invalid_path(self, client):
-        resp = client.get("/count-files?path=/nonexistent/path")
+    def test_count_invalid_path(self, client, data_dir_library):
+        missing = os.path.join(data_dir_library, "nonexistent")
+        resp = client.get("/count-files", query_string={"path": missing})
         assert resp.status_code == 400
+
+    def test_count_outside_libraries_refused(self, client, data_dir_library, tmp_path):
+        d = tmp_path / "elsewhere"
+        d.mkdir()
+        (d / "a.cbz").write_bytes(b"fake")
+        resp = client.get("/count-files", query_string={"path": str(d)})
+        assert resp.status_code == 403
+        assert "file_count" not in resp.get_json()
 
 
 class TestApiBrowseMetadata:

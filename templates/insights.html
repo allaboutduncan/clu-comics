@@ -716,11 +716,12 @@
 
             grid.innerHTML = items.map(item => `
             <div class="recently-read-item"
-                 onclick="window.location.href='/collection?path=${encodeURIComponent(item.path.substring(0, item.path.lastIndexOf('/')))}'">
+                 data-href="${CLU.escapeHtml('/collection?path=' + encodeURIComponent(item.path.substring(0, item.path.lastIndexOf('/'))))}"
+                 onclick="window.location.href = this.dataset.href">
                 <img class="recently-read-thumbnail"
-                     src="${item.thumbnail_url}"
-                     alt="${escapeHtml(item.name)}"
-                     title="${escapeHtml(item.name)}"
+                     src="${CLU.escapeHtml(item.thumbnail_url)}"
+                     alt="${CLU.escapeHtml(item.name)}"
+                     title="${CLU.escapeHtml(item.name)}"
                      loading="lazy"
                      onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 150%22%3E%3Crect fill=%22%23dee2e6%22 width=%22100%22 height=%22150%22/%3E%3Ctext x=%2250%22 y=%2275%22 text-anchor=%22middle%22 fill=%22%236c757d%22 font-size=%2210%22%3ENo Image%3C/text%3E%3C/svg%3E'">
             </div>
@@ -730,12 +731,6 @@
             document.getElementById('recently-read-empty').style.display = 'block';
             document.getElementById('recently-read-grid').style.display = 'none';
         }
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     // ===== READING HEATMAP =====
@@ -1021,7 +1016,7 @@
                     container.innerHTML = data.map((item, index) => `
                         <a href="/browse/${field}/${encodeURIComponent(item.name)}" class="trend-item text-decoration-none">
                             <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="trend-name text-truncate" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</span>
+                                <span class="trend-name text-truncate" title="${CLU.escapeHtml(item.name)}">${CLU.escapeHtml(item.name)}</span>
                                 <span class="trend-count badge bg-primary">${item.count}</span>
                             </div>
                             <div class="progress" style="height: 4px;">
@@ -1074,9 +1069,9 @@
                     skippedList.innerHTML = data.skipped_issues.map(item => `
                         <div class="list-group-item d-flex justify-content-between align-items-start">
                             <div class="me-auto">
-                                <div class="fw-medium text-truncate" style="max-width: 500px;" title="${escapeHtml(item.file)}">${escapeHtml(item.file)}</div>
+                                <div class="fw-medium text-truncate" style="max-width: 500px;" title="${CLU.escapeHtml(item.file)}">${CLU.escapeHtml(item.file)}</div>
                             </div>
-                            <span class="badge bg-secondary">${escapeHtml(item.reason)}</span>
+                            <span class="badge bg-secondary">${CLU.escapeHtml(item.reason)}</span>
                         </div>
                     `).join('');
                     new bootstrap.Modal(document.getElementById('skippedIssuesModal')).show();

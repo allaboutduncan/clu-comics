@@ -53,9 +53,18 @@ def bulk_client(db_connection, tmp_path):
     app.config['TESTING'] = True
     app.register_blueprint(bulk_metadata_bp)
 
-    # Patch is_valid_library_path so tmp_path counts as a library.
-    with patch('routes.bulk_metadata.is_valid_library_path', return_value=True):
-        yield app.test_client()
+    # Make tmp_path the one enabled library (dropping the /data library that
+    # init_db seeds when that folder exists on the host), so the comics the
+    # tests build under it pass the route's real containment check.
+    from core.database import get_db_connection, add_library
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM libraries")
+        conn.commit()
+    finally:
+        conn.close()
+    assert add_library("Test Library", str(tmp_path))
+    yield app.test_client()
 
 
 def _wait_for_job(client, job_id, timeout=8.0):

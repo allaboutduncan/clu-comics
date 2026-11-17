@@ -47,6 +47,7 @@ from urllib.parse import urlparse
 import requests
 
 from core.app_logging import app_logger
+from core.description_html import sanitize_description_html
 from core.metadata_dates import year_of
 
 # Source kinds. ``parse_source`` returns one of these, or None.
@@ -56,9 +57,6 @@ METRON_ARC = "metron-arc"
 COMICVINE_ARC = "comicvine-arc"
 
 _GITHUB_HOSTS = {"github.com", "raw.githubusercontent.com"}
-
-# Allowed HTML tags for imported descriptions (ComicVine, Metron, etc.)
-_SAFE_TAGS = {'p', 'br', 'b', 'strong', 'em', 'i', 'u', 'ul', 'ol', 'li', 'a', 'h2', 'h3', 'h4'}
 
 # How far back ``sync_all`` is willing to push its single ``modified_gt`` call.
 # mokkari follows every ``next`` link inside one call and does so *below* the
@@ -211,40 +209,16 @@ def _token_date(token):
 
 
 def _sanitize_html(html_str):
-    """Strip HTML to only safe tags, removing attributes except href on <a>."""
+    """Sanitize an imported description before it is stored.
+
+    A thin alias of :func:`core.description_html.sanitize_description_html`,
+    kept under its original name for the import workers. The page sanitizes
+    again when it renders (the ``sanitize_description`` filter), because rows
+    stored before this sanitizer existed went through an older one.
+    """
     if not html_str:
         return html_str
-    # Remove script/style blocks entirely
-    cleaned = re_module.sub(r'<(script|style|iframe)[^>]*>.*?</\1>', '', html_str, flags=re_module.DOTALL | re_module.IGNORECASE)
-
-    # Process remaining tags: keep allowed, strip others
-    def _replace_tag(m):
-        full = m.group(0)
-        # Closing tag
-        close_match = re_module.match(r'</(\w+)', full)
-        if close_match:
-            tag = close_match.group(1).lower()
-            return f'</{tag}>' if tag in _SAFE_TAGS else ''
-        # Opening/self-closing tag
-        open_match = re_module.match(r'<(\w+)', full)
-        if not open_match:
-            return ''
-        tag = open_match.group(1).lower()
-        if tag not in _SAFE_TAGS:
-            return ''
-        # Keep href for <a>, strip all other attributes
-        if tag == 'a':
-            href = re_module.search(r'href=["\']([^"\']*)["\']', full, re_module.IGNORECASE)
-            if href:
-                url = href.group(1)
-                # Convert relative ComicVine paths to absolute URLs
-                if url.startswith('/') and not url.startswith('//'):
-                    url = 'https://comicvine.gamespot.com' + url
-                return f'<a href="{url}" target="_blank" rel="noopener">'
-            return '<a>'
-        return f'<{tag}>' if not full.endswith('/>') else f'<{tag}/>'
-
-    return re_module.sub(r'<[^>]+>', _replace_tag, cleaned)
+    return sanitize_description_html(html_str)
 
 
 # ---------------------------------------------------------------------------

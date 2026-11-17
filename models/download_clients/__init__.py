@@ -26,6 +26,7 @@ from .base import (
     DownloadClientConfig,
     DownloadStatus,
     NZBSubmitResult,
+    build_base_url,
 )
 
 # Registry of download client implementations
@@ -114,6 +115,7 @@ __all__ = [
     "DownloadClientConfig",
     "DownloadStatus",
     "NZBSubmitResult",
+    "build_base_url",
     # Registry functions
     "register_download_client",
     "get_download_client",

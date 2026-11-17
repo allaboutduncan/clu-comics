@@ -14,6 +14,7 @@ from core.database import (
     count_owners_who_can_sign_in,
     create_user,
     delete_user,
+    get_db_connection,
     get_owner_user,
     get_user_by_username,
     list_users,
@@ -70,6 +71,8 @@ class TestRolePolicy:
         ("GET", "/logs/tail", "clerk"),
         ("GET", "/app-logs", "clerk"),
         ("GET", "/mon-logs", "clerk"),
+        # The File Manager's Downloads listing (WATCH/TARGET) backs a Clerk page.
+        ("GET", "/list-downloads", "clerk"),
         # Self-service API tokens: a user manages their OWN tokens at any role.
         ("GET", "/account", "reader"),
         ("GET", "/api/account/tokens", "reader"),
@@ -81,6 +84,10 @@ class TestRolePolicy:
         ("POST", "/api/account/appearance", "reader"),
         ("POST", "/api/account/dashboard", "reader"),
         ("POST", "/api/account/page-width", "reader"),
+        # The CBZ editor: opening renames and extracts the archive, so /edit
+        # is a POST and needs the same Clerk write role as /save.
+        ("POST", "/edit", "clerk"),
+        ("POST", "/save", "clerk"),
         ("GET", "/config", "owner"),
         # The site-default page width is in routes/auth.py, but its path is
         # what makes it owner-only.
@@ -90,8 +97,9 @@ class TestRolePolicy:
         ("GET", "/api/database/stats", "owner"),
         # Local ComicVine DB auto-update. These live under /api/providers, not
         # /api/preferences, precisely so the owner prefix covers them: the
-        # generic preference route is not on that list, and a Clerk must not be
-        # able to switch on a site-wide 541 MB download.
+        # generic preference route is not on that list (it gates per key, via
+        # core.settings.PREFERENCE_WRITE_ROLES), and a Clerk must not be able
+        # to switch on a site-wide 541 MB download.
         ("GET", "/api/providers/comicvine_sqlite/update-status", "owner"),
         ("POST", "/api/providers/comicvine_sqlite/auto-update", "owner"),
         ("POST", "/api/providers/comicvine_sqlite/update", "owner"),
@@ -117,6 +125,18 @@ class TestRolePolicy:
         ("POST", "/api/problem-files/delete", "owner"),
         ("POST", "/api/problem-files/replace", "owner"),
         ("POST", "/api/problem-files/replacements/apply", "owner"),
+        # Download client / indexer configuration holds credentials and is
+        # managed only from /config and /setup, both owner-only.
+        ("GET", "/api/download-clients", "owner"),
+        ("POST", "/api/download-clients/sabnzbd/config", "owner"),
+        ("POST", "/api/download-clients/sabnzbd/test", "owner"),
+        ("GET", "/api/indexers", "owner"),
+        ("POST", "/api/indexers/test", "owner"),
+        # ...except the two routes Clerk pages call.
+        ("GET", "/api/download-clients/sources", "clerk"),
+        ("POST", "/api/download-clients/downloads/clear", "clerk"),
+        ("POST", "/api/usenet/search", "clerk"),
+        ("POST", "/api/dcpp/grab", "clerk"),
     ])
     def test_required_role(self, app, method, path, expected):
         with app.test_request_context(path, method=method):
@@ -472,6 +492,8 @@ class TestSetupOwner:
         monkeypatch.delenv("CLU_USERNAME", raising=False)
         monkeypatch.delenv("CLU_PASSWORD", raising=False)
         create_user("owner", password="pw", role="owner")  # already configured
+        # A configured owner means login is on: sign in, then be refused.
+        _login(client, "owner", "pw")
         resp = client.post("/api/admin/setup-owner", json={
             "username": "x", "password": "y",
         })
@@ -479,10 +501,12 @@ class TestSetupOwner:
 
 
 # ---------------------------------------------------------------------------
-# Leaving implicit-owner mode: the first *additional* account turns login on
+# Leaving implicit-owner mode, then adding the first *additional* account
 # ---------------------------------------------------------------------------
 class TestFirstAdditionalUser:
-    """Adding the second account flips is_login_required() from False to True.
+    """Setting the owner password flips is_login_required() from False to True
+    (a password means login; tests/routes/test_password_means_login.py), and
+    adding the second account must keep it there without logging anyone out.
 
     Before the flip nobody has ever logged in, so the owner holds no session.
     These cover the two ways that used to go wrong: the owner being logged out
@@ -538,13 +562,14 @@ class TestFirstAdditionalUser:
             self, client, db_connection, app):
         """A browser holding a dead user_id must still be stamped as the owner.
 
-        Deleting the only other account drops the install back to
-        implicit-owner mode, so a browser whose cookie still names the deleted
-        account resolves to the owner again — acting as the owner with a
-        truthy-but-dead id in its session. Treating that id as "already
+        An install that returns to implicit-owner mode (here: the reader is
+        deleted and the owner's password cleared, the documented recovery for
+        a forgotten owner password) leaves a browser whose cookie still names
+        the deleted account resolving to the owner again — acting as the owner
+        with a truthy-but-dead id in its session. Treating that id as "already
         stamped" would skip the stamp and log that browser out the instant it
-        created the next account, which is the bug this whole guard exists to
-        prevent.
+        set the owner password again, which is the bug this whole guard exists
+        to prevent.
         """
         self._setup_owner(client)
         assert client.post("/api/admin/users", json={
@@ -558,16 +583,24 @@ class TestFirstAdditionalUser:
         # 403 (not 401) confirms the reader is authenticated in this browser.
         assert other.get("/api/admin/users").status_code == 403
 
-        # The owner removes that account: one user left, implicit-owner mode.
+        # The owner removes that account. One user left, but the owner has a
+        # password, so login stays on and the dead cookie is anonymous.
         assert client.delete(f"/api/admin/users/{kid_id}").status_code == 200
         assert count_users() == 1
+        assert other.get("/api/admin/users").status_code == 401
 
-        # The stale cookie no longer resolves, so this browser is the owner.
+        # Clearing the owner's password returns the install to implicit-owner
+        # mode; the stale cookie no longer resolves, so this browser is the owner.
+        conn = get_db_connection()
+        conn.execute("UPDATE users SET password_hash = NULL, needs_setup = 1 "
+                     "WHERE role = 'owner'")
+        conn.commit()
+        conn.close()
         assert other.get("/api/admin/users").status_code == 200
 
-        assert other.post("/api/admin/users", json={
-            "username": "kid2", "password": "pw", "role": "reader",
-        }).status_code == 201
+        assert other.post("/api/admin/setup-owner", json={
+            "username": "boss", "password": ENV_OWNER_KEY,
+        }).status_code == 200
 
         # Login is on again; without the stamp this browser is now anonymous.
         assert other.get("/api/admin/users").status_code == 200
@@ -599,7 +632,7 @@ class TestFirstAdditionalUser:
         client.post("/api/admin/users", json={
             "username": "kid", "password": "pw", "role": "reader",
         })
-        client.get("/logout")
+        client.post("/logout")
         assert client.get("/api/admin/users").status_code == 401
         _login(client, "boss", "hunter2")
         assert client.get("/api/admin/users").status_code == 200

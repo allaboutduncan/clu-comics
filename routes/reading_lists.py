@@ -74,6 +74,22 @@ import core.app_state as app_state
 
 reading_lists_bp = Blueprint('reading_lists', __name__)
 
+
+@reading_lists_bp.app_template_filter('sanitize_description')
+def sanitize_description_filter(value):
+    """Render a reading-list description as allow-listed HTML.
+
+    The only way a description reaches a template as markup: the result is
+    the sanitizer's output wrapped in ``Markup``, so templates never need (and
+    must not use) ``|safe`` on a description. Sanitizing on read as well as on
+    write covers rows stored by older versions.
+    """
+    from markupsafe import Markup
+    from core.description_html import sanitize_description_html
+    # The argument is the allow-list sanitizer's own output (rebuilt tag by
+    # tag, all text escaped), never the stored value itself.
+    return Markup(sanitize_description_html(value))  # nosec B704
+
 # In-memory store for background import tasks
 import_tasks = {}
 

@@ -94,7 +94,8 @@ def _source_priority():
     A source runs only if it is in this list, so it is also the on/off switch
     for Usenet and DC++. Stored as a JSON list (as the Settings page writes
     it); the wizard reads and writes it comma-separated. The Settings route
-    for it is the generic, clerk-level ``/api/preferences/<key>`` in app.py.
+    for it is the generic ``/api/preferences/<key>`` in app.py, which writes
+    it for the owner only (``core.settings.PREFERENCE_WRITE_ROLES``).
     """
     from models.download_sources import KNOWN_SOURCES
 

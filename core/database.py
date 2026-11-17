@@ -3386,7 +3386,7 @@ def get_recent_files(limit=100):
 RECENT_FILES_WINDOW_DAYS = 30
 
 
-def get_recent_files_paginated(offset=0, limit=50):
+def get_recent_files_paginated(offset=0, limit=50, allowed_prefixes=None):
     """
     Paginated sibling of get_recent_files — returns (rows, total).
 
@@ -3394,13 +3394,21 @@ def get_recent_files_paginated(offset=0, limit=50):
     days (currently 30). Same library/downloads filter as the unpaginated
     helper. SELECTs `id` too so the API can return file_index.id for
     client drill-through.
+
+    allowed_prefixes applies per-user folder scope, as in metadata_browse
+    (None = unrestricted, [] = nothing).
     """
+    if allowed_prefixes is not None and not allowed_prefixes:
+        return [], 0
     try:
         import time
 
         conn = get_db_connection()
         if not conn:
             return [], 0
+
+        prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+        scope_sql = f" AND {prefix_clause}" if prefix_clause else ""
 
         cutoff = time.time() - (RECENT_FILES_WINDOW_DAYS * 86400)
         c = conn.cursor()
@@ -3416,8 +3424,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 f"AND ({lib_clauses})"
+                f"{scope_sql}"
             )
-            params = [cutoff] + lib_params
+            params = [cutoff] + lib_params + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
@@ -3441,8 +3450,9 @@ def get_recent_files_paginated(offset=0, limit=50):
                 "AND first_indexed_at IS NOT NULL "
                 "AND first_indexed_at >= ? "
                 "AND parent NOT LIKE ? AND parent NOT LIKE ?"
+                f"{scope_sql}"
             )
-            params = [cutoff, f"{target}%", f"{watch}%"]
+            params = [cutoff, f"{target}%", f"{watch}%"] + prefix_params
             c.execute(f"SELECT COUNT(*) FROM file_index WHERE {where}", params)
             total = c.fetchone()[0] or 0
             c.execute(
@@ -9691,34 +9701,70 @@ def delete_user_setting(key, user_id=None):
 # =============================================================================
 
 
-def get_api_token():
-    """Return the stored API token, or None if not generated yet."""
-    return get_user_preference("api_token", default=None)
+# The legacy global token is stored as ``sha256:<hex digest>``, never as the
+# token itself, exactly like the per-user api_tokens rows. The prefix is what
+# makes the one-time migration idempotent: a stored value without it is a
+# plaintext token from an older release (or written straight to the
+# preference), and is hashed on read as well, so it keeps working before the
+# migration has run.
+LEGACY_TOKEN_DIGEST_PREFIX = "sha256:"
+
+
+def _legacy_digest_of(stored):
+    """The sha256 hex digest for a stored ``api_token`` value, or None."""
+    if not stored or not isinstance(stored, str):
+        return None
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return stored[len(LEGACY_TOKEN_DIGEST_PREFIX):] or None
+    return _hash_token(stored)
+
+
+def get_api_token_digest():
+    """The sha256 digest of the legacy global API token, or None when unset.
+
+    The token itself is not stored and cannot be read back: compare a
+    presented token by hashing it (``_hash_token``).
+    """
+    return _legacy_digest_of(get_user_preference("api_token", default=None))
 
 
 def rotate_api_token():
     """
-    Generate a fresh API token, persist it under user_preferences, and return it.
-    Overwrites any existing token (used to revoke old clients).
+    Generate a fresh API token, persist only its digest, and return the token.
+    Overwrites any existing token (used to revoke old clients). The return
+    value is the one and only time the token is available in plain text.
     """
     import secrets
 
     token = secrets.token_urlsafe(32)
-    set_user_preference("api_token", token, category="security")
+    if not set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(token),
+        category="security",
+    ):
+        raise RuntimeError("could not save the API token")
     return token
 
 
-def ensure_api_token():
+def migrate_legacy_api_token_to_digest():
+    """Replace a plaintext legacy ``api_token`` with its digest, once.
+
+    Idempotent: a value already carrying ``LEGACY_TOKEN_DIGEST_PREFIX`` is
+    left alone, so it can never be hashed twice. Clients holding the token
+    keep working, because the bearer check hashes what they present. Returns
+    True when a value was converted.
     """
-    Return the existing API token, generating one on first call.
-    Use this in places where the token must exist (e.g. tests / first-run).
-    For runtime auth checks prefer get_api_token() so an unset token reports
-    'API disabled' rather than silently bootstrapping.
-    """
-    existing = get_api_token()
-    if existing:
-        return existing
-    return rotate_api_token()
+    stored = get_user_preference("api_token", default=None)
+    if not stored or not isinstance(stored, str):
+        return False
+    if stored.startswith(LEGACY_TOKEN_DIGEST_PREFIX):
+        return False
+    if set_user_preference(
+        "api_token", LEGACY_TOKEN_DIGEST_PREFIX + _hash_token(stored),
+        category="security",
+    ):
+        app_logger.info("Stored the legacy API token as a hash")
+        return True
+    return False
 
 
 _API_BROWSE_MODES = ("metadata", "filesystem")
@@ -9848,6 +9894,54 @@ def count_users():
             pass
 
 
+# The last answer accounts_require_login() actually read from the database.
+# Process-local on purpose: it is only a fallback for a read that failed, never
+# a cache, so nothing has to invalidate it -- every successful read replaces it.
+_accounts_require_login_last = False
+
+
+def accounts_require_login():
+    """Whether the ``users`` table alone turns login on.
+
+    True when any account holds a password (``password_hash`` neither NULL nor
+    empty -- the first-run placeholder owner is stored with NULL), or when more
+    than one account exists. A password means login: an owner who set one is
+    asked for it even while theirs is the only account.
+
+    This runs on every request (core.auth.is_login_required), so it is one
+    aggregate over a table of a handful of rows -- the same single query the
+    old ``count_users() > 1`` made. It is deliberately not cached: a stale
+    "open" answer after a password is set is exactly the hole being closed,
+    and the users table is also replaced wholesale by a database restore.
+
+    Never raises. A missing ``users`` table means no accounts (open, as
+    before). Any other failure -- the database unavailable, locked or corrupt
+    -- answers with the last value this process read, so an install with a
+    password does not fall open for the length of a corruption episode.
+    """
+    global _accounts_require_login_last
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return _accounts_require_login_last
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(*), COALESCE(SUM(CASE WHEN password_hash IS NOT "
+                "NULL AND password_hash != '' THEN 1 ELSE 0 END), 0) FROM users"
+            )
+            row = c.fetchone()
+        total, with_password = (int(row[0] or 0), int(row[1] or 0)) if row else (0, 0)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e).lower():
+            return False
+        return _accounts_require_login_last
+    except Exception:
+        return _accounts_require_login_last
+    answer = total > 1 or with_password > 0
+    _accounts_require_login_last = answer
+    return answer
+
+
 def count_owners_who_can_sign_in():
     """Return how many Store Owners could actually satisfy a login prompt.
 
@@ -9937,19 +10031,52 @@ def current_user_id():
     return _resolve_user_id(None)
 
 
+_DUMMY_PASSWORD_HASH = None
+_DUMMY_PASSWORD_HASH_LOCK = threading.Lock()
+
+
+def _dummy_password_hash():
+    """A hash of a random secret, made once with the same method and cost
+    ``create_user`` / ``set_user_password`` use (werkzeug's default), so
+    checking a password against it costs what checking a real one does.
+
+    Made lazily rather than at import: hashing is deliberately slow, and import
+    time is inside gunicorn's worker boot budget.
+    """
+    global _DUMMY_PASSWORD_HASH
+    if _DUMMY_PASSWORD_HASH is None:
+        import secrets
+        from werkzeug.security import generate_password_hash
+
+        with _DUMMY_PASSWORD_HASH_LOCK:
+            if _DUMMY_PASSWORD_HASH is None:
+                _DUMMY_PASSWORD_HASH = generate_password_hash(secrets.token_urlsafe(32))
+    return _DUMMY_PASSWORD_HASH
+
+
 def verify_password(username, password):
     """Return the user dict if the credentials are valid and the account is
-    active, else None. Constant-time via werkzeug's check_password_hash."""
+    active, else None.
+
+    Every path does one password-hash check, so the response time does not
+    say whether the username exists: an unknown user, or an account with no
+    password yet (the first-run placeholder), is checked against a dummy hash.
+    A disabled account is checked against its real hash and then refused, so
+    it looks exactly like a wrong password.
+    """
     from werkzeug.security import check_password_hash
 
+    password = password or ""
     user = get_user_by_username(username)
-    if not user or not user.get("is_active"):
+    stored = user.get("password_hash") if user else None
+    if not stored:
+        check_password_hash(_dummy_password_hash(), password)
         return None
-    if not user.get("password_hash"):
-        return None  # placeholder/needs-setup account can't log in yet
-    if check_password_hash(user["password_hash"], password):
-        return user
-    return None
+    if not check_password_hash(stored, password):
+        return None
+    if not user.get("is_active"):
+        return None
+    return user
 
 
 def set_user_password(user_id, password):
@@ -10311,7 +10438,7 @@ def adopt_env_credentials_for_placeholder_owner():
     password = os.environ.get("CLU_PASSWORD", "")
     if not username or not password:
         # Report the actual lock-out, not a proxy for it. "Login is on" is
-        # is_login_required(): count_users() > 1 misses the env gate, which can
+        # is_login_required(): the users table alone misses the env gate, which can
         # be on with a single user, and which reads the raw env values rather
         # than the stripped ones above. "No owner can get in" is a count of
         # *owners* holding a usable password — get_owner_user() returns the
@@ -10410,8 +10537,8 @@ def seed_owner_if_needed():
         return
 
     # Migrate the legacy global API token so the existing client keeps working.
-    legacy_token = get_api_token()
-    if legacy_token:
+    legacy_digest = get_api_token_digest()
+    if legacy_digest:
         conn = get_db_connection()
         if conn:
             try:
@@ -10419,7 +10546,7 @@ def seed_owner_if_needed():
                 c.execute(
                     "INSERT OR IGNORE INTO api_tokens (user_id, token_hash, name) "
                     "VALUES (?, ?, ?)",
-                    (owner_id, _hash_token(legacy_token), "Migrated global token"),
+                    (owner_id, legacy_digest, "Migrated global token"),
                 )
                 conn.commit()
                 app_logger.info("Migrated global API token to the Store Owner account")

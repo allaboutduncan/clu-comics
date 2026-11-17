@@ -248,9 +248,12 @@ def queue_file_for_scan(file_path, priority=PRIORITY_NEW_FILE):
             return
 
         # Convert filesystem path to database path format (/data/...)
-        data_dir = get_data_dir()
-        if file_path.startswith(data_dir):
-            db_path = '/data/' + file_path[len(data_dir):].lstrip('/').lstrip('\\')
+        # Only on a separator: /data2/x is not under /data and must not be
+        # mangled into /data/2/x.
+        data_dir = get_data_dir().rstrip('/\\')
+        rest = file_path[len(data_dir):] if file_path.startswith(data_dir) else None
+        if data_dir and rest is not None and (rest == '' or rest[0] in '/\\'):
+            db_path = '/data/' + rest.lstrip('/').lstrip('\\')
         else:
             db_path = file_path
 

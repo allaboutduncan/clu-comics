@@ -970,6 +970,20 @@
                             </div>
                         </div>
                     </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                    id="downloadAllowPrivateHosts" name="downloadAllowPrivateHosts"
+                                    {% if downloadAllowPrivateHosts %}checked{% endif %}>
+                                <label class="form-check-label" for="downloadAllowPrivateHosts">Allow downloads from private network addresses</label>
+                                <small class="form-text text-muted">
+                                    <br />Off by default. Only needed when your download hosts resolve to private
+                                    addresses: a host on your LAN, or fake-ip / split DNS.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- GetComics Wanted Issues Simulation -->
@@ -1086,7 +1100,7 @@
                                 <input type="password" class="form-control password-field" id="apiTokenField"
                                     placeholder="No token generated yet" readonly autocomplete="off">
                                 <button aria-label="Show / hide token" class="btn btn-outline-secondary" type="button" id="apiTokenToggleBtn"
-                                    title="Show / hide token">
+                                    title="Show / hide token" disabled>
                                     <i class="bi bi-eye"></i>
                                 </button>
                                 <button aria-label="Copy to clipboard" class="btn btn-outline-secondary" type="button" id="apiTokenCopyBtn"
@@ -1094,9 +1108,14 @@
                                     <i class="bi bi-clipboard"></i>
                                 </button>
                             </div>
+                            <div id="apiTokenShownOnceNote" class="form-text text-warning d-none">
+                                <i class="bi bi-exclamation-triangle me-1"></i>Copy this token now. It is stored as a
+                                hash and will not be shown again.
+                            </div>
                             <small class="form-text text-muted">
                                 Treat this token like a password. Anyone with it can read your library and reading
                                 progress over <code>/api/v1/*</code>. Rotate it to revoke access from old clients.
+                                Per-user tokens in Settings &rarr; Users are preferred over this global token.
                             </small>
                         </div>
                         <div class="col-md-3 mt-3 mt-md-0">
@@ -2085,6 +2104,26 @@
 
 </div>
 
+<!-- Rotate API Token Confirmation Modal -->
+<div class="modal fade" id="apiTokenRotateModal" tabindex="-1" aria-labelledby="apiTokenRotateModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="apiTokenRotateModalLabel"><i class="bi bi-arrow-repeat me-2"></i>Rotate API Token</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        Rotating the token revokes access for every client still using the old one. The new token is shown
+        once; copy it before leaving the page.
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="apiTokenRotateConfirmBtn">Rotate Token</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Convert Library Confirmation Modal -->
 <div class="modal fade" id="convertLibraryModal" tabindex="-1" aria-labelledby="convertLibraryModalLabel" aria-hidden="true">
   <div class="modal-dialog">
@@ -2192,7 +2231,6 @@
 
 {% block scripts %}
 {{ super() }}
-<script src="{{ asset('js/clu-utils.js') }}"></script>
 <script src="{{ asset('js/clu-rename-preview.js') }}"></script>
 <script src="{{ asset('js/clu-streaming.js') }}"></script>
 <script src="{{ asset('js/clu-personalization.js') }}"></script>
@@ -2578,7 +2616,8 @@
             oneshotFolders: document.getElementById('oneshotFolders')?.value,
             downloadPacks: document.getElementById('downloadPacks')?.checked ?? false,
             // Left out when the switch is absent, so the server keeps the stored value.
-            flaresolverrEnabled: document.getElementById('flaresolverrEnabled')?.checked
+            flaresolverrEnabled: document.getElementById('flaresolverrEnabled')?.checked,
+            downloadAllowPrivateHosts: document.getElementById('downloadAllowPrivateHosts')?.checked
         };
 
         await runTabSave('saveDownloadApiBtn', [
@@ -2833,20 +2872,38 @@
     // Client API Token (mobile/desktop reader)
     // =========================================
 
-    function setApiTokenUi(token) {
+    // The token is stored only as a hash, so the server can say whether one
+    // is set but never what it is. A freshly rotated token is the one
+    // exception: it is shown here once, until the page is reloaded.
+    let apiTokenConfigured = false;
+
+    function setApiTokenUi(configured, token) {
         const field = document.getElementById('apiTokenField');
         const badge = document.getElementById('apiTokenStatusBadge');
         const copyBtn = document.getElementById('apiTokenCopyBtn');
         const rotateLabel = document.getElementById('apiTokenRotateLabel');
         const toggleBtn = document.getElementById('apiTokenToggleBtn');
+        const onceNote = document.getElementById('apiTokenShownOnceNote');
 
+        apiTokenConfigured = !!(configured || token);
+        if (onceNote) onceNote.classList.toggle('d-none', !token);
+        if (apiTokenConfigured) {
+            badge.className = 'badge text-bg-success';
+            badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Configured';
+            rotateLabel.textContent = 'Rotate Token';
+        }
         if (token) {
             field.value = token;
             field.placeholder = '';
-            badge.className = 'badge text-bg-success';
-            badge.innerHTML = '<i class="bi bi-check-circle me-1"></i>Configured';
             copyBtn.disabled = false;
-            rotateLabel.textContent = 'Rotate Token';
+            toggleBtn.disabled = false;
+        } else if (apiTokenConfigured) {
+            field.value = '';
+            field.type = 'password';
+            field.placeholder = 'A token is set. It is stored as a hash and cannot be shown again; rotate to get a new one.';
+            copyBtn.disabled = true;
+            toggleBtn.disabled = true;
+            toggleBtn.querySelector('i').className = 'bi bi-eye';
         } else {
             field.value = '';
             field.placeholder = 'No token generated yet';
@@ -2854,6 +2911,7 @@
             badge.className = 'badge text-bg-secondary';
             badge.innerHTML = '<i class="bi bi-x-circle me-1"></i>Not Configured';
             copyBtn.disabled = true;
+            toggleBtn.disabled = true;
             rotateLabel.textContent = 'Generate Token';
             toggleBtn.querySelector('i').className = 'bi bi-eye';
         }
@@ -2863,26 +2921,31 @@
         fetch('/api/admin/api-token', { headers: { 'Cache-Control': 'no-cache' } })
             .then(r => r.json())
             .then(data => {
-                if (data.success) setApiTokenUi(data.token);
+                if (data.success) setApiTokenUi(data.configured, null);
             })
-            .catch(err => console.error('Failed to load API token:', err));
+            .catch(err => console.error('Failed to load API token status:', err));
+    }
+
+    function requestApiTokenRotate() {
+        if (!apiTokenConfigured) {
+            rotateApiToken();
+            return;
+        }
+        const modalEl = document.getElementById('apiTokenRotateModal');
+        bootstrap.Modal.getOrCreateInstance(modalEl).show();
     }
 
     async function rotateApiToken() {
-        const existing = document.getElementById('apiTokenField').value;
-        if (existing) {
-            const ok = confirm(
-                'Rotating the token will revoke access for any client currently using the old one. Continue?'
-            );
-            if (!ok) return;
-        }
+        const modalEl = document.getElementById('apiTokenRotateModal');
+        const modal = modalEl ? bootstrap.Modal.getInstance(modalEl) : null;
+        if (modal) modal.hide();
         const btn = document.getElementById('apiTokenRotateBtn');
         btn.disabled = true;
         try {
             const resp = await fetch('/api/admin/api-token/rotate', { method: 'POST' });
             const data = await resp.json();
             if (data.success && data.token) {
-                setApiTokenUi(data.token);
+                setApiTokenUi(true, data.token);
                 // Reveal so the user can copy it.
                 document.getElementById('apiTokenField').type = 'text';
                 document.getElementById('apiTokenToggleBtn').querySelector('i').className = 'bi bi-eye-slash';
@@ -2926,7 +2989,9 @@
             if (ok) {
                 flashSuccess();
             } else {
-                window.prompt('Copy this token manually (Ctrl+C / Cmd+C):', value);
+                field.type = 'text';
+                field.select();
+                CLU.toast('Copy the selected token manually (Ctrl+C / Cmd+C).', 'info');
             }
         };
 
@@ -2987,7 +3052,9 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         const rotateBtn = document.getElementById('apiTokenRotateBtn');
-        if (rotateBtn) rotateBtn.addEventListener('click', rotateApiToken);
+        if (rotateBtn) rotateBtn.addEventListener('click', requestApiTokenRotate);
+        const rotateConfirmBtn = document.getElementById('apiTokenRotateConfirmBtn');
+        if (rotateConfirmBtn) rotateConfirmBtn.addEventListener('click', rotateApiToken);
         const copyBtn = document.getElementById('apiTokenCopyBtn');
         if (copyBtn) copyBtn.addEventListener('click', copyApiToken);
         const toggleBtn = document.getElementById('apiTokenToggleBtn');
@@ -3060,12 +3127,12 @@
         html += '<thead><tr><th>CLU Library</th><th>CLU Path</th><th>Komga Path Prefix</th></tr></thead><tbody>';
         for (const m of mappings) {
             html += '<tr>';
-            html += '<td>' + escapeHtml(m.library_name) + '</td>';
-            html += '<td><code>' + escapeHtml(m.library_path) + '</code></td>';
+            html += '<td>' + CLU.escapeHtml(m.library_name) + '</td>';
+            html += '<td><code>' + CLU.escapeHtml(m.library_path) + '</code></td>';
             html += '<td><input type="text" class="form-control form-control-sm komga-prefix-input" '
                 + 'data-library-id="' + m.library_id + '" '
-                + 'aria-label="Komga path prefix for ' + escapeHtml(m.library_name) + '" '
-                + 'value="' + escapeHtml(m.komga_path_prefix || '') + '" '
+                + 'aria-label="Komga path prefix for ' + CLU.escapeHtml(m.library_name) + '" '
+                + 'value="' + CLU.escapeHtml(m.komga_path_prefix || '') + '" '
                 + 'placeholder="/comics"></td>';
             html += '</tr>';
         }
@@ -3582,21 +3649,21 @@
                 html += `
                     <div class="list-group-item d-flex justify-content-between align-items-center">
                         <div>
-                            <strong>${escapeHtml(lib.name)}</strong>
-                            <span class="text-muted ms-2">${escapeHtml(lib.path)}</span>
+                            <strong>${CLU.escapeHtml(lib.name)}</strong>
+                            <span class="text-muted ms-2">${CLU.escapeHtml(lib.path)}</span>
                             ${enabledBadge}
                         </div>
-                        <div class="btn-group btn-group-sm">
-                            <button aria-label="Edit library" title="Edit library" type="button" class="btn btn-outline-secondary" onclick="editLibrary(${lib.id}, '${escapeHtml(lib.name)}', '${escapeHtml(lib.path)}')">
+                        <div class="btn-group btn-group-sm" data-lib-id="${Number(lib.id)}" data-lib-name="${CLU.escapeHtml(lib.name)}" data-lib-path="${CLU.escapeHtml(lib.path)}">
+                            <button aria-label="Edit library" title="Edit library" type="button" class="btn btn-outline-secondary" onclick="const l = this.parentElement.dataset; editLibrary(Number(l.libId), l.libName, l.libPath)">
                                 <i class="bi bi-pencil"></i>
                             </button>
-                            <button aria-label="Convert all RAR/CBR files in this library to CBZ" type="button" class="btn btn-outline-secondary" onclick="openConvertLibraryModal('${escapeHtml(lib.path)}', '${escapeHtml(lib.name)}')" title="Convert all RAR/CBR files in this library to CBZ">
+                            <button aria-label="Convert all RAR/CBR files in this library to CBZ" type="button" class="btn btn-outline-secondary" onclick="const l = this.parentElement.dataset; openConvertLibraryModal(l.libPath, l.libName)" title="Convert all RAR/CBR files in this library to CBZ">
                                 <i class="bi bi-file-earmark-zip"></i>
                             </button>
                             <button aria-label="${lib.enabled ? 'Disable' : 'Enable'} library" title="${lib.enabled ? 'Disable' : 'Enable'} library" type="button" class="btn btn-outline-secondary" onclick="toggleLibrary(${lib.id}, ${!lib.enabled})">
                                 <i class="bi bi-${lib.enabled ? 'pause' : 'play'}"></i>
                             </button>
-                            <button aria-label="Delete library" title="Delete library" type="button" class="btn btn-outline-danger" onclick="deleteLibrary(${lib.id}, '${escapeHtml(lib.name)}')">
+                            <button aria-label="Delete library" title="Delete library" type="button" class="btn btn-outline-danger" onclick="const l = this.parentElement.dataset; deleteLibrary(Number(l.libId), l.libName)">
                                 <i class="bi bi-trash"></i>
                             </button>
                         </div>
@@ -3605,7 +3672,7 @@
             html += '</div>';
             container.innerHTML = html;
         } catch (e) {
-            container.innerHTML = '<div class="alert alert-danger">Error loading libraries: ' + e.message + '</div>';
+            container.innerHTML = '<div class="alert alert-danger">Error loading libraries: ' + CLU.escapeHtml(e.message) + '</div>';
         }
     }
 
@@ -3701,12 +3768,6 @@
         } catch (e) {
             CLU.toast('Error deleting library: ' + e.message, 'error');
         }
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     // =========================================
@@ -3863,11 +3924,11 @@
                     // Auth-required provider - show credential form
                     const authBlockedNotice = provider.auth_blocked ? `
                         <div class="alert alert-danger py-2 px-3 small mb-3">
-                            <div><i class="bi bi-shield-exclamation me-1"></i><strong>Requests to ${escapeHtml(provider.name)} are paused.</strong></div>
-                            <div class="mt-1">${escapeHtml(provider.auth_error || 'The saved credentials were rejected.')}</div>
+                            <div><i class="bi bi-shield-exclamation me-1"></i><strong>Requests to ${CLU.escapeHtml(provider.name)} are paused.</strong></div>
+                            <div class="mt-1">${CLU.escapeHtml(provider.auth_error || 'The saved credentials were rejected.')}</div>
                             <div class="mt-1">Save corrected credentials below, or re-enable to try the current ones again.</div>
                             <button type="button" class="btn btn-outline-danger btn-sm mt-2" onclick="resetProviderAuth('${provider.type}')">
-                                <i class="bi bi-arrow-clockwise me-1"></i>Re-enable ${escapeHtml(provider.name)}
+                                <i class="bi bi-arrow-clockwise me-1"></i>Re-enable ${CLU.escapeHtml(provider.name)}
                             </button>
                         </div>` : '';
                     cardBody = `
@@ -3986,7 +4047,7 @@
                     <div class="col-md-6 mb-3">
                         <div class="card h-100" style="opacity: 0.7;">
                             <div class="card-header d-flex justify-content-between align-items-center">
-                                <strong>${escapeHtml(provider.name)}</strong>
+                                <strong>${CLU.escapeHtml(provider.name)}</strong>
                                 <span class="badge text-bg-secondary"><i class="bi bi-clock me-1"></i>Coming Soon</span>
                             </div>
                             <div class="card-body">
@@ -4000,13 +4061,13 @@
                     // Mokkari 5.0 broke Metron outright, so the client library's
                     // version is worth seeing at a glance when diagnosing one.
                     const libraryVersion = provider.client_library ? `
-                                    <div class="small text-muted">${escapeHtml(provider.client_library.charAt(0).toUpperCase() + provider.client_library.slice(1))} ${escapeHtml(provider.client_library_version || 'not installed')}</div>` : '';
+                                    <div class="small text-muted">${CLU.escapeHtml(provider.client_library.charAt(0).toUpperCase() + provider.client_library.slice(1))} ${CLU.escapeHtml(provider.client_library_version || 'not installed')}</div>` : '';
                     html += `
                     <div class="col-md-6 mb-3">
                         <div class="card h-100">
                             <div class="card-header d-flex justify-content-between align-items-center">
                                 <div>
-                                    <strong>${escapeHtml(provider.name)}</strong>${libraryVersion}
+                                    <strong>${CLU.escapeHtml(provider.name)}</strong>${libraryVersion}
                                 </div>
                                 ${statusBadge}
                             </div>
@@ -4039,7 +4100,7 @@
             loadGcdStats();
             loadCvSqliteUpdateStatus();
         } catch (e) {
-            container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + escapeHtml(e.message) + '</div>';
+            container.innerHTML = '<div class="alert alert-danger">Error loading providers: ' + CLU.escapeHtml(e.message) + '</div>';
         }
     }
 
@@ -4097,7 +4158,7 @@
                         <span><i class="bi bi-person me-1"></i>${fmt(s.creators)} creators</span>
                     </div>`;
                 if (Array.isArray(s.missing_tables) && s.missing_tables.length) {
-                    const list = s.missing_tables.map(escapeHtml).join(', ');
+                    const list = s.missing_tables.map(CLU.escapeHtml).join(', ');
                     html += `<div class="mt-2 small text-warning">
                                 <i class="bi bi-exclamation-triangle me-1"></i>
                                 GCD dump missing ${s.missing_tables.length} table(s):
@@ -4197,19 +4258,19 @@
         if (!status.path_configured) {
             bits.push('<span class="text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Set a database path above first.</span>');
         } else if (status.database_present) {
-            bits.push(`<i class="bi bi-hdd me-1"></i>Database on disk: ${escapeHtml(status.database_size_human || '')}`);
+            bits.push(`<i class="bi bi-hdd me-1"></i>Database on disk: ${CLU.escapeHtml(status.database_size_human || '')}`);
         } else {
             bits.push('<i class="bi bi-hdd me-1"></i>No database at that path yet.');
         }
 
         const updated = cvSqliteFormatStamp(status.last_update);
-        if (updated) bits.push(`<i class="bi bi-arrow-repeat me-1"></i>Last updated: ${escapeHtml(updated)}`);
+        if (updated) bits.push(`<i class="bi bi-arrow-repeat me-1"></i>Last updated: ${CLU.escapeHtml(updated)}`);
 
         const checked = cvSqliteFormatStamp(status.last_check);
-        if (checked) bits.push(`<i class="bi bi-clock me-1"></i>Last checked: ${escapeHtml(checked)}`);
+        if (checked) bits.push(`<i class="bi bi-clock me-1"></i>Last checked: ${CLU.escapeHtml(checked)}`);
 
         if (status.last_error) {
-            bits.push(`<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${escapeHtml(status.last_error)}</span>`);
+            bits.push(`<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${CLU.escapeHtml(status.last_error)}</span>`);
         }
 
         box.innerHTML = bits.join(' &nbsp;|&nbsp; ');
@@ -4339,7 +4400,7 @@
                             const pct = (op.total && op.current)
                                 ? ` (${Math.floor((op.current / op.total) * 100)}%)` : '';
                             box.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>' +
-                                escapeHtml(op.detail || 'working') + escapeHtml(pct);
+                                CLU.escapeHtml(op.detail || 'working') + CLU.escapeHtml(pct);
                         }
                         return;
                     }
@@ -4442,10 +4503,10 @@
             const radioId = `provider-${provider.type}-mode-${mode.id}`;
             html += `
                         <input type="radio" class="btn-check" autocomplete="off"
-                               name="${authModeFieldName(provider.type)}" id="${radioId}" value="${escapeHtml(mode.id)}"
+                               name="${authModeFieldName(provider.type)}" id="${radioId}" value="${CLU.escapeHtml(mode.id)}"
                                ${mode.id === active.id ? 'checked' : ''}
                                onchange="setProviderAuthMode('${provider.type}', '${mode.id}')">
-                        <label class="btn btn-outline-secondary" for="${radioId}">${escapeHtml(mode.label)}</label>`;
+                        <label class="btn btn-outline-secondary" for="${radioId}">${CLU.escapeHtml(mode.label)}</label>`;
         }
         html += `
                     </div>
@@ -4457,7 +4518,7 @@
         for (const mode of modes) {
             const inactive = mode.id !== active.id;
             html += `
-                <div class="provider-auth-mode" data-mode="${escapeHtml(mode.id)}"${inactive ? ' style="display:none;"' : ''}>`;
+                <div class="provider-auth-mode" data-mode="${CLU.escapeHtml(mode.id)}"${inactive ? ' style="display:none;"' : ''}>`;
             for (const field of (mode.fields || [])) {
                 html += generateProviderField(provider, field, inactive);
             }
@@ -4662,7 +4723,7 @@
             const fieldLabel = CLIENT_FIELD_LABELS[field]
                 || field.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
             const fieldHelp = CLIENT_FIELD_HELP[field]
-                ? `<div class="form-text small">${escapeHtml(CLIENT_FIELD_HELP[field])}</div>` : '';
+                ? `<div class="form-text small">${CLU.escapeHtml(CLIENT_FIELD_HELP[field])}</div>` : '';
 
             if (field === 'use_ssl') {
                 const checked = cfg.use_ssl ? 'checked' : '';
@@ -4679,7 +4740,7 @@
             const isSecret = field === 'api_key' || field === 'password';
             const inputType = isSecret ? 'password' : (field === 'port' || field === 'priority' ? 'number' : 'text');
             const val = (cfg[field] !== undefined && cfg[field] !== null) ? String(cfg[field]) : '';
-            const valueAttr = val ? `value="${escapeHtml(val)}"` : '';
+            const valueAttr = val ? `value="${CLU.escapeHtml(val)}"` : '';
             // Secrets never come back from the server; a blank field keeps the
             // saved one, because Save and Test send only non-blank fields.
             const placeholder = (isSecret && (client.secrets_set || []).includes(field))
@@ -4733,9 +4794,9 @@
             let html = '';
             for (const group of groups) {
                 const note = CLIENT_GROUP_NOTES[group.key]
-                    ? `<div class="text-muted small mb-2">${escapeHtml(CLIENT_GROUP_NOTES[group.key])}</div>` : '';
+                    ? `<div class="text-muted small mb-2">${CLU.escapeHtml(CLIENT_GROUP_NOTES[group.key])}</div>` : '';
                 html += `<h3 class="h6 text-uppercase text-muted small fw-bold mt-2 mb-2">
-                    ${escapeHtml(CLIENT_GROUP_LABELS[group.key] || group.key)}</h3>${note}
+                    ${CLU.escapeHtml(CLIENT_GROUP_LABELS[group.key] || group.key)}</h3>${note}
                     <div class="row">`;
             for (const client of group.clients) {
                 let statusBadge;
@@ -4755,7 +4816,7 @@
                 <div class="col-md-6 mb-3">
                     <div class="card h-100">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <strong>${escapeHtml(client.name)}</strong>
+                            <strong>${CLU.escapeHtml(client.name)}</strong>
                             ${statusBadge}
                         </div>
                         <div class="card-body">
@@ -4788,7 +4849,7 @@
             container.innerHTML = html;
             initPasswordToggles(container);
         } catch (e) {
-            container.innerHTML = '<div class="alert alert-danger">Error loading download clients: ' + escapeHtml(e.message) + '</div>';
+            container.innerHTML = '<div class="alert alert-danger">Error loading download clients: ' + CLU.escapeHtml(e.message) + '</div>';
         }
     }
 
@@ -4952,8 +5013,8 @@
                     <div class="list-group-item">
                         <div class="d-flex justify-content-between align-items-center">
                             <div>
-                                <strong>${escapeHtml(idx.name)}</strong> ${statusBadge} ${enabledBadge}
-                                <br><small class="text-muted">${escapeHtml(idx.url)}</small>
+                                <strong>${CLU.escapeHtml(idx.name)}</strong> ${statusBadge} ${enabledBadge}
+                                <br><small class="text-muted">${CLU.escapeHtml(idx.url)}</small>
                             </div>
                             <div class="btn-group btn-group-sm">
                                 <button aria-label="Move up" type="button" class="btn btn-outline-secondary" title="Move up"
@@ -4981,7 +5042,7 @@
             container.innerHTML = html;
             window._indexerOrder = data.indexers.map(i => i.id);
         } catch (e) {
-            container.innerHTML = '<div class="alert alert-danger">Error loading indexers: ' + escapeHtml(e.message) + '</div>';
+            container.innerHTML = '<div class="alert alert-danger">Error loading indexers: ' + CLU.escapeHtml(e.message) + '</div>';
         }
     }
 
@@ -5124,7 +5185,7 @@
                     <div class="form-check form-switch mb-0">
                         <input class="form-check-input" type="checkbox" role="switch" id="source-on-${src}" checked
                                onchange="toggleSource('${src}', this.checked)">
-                        <label class="form-check-label" for="source-on-${src}">${i + 1}. ${escapeHtml(SOURCE_LABELS[src] || src)}</label>
+                        <label class="form-check-label" for="source-on-${src}">${i + 1}. ${CLU.escapeHtml(SOURCE_LABELS[src] || src)}</label>
                     </div>
                     <div class="btn-group btn-group-sm">
                         <button aria-label="Move up" title="Move up" type="button" class="btn btn-outline-secondary" onclick="moveSource(${i}, -1)" ${i === 0 ? 'disabled' : ''}>
@@ -5142,7 +5203,7 @@
                     <div class="form-check form-switch mb-0">
                         <input class="form-check-input" type="checkbox" role="switch" id="source-on-${src}"
                                onchange="toggleSource('${src}', this.checked)">
-                        <label class="form-check-label text-muted" for="source-on-${src}">${escapeHtml(SOURCE_LABELS[src] || src)} (off)</label>
+                        <label class="form-check-label text-muted" for="source-on-${src}">${CLU.escapeHtml(SOURCE_LABELS[src] || src)} (off)</label>
                     </div>
                 </div>`;
         });
@@ -5227,7 +5288,7 @@
                         <h3 class="accordion-header" id="heading-lib-${lib.id}">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse"
                                     data-bs-target="#collapse-lib-${lib.id}" aria-expanded="false" aria-controls="collapse-lib-${lib.id}">
-                                <strong>${escapeHtml(lib.name)}</strong>
+                                <strong>${CLU.escapeHtml(lib.name)}</strong>
                                 <span class="badge text-bg-info ms-2">${libraryProviders.length} provider(s)</span>
                             </button>
                         </h3>
@@ -5249,7 +5310,7 @@
             html += '</div>';
             container.innerHTML = html;
         } catch (e) {
-            container.innerHTML = '<div class="alert alert-danger">Error loading library providers: ' + escapeHtml(e.message) + '</div>';
+            container.innerHTML = '<div class="alert alert-danger">Error loading library providers: ' + CLU.escapeHtml(e.message) + '</div>';
         }
     }
 
@@ -5287,7 +5348,7 @@
                                data-library-id="${libraryId}" data-provider-type="${provider.type}"
                                ${isEnabled ? 'checked' : ''}>
                         <label class="form-check-label" for="lib-${libraryId}-prov-${provider.type}">
-                            ${escapeHtml(provider.name)}
+                            ${CLU.escapeHtml(provider.name)}
                             ${provider.is_valid ? '<i class="bi bi-check-circle-fill text-success ms-1"></i>' : ''}
                         </label>
                     </div>
@@ -5436,12 +5497,12 @@
 
                 tbody.innerHTML += `
                     <tr>
-                        <td>${sim.series}</td>
-                        <td>${sim.issue}</td>
-                        <td>${sim.issue_year || '-'}</td>
+                        <td>${CLU.escapeHtml(sim.series)}</td>
+                        <td>${CLU.escapeHtml(sim.issue)}</td>
+                        <td>${CLU.escapeHtml(sim.issue_year || '-')}</td>
                         <td><span class="badge ${decisionClass}">${decision}</span></td>
-                        <td>${score}</td>
-                        <td title="${bestTitle}">${bestTitleTrunc}</td>
+                        <td>${CLU.escapeHtml(score)}</td>
+                        <td title="${CLU.escapeHtml(bestTitle)}">${CLU.escapeHtml(bestTitleTrunc)}</td>
                         <td>${allCount} result${allCount !== 1 ? 's' : ''}</td>
                     </tr>
                 `;

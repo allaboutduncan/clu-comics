@@ -184,6 +184,20 @@ class TestSeriesSearch:
         mock_api.series_list.assert_called_once_with({"name": "batman"})
 
 
+@pytest.fixture
+def data_library_roots(tmp_path):
+    """``/data`` and ``tmp_path`` as the library roots.
+
+    A mapped folder must lie inside a library (routes.series
+    ``_mapped_folder_refusal``); these tests use ``/data/...`` paths and
+    ``tmp_path`` without configuring a library table.
+    """
+    with patch("helpers.library.get_library_roots",
+               return_value=["/data", str(tmp_path)]):
+        yield
+
+
+@pytest.mark.usefixtures("data_library_roots")
 class TestMapSeries:
 
     @patch("core.database.save_publisher")
@@ -256,6 +270,7 @@ class TestGetSeriesMapping:
         assert resp.get_json()["mapped_path"] is None
 
 
+@pytest.mark.usefixtures("data_library_roots")
 class TestSubscribeSeries:
     """The subscribe route must sanitize the user-supplied path before
     os.makedirs so filesystem-hostile characters never reach disk."""
@@ -1403,6 +1418,7 @@ class TestPullListExport:
         assert batman["mapped_path"] == "/data/DC Comics/Batman"
 
 
+@pytest.mark.usefixtures("data_library_roots")
 class TestPullListImport:
 
     def test_rejects_missing_file(self, client_with_data):

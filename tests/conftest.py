@@ -260,6 +260,44 @@ def _reset_provider_latches():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: the login gate's last-known answer doesn't outlive a test (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_login_gate_fallback():
+    """``core.database.accounts_require_login`` answers a failed read with the
+    last value this process read. A test whose database had a password would
+    otherwise make a later test with an unreadable database require login.
+    Only touched when the module is already imported."""
+    yield
+    import sys
+
+    database = sys.modules.get("core.database")
+    if database is not None and hasattr(database, "_accounts_require_login_last"):
+        database._accounts_require_login_last = False
+
+
+# ---------------------------------------------------------------------------
+# Fixture: Failed-login throttle doesn't outlive a test (autouse)
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_auth_throttle():
+    """``core.auth_throttle.throttle`` is process-global. Many tests log in
+    with a wrong password on purpose, and every test client shares one
+    address, so without this the run would start answering 429 to tests that
+    have nothing to do with throttling. Reset on both sides of the test, and
+    only if the module is already imported."""
+    import sys
+
+    module = sys.modules.get("core.auth_throttle")
+    if module is not None:
+        module.throttle.reset()
+    yield
+    module = sys.modules.get("core.auth_throttle")
+    if module is not None:
+        module.throttle.reset()
+
+
+# ---------------------------------------------------------------------------
 # Fixture: Logging suppression (autouse)
 # ---------------------------------------------------------------------------
 @pytest.fixture(autouse=True)

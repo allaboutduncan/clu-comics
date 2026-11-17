@@ -384,7 +384,7 @@
             if (!data.success) {
                 resultsDiv.innerHTML = `
                 <div class="alert alert-danger">
-                    <i class="bi bi-exclamation-triangle me-2"></i>${data.error}
+                    <i class="bi bi-exclamation-triangle me-2"></i>${CLU.escapeHtml(data.error)}
                 </div>
             `;
                 return;
@@ -397,11 +397,17 @@
 
             resultsDiv.innerHTML = `
             <div class="list-group">
-                ${data.publishers.map(pub => `
+                ${data.publishers.map(pub => {
+                    // Metron's answer: names and image URLs are text, and the
+                    // Add button reads them back from data-* (never from a JS
+                    // string built here).
+                    const name = CLU.escapeHtml(pub.name);
+                    const image = CLU.safeUrl(pub.image, '');
+                    return `
                     <div class="list-group-item d-flex align-items-center justify-content-between">
                         <div class="d-flex align-items-center">
-                            ${pub.image ?
-                    `<img src="${pub.image}" alt="${pub.name}" class="rounded me-3"
+                            ${image ?
+                    `<img src="${CLU.escapeHtml(image)}" alt="${name}" class="rounded me-3"
                                      style="width: 48px; height: 48px; object-fit: contain;">` :
                     `<div class="bg-light rounded me-3 d-flex align-items-center justify-content-center"
                                      style="width: 48px; height: 48px;">
@@ -409,26 +415,28 @@
                                 </div>`
                 }
                             <div>
-                                <div class="fw-bold">${pub.name}</div>
-                                <small class="text-muted">ID: ${pub.id}</small>
+                                <div class="fw-bold">${name}</div>
+                                <small class="text-muted">ID: ${CLU.escapeHtml(pub.id)}</small>
                             </div>
                         </div>
                         <div>
                             ${pub.exists ?
                     `<span class="badge bg-success"><i class="bi bi-check"></i> Added</span>` :
-                    `<button class="btn btn-sm btn-primary" onclick="addFromMetron(${pub.id}, '${pub.name.replace(/'/g, "\\'")}', ${pub.image ? `'${pub.image}'` : 'null'})">
+                    `<button class="btn btn-sm btn-primary" data-pub-id="${CLU.escapeHtml(pub.id)}" data-pub-name="${name}" data-pub-image="${CLU.escapeHtml(image)}"
+                                    onclick="addFromMetron(Number(this.dataset.pubId), this.dataset.pubName, this.dataset.pubImage || null)">
                                     <i class="bi bi-plus-lg me-1"></i>Add
                                 </button>`
                 }
                         </div>
                     </div>
-                `).join('')}
+                `;
+                }).join('')}
             </div>
         `;
         } catch (error) {
             resultsDiv.innerHTML = `
             <div class="alert alert-danger">
-                <i class="bi bi-exclamation-triangle me-2"></i>Error: ${error.message}
+                <i class="bi bi-exclamation-triangle me-2"></i>Error: ${CLU.escapeHtml(error.message)}
             </div>
         `;
         }

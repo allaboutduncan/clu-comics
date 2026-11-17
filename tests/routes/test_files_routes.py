@@ -859,6 +859,34 @@ class TestCombineCbz:
         assert data["success"] is True
         assert data["total_images"] == 4
 
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_file_in_a_name_prefix_lookalike_of_target_is_denied(
+            self, mock_valid, client, create_cbz, tmp_path):
+        target = tmp_path / "processed"
+        target.mkdir(exist_ok=True)
+        lookalike = tmp_path / "processed2"
+        lookalike.mkdir()
+        inside = str(target / "part1.cbz")
+        os.replace(create_cbz("part1.cbz", num_images=1), inside)
+        inside2 = str(target / "part3.cbz")
+        os.replace(create_cbz("part3.cbz", num_images=1), inside2)
+        outside = str(lookalike / "part2.cbz")
+        os.replace(create_cbz("part2.cbz", num_images=1), outside)
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+                patch("core.config.get_watch_dir", return_value=str(tmp_path / "temp")), \
+                patch("routes.files.file_op_refusal", return_value=None):
+            resp = client.post("/api/combine-cbz", json={
+                "files": [inside, outside], "output_name": "Combined",
+                "directory": str(target),
+            })
+            assert resp.status_code == 403
+            # Both inside TARGET: the same request passes the gate.
+            ok = client.post("/api/combine-cbz", json={
+                "files": [inside, inside2], "output_name": "Combined",
+                "directory": str(target),
+            })
+        assert ok.status_code == 200
+
 
 def _make_multi_issue_cbz(path, issues, series="Cult of Dracula"):
     """issues: dict issue_str -> page_count. Pages named '<series> <issue> - NNNN.png'."""
@@ -893,6 +921,22 @@ class TestSplitCbz:
         f.write_bytes(b"fake")
         resp = client.get(f"/api/split-cbz/inspect?file_path={f}")
         assert resp.status_code == 403
+
+    @patch("routes.files.is_valid_library_path", return_value=False)
+    def test_inspect_in_a_name_prefix_lookalike_of_watch_is_denied(
+            self, mock_valid, client, tmp_path):
+        """``temp2`` starts with ``temp`` but is not WATCH."""
+        watch = tmp_path / "temp"
+        watch.mkdir()
+        lookalike = tmp_path / "temp2"
+        lookalike.mkdir()
+        f = _make_multi_issue_cbz(lookalike / "a.cbz", {"001": 1})
+        with patch("core.config.get_watch_dir", return_value=str(watch)), \
+                patch("core.config.get_target_dir", return_value=str(tmp_path / "proc")):
+            resp = client.get(f"/api/split-cbz/inspect?file_path={f}")
+            assert resp.status_code == 403
+            inside = _make_multi_issue_cbz(watch / "b.cbz", {"001": 1})
+            assert client.get(f"/api/split-cbz/inspect?file_path={inside}").status_code == 200
 
     @patch("routes.files.is_valid_library_path", return_value=True)
     def test_inspect_groups(self, mock_valid, client, tmp_path):

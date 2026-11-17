@@ -24,12 +24,6 @@
     return parts[parts.length - 1] || folderPath;
   }
 
-  function esc(value) {
-    var d = document.createElement('div');
-    d.textContent = (value == null ? '' : String(value));
-    return d.innerHTML;
-  }
-
   /**
    * Flag a folder as a tracked series on the Pull List.
    *
@@ -107,8 +101,8 @@
     var reason = document.getElementById('pullListAddReason');
 
     if (reason) {
-      reason.innerHTML = esc(pendingFolder) + ' — ' +
-        esc(data.reason || 'No series.json or cvinfo in this folder') +
+      reason.innerHTML = CLU.escapeHtml(pendingFolder) + ' — ' +
+        CLU.escapeHtml(data.reason || 'No series.json or cvinfo in this folder') +
         '. Pick the series to track it.';
     }
     resetResults();
@@ -197,15 +191,15 @@
     if (status) status.textContent = '';
 
     body.innerHTML = series.map(function (s, i) {
-      var volume = s.volume ? ' <span class="text-muted">Vol. ' + esc(s.volume) + '</span>' : '';
+      var volume = s.volume ? ' <span class="text-muted">Vol. ' + CLU.escapeHtml(s.volume) + '</span>' : '';
       var tracked = s.subscribed
         ? ' <span class="badge bg-secondary ms-1">Tracked</span>'
         : '';
       return '<tr>' +
-        '<td class="fw-bold">' + esc(s.name) + volume + tracked + '</td>' +
-        '<td>' + esc(s.publisher || '-') + '</td>' +
-        '<td>' + esc(s.year_began || '-') + '</td>' +
-        '<td class="text-center">' + esc(s.issue_count == null ? '-' : s.issue_count) + '</td>' +
+        '<td class="fw-bold">' + CLU.escapeHtml(s.name) + volume + tracked + '</td>' +
+        '<td>' + CLU.escapeHtml(s.publisher || '-') + '</td>' +
+        '<td>' + CLU.escapeHtml(s.year_began || '-') + '</td>' +
+        '<td class="text-center">' + CLU.escapeHtml(s.issue_count == null ? '-' : s.issue_count) + '</td>' +
         '<td class="text-end">' +
           '<button type="button" class="btn btn-sm btn-primary pull-list-pick" data-idx="' + i + '">' +
             '<i class="bi bi-plus-lg me-1"></i>Add' +

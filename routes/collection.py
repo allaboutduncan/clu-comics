@@ -540,6 +540,9 @@ def api_missing_xml():
 
     files = get_files_missing_comicinfo(path)
 
+    # Per-user: drop files outside the user's folder grants.
+    files = filter_paths_for_user(current_user(), files, key='path')
+
     processed = []
     for f in files:
         file_info = {
@@ -1333,11 +1336,20 @@ def list_new_files():
     """List files created in the past N days."""
     import time as time_module
 
-    current_path = request.args.get('path') or get_default_library_root()
+    from core.path_access import resolve_served_path, walk_visible
+
+    requested = request.args.get('path') or get_default_library_root()
     days = int(request.args.get('days', 7))
     max_results = int(request.args.get('max_results', 500))
 
-    if not os.path.exists(current_path):
+    # Libraries only, in browse mode: a traverse-only ancestor may be scanned,
+    # but walk_visible withholds everything outside the user's grants.
+    served, refusal = resolve_served_path(requested, mode='browse')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    current_path = served.path
+
+    if not os.path.isdir(current_path):
         return jsonify({"error": "Directory not found"}), 404
 
     try:
@@ -1355,12 +1367,14 @@ def list_new_files():
         def scan_for_new_files():
             nonlocal files_scanned, dirs_scanned
 
-            for root, dirs, files in os.walk(current_path):
+            def _prune_hidden(dirs):
+                dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
+
+            for root, dirs, files in walk_visible(served, prune=_prune_hidden):
                 if time_module.time() - start_time > max_scan_time:
                     app_logger.warning(f"New files scan timed out after {max_scan_time}s")
                     break
 
-                dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
                 dirs_scanned += 1
 
                 for filename in files:
@@ -1429,18 +1443,50 @@ def list_downloads():
                      cache_stats, MAX_CACHE_SIZE, cleanup_cache, is_cache_valid,
                      get_directory_listing)
 
-    target_dir = get_target_dir_live()
-    current_path = request.args.get('path', target_dir)
+    from core.path_access import (resolve_served_path, STAGING_TARGET,
+                                  STAGING_WATCH)
 
-    if not os.path.exists(current_path):
+    target_dir = get_target_dir_live()
+    requested = request.args.get('path') or target_dir
+    staging = (STAGING_TARGET, STAGING_WATCH)
+
+    # A File Manager listing (a Clerk route by policy). It serves WATCH and
+    # TARGET, and the library roots too: files.js reloads whatever folder the
+    # panel shows through here after a bulk rename, usually a library folder.
+    # Realpath-contained, and everything outside those roots is refused.
+    #
+    # Not folder-grant scoped, deliberately: /list-directories lists the same
+    # library folders without a grant check (test_file_manager_not_folder_scoped),
+    # and two listings of one folder must not disagree. Reading a file's
+    # content or metadata (/cbz-metadata, /get-image-data, ...) is still
+    # grant-checked.
+    served, refusal = resolve_served_path(
+        requested, staging=staging, mode='browse', apply_grants=False)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    current_path = served.path
+
+    if not os.path.isdir(current_path):
         return jsonify({"error": "Directory not found"}), 404
+
+    def _parent(path):
+        # No "Parent" above a served root, unless that root is itself inside
+        # another one (WATCH nested in TARGET is a supported layout).
+        if os.path.normpath(path) != os.path.normpath(served.root):
+            return os.path.dirname(path)
+        parent = os.path.dirname(path)
+        if parent == path:
+            return None
+        _ok, outside = resolve_served_path(
+            parent, staging=staging, mode='browse', apply_grants=False)
+        return None if outside else parent
 
     try:
         cleanup_cache()
 
         if is_cache_valid(current_path):
             cached_data = directory_cache[current_path]
-            parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
+            parent_dir = _parent(current_path)
 
             return jsonify({
                 "current_path": current_path,
@@ -1460,7 +1506,7 @@ def list_downloads():
             if len(directory_cache) > MAX_CACHE_SIZE:
                 cleanup_cache()
 
-        parent_dir = os.path.dirname(current_path) if current_path != target_dir else None
+        parent_dir = _parent(current_path)
 
         return jsonify({
             "current_path": current_path,
@@ -1543,13 +1589,23 @@ def search_files():
 @collection_bp.route('/count-files', methods=['GET'])
 def count_files():
     """Count the total number of files in a directory (recursive)"""
-    path = request.args.get('path')
-    if not path or not os.path.exists(path):
+    from core.path_access import resolve_served_path, walk_visible
+
+    requested = request.args.get('path')
+    if not requested:
+        return jsonify({"error": "Invalid path"}), 400
+
+    # Libraries only; a traverse-only ancestor counts just the granted files.
+    served, refusal = resolve_served_path(requested, mode='browse')
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    path = served.path
+    if not os.path.exists(path):
         return jsonify({"error": "Invalid path"}), 400
 
     try:
         file_count = 0
-        for root, _, files in os.walk(path):
+        for root, _, files in walk_visible(served):
             file_count += len(files)
 
         return jsonify({
@@ -1716,11 +1772,18 @@ def pin_folder_thumbnail():
             {"success": False, "error": "Only comic files can be pinned"}
         ), 400
 
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
+    # Containment on the realpath as well as the grant: the comic is read to
+    # build the cover and the folder's art is written, so both must lie in a
+    # library (or TARGET, which the grid also browses). The pin is stored
+    # with the paths exactly as given -- they are joined on file_index.path.
+    from core.path_access import (folder_art_write_refusal, resolve_served_path,
+                                  STAGING_TARGET)
+    _served, refusal = resolve_served_path(comic_path, staging=(STAGING_TARGET,), mode="full")
     folder_path = os.path.dirname(comic_path)
+    refusal = refusal or folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+
     if not set_folder_pin(folder_path, comic_path):
         return jsonify({"success": False, "error": "Could not save pin"}), 500
 
@@ -1748,9 +1811,12 @@ def unpin_folder_thumbnail():
     if not folder_path or not os.path.isdir(folder_path):
         return jsonify({"success": False, "error": "Invalid folder path"}), 400
 
-    denied = enforce_path_access(folder_path)
-    if denied:
-        return denied
+    # Rebuilding writes the folder's art: library (or TARGET) containment on
+    # the realpath, plus a 'full' grant, as /api/generate-folder-thumbnail.
+    from core.path_access import folder_art_write_refusal
+    refusal = folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
 
     delete_folder_pin(folder_path)
     _regenerate(folder_path)
@@ -1835,13 +1901,22 @@ def _start_thumbnail_sweep(regenerate_all):
     folder takes far longer than gunicorn's 120s timeout, so the request only
     hands back an operation id for the progress UI to poll.
     """
-    data = request.get_json() or {}
-    roots = _thumbnail_sweep_roots(data.get('path'))
+    from core.path_access import folder_art_write_refusal, keep_writable
+
+    data = request.get_json(silent=True) or {}
+    requested = data.get('path')
+    if requested:
+        refusal = folder_art_write_refusal(requested)
+        if refusal:
+            return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+    roots = _thumbnail_sweep_roots(requested)
 
     if not roots:
         return jsonify({"success": False, "error": "Invalid path"}), 400
 
-    folders = _walk_folders(roots)
+    # The walk happens here, in the request, and is narrowed to the folders
+    # the requester may write; the sweep thread only gets this list.
+    folders = keep_writable(requested, _walk_folders(roots))
     if not folders:
         return jsonify({
             "success": True,

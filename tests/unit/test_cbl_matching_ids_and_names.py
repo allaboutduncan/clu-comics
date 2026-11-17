@@ -403,7 +403,12 @@ class TestMapModalEscaping:
 
     @pytest.mark.parametrize("template", ["reading_lists.html", "reading_list_view.html"])
     def test_every_page_loading_the_script_loads_the_escaper(self, template):
+        """clu-utils.js is loaded once, in base.html's <head>, so it is in
+        place before any page script that the template adds."""
         from pathlib import Path
-        html = Path(__file__).resolve().parents[2].joinpath(
-            "templates", template).read_text()
-        assert html.index("js/clu-utils.js") < html.index("js/reading_list.js")
+        templates = Path(__file__).resolve().parents[2].joinpath("templates")
+        html = templates.joinpath(template).read_text()
+        base = templates.joinpath("base.html").read_text()
+        assert html.lstrip().startswith(("{% extends 'base.html' %}", '{% extends "base.html" %}'))
+        assert "js/reading_list.js" in html
+        assert "js/clu-utils.js" in base[:base.index("</head>")]

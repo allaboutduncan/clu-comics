@@ -429,9 +429,27 @@ def is_download_packs_enabled() -> bool:
         return False
 
 
+def apply_session_cookie_policy(app):
+    """Set the session cookie's attributes on *app*.
+
+    ``SameSite=Lax`` keeps the cookie off cross-site POSTs (the same-origin
+    check in ``core/request_origin.py`` is the other half), and ``HttpOnly``
+    keeps it out of page scripts (Flask's default, stated so it cannot drift).
+    ``Secure`` is deliberately left unset: most installs are plain HTTP on a
+    LAN, and a Secure cookie would never be sent back, locking them out.
+
+    Called from ``load_flask_config`` (the real app) and when ``auth_bp`` is
+    registered (``routes/auth.py``), so the test app gets it too.
+    """
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+
+
 def load_flask_config(app, logger=None):
     """Populate a Flask app's config from the stored settings."""
     from core.settings import get_setting, get_bool, get_int, invalidate
+
+    apply_session_cookie_policy(app)
 
     # A save just happened, or the DB was not ready last time: read fresh.
     invalidate()

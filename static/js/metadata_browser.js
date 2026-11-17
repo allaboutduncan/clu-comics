@@ -398,7 +398,11 @@
                 const filename = item.path.split('/').pop().split('\\').pop();
                 document.getElementById('editCBZModalText').textContent = `Editing ${filename}`;
                 CLU.setupEditModalDropZone();
-                fetch(`/edit?file_path=${encodeURIComponent(item.path)}`)
+                fetch('/edit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_path: item.path })
+                })
                     .then(r => r.ok ? r.json() : Promise.reject(new Error('Failed to load edit content.')))
                     .then(data => {
                         document.getElementById('editInlineContainer').innerHTML = data.modal_body;
@@ -541,12 +545,6 @@
 
     // ------- Escaping helpers -------
 
-    function escapeHtml(s) {
-        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
-    }
-    function escapeAttr(s) { return escapeHtml(s); }
 
     // ------- Event wiring -------
 

@@ -42,10 +42,10 @@ def list_download_clients():
             c['is_valid'] = status.get('is_valid', 0) == 1
             c['last_tested'] = status.get('last_tested')
             # The stored values pre-fill the settings form, except the
-            # secrets: this route is clerk-level, and a Clerk must not read
-            # the owner's API keys. `secrets_set` says which ones are saved,
-            # and a save or test leaves out a blank field, so the stored
-            # value is merged back in (see save/test below).
+            # secrets, which never leave the server. `secrets_set` says which
+            # ones are saved, and a save or test leaves out a blank field, so
+            # the stored value is merged back in (see save/test below; a test
+            # merges it only for the stored destination).
             config = get_download_client_config(c['type']) if c['has_config'] else None
             c['secrets_set'] = [f for f in SECRET_CLIENT_FIELDS if config and config.get(f)]
             c['config'] = (
@@ -151,13 +151,20 @@ def test_download_client(client_type):
     value the user is looking at rather than on the last saved one. (Testing
     an unsaved edit against the stored config makes a corrected setting look
     like it changed nothing.) Partial input is merged over the stored config.
+
+    The form leaves a secret field out to mean "keep the saved one". That
+    stored secret is only merged in while the request still points at the
+    stored scheme, host, port and username; a request for any other
+    destination has to bring its own, or nothing is contacted.
     """
     try:
         from core.database import (
             get_download_client_config,
             update_download_client_validity,
         )
+        from core.outbound_credentials import reused_secret_refusal
         from models.download_clients import (
+            build_base_url,
             get_download_client_by_name,
             DownloadClientConfig,
         )
@@ -165,10 +172,20 @@ def test_download_client(client_type):
         if not _validate_client_type(client_type):
             return jsonify({"error": f"Unknown client type: {client_type}"}), 400
 
-        config_dict = get_download_client_config(client_type) or {}
+        stored = get_download_client_config(client_type) or {}
         overrides = request.get_json(silent=True) or {}
-        if isinstance(overrides, dict) and overrides:
-            config_dict = {**config_dict, **overrides}
+        if not isinstance(overrides, dict):
+            return jsonify({"success": False, "error": "Expected a JSON object"}), 400
+
+        refusal = reused_secret_refusal(
+            stored, overrides, SECRET_CLIENT_FIELDS,
+            destination=lambda cfg: build_base_url(DownloadClientConfig.from_dict(cfg)),
+            identity_fields=("username",),
+        )
+        if refusal:
+            return jsonify({"success": False, "valid": False, "error": refusal}), 400
+
+        config_dict = {**stored, **overrides}
         if not config_dict:
             return jsonify({"success": False, "error": "No config configured"}), 400
 

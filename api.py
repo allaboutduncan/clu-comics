@@ -12,7 +12,7 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from flask_cors import CORS
+from core.cors import configure_cors
 from werkzeug.utils import secure_filename
 from typing import Optional
 from http.client import IncompleteRead
@@ -37,6 +37,7 @@ from core.settings import get_bool, get_int, get_list, get_setting
 from core.download_utils import download_notification_body
 from core.download_runs import set_download_outcome
 from core import flaresolverr
+from core import url_guard
 
 # Load config and initialize Flask app.
 app = Flask(__name__)
@@ -280,8 +281,8 @@ def _is_cloudflare_challenge(resp) -> bool:
     return 'cloudflare' in server
 
 
-# Allow cross-origin requests.
-CORS(app, resources={r"/*": {"origins": "*"}})
+# Cross-origin access: the browser extension's POST to /download only.
+configure_cors(app)
 
 # -------------------------------
 # URL Resolver
@@ -303,6 +304,10 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
 
     current = url
     for _ in range(max_hops):
+        # Every hop is checked before anything is sent to it, outside the try
+        # below so a refusal fails the download instead of returning the URL.
+        url_guard.check_url(current)
+        hop_hdrs = url_guard.scope_headers(hdrs, current, basic_headers, origin=url)
         is_gc = 'getcomics.org' in current.lower()
         r = None
         cleared = False
@@ -328,11 +333,11 @@ def resolve_final_url(url: str, *, hdrs=headers, max_hops: int = 6) -> str:
                         continue
                 else:
                     try:
-                        r = requests.head(current, headers=hdrs,
+                        r = requests.head(current, headers=hop_hdrs,
                                           allow_redirects=False, timeout=15)
                     except requests.RequestException:
                         # some hosts block HEAD → fall back to a very small GET
-                        r = requests.get(current, headers=hdrs, stream=True,
+                        r = requests.get(current, headers=hop_hdrs, stream=True,
                                          allow_redirects=False, timeout=15)
                 break
             except Exception as e:
@@ -505,6 +510,8 @@ def process_download(task):
                 download_progress[download_id]['bytes_downloaded'] = 0
                 download_progress[download_id]['bytes_total'] = 0
                 download_progress[download_id]['error'] = None
+
+            url_guard.check_url(try_url)
 
             # Skip URL resolution for known provider domains — their download
             # functions handle URL construction internally
@@ -788,6 +795,8 @@ def download_getcomics(url, download_id, hdrs=None, source_url=None):
     if scraper_ua:
         session.headers["User-Agent"] = scraper_ua
     session.headers["Referer"] = "https://getcomics.org/"
+    # Check every request and redirect hop; keep custom headers on known hosts.
+    url_guard.guard_session(session, headers, basic_headers)
 
     # The destination name is reserved once and held for every attempt. Taking
     # it per attempt is what let two of the three workers agree on the same
@@ -1063,7 +1072,8 @@ def _requests_session() -> requests.Session:
     )
     s.mount("https://", HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
     s.mount("http://",  HTTPAdapter(max_retries=retries, pool_connections=32, pool_maxsize=32))
-    return s
+    # Check every request and redirect hop; keep custom headers on known hosts.
+    return url_guard.guard_session(s, headers, basic_headers)
 
 def _parse_total_from_headers(hdrs, default_size=None):
     # Prefer Content-Range when resuming, else Content-Length
@@ -1579,6 +1589,11 @@ def download():
         return jsonify({'error': 'Missing "link" in request data'}), 400
 
     url = data['link']
+    try:
+        url_guard.check_url(url)
+    except url_guard.BlockedURLError as e:
+        monitor_logger.warning(f"Refused download link: {e}")
+        return jsonify({'error': f'Link refused: {e}'}), 400
     download_id = str(uuid.uuid4())
     download_progress[download_id] = {
          'url': url,

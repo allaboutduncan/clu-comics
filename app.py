@@ -79,7 +79,7 @@ from core.settings import all_settings, get_bool, get_int, get_list, get_setting
 from core.auth import enforce_path_access, current_user, filter_paths_for_user, file_op_refusal
 from helpers.library import is_allowed_path
 from cbz_ops.edit import (
-    get_edit_modal,
+    edit_cbz,
     save_cbz,
 )
 from core.memory_utils import (
@@ -243,11 +243,15 @@ from core.config import seed_monitor_from_env  # noqa: E402
 
 seed_monitor_from_env()
 
-# Multi-user: ensure a Store Owner account exists (implicit-owner mode for
-# single-user installs; seeded from CLU_USERNAME/CLU_PASSWORD when present).
-from core.database import seed_owner_if_needed
+# Multi-user: ensure a Store Owner account exists (implicit-owner mode until
+# a password is set; seeded from CLU_USERNAME/CLU_PASSWORD when present).
+from core.database import migrate_legacy_api_token_to_digest, seed_owner_if_needed
 
 seed_owner_if_needed()
+
+# The legacy global API token used to be stored in plain text. Keep only its
+# hash (idempotent; existing clients keep working).
+migrate_legacy_api_token_to_digest()
 
 # Upgrade the provisional per-process secret key (set in load_flask_config
 # before the DB existed) to a stable, persisted one so browser sessions survive
@@ -3275,6 +3279,7 @@ from helpers.library import (
     get_default_library,
     get_default_library_root,
     is_valid_library_path,
+    is_within_roots,
     get_library_for_path,
     watch_target_verdict,
     is_root_mounted,
@@ -5507,8 +5512,8 @@ def _find_extracted_file(directory, filename):
         for f in files:
             if f.lower() == target:
                 full = os.path.join(root, f)
-                # Path traversal guard
-                if os.path.realpath(full).startswith(os.path.realpath(directory)):
+                # Path traversal guard (realpath, separator-bounded)
+                if is_within_roots(full, [directory]):
                     return full
     return None
 
@@ -6272,11 +6277,19 @@ def get_thumbnail():
 @app.route("/api/generate-folder-thumbnail", methods=["POST"])
 def generate_folder_thumbnail():
     """Generate a fanned stack thumbnail for a folder using cached thumbnails."""
-    data = request.get_json()
+    from core.path_access import folder_art_write_refusal
+
+    data = request.get_json(silent=True) or {}
     folder_path = data.get("folder_path")
 
     if not folder_path:
         return jsonify({"error": "Missing folder_path"}), 400
+
+    # Containment and the folder grant, before anything is read or written
+    # (tests/unit/test_folder_thumbnail_route_grants.py pins this order).
+    refusal = folder_art_write_refusal(folder_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
 
     if not os.path.exists(folder_path) or not os.path.isdir(folder_path):
         return jsonify({"error": "Invalid folder path"}), 400
@@ -6410,10 +6423,11 @@ def download_file():
         return jsonify({"error": "Missing path parameter"}), 400
 
     # Security: Ensure the file path is within allowed directories
+    # Realpath and separator-bounded on both arms (helpers.library).
     normalized_path = os.path.normpath(file_path)
     if not (
         is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
+        or is_within_roots(normalized_path, [get_target_dir_live()])
     ):
         return jsonify({"error": "Access denied"}), 403
 
@@ -6436,26 +6450,23 @@ def download_file():
 
 @app.route("/api/read-text-file")
 def read_text_file():
-    """Read and return the contents of a text file."""
+    """Read and return the contents of a .txt file in a library (or TARGET).
+
+    Containment, the per-user folder grant, the extension and the size cap
+    are all decided by core.path_access.resolve_text_file before the file is
+    opened.
+    """
+    from core.path_access import resolve_text_file
+
     file_path = request.args.get("path")
 
     if not file_path:
-        return "Missing path parameter", 400
+        return jsonify({"error": "Missing path parameter"}), 400
 
-    # Security: Ensure the file path is within allowed directories
-    normalized_path = os.path.normpath(file_path)
-    if not (
-        is_valid_library_path(normalized_path)
-        or normalized_path.startswith(os.path.normpath(get_target_dir_live()))
-    ):
-        return "Access denied", 403
-
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        return "File not found", 404
-
-    # Check if file is a text file
-    if not file_path.lower().endswith(".txt"):
-        return "Only .txt files are supported", 400
+    served, refusal = resolve_text_file(file_path)
+    if refusal:
+        return jsonify({"error": refusal[0]}), refusal[1]
+    file_path = served.path
 
     try:
         # Read the file with UTF-8 encoding, falling back to latin-1 if needed
@@ -6892,6 +6903,8 @@ def save_download_api_config():
         # page cannot switch the bundled solver off.
         if "flaresolverrEnabled" in data:
             set_setting("FLARESOLVERR_ENABLED", bool(data.get("flaresolverrEnabled")))
+        if "downloadAllowPrivateHosts" in data:
+            set_setting("DOWNLOAD_ALLOW_PRIVATE_HOSTS", bool(data.get("downloadAllowPrivateHosts")))
 
         # Save API credentials to DB (provider_credentials)
         try:
@@ -6912,8 +6925,16 @@ def save_download_api_config():
 
 @app.route("/api/preferences/<key>", methods=["GET"])
 def api_get_preference(key):
-    """Get a user preference value."""
+    """Get a preference value, if it is on the read allow-list for this role."""
+    from core.auth import current_user
     from core.database import get_user_preference
+    from core.settings import preference_read_status
+
+    status = preference_read_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
 
     value = get_user_preference(key)
     return jsonify({"success": True, "value": value})
@@ -6921,13 +6942,22 @@ def api_get_preference(key):
 
 @app.route("/api/preferences/<key>", methods=["POST"])
 def api_save_preference(key):
-    """Save a user preference value."""
-    from core.database import set_user_preference
+    """Save a preference value, if it is on the write allow-list for this role."""
+    from core.auth import current_user
+    from core.settings import preference_write_status, save_preference
 
-    data = request.get_json()
-    if not data or "value" not in data:
+    status = preference_write_status(key, current_user())
+    if status == 403:
+        return jsonify({"success": False, "error": "Forbidden"}), 403
+    if status != 200:
+        return jsonify({"success": False, "error": "Unknown preference"}), 404
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or "value" not in data:
         return jsonify({"success": False, "error": "No value provided"}), 400
-    set_user_preference(key, data["value"], category=data.get("category", "general"))
+    status, error = save_preference(key, data["value"])
+    if status != 200:
+        return jsonify({"success": False, "error": error}), status
     return jsonify({"success": True})
 
 
@@ -7169,6 +7199,7 @@ def config_page():
         oneshotFolders=st["ONESHOT_FOLDERS"],
         downloadPacks=is_download_packs_enabled(),
         flaresolverrEnabled=st["FLARESOLVERR_ENABLED"],
+        downloadAllowPrivateHosts=st["DOWNLOAD_ALLOW_PRIVATE_HOSTS"],
         enableDebugLogging=st["ENABLE_DEBUG_LOGGING"],
         bootstrapTheme=get_user_preference("bootstrap_theme", default="default"),
         pageWidth=st["PAGE_WIDTH"],
@@ -7565,30 +7596,12 @@ def logs_tail():
 
 
 #########################
-#    Edit CBZ Route     #
+#    Edit CBZ Routes    #
 #########################
-@app.route("/edit", methods=["GET"])
-def edit_cbz():
-    """
-    Processes the provided CBZ file (via 'file_path' query parameter) and returns a JSON
-    object containing:
-      - modal_body: HTML snippet for inline editing,
-      - folder_name, zip_file_path, original_file_path for the hidden form fields.
-    """
-    file_path = request.args.get("file_path")
-    if not file_path:
-        return jsonify({"error": "Missing file path parameter"}), 400
-    try:
-        result = get_edit_modal(
-            file_path
-        )  # Reuse existing logic for generating modal content
-        return jsonify(result)
-    except Exception as e:
-        app_logger.error(f"Error in /edit route: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-# Register the save route using the imported save_cbz function.
+# Opening renames and extracts the archive, so /edit is a POST (a write, Clerk
+# under core.auth's policy) and validates its path in cbz_ops.edit.edit_cbz
+# before touching anything -- the same containment /save applies.
+app.add_url_rule("/edit", view_func=edit_cbz, methods=["POST"])
 app.add_url_rule("/save", view_func=save_cbz, methods=["POST"])
 
 #########################
@@ -7827,11 +7840,14 @@ def api_insights():
     silently surface the owner's stats.
     """
     from core.auth import resolve_optional_bearer_user
+    from core.auth_throttle import too_many_attempts_json
     from models.stats import get_insights_stats
 
     status, user = resolve_optional_bearer_user(
         request.headers.get("Authorization", "")
     )
+    if status == "throttled":
+        return too_many_attempts_json(user)
     if status == "invalid":
         return jsonify({"error": "unauthorized"}), 401
 

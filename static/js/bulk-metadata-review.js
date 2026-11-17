@@ -208,8 +208,8 @@ window.BulkMetadataReview = (function () {
 
         const group = _wizard.groups[_wizard.idx];
         if (summaryEl) {
-            summaryEl.innerHTML = `Resolve <strong>${_escape(group.parsed_series || '(unknown series)')}</strong> ` +
-                `in <code>${_escape(group.folder_path)}</code>`;
+            summaryEl.innerHTML = `Resolve <strong>${CLU.escapeHtml(group.parsed_series || '(unknown series)')}</strong> ` +
+                `in <code>${CLU.escapeHtml(group.folder_path)}</code>`;
         }
         list.innerHTML = '';
         const card = _renderReviewRow(group.rows[0], _wizard.jobId, group);
@@ -242,12 +242,12 @@ window.BulkMetadataReview = (function () {
         }[item.reason] || `<span class="badge bg-secondary">${item.reason}</span>`;
 
         const target = item.file_path
-            ? `<code class="small">${_escape(item.file_path.split(/[\\/]/).pop())}</code>`
-            : `<code class="small">${_escape(item.folder_path)}</code>`;
+            ? `<code class="small">${CLU.escapeHtml(item.file_path.split(/[\\/]/).pop())}</code>`
+            : `<code class="small">${CLU.escapeHtml(item.folder_path)}</code>`;
 
         const parsedSummary = [
-            item.parsed_series ? `series "${_escape(item.parsed_series)}"` : null,
-            item.parsed_issue ? `issue #${_escape(item.parsed_issue)}` : null,
+            item.parsed_series ? `series "${CLU.escapeHtml(item.parsed_series)}"` : null,
+            item.parsed_issue ? `issue #${CLU.escapeHtml(item.parsed_issue)}` : null,
             item.parsed_year ? `year ${item.parsed_year}` : null
         ].filter(Boolean).join(', ');
 
@@ -308,7 +308,7 @@ window.BulkMetadataReview = (function () {
                         <div class="manual-search mt-2 ${candidates.length && item.reason !== 'date_conflict' ? 'd-none' : ''}">
                             <div class="input-group input-group-sm">
                                 <input type="text" class="form-control manual-query" aria-label="Search series"
-                                    placeholder="Search series…" value="${_escape(item.parsed_series || '')}">
+                                    placeholder="Search series…" value="${CLU.escapeHtml(item.parsed_series || '')}">
                                 <input type="number" class="form-control manual-year" style="max-width: 6rem;" aria-label="Year"
                                     placeholder="Year" value="${item.parsed_year || ''}">
                                 <button aria-label="Search" title="Search" class="btn btn-outline-primary action-manual-search" type="button">
@@ -428,15 +428,15 @@ window.BulkMetadataReview = (function () {
         const isIssue = candidate.issue_number !== undefined;
         const title = candidate.title || candidate.issue_number || '(untitled)';
         const sub = isIssue
-            ? `Issue #${_escape(candidate.issue_number || '')}${candidate.cover_date ? ' · ' + _escape(candidate.cover_date) : ''}`
-            : `${_escape(candidate.publisher || '')}${candidate.year ? ' · ' + candidate.year : ''}${candidate.issue_count ? ' · ' + candidate.issue_count + ' issues' : ''}`;
+            ? `Issue #${CLU.escapeHtml(candidate.issue_number || '')}${candidate.cover_date ? ' · ' + CLU.escapeHtml(candidate.cover_date) : ''}`
+            : `${CLU.escapeHtml(candidate.publisher || '')}${candidate.year ? ' · ' + CLU.escapeHtml(candidate.year) : ''}${candidate.issue_count ? ' · ' + CLU.escapeHtml(candidate.issue_count) + ' issues' : ''}`;
         // GCD (comics.org API) series results carry no cover — fetch it lazily.
         const isGcd = candidate.provider === 'gcd_api';
         const coverSeriesId = candidate.series_id || candidate.id;
         const coverIssue = isIssue ? (candidate.issue_number || '') : (reviewItem.parsed_issue || '');
         let cover;
-        if (candidate.cover_url) {
-            cover = `<img src="${_escape(candidate.cover_url)}" alt="" class="me-2" style="width: 48px; height: 72px; object-fit: cover;">`;
+        if (CLU.safeUrl(candidate.cover_url, '')) {
+            cover = `<img src="${CLU.escapeHtml(CLU.safeUrl(candidate.cover_url, ''))}" alt="" class="me-2" style="width: 48px; height: 72px; object-fit: cover;">`;
         } else if (isGcd && coverSeriesId) {
             cover = `<div class="me-2 bg-light flex-shrink-0" data-gcd-cover style="width: 48px; height: 72px;"></div>`;
         } else {
@@ -447,9 +447,9 @@ window.BulkMetadataReview = (function () {
                 <div class="card-body p-2 d-flex">
                     ${cover}
                     <div class="flex-grow-1 small">
-                        <div class="fw-bold text-truncate" title="${_escape(title)}">${_escape(title)}</div>
+                        <div class="fw-bold text-truncate" title="${CLU.escapeHtml(title)}">${CLU.escapeHtml(title)}</div>
                         <div class="text-muted small text-truncate">${sub}</div>
-                        <div class="text-muted small">${_escape(candidate.provider || '')}</div>
+                        <div class="text-muted small">${CLU.escapeHtml(candidate.provider || '')}</div>
                         <button class="btn btn-sm btn-primary mt-2 action-apply" type="button">
                             <i class="bi bi-check2 me-1"></i>Apply
                         </button>
@@ -690,16 +690,6 @@ window.BulkMetadataReview = (function () {
         }
         tick();
         return () => { stopped = true; };
-    }
-
-    function _escape(s) {
-        if (s == null) return '';
-        return String(s)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
     }
 
     function _resetProgressUi() {
