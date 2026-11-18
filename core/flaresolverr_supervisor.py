@@ -23,6 +23,18 @@ Things that look arbitrary and are not:
 - **A server already answering on the port is reused.** That is the normal
   state while an orphan from a killed worker winds down, and it is also how a
   developer can point CLU at a FlareSolverr run by hand.
+- **The port is not FlareSolverr's own default (8191).** CLU is often run with
+  ``network_mode: service:<vpn>``, where every container in the namespace
+  shares one loopback, and a standalone FlareSolverr for Prowlarr is commonly
+  one of them. On 8191 whichever of the two started second died with
+  ``EADDRINUSE`` (#782) -- and when that was the standalone one, Prowlarr lost
+  its solver whenever a GetComics run happened to have ours up. Nothing outside
+  CLU needs to find this port, so it does not have to be the well-known one.
+  ``FLARESOLVERR_PORT`` overrides it; setting it to 8191 on purpose is how to
+  share a standalone solver in the same namespace.
+- **A start that fails on a taken port says so.** The child's own traceback
+  goes to ``/dev/null``, so without the check the log reads "exited during
+  startup (code 1)" and names neither the port nor the variable that moves it.
 - **A failed start backs off.** Without it every challenged download would pay
   a full browser start that is going to fail again. Announced on the
   transition, per the logging budget in CLAUDE.md.
@@ -33,6 +45,7 @@ Single-worker gunicorn is load-bearing here, as for the monitor supervisor.
 """
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -46,7 +59,34 @@ from core.app_logging import app_logger
 INSTALL_DIR = os.environ.get("FLARESOLVERR_HOME", "/opt/flaresolverr")
 PYTHON = os.environ.get("FLARESOLVERR_PYTHON", "/opt/flaresolverr-venv/bin/python")
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("FLARESOLVERR_PORT", "8191"))
+UPSTREAM_DEFAULT_PORT = 8191   # what a standalone FlareSolverr listens on
+DEFAULT_PORT = 18191
+
+
+def _env_port(environ=None):
+    """``FLARESOLVERR_PORT`` when it is a usable port, else ``DEFAULT_PORT``.
+
+    A typo must not raise: this runs at import, and the import sits inside the
+    ``try`` of every caller, so a bad value would silently switch the solver
+    off instead of being reported.
+    """
+    raw = (environ if environ is not None else os.environ).get("FLARESOLVERR_PORT", "")
+    raw = str(raw).strip()
+    if not raw:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        app_logger.warning(
+            f"FLARESOLVERR_PORT={raw!r} is not a port number; using {DEFAULT_PORT}"
+        )
+        return DEFAULT_PORT
+    return port
+
+
+PORT = _env_port()
 BASE_URL = f"http://{HOST}:{PORT}"
 
 READY_MESSAGE = "FlareSolverr is ready!"
@@ -83,6 +123,16 @@ def probe_ready(base_url=BASE_URL, timeout=2.0):
         data = requests.get(base_url + "/", timeout=timeout).json()
         return READY_MESSAGE.lower() in str(data.get("msg", "")).lower()
     except Exception:
+        return False
+
+
+def port_in_use(host=HOST, port=None, timeout=1.0):
+    """True when something accepts connections on the solver's port."""
+    try:
+        with socket.create_connection((host, PORT if port is None else port),
+                                      timeout=timeout):
+            return True
+    except OSError:
         return False
 
 
@@ -148,7 +198,8 @@ class FlareSolverrSupervisor:
 
     def __init__(self, spawn=_spawn, probe=probe_ready, installed=is_installed,
                  clock=time.monotonic, sleep=time.sleep, idle_seconds=_idle_seconds,
-                 start_timeout=START_TIMEOUT_SECONDS, threaded=True):
+                 start_timeout=START_TIMEOUT_SECONDS, threaded=True,
+                 port_busy=port_in_use):
         self._spawn = spawn
         self._probe = probe
         self._installed = installed
@@ -157,6 +208,7 @@ class FlareSolverrSupervisor:
         self._idle_seconds = idle_seconds
         self._start_timeout = start_timeout
         self._threaded = threaded
+        self._port_busy = port_busy
 
         self._cond = threading.Condition()
         self._thread = None
@@ -293,7 +345,7 @@ class FlareSolverrSupervisor:
             return
         while self._clock() - started < self._start_timeout:
             if proc.poll() is not None:
-                self._note_failure(f"exited during startup (code {proc.returncode})")
+                self._note_failure(self._exit_reason(proc.returncode))
                 return
             if self._probe(BASE_URL):
                 self._proc = proc
@@ -304,6 +356,24 @@ class FlareSolverrSupervisor:
             self._sleep(READY_POLL_SECONDS)
         _terminate(proc)
         self._note_failure(f"not ready after {int(self._start_timeout)}s")
+
+    def _exit_reason(self, code):
+        """Why the child died at startup, naming the port when that is why.
+
+        Checked after the exit, not before the spawn: by then our own child is
+        gone, so whatever still holds the port is somebody else's. It did not
+        answer as a FlareSolverr either, or the probe would have reused it.
+        """
+        try:
+            busy = self._port_busy()
+        except Exception:
+            busy = False
+        if busy:
+            return (f"could not start: {HOST}:{PORT} is already used by another "
+                    f"service (one sharing this container's network, for example "
+                    f"behind a VPN container). Set the FLARESOLVERR_PORT environment "
+                    f"variable to a free port and restart CLU")
+        return f"exited during startup (code {code})"
 
     def _note_failure(self, reason):
         self._retry_after = self._clock() + self._backoff
