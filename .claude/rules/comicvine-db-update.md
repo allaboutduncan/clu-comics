@@ -21,11 +21,28 @@ into Settings. A public mirror republishes that database, so
 A ~541 MB download and a multi-GB disk write must not start unannounced on
 upgrade. The button is not gated: clicking it is a choice.
 
-The mirror publishes a 69-byte `checksum` file in `md5sum` format next to the
-zip, holding the MD5 of the **extracted** `.db`. That gives the same probe/apply
-split as `core/reading_list_sync.py` — and the same value is the integrity
-check on the unpacked file, so nothing else had to be invented to verify the
-download.
+The probe is a `HEAD` on the zip itself, and the change token is its `ETag`
+(else `Last-Modified` + `Content-Length` together, never a size alone). That
+gives the same probe/apply split as `core/reading_list_sync.py`.
+
+> **Depend on nothing the mirror publishes beside the archive.** It used to
+> publish a `checksum` file (MD5 of the extracted `.db`) that was both the token
+> and the integrity check. The file disappeared, the probe 404'd, and every
+> update — button and schedule — failed before downloading anything (#785).
+> Integrity is now what the archive carries: the byte count against
+> `Content-Length`, then the member's CRC-32, which `zipfile` checks as
+> `_extract_db` reads it to EOF (`BadZipFile`/`zlib.error` become "the archive
+> is damaged").
+
+- **The token stamped is the one on the download response**, not the probe's
+  (`_download_zip` returns it). The mirror can republish between the two
+  requests, and the probe's token over the newer database would cost a second
+  541 MB download at the next check.
+- **A token from the checksum era is just a stale token.** Installs stamped with
+  an MD5 re-download once. Do not add a migration that blesses an unrecognised
+  stamp as current.
+- **A `text/html` probe response is a failure.** An error page served with a 200
+  has an `ETag` of its own, which would be stamped as the database's.
 
 > **The source URL must never reach the UI.** It is a module constant in
 > `core/comicvine_db_update.py`. The settings page states the cadence and the
@@ -50,8 +67,8 @@ Things that look arbitrary and are not:
   `core.problem_files.list_problems`: collapsing "I could not ask" into
   "nothing changed" would make every outage prove the database is current, and
   the sweep would skip it forever.
-- **The swap order is load-bearing.** Download → unpack (hashing as it writes,
-  one pass over several GB) → **delete the zip** → verify → fix permissions →
+- **The swap order is load-bearing.** Download → unpack (CRC-checked as it
+  writes, one pass over several GB) → **delete the zip** → verify → fix permissions →
   `os.replace`. The zip goes *before* the swap so peak disk is `old + new`
   rather than `old + new + 541 MB` on the one volume that must hold all three.
   Everything is staged in the **destination directory** under the hidden
@@ -66,10 +83,9 @@ Things that look arbitrary and are not:
   that was never installed — the same rule as `core.reading_list_sync.apply`.
   A failed run is a no-op: the destination is untouched until the replace and
   every staged file is removed in a `finally`.
-- **Verification is the MD5 plus a schema probe, not `check_integrity()`.**
-  `quick_check` reads every page of a multi-GB file, and a byte-exact match
-  against the publisher's own hash is stronger evidence than a structural scan
-  of bytes already proven. What the hash cannot prove is that the file is the
+- **Verification is the archive CRC plus a schema probe, not `check_integrity()`.**
+  `quick_check` reads every page of a multi-GB file, and the CRC has already
+  proven the bytes are the ones the publisher packed. What it cannot prove is that the file is the
   database *this provider* expects, which is what `verify_database()` checks —
   the same `cv_volume`/`cv_issue` tables `ComicVineSqliteProvider.test_connection`
   looks for.
