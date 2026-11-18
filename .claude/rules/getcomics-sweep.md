@@ -194,6 +194,35 @@ just **4 distinct files**, 35 stack traces, and not one success.
 
 The GetComics download detection uses a scoring system in `models/getcomics.py` (`score_getcomics_result`) to match search results against wanted issues.
 
+### A Result Needs Evidence for the Issue
+
+A title that names neither the wanted issue nor a range holding it is capped
+below `ACCEPT_THRESHOLD` in `score_comic`, whatever else it scores (#729).
+"Empyre" used to reach 45 on series name + tightness and was a "direct match"
+for every missing issue of Empyre. The cap is in `score_comic` because the
+sweep, its year-refined pass, the simulation, the sitemap candidates and the
+scrape-index tier have no shared call site. Usenet and DC++ additionally
+require `issue_matched` themselves and get no exception.
+
+- **The one exception is `_is_unnumbered_oneshot`**: wanted issue is #1, the
+  title carries the issue's or the volume's year, and the title is nothing but
+  the series name and that year. Each condition closes a way the bug got in;
+  do not relax one to rescue a single title.
+- **`_strip_site_suffix` removes the trailing " – GetComics" and nothing
+  else.** `scrape_and_score_candidate` used to cut at the *first* dash, so
+  "Astonishing X-Men – Infinity Comic #5 – 7" was scored as "Astonishing
+  X-Men" and a pack "#1 – 80" as issue #1. That, not the scorer, manufactured
+  the bare titles. The scrape indexer still has its own first-dash split; its
+  titles feed `_slugify_entry_title`, so it was left alone and its rows are
+  held back by the cap.
+- **Only text before the issue marker names the series** (`_score_remaining`).
+  "Green Lantern Corps #0 – 37 + Annual" is not Green Lantern: a keyword after
+  the number is an add-on to the run. A range under another series' name is
+  rejected outright, like an arc. A leading "Vol. N" is a volume marker, not
+  other-series text.
+
+Tests: `tests/mocked/test_getcomics_issue_evidence.py`.
+
 ### Range Pack Handling
 
 Ranges are handled differently based on whether they're same-series or different-series:

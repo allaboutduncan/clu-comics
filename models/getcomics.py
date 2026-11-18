@@ -132,6 +132,10 @@ class ComicScore:
     remaining_is_different_series: bool = False
     year_in_series_name: bool = False  # year-labeled edition (e.g., "2025 Annual")
     issue_matched: bool = False  # target issue number positively confirmed in title
+    # No issue number in the title, but it qualifies as a one-shot posted under
+    # its name alone (see _is_unnumbered_oneshot). The only way a title without
+    # issue evidence can reach ACCEPT.
+    unnumbered_oneshot: bool = False
 
 
 @dataclass
@@ -2267,6 +2271,13 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     )
     score += rem_delta
 
+    # A range under another series' name holds that series' issues: "Green
+    # Lantern Corps #0 – 37" has no Green Lantern #0 in it. Same reasoning as
+    # the arc rejection above. (A "The" swap is a naming difference, not a
+    # different run, so it keeps its range fallback.)
+    if range_contains_target and remaining_is_different_series and not used_the_swap:
+        return ComicScore(score=-100, range_contains_target=True)
+
     allow_issue_match = series_match and (
         (sub_series_type is None and not remaining_is_different_series) or
         (variant_accepted and sub_series_type != 'arc') or
@@ -2296,8 +2307,22 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     if range_contains_target and score >= FALLBACK_MIN:
         score = min(score, ACCEPT_THRESHOLD - 1)
 
+    # Issue evidence (#729). A title that names neither the wanted issue nor a
+    # range holding it is not a match for that issue, however well the series
+    # name fits: "Empyre" scored 45 on name + tightness alone and was accepted
+    # for every missing issue of Empyre. A score never overrides that -- a
+    # missed download is retried next sweep, a wrong one is found by hand.
+    unnumbered_oneshot = False
+    if not issue_matched and not range_contains_target:
+        unnumbered_oneshot = _is_unnumbered_oneshot(
+            title_lower, series_lower, issue_num, search,
+            sub_series_type, remaining_is_different_series)
+        if not unnumbered_oneshot:
+            score = min(score, ACCEPT_THRESHOLD - 1)
+
     return ComicScore(
         score=score,
+        unnumbered_oneshot=unnumbered_oneshot,
         range_contains_target=range_contains_target,
         series_match=series_match,
         sub_series_type=sub_series_type,
@@ -2308,6 +2333,43 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         year_in_series_name=year_in_series_name,
         issue_matched=issue_matched,
     )
+
+
+_ONESHOT_NOISE = frozenset({
+    'the', 'a', 'an', 'of', 'and', 'in', 'by', 'for', 'to', 'from', 'with',
+    'on', 'at', 'or', 'is', 'vol', 'volume', 'comic', 'comics', 'getcomics'})
+
+
+def _is_unnumbered_oneshot(
+    title_lower: str,
+    series_lower: str,
+    issue_num: str,
+    search: SearchCriteria,
+    sub_series_type: str | None,
+    remaining_is_different_series: bool,
+) -> bool:
+    """Whether a title with no issue number may still stand for the wanted issue.
+
+    The one exception to the issue-evidence rule: a one-shot or graphic novel is
+    posted under its name alone ("Batman – The Killing Joke (2008)"). All of
+    these must hold, and each closes a way the bare-title bug got in:
+
+    - the wanted issue is #1 -- a bare page can never be issue 3 of a series;
+    - the title carries the issue's year or the volume's start year, so it is
+      this edition and not merely something of the same name;
+    - the title is nothing but the series name and that year -- one extra word
+      is a tie-in, a format or a different book.
+    """
+    if issue_num != '1' or sub_series_type is not None or remaining_is_different_series:
+        return False
+    years = {str(y) for y in (search.year, search.volume_year) if y}
+    title_years = set(re.findall(r'\b(\d{4})\b', title_lower))
+    if not years or not (years & title_years):
+        return False
+    expected = set(re.findall(r'[a-z0-9]+', series_lower)) | years
+    return all(
+        w in expected or w in _ONESHOT_NOISE or len(w) < 2
+        for w in re.findall(r'[a-z0-9]+', title_lower))
 
 
 def _score_issue(
@@ -2518,6 +2580,10 @@ def _score_collected_edition(
     return 0
 
 
+_LEADING_VOLUME = re.compile(r'^vol\.?\s*\d+\b\s*', re.IGNORECASE)
+_ISSUE_MARKER = re.compile(r'#|\bissues?\s*\d', re.IGNORECASE)
+
+
 def _score_remaining(
     remaining: str,
     sub_series_type: str | None,
@@ -2540,6 +2606,17 @@ def _score_remaining(
     if not remaining or sub_series_type is not None:
         return False, 0
 
+    if used_the_swap:
+        return True, -30
+
+    # A leading "Vol. N" is a volume marker on the same series, not a different
+    # series: "Catwoman Vol. 2 #5" names Catwoman #5. (The volume itself is
+    # compared separately, and a mismatch is penalised there.) Without this the
+    # issue number after it was never allowed to count as a match.
+    remaining = _LEADING_VOLUME.sub('', remaining.strip())
+    if not remaining:
+        return False, 0
+
     remaining_cleaned = (remaining.strip()
         .replace('-', '').replace('\u2013', '').replace('\u2014', '')
         .replace(' ', '').replace('#', '').replace('(', '').replace(')', ''))
@@ -2548,8 +2625,6 @@ def _score_remaining(
     starts_with_issue = bool(re.match(r'^#?\d', remaining.strip()))
     starts_with_issue_word = bool(re.match(r'^issues?\s*\d', remaining.strip(), re.IGNORECASE))
 
-    if used_the_swap:
-        return True, -30
     if is_purely_range:
         return False, 0
 
@@ -2571,7 +2646,12 @@ def _score_remaining(
 
     if not starts_with_issue and not starts_with_issue_word:
         if not remaining.startswith(('-', '\u2013', '\u2014', ':')):
-            rem_check = (remaining.replace('-', '').replace('\u2013', '')
+            # Only the text BEFORE the issue marker says what the series is. A
+            # keyword after it is an add-on to the run: "Corps #0 \u2013 37 + Annual"
+            # is Green Lantern Corps, and its "+ Annual" must not excuse the
+            # "Corps" (#729).
+            head = _ISSUE_MARKER.split(remaining, maxsplit=1)[0]
+            rem_check = (head.replace('-', '').replace('\u2013', '')
                          .replace('\u2014', '').lower())
             for kw in get_variant_types():
                 if re.search(rf'\b{_keyword_pattern(kw)}\b', rem_check, re.IGNORECASE):
@@ -3371,6 +3451,22 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     return total_indexed
 
 
+_SITE_SUFFIX = re.compile(r'\s*[-–—\x97|]?\s*GetComics\b.*$', re.IGNORECASE)
+_DASH_VARIANTS = str.maketrans({'–': '-', '—': '-', '\x97': '-'})
+
+
+def _strip_site_suffix(text: str) -> str:
+    """A page or entry title without the trailing " – GetComics", dashes normalized.
+
+    Only the site's own suffix is removed. This used to cut at the FIRST dash,
+    which threw away exactly what tells two posts apart: "Astonishing X-Men –
+    Infinity Comic #5 – 7 – GetComics" was scored as "Astonishing X-Men", a
+    bare series name that then matched every missing issue of that series
+    (#729), and the pack "Supergirl Vol. 4 #1 – 80" was scored as issue #1.
+    """
+    return _SITE_SUFFIX.sub('', text or '').translate(_DASH_VARIANTS).strip()
+
+
 def scrape_and_score_candidate(
     url: str,
     series_name: str,
@@ -3414,16 +3510,7 @@ def scrape_and_score_candidate(
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        def _extract_title(text: str) -> str:
-            """Normalize title text for scoring."""
-            for sep in [" - ", " \u2013 ", " \u2014 ", " \x97 ", " \u0097 "]:
-                if sep in text:
-                    text = text.split(sep)[0].strip()
-                    break
-            else:
-                if "GetComics" in text:
-                    text = text.split("GetComics")[0].strip().rstrip("-").rstrip("\u2013").rstrip("\u2014").rstrip()
-            return text.replace('\u2013', '-').replace('\u2014', '-').replace('\x97', '-').replace('\u0097', '-')
+        _extract_title = _strip_site_suffix
 
         def _extract_links(container) -> dict:
             """Extract download links from a soup container."""
