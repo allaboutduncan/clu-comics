@@ -86,6 +86,10 @@ SETTINGS_SCHEMA = {
     "FLARESOLVERR_ENABLED": _s("flaresolverr_enabled", _B, True, "downloads"),
     "FLARESOLVERR_IDLE_MINUTES": _s("flaresolverr_idle_minutes", _I, 10, "downloads"),
     "FLARESOLVERR_TIMEOUT": _s("flaresolverr_timeout", _I, 60, "downloads"),
+    # Identify a file with no cvinfo from its cover (models.metron
+    # .match_issue_by_cover). One or two extra Metron requests per such file.
+    # Never in an ini.
+    "METRON_COVER_MATCH": _s("metron_cover_match", _B, True, "metadata"),
     "GCD_METADATA_LANGUAGES": _s("gcd_metadata_languages", _S, "en", "metadata"),
     # getcomics scoring vocabularies
     "PUBLICATION_TYPES": _s("publication_types", _S, "annual,quarterly", "downloads"),

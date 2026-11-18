@@ -251,6 +251,10 @@ def _sorted_page_names(names):
     )
 
 
+# Public name: core.cover_hash must hash the same page the thumbnail shows.
+sorted_page_names = _sorted_page_names
+
+
 def _render(image_file):
     """Resize an open page stream to the cache's standard size."""
     from PIL import Image
