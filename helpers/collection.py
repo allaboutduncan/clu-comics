@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+from core import series_names
 from core.app_logging import app_logger
 
 
@@ -178,26 +179,13 @@ def get_series_name_from_files(mapped_path, db_series_name):
     return db_series_name
 
 
-# Apostrophe variants: ASCII, curly single quotes, modifier letter apostrophe.
-_APOS_CLASS = "['‘’ʼ]"
-_APOS_RE = re.compile(_APOS_CLASS)
-
-
-def _word_regex(word):
-    """Escape one series-name word, making apostrophes optional in both directions.
-
-    A possessive is written inconsistently across sources and filenames
-    ("World's Finest" vs "Worlds Finest"), so the apostrophe must never be a
-    hard requirement — nor may its absence be. An apostrophe in the name
-    becomes optional; a word ending in "s" without one gains an optional
-    apostrophe before that "s".
-    """
-    if _APOS_RE.search(word):
-        parts = [re.escape(p) for p in _APOS_RE.split(word)]
-        return (_APOS_CLASS + "?").join(parts)
-    if len(word) > 1 and word[-1].lower() == "s":
-        return re.escape(word[:-1]) + _APOS_CLASS + "?" + re.escape(word[-1])
-    return re.escape(word)
+# Which spellings name the same series is decided in core/series_names.py, for
+# the filename tier and the ComicInfo tier alike. These are aliases, kept
+# because models/cbl.py and the tests import the old names -- never give one a
+# body of its own here: two character tables is how the tiers came to disagree
+# about a leading "The" (#780).
+_APOS_CLASS = series_names.APOS_CLASS
+_word_regex = series_names.word_regex
 
 
 # A leading minus is part of the issue NUMBER, not a sign to be discarded:
@@ -352,41 +340,11 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
                 pattern, count=1,
             )
 
-        # Handle "The " prefix - make it optional for matching
-        # DB might have "The Ultimates" but files might be "Ultimates"
-        working_name = series_name
-        the_prefix = ''
-        if series_name.lower().startswith('the '):
-            the_prefix = r'(?:The[\s\-_]+)?'
-            working_name = series_name[4:]  # Remove "The " from name
-
-        # Remove ampersands entirely first \u2014 files often omit them
-        # ("Black & White" -> "Black White"); the separator class below absorbs
-        # one that is present. Apostrophes are kept here and made optional
-        # per-word below, so the possessive can differ between name and file.
-        temp_name = working_name.replace("&", "")
-        # Then normalize other punctuation - replace :, -, /, etc. with space for consistent handling
-        # This allows "Nemesis: Forever", "Nemesis - Forever", "Nemesis Forever" to all match
-        # Slashes are separators too: a name like "Batman / Superman" can never
-        # appear literally in a filename ("/" is a path separator).
-        # Include Unicode dashes: en dash \u2013, em dash \u2014, horizontal bar \u2015
-        normalized_name = re.sub(r'[\s\-_:;,\./\\\u2010-\u2015\u2212]+', ' ', temp_name).strip()
-
-        # Build series pattern word-by-word, making common connecting words optional
-        # Files often omit words like "and", "of", "the" (e.g., "Magik Colossus" for "Magik and Colossus")
-        OPTIONAL_WORDS = {'and', 'the', 'of', 'or', 'vs', 'versus'}
-        sep = r"[\s\-_:'\.&\u2010-\u2015\u2212]*"
-        words = normalized_name.split()
-        pattern_parts = []
-        for i, word in enumerate(words):
-            escaped_word = _word_regex(word)
-            if word.lower() in OPTIONAL_WORDS:
-                pattern_parts.append(f"(?:{escaped_word}{sep})?")
-            else:
-                pattern_parts.append(escaped_word)
-                if i < len(words) - 1:
-                    pattern_parts.append(sep)
-        series_pattern = the_prefix + ''.join(pattern_parts)
+        # The series name: optional leading "The" in both directions, optional
+        # apostrophes and connecting words, and no punctuation a filename
+        # cannot be relied on to carry. One table, shared with the ComicInfo
+        # tier -- see core/series_names.py.
+        series_pattern = series_names.series_name_regex(series_name)
 
         # Match issue number with optional leading zeros, anchored on both sides
         # so it can never match a fragment of a longer number, and sign-aware so
@@ -470,18 +428,14 @@ _BENIGN_SERIES_EXTRA = re.compile(
 # LEADING article is the only relaxation -- it is the one real libraries
 # actually exhibit ("Ultimates" for "The Ultimates"), and unlike a general
 # droppable-word set it cannot silently merge two distinct series.
-_LEADING_ARTICLE = re.compile(r"^(?:the|a|an)\s+", re.IGNORECASE)
+_LEADING_ARTICLE = series_names.LEADING_ARTICLE
 
-# Separators that differ freely between a database name and a library spelling.
-# Deliberately the same class generate_filename_pattern normalizes with, and
-# deliberately NOT including parentheses or brackets: _BENIGN_SERIES_EXTRA
-# reads those to recognize "(2025)" and "[Digital]".
-_SERIES_SEP_RE = re.compile(r"[\s\-_:;,\./\\‐-―−]+")
-
-
-def _norm_series_text(value):
-    """Lower-cased, separator-flattened form used to compare two series names."""
-    return _SERIES_SEP_RE.sub(" ", (value or "").lower()).strip()
+# The class both names are flattened with is the one generate_filename_pattern
+# uses, because it is literally the same object. It deliberately excludes
+# parentheses and brackets: _BENIGN_SERIES_EXTRA reads those to recognize
+# "(2025)" and "[Digital]".
+_SERIES_SEP_RE = series_names.SERIES_SEP_RE
+_norm_series_text = series_names.norm_series_text
 
 
 def _subtraction_is_benign(longer, shorter):

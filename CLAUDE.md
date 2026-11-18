@@ -299,6 +299,7 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 - `.claude/rules/file-job-queue.md` - File job queue
 - `.claude/rules/reading-lists.md` - Reading list sync and reading-list gaps on the Wanted list
 - `.claude/rules/target-scan.md` - TARGET scan, series identity and filename matching
+- `.claude/rules/series-name-matching.md` - Series-name matching: the three systems, and the one table of filing rules (`core/series_names.py`)
 - `.claude/rules/filename-chars.md` - Filesystem-hostile characters (the one sanitizer)
 - `.claude/rules/path-references.md` - Path references and deletion hooks
 - `.claude/rules/notifications.md` - Notification hook sites and the status page stores

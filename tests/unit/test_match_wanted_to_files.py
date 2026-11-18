@@ -723,3 +723,76 @@ class TestYearAwareFiling:
         d.mkdir()
         w = _wanted("Batman", "5", str(d))
         assert len(self._run([w], tmp_path, "Batman 005 (2031).cbz")) == 1
+
+
+# ---- downloads named after the host, not the series (#780) ---------------
+
+class TestDownloadNamedAfterTheHost:
+    """The four files from #780, end to end through the move matcher."""
+
+    CASES = [
+        ("Totally Awesome Hulk", "17", "The Totally Awesome Hulk 017 (2017).cbz"),
+        ("Vampyrates!", "3", "Vampyrates 003 (2026).cbz"),
+        ("Venom War: It's Jeff!", "1", "Venom War - Its Jeff 001 (2025).cbz"),
+        ("Marvel's Avengers: Endgame Prelude", "3",
+         "Marvel 's Avengers - Endgame Prelude 003 (2019).cbz"),
+    ]
+
+    def test_every_file_is_filed_to_its_own_series(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        wanted, files = [], []
+        for idx, (series, number, filename) in enumerate(self.CASES, start=1):
+            folder = tmp_path / f"series{idx}"
+            folder.mkdir()
+            src = target / filename
+            _touch(str(src))
+            wanted.append(_wanted(series, number, str(folder), series_id=idx))
+            files.append((filename, str(src)))
+
+        matches = match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+
+        filed = {m["filename"]: m["issue"]["series_id"] for m in matches}
+        assert filed == {
+            filename: idx
+            for idx, (_s, _n, filename) in enumerate(self.CASES, start=1)
+        }
+
+    def test_comicinfo_tier_agrees_about_punctuation(self, tmp_path):
+        # The filename says nothing useful; the ComicInfo spelling differs from
+        # the wanted name only by an apostrophe and a "!".
+        folder = tmp_path / "series"
+        folder.mkdir()
+        src = tmp_path / "download-1234.cbz"
+        _make_cbz_with_comicinfo(str(src), "Venom War - Its Jeff", "1")
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Venom War: It's Jeff!", "1", str(folder))],
+            [(src.name, str(src))],
+            PATTERN,
+            alias_lookup=_no_aliases,
+        )
+        assert [m["filename"] for m in matches] == [src.name]
+
+    def test_year_decides_between_a_series_and_its_the_twin(self, tmp_path):
+        # "Flash" and "The Flash" both match the file now; the year a download
+        # carries has to pick the run it belongs to.
+        old = tmp_path / "flash-1987"
+        new = tmp_path / "the-flash-2016"
+        old.mkdir()
+        new.mkdir()
+        src = tmp_path / "The Flash 005 (2016).cbz"
+        _touch(str(src))
+        wanted = [
+            dict(_wanted("Flash", "5", str(old), series_id=1),
+                 volume_year=1987, year_end=2009, store_date="1987-10-01"),
+            dict(_wanted("The Flash", "5", str(new), series_id=2),
+                 volume_year=2016, year_end=None, store_date="2016-08-24"),
+        ]
+
+        matches = match_wanted_issues_to_files(
+            wanted, [(src.name, str(src))], PATTERN, alias_lookup=_no_aliases
+        )
+        assert [m["issue"]["series_id"] for m in matches] == [2]
