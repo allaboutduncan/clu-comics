@@ -2982,3 +2982,135 @@ class TestCollectedEditionCascade:
         data = resp.get_json()
         assert not data.get("requires_selection")
         assert data["source"] == "metron"
+
+
+class TestMetronCoverMatch:
+    """A file with no cvinfo is identified by its cover before the series is
+    guessed from its name (models.metron.match_issue_by_cover)."""
+
+    HIT = {"id": 77, "series_id": 5, "series_name": "Batman", "series_year": 2016,
+           "number": "1", "cover_year": 2020, "cover_hash": "0" * 16, "distance": 2}
+
+    def _metron_only(self, app, stack):
+        TestSearchMetadataMetronSelection._metron_only(self, app, stack)
+        stack.enter_context(patch("models.metron.map_to_comicinfo",
+                                  return_value={"Series": "Batman", "Number": "1"}))
+        stack.enter_context(patch("models.metron._to_dict",
+                                  return_value={"image": "http://cover"}))
+
+    def test_cover_hit_tags_without_the_series_picker(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            match = stack.enter_context(patch(
+                "models.metron.match_issue_by_cover", return_value=self.HIT))
+            detail = stack.enter_context(patch(
+                "models.metron.fetch_issue_detail", return_value=MagicMock()))
+            # Ambiguous by name: without the cover this is a selection prompt.
+            search = stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 1, "name": "The Batman", "start_year": 1940},
+                {"id": 2, "name": "Batman Beyond", "start_year": 1999},
+            ]))
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        data = resp.get_json()
+        assert not data.get("requires_selection")
+        assert data["source"] == "metron"
+        assert match.call_args.args[1] == '/data/Batman 001 (2020).cbz'
+        # The body written into the file is fetched live, by the matched id.
+        assert detail.call_args.args[1] == 77
+        search.assert_not_called()
+
+    def test_no_cover_match_falls_back_to_the_name_search(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            stack.enter_context(patch("models.metron.match_issue_by_cover", return_value=None))
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 1, "name": "The Batman", "start_year": 1940},
+                {"id": 2, "name": "Batman Beyond", "start_year": 1999},
+            ]))
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.get_json()["requires_selection"] is True
+
+    def test_a_typed_search_term_skips_the_cover(self, app, client):
+        """A manual search is the user overruling the automatic answer."""
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            match = stack.enter_context(patch(
+                "models.metron.match_issue_by_cover", return_value=self.HIT))
+            stack.enter_context(patch("models.metron.search_series_list", return_value=[
+                {"id": 1, "name": "The Batman", "start_year": 1940},
+                {"id": 2, "name": "Batman Beyond", "start_year": 1999},
+            ]))
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+                'search_term': 'Batman',
+            })
+
+        match.assert_not_called()
+        assert resp.get_json()["requires_selection"] is True
+
+    def test_a_cvinfo_series_id_is_used_as_before(self, app, client):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            self._metron_only(app, stack)
+            stack.enter_context(patch(
+                "models.comicvine.find_cvinfo_in_folder", return_value="/data/cvinfo"))
+            stack.enter_context(patch(
+                "models.metron.parse_cvinfo_for_metron_id", return_value=5))
+            match = stack.enter_context(patch(
+                "models.metron.match_issue_by_cover", return_value=self.HIT))
+            by_number = stack.enter_context(patch(
+                "models.metron.get_issue_metadata", return_value={"image": "http://cover"}))
+            resp = client.post('/api/search-metadata', json={
+                'file_path': '/data/Batman 001 (2020).cbz',
+                'file_name': 'Batman 001 (2020).cbz',
+            })
+
+        assert resp.get_json()["source"] == "metron"
+        match.assert_not_called()
+        by_number.assert_called_once()
+
+    def test_batch_tags_a_file_whose_folder_has_no_metron_series(self, app, client, tmp_path):
+        """The batch route used to skip Metron for every file once the folder
+        had no series id (a one-shot folder, or no name match)."""
+        from contextlib import ExitStack
+        folder = tmp_path / "Batman (2020)"
+        folder.mkdir()
+        cbz = str(folder / "Batman 001 (2020).cbz")
+        _make_cbz(cbz, with_comicinfo=False)
+
+        with ExitStack() as stack:
+            TestBatchMetadataSkipProviders._batch_stack(self, app, stack)
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[]))
+            match = stack.enter_context(patch(
+                "models.metron.match_issue_by_cover", return_value=self.HIT))
+            stack.enter_context(patch(
+                "models.metron.fetch_issue_detail", return_value=MagicMock()))
+            stack.enter_context(patch("models.metron._to_dict", return_value={"number": "1"}))
+            stack.enter_context(patch(
+                "models.metron.map_to_comicinfo",
+                return_value={"Series": "Batman", "Number": "1", "Notes": "Metadata from Metron."}))
+            write = stack.enter_context(patch(
+                "routes.metadata.add_comicinfo_to_cbz", return_value=True))
+            stack.enter_context(patch("cbz_ops.rename.rename_comic_from_metadata",
+                                      side_effect=lambda p, m: (p, False)))
+            resp = client.post('/api/batch-metadata', json={
+                'directory': str(folder), 'library_id': 1,
+            })
+            body = resp.get_data(as_text=True)
+
+        assert resp.status_code == 200
+        assert match.call_args.args[1:] == (cbz, "Batman", "1", 2020)
+        write.assert_called_once()
+        assert '"source": "Metron"' in body

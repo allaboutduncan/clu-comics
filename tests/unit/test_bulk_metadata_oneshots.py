@@ -224,3 +224,84 @@ class TestProcessFolderRouting:
 
         oneshot_mock.assert_not_called()
         sidecar_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Cover match: a one-shot file is identified by its cover before its filename
+# ---------------------------------------------------------------------------
+class TestOneshotCoverMatch:
+
+    HIT = {"id": 77, "series_id": 5, "series_name": "Batman - Damned", "series_year": 2018,
+           "number": "1", "cover_year": 2018, "cover_hash": "0" * 16, "distance": 1}
+
+    def _run(self, db_connection, tmp_path, hit, providers=('metron', 'comicvine'),
+             resolve=(None, None, []), date_conflict=False):
+        folder = tmp_path / 'oneshots'
+        folder.mkdir()
+        file_path = str(folder / 'Batman Damned (2018).cbz')
+        job_id = _new_job()
+
+        provider = MagicMock()
+        provider.get_issue.return_value = _make_issue(ProviderType.METRON, '5', '1', issue_id='77')
+        provider.get_issues.return_value = []
+        write_mock = MagicMock(return_value=True)
+        resolve_mock = MagicMock(return_value=resolve)
+
+        with patch('models.metron.match_issue_by_cover', return_value=hit) as match, \
+             patch.object(bm, '_resolve_series_auto', resolve_mock), \
+             patch.object(bm, '_instantiate_provider', return_value=provider), \
+             patch.object(bm, '_date_conflicted', return_value=date_conflict), \
+             patch.object(bm, '_write_metadata', write_mock):
+            bm._process_oneshot_folder(
+                job_id=job_id, op_id='op-test', folder_path=str(folder),
+                files=[file_path], providers=list(providers),
+                overwrite_existing=True, progress={"done": 0},
+            )
+        return job_id, file_path, match, provider, write_mock, resolve_mock
+
+    def test_cover_hit_is_written_without_a_name_search(self, db_connection, tmp_path):
+        job_id, file_path, match, provider, write, resolve = self._run(
+            db_connection, tmp_path, self.HIT)
+
+        # Asked with what the filename gives: series, the one-shot "1", year.
+        assert match.call_args.args[1:] == (file_path, 'Batman Damned', '1', 2018)
+        provider.get_issue.assert_called_once_with('77')
+        resolve.assert_not_called()
+
+        kwargs = write.call_args.kwargs
+        assert kwargs['provider_name'] == 'metron'
+        assert kwargs['matched_via'] == 'oneshot_cover'
+        assert kwargs['issue'].id == '77'
+        assert (kwargs['series'].id, kwargs['series'].title, kwargs['series'].year) == (
+            '5', 'Batman - Damned', 2018)
+
+        job = get_bulk_job(job_id)
+        assert job['auto_accepted'] == 1
+        assert job['needs_review'] == 0
+        # Still a one-shot folder: no sidecar from a per-file answer.
+        assert not os.path.exists(os.path.join(os.path.dirname(file_path), 'cvinfo'))
+
+    def test_no_cover_match_resolves_by_name_as_before(self, db_connection, tmp_path):
+        job_id, _, _, _, write, resolve = self._run(db_connection, tmp_path, None)
+
+        resolve.assert_called_once()
+        write.assert_not_called()
+        assert get_bulk_job(job_id)['needs_review'] == 1
+        assert get_review_queue(job_id)[0]['reason'] == 'series_no_match'
+
+    def test_cover_is_not_asked_when_metron_is_not_a_job_provider(self, db_connection, tmp_path):
+        # A re-tag forced to ComicVine must not be answered by Metron.
+        _, _, match, _, write, resolve = self._run(
+            db_connection, tmp_path, self.HIT, providers=('comicvine',))
+
+        match.assert_not_called()
+        resolve.assert_called_once()
+        write.assert_not_called()
+
+    def test_a_date_conflict_sends_the_file_down_the_name_path(self, db_connection, tmp_path):
+        job_id, _, _, _, write, resolve = self._run(
+            db_connection, tmp_path, self.HIT, date_conflict=True)
+
+        write.assert_not_called()
+        resolve.assert_called_once()
+        assert get_bulk_job(job_id)['needs_review'] == 1

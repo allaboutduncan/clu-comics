@@ -903,6 +903,50 @@ def _process_folder(
             update_bulk_job_counts(job_id, needs_review=1)
 
 
+def _oneshot_cover_match(
+    providers: List[str],
+    file_path: str,
+    file_series: str,
+    issue_text: str,
+    file_year: Optional[int],
+) -> Optional[Tuple[SearchResult, IssueResult]]:
+    """Identify a one-shot file from its cover, through Metron.
+
+    A one-shot folder has no cvinfo and every file is its own series, so the
+    filename is all the name search has. ``metron.match_issue_by_cover`` asks
+    Metron which issue carries this cover and accepts only an answer the
+    filename agrees with. Returns ``(series, issue)`` or None, in which case
+    the caller resolves the series by name as before.
+    """
+    if 'metron' not in providers:
+        return None
+    provider = _instantiate_provider('metron')
+    if provider is None:
+        return None
+    try:
+        from models import metron
+        from models.providers import ProviderType
+
+        hit = metron.match_issue_by_cover(
+            provider._get_api(), file_path, file_series, issue_text, file_year
+        )
+        if not hit:
+            return None
+        issue = provider.get_issue(str(hit["id"]))
+        if issue is None:
+            return None
+        series = SearchResult(
+            provider=ProviderType.METRON,
+            id=str(hit["series_id"]),
+            title=hit["series_name"],
+            year=hit["series_year"],
+        )
+        return series, issue
+    except Exception as e:
+        app_logger.warning(f"Cover match failed for {file_path}: {e}")
+        return None
+
+
 def _process_oneshot_folder(
     job_id: str,
     op_id: str,
@@ -939,6 +983,28 @@ def _process_oneshot_folder(
         file_year = extract_year_from_name(base)
         # One-shots are a single issue; default a missing issue number to #1.
         issue_text = extract_issue_number(base) or "1"
+
+        # The cover first: it names the issue directly, where the filename can
+        # only name a series to guess from. A per-file answer, so it never
+        # touches series_cache.
+        covered = _oneshot_cover_match(
+            providers, file_path, file_series, issue_text, file_year
+        )
+        if covered and not _date_conflicted(
+                file_path, covered[1], issue_text, covered[0].year):
+            ok = _write_metadata(
+                job_id=job_id,
+                folder_path=folder_path,
+                file_path=file_path,
+                provider_name='metron',
+                series=covered[0],
+                issue=covered[1],
+                matched_via='oneshot_cover',
+                parsed_year=file_year,
+                replace=bool((options or {}).get("replace")),
+            )
+            update_bulk_job_counts(job_id, **({"auto_accepted": 1} if ok else {"errors": 1}))
+            continue
 
         cache_key = (file_series, file_year)
         if cache_key in series_cache:

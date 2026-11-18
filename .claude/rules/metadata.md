@@ -162,6 +162,48 @@ it.
 Batch, bulk and the `app.py` auto-tag loops do not use this yet. The helpers
 are shared precisely so they can.
 
+### Matching a File by Its Cover (Metron)
+
+A file with no cvinfo used to be identified from its name alone: guess the
+series, then look up the number. Metron can search issues by the perceptual
+hash of the cover (`/api/issue/?cover_hash_near=`, Metron PR #683), which names
+the **issue** directly. `models.metron.match_issue_by_cover` is the one policy
+function; the single-file cascade (`_try_metron_single`), the batch route's
+`try_metron` and bulk one-shot folders (`_oneshot_cover_match`) call it, each
+only when there is no Metron series id. A miss returns `None` and the caller
+matches by name exactly as before. Auto-tag on move and bulk series folders do
+not use it yet.
+
+- **`core/cover_hash.py` is `imagehash.phash` on Pillow alone.** The real
+  library needs numpy, scipy and PyWavelets. `tests/unit/test_cover_hash.py`
+  pins the output against vectors the real library produced, so do not "tidy"
+  the resize filter, the 32x32 sample or the bit order.
+- **It hashes the full first page, not the cached thumbnail**, chosen with the
+  thumbnail's own `sorted_page_names`. A landscape page (wider than 1.2x its
+  height) is a wraparound cover: it is split exactly at the midpoint and the
+  right half is tried first, because Metron stores only the front cover.
+- **A close hash is evidence, not an answer.** Unrelated covers come within 8
+  bits, and a collected edition often carries an issue's cover exactly, so a
+  trade can sort ahead of the issue at 0 bits. A candidate is accepted only
+  when the filename agrees on two of series, number and year, a number the
+  filename gives never contradicts, and **exactly one** candidate qualifies.
+- **At most two requests per file** (`COVER_MATCH_MAX_CALLS`): distance 10,
+  then, only if that returned nothing and the filename has a year, distance 16
+  with `cover_year`. The wide search needs series **and** number; unfiltered at
+  16, Metron's own figures have every query returning strangers.
+- **`find_issues_by_cover` recomputes the distance from each row's
+  `cover_hash`** and drops rows outside the limit. A server that does not know
+  the filter ignores it and returns unfiltered issues. It returns `None` when
+  Metron could not be asked and `[]` for no match.
+- **A typed search term skips the cover** in `/api/search-metadata`: a manual
+  search is the user overruling the automatic answer.
+- **No cvinfo is written from a cover match.** It identifies one file.
+- `metron_cover_match` (default on) switches it off. It has no settings UI yet.
+
+Tests: `tests/unit/test_cover_hash.py`, `tests/mocked/test_metron_cover_match.py`,
+`TestMetronCoverMatch` in `tests/routes/test_metadata_routes.py`,
+`TestOneshotCoverMatch` in `tests/unit/test_bulk_metadata_oneshots.py`.
+
 ### Provider Provenance, Re-tag and Backfill
 
 Nothing recorded which provider tagged a file except the free text in
