@@ -646,6 +646,7 @@ def scheduled_series_sync():
         fail_count = 0
 
         from helpers.comicvine_ids import is_comicvine_series_id
+        from core.series_sync import should_skip_issue_fetch
 
         for series in series_list:
             series_id = series["id"]
@@ -656,7 +657,9 @@ def scheduled_series_sync():
                 continue
             # These values should come from your local database
             local_status = series.get("status")
-            local_issue_count = series.get("issue_count", 0)
+            # NULL until the series has been synced once; the skip decision
+            # below treats that as "unknown", never as 0 (#779).
+            local_issue_count = series.get("issue_count")
             try:
                 # 1. Fetch BASIC series info (1 API call, with rate-limit handling)
                 series_info = api.using(
@@ -678,19 +681,12 @@ def scheduled_series_sync():
                 )
                 api_issue_count = series_info.issue_count
 
-                # Logical check to skip
-                should_skip = False
-
-                # Skip if completed/cancelled and we already have all issues
-                if (
-                    api_status in ["Ended", "Completed", "Cancelled"]
-                    and local_issue_count >= api_issue_count
-                ):
-                    should_skip = True
-
-                # Skip if issue count hasn't changed (API modified date is unreliable for new issues)
-                elif local_issue_count == api_issue_count:
-                    should_skip = True
+                # Skip when finished and complete, or when the count has not
+                # moved. A never-synced series always falls through to the
+                # fetch -- see core.series_sync.
+                should_skip = should_skip_issue_fetch(
+                    local_issue_count, api_status, api_issue_count
+                )
 
                 if should_skip:
                     skip_count += 1
