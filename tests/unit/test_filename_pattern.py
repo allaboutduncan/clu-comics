@@ -741,3 +741,62 @@ class TestLiteralSeparatorBetweenSeriesAndIssue:
             "#{issue_number} - {series_name}", "Batman", "1"
         )
         assert not regex.match("Detective Comics 900 - #001 - Batman.cbz")
+
+
+class TestDownloadNamedAfterTheHost:
+    """#780: a download keeps the host's filename, not CLU's series name.
+
+    Each row is a real file that stayed in TARGET, with its issue still wanted,
+    until it was downloaded again. The matcher feeding the move is the strict
+    one, so every case runs with strict_gap=True.
+    """
+
+    PATTERN = "{series_name} {issue_number}"
+
+    def _regex(self, series, number):
+        return generate_filename_pattern(
+            self.PATTERN, series, number, strict_gap=True
+        )
+
+    @pytest.mark.parametrize("series, number, filename", [
+        # "The" only in the filename; the reverse already worked.
+        ("Totally Awesome Hulk", "17", "The Totally Awesome Hulk 017 (2017).cbz"),
+        ("The Ultimates", "1", "Ultimates 001 (2002).cbz"),
+        # "!" / "?" in the series name, absent from the file.
+        ("Vampyrates!", "3", "Vampyrates 003 (2026).cbz"),
+        ("Venom War: It's Jeff!", "1", "Venom War - Its Jeff 001 (2025).cbz"),
+        ("What If...?", "5", "What If 005 (2023).cbz"),
+        # ...and the mirror: present in the file, absent from the name.
+        ("Vampyrates", "3", "Vampyrates! 003 (2026).cbz"),
+        # GetComics writes the possessive with a space in front.
+        ("Marvel's Avengers: Endgame Prelude", "3",
+         "Marvel 's Avengers - Endgame Prelude 003 (2019).cbz"),
+        ("Worlds Finest", "2", "World 's Finest 002.cbz"),
+    ])
+    def test_is_matched(self, series, number, filename):
+        assert self._regex(series, number).match(filename)
+
+    def test_the_needs_a_separator_after_it(self):
+        assert not self._regex("ater", "1").match("Theater 001.cbz")
+
+    def test_a_space_without_an_apostrophe_is_not_a_possessive(self):
+        assert not self._regex("Marvels Avengers", "1").match(
+            "Marvel s Avengers 001.cbz"
+        )
+
+    def test_added_article_does_not_open_the_spinoff_guard(self):
+        assert not self._regex("Totally Awesome Hulk", "17").match(
+            "The Totally Awesome Hulk - Planet Hulk 017 (2017).cbz"
+        )
+
+    def test_another_series_is_still_another_series(self):
+        assert not self._regex("Totally Awesome Hulk", "17").match(
+            "The Incredible Hulk 017 (2017).cbz"
+        )
+
+    def test_a_name_of_only_punctuation_does_not_match_everything(self):
+        # Flattened to nothing it would compile to an empty series pattern and
+        # claim every file with the right issue number.
+        regex = self._regex("!!!", "1")
+        assert not regex.match("Batman 001.cbz")
+        assert regex.match("!!! 001.cbz")
