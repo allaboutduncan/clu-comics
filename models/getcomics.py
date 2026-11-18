@@ -3160,6 +3160,62 @@ def _norm_series_key(name: str | None) -> str | None:
                 .lower())
 
 
+# Where the series name ends in an entry title: a volume marker, the issue
+# marker, a parenthetical, a subtitle colon or an arc dash.
+_ENTRY_SERIES_CUT = re.compile(
+    r'\s+vol(?:ume)?\.?\s*\d|\s+v\d+\b|\s*#|\s*\(|\s*:|\s+-\s+',
+    re.IGNORECASE,
+)
+
+
+def _series_words(name: str | None) -> list[str]:
+    """Lower-cased words of a series name, punctuation-blind, leading article dropped."""
+    words = re.sub(r'[\W_]+', ' ', (name or '').lower()).split()
+    if len(words) > 1 and words[0] == 'the':
+        words = words[1:]
+    return words
+
+
+def _series_from_entry_title(title: str | None) -> str:
+    """The series an entry title names: the text before its first marker."""
+    title = title or ''
+    cut = _ENTRY_SERIES_CUT.search(title)
+    head = title[:cut.start()] if cut else title
+    return head.strip(' -.,')
+
+
+def _title_names_series(title: str | None, series: str | None) -> bool:
+    """True when ``title`` opens with ``series`` (whole words, punctuation-blind).
+
+    "Punisher #4" names "The Punisher" and "Spider Man #5" names "Spider-Man";
+    "2000AD #2400" names "2000 AD" because the two are the same once spaces go.
+    "Batgirl Vol. 1: ..." does not name "52", wherever a 52 appears on its page.
+    """
+    want = _series_words(series)
+    if not want:
+        return False
+    if _series_words(title)[:len(want)] == want:
+        return True
+    head = _series_words(_series_from_entry_title(title))
+    return bool(head) and ''.join(head) == ''.join(want)
+
+
+def _entry_series_key(title: str | None, page_series: str | None) -> str:
+    """The series an indexed entry is filed under (``getcomics_urls.series_norm``).
+
+    ``page_series`` is only a hint: it is the sitemap slug's guess for the whole
+    page, or the series somebody happened to be *searching for* when the page
+    came back. A live search for "52" returns every DC "New 52" collection, and
+    filing those under the hint put 458 unrelated trades under series "52"
+    (#777). So the hint is kept only when the entry's own title names it;
+    otherwise the entry is filed under the series its title names.
+    """
+    if page_series and _title_names_series(title, page_series):
+        return page_series
+    derived = normalize_series_name(_series_from_entry_title(title))[0]
+    return derived or (page_series or "")
+
+
 def lookup_series_urls(series_name: str) -> list[dict]:
     """
     Look up indexed GetComics URLs for a series from the local sitemap DB.
@@ -4485,12 +4541,10 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
             # page, or "Name (Year) :" junk) and broke GetComics matching. Search
             # aliases are user-defined only and live in getcomics_series_aliases.
             entry_aliases = search_aliases  # always "" from callers; kept for signature stability
-            if parsed.name:
-                stored_series = series_norm if series_norm else normalize_series_name(parsed.name)[0]
-            elif series_norm:
-                stored_series = series_norm
-            else:
-                stored_series = ""
+            # series_norm is a hint for the whole page (the sitemap slug's
+            # guess, or the series a live search was run for). The entry is
+            # filed under it only when its own title names it (#777).
+            stored_series = _entry_series_key(title_text, series_norm)
 
             if download_url:
                 scrape_status = 'success'
@@ -4501,7 +4555,7 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
                 url,           # base page URL for lookups
                 url_slug,
                 stored_series,
-                stored_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if stored_series else None,
+                _norm_series_key(stored_series),
                 entry_aliases,
                 title_text,
                 parsed.issue,
@@ -4886,7 +4940,11 @@ def index_live_results(urls: list[str], series_norm: str = "", rate_limit: float
 
     Args:
         urls: List of GetComics page URLs to index
-        series_norm: Series name for context (extracted from URL slug if not provided)
+        series_norm: The series the search was run for. A hint only: a search
+                     returns pages for other series too, so each entry is filed
+                     under it only when its own title names it
+                     (see _entry_series_key). Extracted from the URL slug if
+                     not provided.
         rate_limit: Seconds between requests (default 1.0 — good GetComics citizen)
 
     Returns:
@@ -4960,6 +5018,72 @@ def index_live_results(urls: list[str], series_norm: str = "", rate_limit: float
 
     logger.info(f"index_live_results: indexed {indexed}/{total} new URLs for series '{series_norm}'")
     return indexed
+
+
+SERIES_TAGS_REPAIRED_FLAG = "getcomics_series_tags_repaired_v1"
+_SERIES_TAG_REPAIR_CHUNK = 500
+
+
+def repair_series_tags() -> int:
+    """Re-file scraped entries that were stored under a series they do not name.
+
+    One-time repair for #777: live-search results used to be indexed under the
+    series being *searched for*, so a search for "52" filed hundreds of DC
+    "New 52" trades under series "52". Each row with a title is checked against
+    its own tag and, when the title does not name it, re-keyed with
+    ``_entry_series_key`` -- the rule the indexer now applies on write.
+
+    Rows without a title are sitemap rows nobody has scraped yet; their tag is
+    the slug's guess and there is nothing to check it against.
+
+    Runs from the scheduled jobs, never from ``_ensure_urls_table``: that is
+    called on request threads and this reads the whole table. The flag is set
+    only after every chunk was written, so a failed run is retried.
+
+    Returns:
+        Number of rows re-keyed (0 when already done or nothing was wrong).
+    """
+    from core.database import db_conn, get_user_preference, set_user_preference
+
+    if get_user_preference(SERIES_TAGS_REPAIRED_FLAG):
+        return 0
+    _ensure_urls_table()
+
+    with db_conn() as conn:
+        if conn is None:
+            return 0
+        rows = conn.execute(
+            "SELECT id, title, series_norm FROM getcomics_urls "
+            "WHERE title IS NOT NULL AND title != '' "
+            "  AND series_norm IS NOT NULL AND series_norm != ''"
+        ).fetchall()
+
+    fixes = []
+    for row_id, title, tag in rows:
+        if _title_names_series(title, tag):
+            continue
+        new_tag = _entry_series_key(title, tag)
+        if new_tag and new_tag != tag:
+            fixes.append((new_tag, _norm_series_key(new_tag), row_id))
+
+    # Short transactions: this shares the database with every other writer.
+    for start in range(0, len(fixes), _SERIES_TAG_REPAIR_CHUNK):
+        with db_conn() as conn:
+            if conn is None:
+                raise RuntimeError("could not open the database to repair series tags")
+            conn.executemany(
+                "UPDATE getcomics_urls SET series_norm = ?, series_norm_norm = ? WHERE id = ?",
+                fixes[start:start + _SERIES_TAG_REPAIR_CHUNK],
+            )
+            conn.commit()
+
+    set_user_preference(SERIES_TAGS_REPAIRED_FLAG, "1", category="getcomics")
+    if fixes:
+        logger.info(
+            f"GetComics scrape index: re-filed {len(fixes)} of {len(rows)} entries "
+            f"that were stored under a series their title does not name"
+        )
+    return len(fixes)
 
 
 def prepopulate_series_index(series_name: str, max_workers: int = 5, rate_limit: float = 0.5):
@@ -5322,6 +5446,51 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
     return results
 
 
+def _best_accepted_row(
+    rows: list[dict],
+    search_name: str,
+    issue_num,
+    issue_year=None,
+    series_volume=None,
+    series_year=None,
+    search_variants=None,
+    series_aliases=None,
+) -> tuple[dict | None, int]:
+    """Score scrape-index rows with the shared scorer; return the best ACCEPT.
+
+    A row's ``series_norm`` says which series it was *filed under*, which is not
+    evidence that it is that series (#777), and its stored issue range says
+    nothing about whose issues those are. The title is the evidence, and
+    ``score_getcomics_result`` is the one place that reads it -- the same call
+    the sweep and the simulation make on whatever this returns.
+    """
+    best = None
+    best_score = 0
+    for row in rows:
+        title = row.get('title') or ''
+        if not title:
+            continue
+        score, range_contains, series_match = score_getcomics_result(
+            title, search_name, str(issue_num), issue_year,
+            accept_variants=search_variants,
+            series_volume=series_volume,
+            volume_year=series_year,
+            series_aliases=series_aliases,
+        )
+        if accept_result(score, range_contains, series_match) != "ACCEPT":
+            continue
+        if best is None or score > best_score:
+            best, best_score = row, score
+    if best is None:
+        return None, 0
+    return {
+        'title': best['title'],
+        'link': best['url'],
+        'image': '',
+        'download_url': best.get('download_url') or None,
+    }, best_score
+
+
 def try_scrape_index(
     search_name: str,
     issue_num,
@@ -5329,13 +5498,22 @@ def try_scrape_index(
     series_volume=None,
     series_year=None,
     search_variants=None,
+    series_aliases=None,
 ) -> tuple[dict | None, int]:
     """
-    Search the scrape index for a matching comic and return the first ACCEPT result.
+    Search the scrape index for a matching comic and return the best ACCEPT result.
 
     This is the core of the scrape-index-first search strategy: rather than hitting
     GetComics live, we search the locally-stored scrape index which has already been
     populated by background scraping.
+
+    The index is only a prefilter (series tag, year, volume, issue number or a
+    range holding it). Every candidate is then scored against its own title, and
+    only a row the shared scorer accepts is returned, with that score. There used
+    to be a first tier that returned any tag + issue-number hit at a fixed 50
+    without reading the title: it "accepted" a Batgirl trade for every issue of
+    52 (2006) in its range, and because the caller returns an index hit instead
+    of searching live, the real issue was never looked for (#777).
 
     Args:
         search_name: Series name to search for
@@ -5344,162 +5522,31 @@ def try_scrape_index(
         series_volume: Volume number (optional)
         series_year: Volume year for soft year matching (optional)
         search_variants: List of variant keywords to accept (optional)
+        series_aliases: GetComics search aliases for the series (optional)
 
     Returns:
         (result_dict, score) if ACCEPT found, else (None, 0)
         result_dict has keys: title, link, image, download_url
     """
-    """
-    Search the scrape index for a matching comic and return the first ACCEPT result.
-
-    This is the core of the scrape-index-first search strategy: rather than hitting
-    GetComics live, we search the locally-stored scrape index which has already been
-    populated by background scraping.
-
-    The search uses a tiered approach:
-      1. Direct issue-number match — uses stored issue_num/issue_range fields (no scoring needed)
-      2. Fuzzy title scoring — falls back to score_comic when direct match is ambiguous
-
-    Args:
-        search_name: Series name to search for
-        issue_num: Issue number to match
-        issue_year: Year of the issue (optional)
-        series_volume: Volume number (optional)
-        series_year: Volume year for soft year matching (optional)
-        search_variants: List of variant keywords to accept (optional)
-
-    Returns:
-        (result_dict, score) if ACCEPT found, else (None, 0)
-        result_dict has keys: title, link, image, download_url
-    """
-    resolved = resolve_series_alias(search_name)
-    norm_series = resolved.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
-
     try:
         target_issue = float(str(issue_num).lstrip('0') or '0') if issue_num else None
     except ValueError:
         target_issue = None
 
-    # ── Tier 1: Direct issue-number match via SQL ──────────────────────────────
-    # Uses the stored issue_num / issue_range columns — no title scoring needed.
-    # Only returns entries with scrape_status='success' (fully scraped with download_url).
-    # Entries with 'empty' or 'failed' status are retried by the background indexer but
-    # not served to users (don't want to return a missing download to a user).
-    from core.database import get_db_connection
-    _ensure_urls_table()
-    conn = get_db_connection()
-
-    def _build_query(year_filter, volume_filter):
-        """Build parameterized query for exact + alias matching."""
-        col = "series_norm_norm"
-        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
-        use_norm = "series_norm_norm" in existing_cols
-
-        if use_norm:
-            base_q = f"SELECT * FROM getcomics_urls WHERE {col} = ? COLLATE NOCASE"
-        else:
-            base_q = """SELECT * FROM getcomics_urls
-                        WHERE LOWER(REPLACE(REPLACE(series_norm, '-', ' '), '\u2013', ' ')) = ? COLLATE NOCASE"""
-        alias_q = """SELECT * FROM getcomics_urls
-                     WHERE LOWER(REPLACE(REPLACE(search_aliases, '-', ' '), '\u2013', ' ')) LIKE ? COLLATE NOCASE"""
-        p = [norm_series]
-        ap = [f"%{norm_series}%"]
-
-        if year_filter is not None:
-            base_q += " AND (year = ? OR year IS NULL)"
-            alias_q += " AND (year = ? OR year IS NULL)"
-            p.append(year_filter)
-            ap.append(year_filter)
-        if volume_filter is not None:
-            base_q += " AND volume = ?"
-            alias_q += " AND volume = ?"
-            p.append(volume_filter)
-            ap.append(volume_filter)
-
-        # Direct issue match: exact issue_num OR range containing target
-        base_q += " AND (issue_num = ? OR issue_num LIKE ? OR issue_range IS NOT NULL)"
-        alias_q += " AND (issue_num = ? OR issue_num LIKE ? OR issue_range IS NOT NULL)"
-        p.extend([str(issue_num), f"{issue_num}-%"])
-        ap.extend([str(issue_num), f"{issue_num}-%"])
-
-        base_q += " AND is_bulk_pack = 0 AND scrape_status = 'success'"
-        alias_q += " AND is_bulk_pack = 0 AND scrape_status = 'success'"
-
-        base_q += " ORDER BY year DESC, volume DESC LIMIT 20"
-        alias_q += " ORDER BY year DESC, volume DESC LIMIT 20"
-        return base_q, alias_q, p, ap
-
-    # Try exact → alias fallback
-    base_q, alias_q, params, alias_params = _build_query(issue_year, series_volume)
-    rows = conn.execute(base_q, params).fetchall()
-    if not rows:
-        rows = conn.execute(alias_q, alias_params).fetchall()
-
-    # Filter range packs in Python (issue_range stored as string "(start, end)")
-    def _range_overlaps(rng, target):
-        if rng is None:
-            return False
-        try:
-            import ast
-            rng_clean = rng.strip("()")
-            parts = [int(x.strip()) for x in rng_clean.split(",")]
-            start, end = parts[0], parts[1]
-            return start <= target <= end
-        except Exception:
-            return False
-
-    if target_issue is not None:
-        rows = [r for r in rows if r['issue_num'] == str(issue_num) or
-                (r['issue_num'] or '').startswith(str(issue_num) + '-') or
-                (r['issue_range'] and _range_overlaps(r['issue_range'], target_issue))]
-
-    if rows:
-        conn.close()
-        first = rows[0]
-        return {
-            'title': first['title'],
-            'link': first['url'],
-            'image': '',
-            'download_url': first['download_url'] or None,
-        }, 50  # high confidence for direct DB match
-
-    conn.close()
-
-    # ── Tier 2: Fuzzy scoring fallback ─────────────────────────────────────────
     criteria = ScrapeSearchCriteria(
         series_norm=search_name,
         year=issue_year,
         volume=series_volume,
         issue_num=str(issue_num),
-        issue_range=(target_issue, target_issue) if issue_num else None,
+        issue_range=(target_issue, target_issue) if target_issue is not None else None,
     )
-    results = search_scrape_index(criteria, limit=50)
-    if not results:
-        return None, 0
-
-    sc = search_criteria(
-        series_name=search_name,
-        issue_number=str(issue_num),
-        year=issue_year,
-        series_volume=series_volume,
-        volume_year=series_year,
-        accept_variants=search_variants,
+    # The limit is applied in SQL, before the range-containment filter, so a
+    # series with many range rows needs room for the single-issue row.
+    rows = search_scrape_index(criteria, limit=200)
+    return _best_accepted_row(
+        rows, search_name, issue_num, issue_year, series_volume, series_year,
+        search_variants, series_aliases,
     )
-    scored = []
-    for r in results:
-        cs = score_comic(r['title'], sc)
-        decision = accept_result(cs.score, cs.range_contains_target, cs.series_match)
-        scored.append((cs.score, decision, cs, r))
-    scored.sort(key=lambda x: x[0], reverse=True)
-    for score, decision, cs, r in scored:
-        if decision == "ACCEPT":
-            return {
-                'title': r['title'],
-                'link': r['url'],
-                'image': '',
-                'download_url': r.get('download_url') or None,
-            }, score
-    return None, 0
 
 
 def search_getcomics_for_issue(
@@ -5569,7 +5616,8 @@ def search_getcomics_for_issue(
         app_logger.info(f"🔍 Series '{series_name}' not in sitemap index, checking scrape index "
                        f"{search_context}")
         scrape_result, scrape_score = try_scrape_index(
-            series_name, issue_num, issue_year, series_volume, series_year, search_variants
+            series_name, issue_num, issue_year, series_volume, series_year, search_variants,
+            series_aliases=series_aliases,
         )
         if scrape_result:
             app_logger.info(f"✅ Scrape index ACCEPT (score={scrape_score}): "
@@ -5613,7 +5661,8 @@ def search_getcomics_for_issue(
 
         # Try scrape index for comparison
         scrape_result, scrape_score = try_scrape_index(
-            series_name, issue_num, issue_year, series_volume, series_year, search_variants
+            series_name, issue_num, issue_year, series_volume, series_year, search_variants,
+            series_aliases=series_aliases,
         )
 
         # Pick the best result between sitemap and scrape index
@@ -5665,7 +5714,8 @@ def search_getcomics_for_issue(
             app_logger.info(f"   No scrape index hits for canonical '{series_name}', "
                            f"trying base name '{base_name}' {search_context}")
             result, score = try_scrape_index(
-                base_name, issue_num, issue_year, series_volume, series_year, search_variants
+                base_name, issue_num, issue_year, series_volume, series_year, search_variants,
+                series_aliases=series_aliases,
             )
             if result:
                 app_logger.info(f"✅ Scrape index ACCEPT via base name (score={score}): "

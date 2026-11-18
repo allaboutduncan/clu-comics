@@ -1317,6 +1317,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             get_series_alias_list,
             select_download_url,
             PROVIDER_LABELS,
+            repair_series_tags,
         )
         from api import download_queue, download_progress
         from datetime import date
@@ -1372,6 +1373,14 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
 
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
+
+        # One-time (#777): re-file scrape-index entries stored under a series
+        # their title does not name. A no-op once its flag is set, and a
+        # failure must not cost the sweep -- the index only prefilters.
+        try:
+            repair_series_tags()
+        except Exception as e:
+            app_logger.warning(f"GetComics series-tag repair failed: {e}")
 
         today = date.today().isoformat()
         cooldown_now = datetime.now()
@@ -2247,11 +2256,21 @@ def scheduled_scrape_index_build(batch_size: int = 300):
     """
     try:
         from core.database import get_db_connection
-        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index, _ensure_urls_table
+        from models.getcomics import (
+            _scrape_url_to_index as _scrape_url_for_index,
+            _ensure_urls_table,
+            repair_series_tags,
+        )
         import time
 
         # Ensure table exists before querying
         _ensure_urls_table()
+
+        # One-time (#777), before the batch below groups by series_norm.
+        try:
+            repair_series_tags()
+        except Exception as e:
+            app_logger.warning(f"GetComics series-tag repair failed: {e}")
 
         app_logger.info(f"Starting scrape index build (batch={batch_size})...")
 
