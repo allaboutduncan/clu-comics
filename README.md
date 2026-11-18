@@ -101,6 +101,9 @@ services:
             ## Only if a reverse proxy rewrites the Host header and changes in the UI fail
             ## with "Cross-site request refused" (see "Running behind a reverse proxy").
             # - CLU_TRUSTED_ORIGINS=https://comics.example.com
+            ## Only if another service on this container's network already uses
+            ## 127.0.0.1:18191 (see "Built-in FlareSolverr").
+            # - FLARESOLVERR_PORT=18191
 volumes:
   config-volume: # Now required for Database Storage and Backups
 ```
@@ -130,6 +133,24 @@ If a proxy rewrites `Host` to the container's address and sends no `X-Forwarded-
         environment:
             - CLU_TRUSTED_ORIGINS=https://comics.example.com
 ```
+
+### Built-in FlareSolverr
+
+Some GetComics mirrors answer with a Cloudflare "Just a moment…" check that a normal download cannot pass. The Docker image ships its own [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) (a headless Chromium) for that, so there is no second container to install.
+
+* It starts on the first challenge and stops after 10 idle minutes. While it is up it uses a few hundred MB of memory.
+* It only fetches the clearance cookies; CLU then downloads the file itself. A check it cannot pass still ends as a manual-download link.
+* Turn it off, or test it, under **Settings → Download and API → Pass Cloudflare challenges (FlareSolverr)**.
+* It listens on `127.0.0.1:18191` inside the container and is never published. The port is deliberately not FlareSolverr's usual `8191`.
+
+| Environment variable | Default | What it does |
+| --- | --- | --- |
+| `FLARESOLVERR_PORT` | `18191` | Loopback port of the built-in solver |
+| `FLARESOLVERR_LOG_LEVEL` | `info` | Log level of the solver process |
+
+**Sharing a network with other containers.** With `network_mode: service:<vpn>` (gluetun and similar), every container behind the VPN shares one `127.0.0.1`, so two services cannot use the same port. CLU up to 7.2.1 used `8191`, which clashed with a standalone FlareSolverr run for Prowlarr in the same namespace: whichever started second failed with `Address already in use`. Later versions use `18191`, so the two run side by side. If something else already holds `18191`, the app log says so; set `FLARESOLVERR_PORT` to a free port and restart the container.
+
+To have CLU use a standalone FlareSolverr in the same network namespace instead of starting its own, set `FLARESOLVERR_PORT` to that solver's port (`8191`). CLU reuses a FlareSolverr that is already answering on its port. This needs the two to share a network namespace, and the solver must leave through the same public IP as CLU, because Cloudflare ties the clearance to the address that earned it.
 
 ## Integrations
 

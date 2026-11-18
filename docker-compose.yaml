@@ -45,6 +45,13 @@ services:
             ## request refused": your public address(es), comma-separated.
             ## See "Running behind a reverse proxy" in README.md.
             # - CLU_TRUSTED_ORIGINS=https://comics.example.com
+            ## The built-in FlareSolverr (Cloudflare challenges on GetComics mirrors)
+            ## listens on 127.0.0.1:18191 inside the container. Change it only if
+            ## another service on the same network already uses that port, e.g. with
+            ## network_mode: service:<vpn>. Set it to 8191 to reuse a standalone
+            ## FlareSolverr in the same network namespace instead.
+            ## See "Built-in FlareSolverr" in README.md.
+            # - FLARESOLVERR_PORT=18191
             # GCD Database: download the SQLite dump from https://www.comics.org/download/,
             # mount it into the container, and point CLU at it (or set the path in
             # Config -> Metadata Providers instead of using this env var).
