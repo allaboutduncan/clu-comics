@@ -167,6 +167,37 @@ against, `series_norm_norm`. Every writer has to agree with
 `lookup_series_urls`'s `WHERE series_norm_norm = ?`; a row that disagrees is
 indexed and then never found, which is what the sitemap insert also did.
 
+#### The scrape index is a prefilter, never a verdict
+
+`series_norm` says which series a row was *filed under*, not which series it
+is. `search_getcomics_for_issue` indexes its live results with
+`index_live_results(urls, series_norm=<the searched name>)`, and a search for
+"52" returns every DC "New 52" collection: 458 of 473 rows under `52` were
+Batgirl, Green Lantern and Batman trades (#777).
+
+- **`try_scrape_index` scores every row it returns.** It used to have a first
+  tier that matched the tag plus an issue number or range and returned a fixed
+  50 without reading the title. The sweep re-scores whatever comes back, so
+  that was probably not a wrong download — but an index hit is returned
+  *instead of* searching live, so the real issue was never looked for, behind a
+  log line saying ACCEPT. `_best_accepted_row` makes the same
+  `score_getcomics_result` + `accept_result` call the sweep makes, and a range
+  row is a FALLBACK there like anywhere else.
+- **An entry is filed under the series its own title names**
+  (`_entry_series_key`). The `series_norm` passed to `_scrape_url_to_index` is
+  a hint for the whole page — the sitemap slug's guess or the searched name —
+  and is kept only when the title opens with it (whole words,
+  punctuation-blind, leading article ignored). `parse_result_title().name` is
+  not a usable key: it keeps subtitles and empty parentheses.
+- **`repair_series_tags()` re-files the old rows once**
+  (`getcomics_series_tags_repaired_v1`), from the sweep and the scrape-index
+  build, each in its own `try`. Not from `_ensure_urls_table`: request threads
+  call that and the repair reads the whole table.
+- `scrape_sitemap.py` calls the app's indexer. It carried a private copy that
+  stamped the tag on every entry and slugified entry keys its own way.
+
+Tests: `tests/mocked/test_getcomics_scrape_index_series.py`.
+
 #### A rate-limited provider is stood down, not asked again
 
 `core.download_utils` holds a per-provider cooldown

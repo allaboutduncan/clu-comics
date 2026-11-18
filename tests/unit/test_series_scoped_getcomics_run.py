@@ -448,3 +448,38 @@ class TestMappedSeriesQueueCooldown:
             for n in ast.walk(holder.value)
         ), "the stamps must be skipped when only_series_id is set"
         assert calls  # keep the reference meaningful
+
+
+class TestSeriesTagRepairHook:
+    """#777: scrape-index entries filed under a series their title does not
+    name are repaired once. The repair reads the whole table, so it runs from
+    the two scheduled jobs and not from ``_ensure_urls_table`` (which request
+    threads call), and a failure must not cost the job it rides on."""
+
+    @pytest.mark.parametrize("job", [FUNC, "scheduled_scrape_index_build"])
+    def test_the_job_runs_the_repair_inside_its_own_try(self, job):
+        with open(APP_PATH, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        node = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == job
+        )
+        guarded = [
+            stmt for stmt in ast.walk(node)
+            if isinstance(stmt, ast.Try)
+            and any(_calls_named(s, "repair_series_tags") for s in stmt.body)
+            # The job's outer try wraps everything; the repair's own is small.
+            and len(stmt.body) == 1
+        ]
+        assert guarded, f"{job} must call repair_series_tags() in its own try"
+
+    def test_the_table_bootstrap_does_not_run_it(self):
+        path = os.path.join(PROJECT_ROOT, "models", "getcomics.py")
+        with open(path, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        for name in ("_ensure_urls_table", "_ensure_alias_table"):
+            node = next(
+                n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == name
+            )
+            assert not _calls_named(node, "repair_series_tags")
