@@ -13730,9 +13730,52 @@ def remove_series_mapping(series_id):
 # =============================================================================
 
 
+# An upsert, never ``INSERT OR REPLACE``: on a primary-key conflict REPLACE
+# *deletes* the existing row and inserts a new one, and
+# ``collection_status.issue_id`` is ``ON DELETE CASCADE`` with foreign keys on.
+# So every re-save of an issue the library already knew (scheduled series sync,
+# ``?refresh=true``, automap, Mylar import) silently deleted its
+# collection_status row, and owned issues read as missing until the next
+# collection scan (#781). ``created_at`` is kept by leaving it out of the SET.
+_ISSUE_UPSERT_SQL = """
+    INSERT INTO issues
+    (id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
+     created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET
+        series_id = excluded.series_id,
+        number = excluded.number,
+        name = excluded.name,
+        cover_date = excluded.cover_date,
+        store_date = excluded.store_date,
+        image = excluded.image,
+        resource_url = excluded.resource_url,
+        cv_id = excluded.cv_id,
+        updated_at = CURRENT_TIMESTAMP
+"""
+
+
+def _issue_upsert_params(issue_dict, series_id):
+    """The parameter tuple for ``_ISSUE_UPSERT_SQL`` from one issue dict."""
+    return (
+        issue_dict.get("id"),
+        series_id,
+        str(issue_dict.get("number", "")),
+        issue_dict.get("issue_name") or issue_dict.get("name"),
+        issue_dict.get("cover_date"),
+        issue_dict.get("store_date"),
+        str(issue_dict.get("image")) if issue_dict.get("image") else None,
+        str(issue_dict.get("resource_url")) if issue_dict.get("resource_url") else None,
+        issue_dict.get("cv_id"),
+    )
+
+
 def save_issue(issue_data, series_id):
     """
     Save or update a single issue in the database.
+
+    Updates in place, so rows that reference the issue (collection_status)
+    survive a re-save.
 
     Args:
         issue_data: Dict with issue data from Metron API
@@ -13742,45 +13785,15 @@ def save_issue(issue_data, series_id):
         True if successful, False otherwise
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-
-        c = conn.cursor()
-
-        # Extract issue ID
-        issue_id = issue_data.get("id")
-        if not issue_id:
+        if not issue_data.get("id"):
             app_logger.error("Issue data missing 'id' field")
             return False
 
-        c.execute(
-            """
-            INSERT OR REPLACE INTO issues
-            (id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
-             created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT created_at FROM issues WHERE id = ?), CURRENT_TIMESTAMP),
-                    CURRENT_TIMESTAMP)
-        """,
-            (
-                issue_id,
-                series_id,
-                str(issue_data.get("number", "")),
-                issue_data.get("issue_name") or issue_data.get("name"),
-                issue_data.get("cover_date"),
-                issue_data.get("store_date"),
-                str(issue_data.get("image")) if issue_data.get("image") else None,
-                str(issue_data.get("resource_url"))
-                if issue_data.get("resource_url")
-                else None,
-                issue_data.get("cv_id"),
-                issue_id,
-            ),
-        )
-
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.execute(_ISSUE_UPSERT_SQL, _issue_upsert_params(issue_data, series_id))
+            conn.commit()
         return True
 
     except Exception as e:
@@ -13834,30 +13847,7 @@ def save_issues_bulk(issues_list, series_id):
             if not issue_id:
                 continue
 
-            c.execute(
-                """
-                INSERT OR REPLACE INTO issues
-                (id, series_id, number, name, cover_date, store_date, image, resource_url, cv_id,
-                 created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        COALESCE((SELECT created_at FROM issues WHERE id = ?), CURRENT_TIMESTAMP),
-                        CURRENT_TIMESTAMP)
-            """,
-                (
-                    issue_id,
-                    series_id,
-                    str(issue_dict.get("number", "")),
-                    issue_dict.get("issue_name") or issue_dict.get("name"),
-                    issue_dict.get("cover_date"),
-                    issue_dict.get("store_date"),
-                    str(issue_dict.get("image")) if issue_dict.get("image") else None,
-                    str(issue_dict.get("resource_url"))
-                    if issue_dict.get("resource_url")
-                    else None,
-                    issue_dict.get("cv_id"),
-                    issue_id,
-                ),
-            )
+            c.execute(_ISSUE_UPSERT_SQL, _issue_upsert_params(issue_dict, series_id))
             saved_count += 1
 
         conn.commit()
