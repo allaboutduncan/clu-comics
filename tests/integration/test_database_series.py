@@ -201,6 +201,85 @@ class TestIssueCRUD:
         saved = get_issues_for_series(series_id)
         assert len(saved) == 10
 
+    @staticmethod
+    def _owned_issue():
+        """A series with one issue and its collection_status row (found)."""
+        from core.database import save_collection_status_bulk
+
+        pub_id = create_publisher()
+        series_id = create_series(publisher_id=pub_id)
+        issue_id = create_issue(series_id=series_id, number="1")
+        assert save_collection_status_bulk([{
+            "series_id": series_id,
+            "issue_id": issue_id,
+            "issue_number": "1",
+            "found": 1,
+            "file_path": "/data/Comic 001.cbz",
+            "file_mtime": 1234567890.0,
+            "matched_via": "filename",
+        }]) is True
+        return series_id, issue_id
+
+    @staticmethod
+    def _status_rows(db_connection, series_id):
+        return [tuple(r) for r in db_connection.execute(
+            "SELECT id, issue_id, issue_number, found, file_path, matched_via "
+            "FROM collection_status WHERE series_id = ?", (series_id,)
+        ).fetchall()]
+
+    def test_resaving_issues_bulk_keeps_collection_status(self, db_connection):
+        """#781: a re-fetch must not cascade-delete the issue's status row."""
+        from core.database import save_issues_bulk, get_issue_by_id
+
+        series_id, issue_id = self._owned_issue()
+        before = self._status_rows(db_connection, series_id)
+        assert len(before) == 1
+
+        assert save_issues_bulk(
+            [{"id": issue_id, "number": "1", "issue_name": "Renamed"}], series_id
+        ) == 1
+
+        assert self._status_rows(db_connection, series_id) == before
+        assert get_issue_by_id(issue_id)["name"] == "Renamed"
+
+    def test_resaving_single_issue_keeps_collection_status(self, db_connection):
+        from core.database import save_issue, get_issue_by_id
+
+        series_id, issue_id = self._owned_issue()
+        before = self._status_rows(db_connection, series_id)
+
+        assert save_issue({"id": issue_id, "number": "1", "name": "Renamed"}, series_id) is True
+
+        assert self._status_rows(db_connection, series_id) == before
+        assert get_issue_by_id(issue_id)["name"] == "Renamed"
+
+    def test_resaving_issue_keeps_created_at(self, db_connection):
+        from core.database import save_issue
+
+        series_id, issue_id = self._owned_issue()
+        db_connection.execute(
+            "UPDATE issues SET created_at = '2001-01-01 00:00:00', "
+            "updated_at = '2001-01-01 00:00:00' WHERE id = ?", (issue_id,)
+        )
+        db_connection.commit()
+
+        assert save_issue({"id": issue_id, "number": "1"}, series_id) is True
+
+        row = db_connection.execute(
+            "SELECT created_at, updated_at FROM issues WHERE id = ?", (issue_id,)
+        ).fetchone()
+        assert row[0] == "2001-01-01 00:00:00"
+        assert row[1] != "2001-01-01 00:00:00"
+
+    def test_no_writer_replaces_an_issue_row(self):
+        """REPLACE deletes the row first, which cascades into collection_status."""
+        import core.database as database
+
+        source = open(database.__file__, encoding="utf-8").read().upper()
+        assert "REPLACE INTO ISSUES\n" not in source
+        assert "REPLACE INTO ISSUES " not in source
+        assert "REPLACE INTO ISSUES(" not in source
+
     def test_delete_issues_for_series(self, db_connection):
         from core.database import delete_issues_for_series, get_issues_for_series
 
