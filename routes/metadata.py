@@ -421,6 +421,10 @@ def cbz_metadata():
 
         metadata = {
             "file_size": os.path.getsize(file_path),
+            # Changes whenever the archive is rewritten. The info modal puts
+            # it on its page-image URLs: a browser reuses an image it already
+            # loaded from the same URL, whatever the response headers say.
+            "modified": int(os.path.getmtime(file_path) * 1000),
             "total_files": 0,
             "image_files": 0,
             "comicinfo": None,
@@ -2076,9 +2080,24 @@ def batch_metadata():
                     # Helper function for Metron lookup
                     def try_metron():
                         nonlocal metadata, source
-                        if not (metron_available and metron_api and series_id):
+                        if not (metron_available and metron_api):
                             return False
                         try:
+                            if not series_id:
+                                # No series for the folder (a one-shot folder,
+                                # or no cvinfo and no name match): the cover
+                                # can still name this file's issue.
+                                issue_data = _metron_issue_by_cover(
+                                    metron_api, file_path,
+                                    extract_series_name_from_filename(filename),
+                                    issue_number, extract_year_from_name(filename),
+                                )
+                                if issue_data:
+                                    metadata = metron.map_to_comicinfo(issue_data)
+                                    source = 'Metron'
+                                    app_logger.info(f"Found metadata from Metron for {filename} (cover match)")
+                                    return True
+                                return False
                             issue_data = metron.get_issue_metadata(metron_api, series_id, issue_number)
                             if issue_data:
                                 metadata = metron.map_to_comicinfo(issue_data)
@@ -3985,7 +4004,31 @@ def _pick_comicvine_volume_issue(provider, volumes, normalized_series, issue_num
     return None, None, None
 
 
-def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses=None):
+def _metron_issue_by_cover(metron_api, file_path, series_name, issue_number, year):
+    """Full Metron issue data for a file identified by its cover, or None.
+
+    Shared by the single-file and batch paths. The id comes from
+    ``metron.match_issue_by_cover``; the body is fetched live, like every
+    issue that is about to be written into a file.
+    """
+    hit = metron.match_issue_by_cover(
+        metron_api, file_path, series_name, issue_number, year
+    )
+    if not hit:
+        return None
+    issue = metron.fetch_issue_detail(metron_api, hit["id"], context="(cover match)")
+    return metron._to_dict(issue) if issue is not None else None
+
+
+def _metron_image_url(issue_data):
+    image = issue_data.get('image') if isinstance(issue_data, dict) else None
+    if not image:
+        return None
+    return str(image) if not isinstance(image, str) else image
+
+
+def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses=None,
+                       file_path=None):
     """Try Metron provider for a single file.
     Returns (metadata_dict, image_url, None) on success,
     or (None, None, selection_data) when user selection is needed,
@@ -4002,6 +4045,15 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
         # Try cvinfo first for a direct series ID
         if cvinfo_path:
             series_id = metron.parse_cvinfo_for_metron_id(cvinfo_path)
+
+        # No series id: ask Metron which issue has this cover before guessing
+        # the series from the filename. A miss falls through to the name search.
+        if not series_id and file_path:
+            issue_data = _metron_issue_by_cover(
+                metron_api, file_path, series_name, issue_number, year
+            )
+            if issue_data:
+                return metron.map_to_comicinfo(issue_data), _metron_image_url(issue_data), None
 
         # Fall back to searching by series name. When more than one candidate
         # matches and none is a confident (exact) title match, pause for the
@@ -4042,15 +4094,7 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
             return None, None, None
 
         metadata = metron.map_to_comicinfo(issue_data)
-
-        # Extract image URL
-        img_url = None
-        if isinstance(issue_data, dict):
-            image = issue_data.get('image')
-            if image:
-                img_url = str(image) if not isinstance(image, str) else image
-
-        return metadata, img_url, None
+        return metadata, _metron_image_url(issue_data), None
     except Exception as e:
         app_logger.warning(f"[search-metadata] Metron lookup failed: {e}")
         return None, None, None
@@ -5389,7 +5433,10 @@ def search_metadata():
             if provider_type == 'metron':
                 metadata, img_url, selection_data = _try_metron_single(
                     cvinfo_path, series_name, issue_number, year,
-                    near_misses=near_misses
+                    near_misses=near_misses,
+                    # A typed search term is the user asking for a name
+                    # search; the cover has already had its say.
+                    file_path=None if search_term_override else file_path
                 )
                 if selection_data and held_match is None:
                     selection_data["parsed_filename"] = {

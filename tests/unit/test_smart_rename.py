@@ -800,7 +800,8 @@ class TestApplyNeverOverwrites:
 
 
 class TestRenameNoClobberPrimitives:
-    """Each tier of _rename_no_clobber. Windows (where the suite runs locally)
+    """Each tier of helpers.no_clobber.rename_no_clobber (which smart_rename
+    re-exports as _rename_no_clobber). Windows (where the suite runs locally)
     takes the os.rename branch, so the POSIX tiers are exercised directly."""
 
     def test_link_then_unlink_renames(self, tmp_path):
@@ -850,35 +851,35 @@ class TestRenameNoClobberPrimitives:
 
     def _posix(self):
         """Run _rename_no_clobber's POSIX path on any platform."""
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
         fake_os = MagicMock(wraps=os)
         fake_os.name = "posix"
         fake_os.path = os.path
         return patch.object(sr, "os", fake_os)
 
     def test_posix_falls_back_to_link_when_renameat2_unavailable(self, tmp_path):
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
         src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
         src.write_bytes(b"A")
         with self._posix(), patch.object(sr, "_renameat2_noreplace", return_value=False), \
              patch.object(sr, "_link_then_unlink", wraps=sr._link_then_unlink) as link:
-            sr._rename_no_clobber(str(src), str(dst))
+            sr.rename_no_clobber(str(src), str(dst))
         link.assert_called_once()
         assert dst.read_bytes() == b"A"
 
     def test_posix_without_hard_links_falls_back_to_rename(self, tmp_path):
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
         src, dst = tmp_path / "a.cbz", tmp_path / "b.cbz"
         src.write_bytes(b"A")
         with self._posix(), patch.object(sr, "_renameat2_noreplace", return_value=False), \
              patch.object(sr, "_link_then_unlink", return_value=False):
-            sr._rename_no_clobber(str(src), str(dst))
+            sr.rename_no_clobber(str(src), str(dst))
         assert not src.exists()
         assert dst.read_bytes() == b"A"
 
     def test_renameat2_eexist_raises_file_exists(self, tmp_path):
         import errno
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
 
         fake = MagicMock(return_value=-1)
         with patch.object(sr, "_load_renameat2", return_value=fake), \
@@ -888,7 +889,7 @@ class TestRenameNoClobberPrimitives:
 
     def test_renameat2_unsupported_by_filesystem_reports_false(self, tmp_path):
         import errno
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
 
         fake = MagicMock(return_value=-1)
         with patch.object(sr, "_load_renameat2", return_value=fake), \
@@ -896,7 +897,7 @@ class TestRenameNoClobberPrimitives:
             assert sr._renameat2_noreplace(str(tmp_path / "a"), str(tmp_path / "b")) is False
 
     def test_renameat2_success(self, tmp_path):
-        import cbz_ops.smart_rename as sr
+        import helpers.no_clobber as sr
 
         fake = MagicMock(return_value=0)
         with patch.object(sr, "_load_renameat2", return_value=fake):

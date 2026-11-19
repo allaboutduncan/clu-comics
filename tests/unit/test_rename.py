@@ -1990,3 +1990,35 @@ class TestFreeDestination:
             rename_files(str(tmp_path))
         contents = sorted(p.read_bytes() for p in tmp_path.iterdir())
         assert contents == [b"keep me", b"other"]
+
+
+class TestMetadataRenameNeverOverwrites:
+    """#731: rename_comic_from_metadata was exists-then-os.rename, which on
+    Linux replaces a comic created at that name in between."""
+
+    PATTERN = '{series_name} {issue_number} ({volume_year})'
+    META = {'Series': 'Batman', 'Number': '1', 'Year': 2020}
+
+    def test_existing_target_is_kept(self, tmp_path):
+        from cbz_ops.rename import rename_comic_from_metadata
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"new")
+        taken = tmp_path / "Batman 001 (2020).cbz"
+        taken.write_bytes(b"already filed")
+        with patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, self.PATTERN)):
+            assert rename_comic_from_metadata(str(f), self.META) == (str(f), False)
+        assert taken.read_bytes() == b"already filed"
+        assert f.read_bytes() == b"new"
+
+    def test_target_created_after_the_check_is_kept(self, tmp_path):
+        """The existence check sees nothing; the rename itself must refuse."""
+        from cbz_ops.rename import rename_comic_from_metadata
+        f = tmp_path / "old.cbz"
+        f.write_bytes(b"new")
+        taken = tmp_path / "Batman 001 (2020).cbz"
+        taken.write_bytes(b"already filed")
+        with patch('cbz_ops.rename.load_custom_rename_config', return_value=(True, self.PATTERN)), \
+             patch('helpers.no_clobber.os.path.lexists', return_value=False):
+            assert rename_comic_from_metadata(str(f), self.META) == (str(f), False)
+        assert taken.read_bytes() == b"already filed"
+        assert f.read_bytes() == b"new"

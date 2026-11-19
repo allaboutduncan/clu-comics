@@ -19,6 +19,9 @@ import gc
 import io
 from contextlib import contextmanager
 
+# Standard library only, so this cannot cycle back into the package.
+from helpers.no_clobber import rename_no_clobber  # noqa: F401  (re-exported)
+
 #########################
 # Hidden File Handling  #
 #########################
@@ -264,7 +267,7 @@ def match_parent_permissions(path):
         pass
 
 
-def move_file(src, dst):
+def move_file(src, dst, replace=True):
     """Move *src* onto *dst* without letting a metadata copy fail the move.
 
     ``shutil.move`` falls back to ``copy2`` for a cross-device move, and
@@ -301,13 +304,27 @@ def move_file(src, dst):
     ``STALE_INCOMING_SECONDS`` old.
 
     Not for directories: ``dst`` is always a full file path here.
+
+    ``replace=False`` is for a caller that must never overwrite (filing a
+    download into the library, #731): a different file already at *dst* raises
+    ``FileExistsError``, with *src* left where it was and *dst* untouched. The
+    refusal is made by the rename itself (``helpers.no_clobber``), not by an
+    ``os.path.exists`` check beforehand, so a file that appears at *dst* while
+    the copy is running is not replaced either.
     """
+    # os.replace rather than os.rename so an existing destination is clobbered
+    # on Windows too, matching what rename already does on POSIX.
+    install = os.replace if replace else rename_no_clobber
+
     try:
-        # Same-device fast path. os.replace rather than os.rename so an
-        # existing destination is clobbered on Windows too, matching what
-        # rename already does on POSIX.
-        os.replace(src, dst)
+        # Same-device fast path.
+        install(src, dst)
         return
+    except FileExistsError:
+        if not replace:
+            raise
+        if _same_file(src, dst):
+            raise
     except OSError:
         # Cross-device (EXDEV), or a destination we must copy onto. A
         # case-only rename on a case-insensitive mount is the same file: the
@@ -331,8 +348,10 @@ def move_file(src, dst):
                 "the mount refuses utime/chmod"
             )
         # Same directory, so this cannot be cross-device; until it runs the
-        # original at dst is untouched.
-        os.replace(staged, dst)
+        # original at dst is untouched. With replace=False this is the
+        # no-clobber rename: a file that appeared at dst during the copy
+        # raises FileExistsError, and the staged copy is removed below.
+        install(staged, dst)
     except BaseException:
         try:
             os.remove(staged)
@@ -618,6 +637,46 @@ def describe_archive_error(exc):
     """
     detail = archive_error_detail(exc)
     return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
+_NON_ZIP_MAGIC = (
+    (b"Rar!\x1a\x07", "rar"),
+    (b"7z\xbc\xaf\x27\x1c", "7z"),
+)
+
+
+def sniff_archive_format(path):
+    """``'rar'`` or ``'7z'`` when ``path`` starts with that signature, else None.
+
+    The answer comes from the bytes, never the name. Release groups ship RAR
+    and 7-Zip archives named ``.cbz`` (a six-issue pack of 7z files was the
+    report), and every conversion decision in the WATCH pipeline used to be
+    made on the extension alone: such a file sailed through to the library,
+    where nothing could preview, tag or edit it ("File is not a zip file")
+    while a reader that sniffs content opened it happily. One six-byte read;
+    None on any OSError. A zip is None too -- this only names what a ``.cbz``
+    must not be.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(6)
+    except OSError:
+        return None
+    for magic, name in _NON_ZIP_MAGIC:
+        if head.startswith(magic):
+            return name
+    return None
+
+
+def mislabelled_cbz_format(path):
+    """The real format of a RAR/7z archive named ``.cbz``, or None.
+
+    Both convert through the RAR ladder (``extract_rar_with_unar``: unrar,
+    then 7z, then unar -- the tools read content, not names).
+    """
+    if not str(path).lower().endswith(".cbz"):
+        return None
+    return sniff_archive_format(path)
 
 
 #########################

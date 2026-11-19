@@ -222,6 +222,29 @@ def single_flight_target_sweep(func):
     return wrapper
 
 
+# A download the wanted pass declined to file because its name is already taken
+# in the series folder (#731). It stays in TARGET and is matched again on every
+# pass while the issue stays wanted -- and a pass runs per completed download --
+# so the refusal is announced once per file and is DEBUG after that. Keyed on
+# (path, mtime, size): a re-download landing at the same path is a new file and
+# is announced again. In memory on purpose; a restart costs one repeated line.
+_filing_refusals = set()
+_filing_refusals_lock = threading.Lock()
+MAX_FILING_REFUSALS = 2000
+
+
+def first_filing_refusal(path, fingerprint=None):
+    """True the first time this file is refused, False on every repeat."""
+    key = (path, fingerprint)
+    with _filing_refusals_lock:
+        if key in _filing_refusals:
+            return False
+        if len(_filing_refusals) >= MAX_FILING_REFUSALS:
+            _filing_refusals.clear()
+        _filing_refusals.add(key)
+        return True
+
+
 # ── Operations Registry ──
 _operations = {}
 _operations_lock = threading.Lock()
@@ -253,7 +276,7 @@ def _visible(op_or_note, viewer_id, is_owner):
 
 
 def register_operation(op_type, label, total=0, op_id=None, user_id=None,
-                       status="running"):
+                       status="running", path=None):
     """Register a new long-running operation. Returns the operation ID.
 
     ``status="queued"`` registers an op that is waiting its turn in a job
@@ -264,6 +287,9 @@ def register_operation(op_type, label, total=0, op_id=None, user_id=None,
     token for synchronous endpoints that want polled progress). Defaults to a
     fresh uuid when omitted. The op is attributed to ``user_id`` (or the current
     request user / owner) so progress doesn't leak across accounts.
+
+    ``path`` names the one file the op is rewriting, when there is one. Pages
+    use it to mark that file as busy where it is listed.
     """
     if op_id is None:
         op_id = uuid.uuid4().hex
@@ -281,6 +307,7 @@ def register_operation(op_type, label, total=0, op_id=None, user_id=None,
             "updated_at": now,
             "completed_at": None,
             "user_id": _resolve_uid(user_id),
+            "path": path,
         }
     return op_id
 

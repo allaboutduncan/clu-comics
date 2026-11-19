@@ -167,6 +167,37 @@ against, `series_norm_norm`. Every writer has to agree with
 `lookup_series_urls`'s `WHERE series_norm_norm = ?`; a row that disagrees is
 indexed and then never found, which is what the sitemap insert also did.
 
+#### The scrape index is a prefilter, never a verdict
+
+`series_norm` says which series a row was *filed under*, not which series it
+is. `search_getcomics_for_issue` indexes its live results with
+`index_live_results(urls, series_norm=<the searched name>)`, and a search for
+"52" returns every DC "New 52" collection: 458 of 473 rows under `52` were
+Batgirl, Green Lantern and Batman trades (#777).
+
+- **`try_scrape_index` scores every row it returns.** It used to have a first
+  tier that matched the tag plus an issue number or range and returned a fixed
+  50 without reading the title. The sweep re-scores whatever comes back, so
+  that was probably not a wrong download — but an index hit is returned
+  *instead of* searching live, so the real issue was never looked for, behind a
+  log line saying ACCEPT. `_best_accepted_row` makes the same
+  `score_getcomics_result` + `accept_result` call the sweep makes, and a range
+  row is a FALLBACK there like anywhere else.
+- **An entry is filed under the series its own title names**
+  (`_entry_series_key`). The `series_norm` passed to `_scrape_url_to_index` is
+  a hint for the whole page — the sitemap slug's guess or the searched name —
+  and is kept only when the title opens with it (whole words,
+  punctuation-blind, leading article ignored). `parse_result_title().name` is
+  not a usable key: it keeps subtitles and empty parentheses.
+- **`repair_series_tags()` re-files the old rows once**
+  (`getcomics_series_tags_repaired_v1`), from the sweep and the scrape-index
+  build, each in its own `try`. Not from `_ensure_urls_table`: request threads
+  call that and the repair reads the whole table.
+- `scrape_sitemap.py` calls the app's indexer. It carried a private copy that
+  stamped the tag on every entry and slugified entry keys its own way.
+
+Tests: `tests/mocked/test_getcomics_scrape_index_series.py`.
+
 #### A rate-limited provider is stood down, not asked again
 
 `core.download_utils` holds a per-provider cooldown
@@ -193,6 +224,35 @@ just **4 distinct files**, 35 stack traces, and not one success.
 ## GetComics Search Scoring System
 
 The GetComics download detection uses a scoring system in `models/getcomics.py` (`score_getcomics_result`) to match search results against wanted issues.
+
+### A Result Needs Evidence for the Issue
+
+A title that names neither the wanted issue nor a range holding it is capped
+below `ACCEPT_THRESHOLD` in `score_comic`, whatever else it scores (#729).
+"Empyre" used to reach 45 on series name + tightness and was a "direct match"
+for every missing issue of Empyre. The cap is in `score_comic` because the
+sweep, its year-refined pass, the simulation, the sitemap candidates and the
+scrape-index tier have no shared call site. Usenet and DC++ additionally
+require `issue_matched` themselves and get no exception.
+
+- **The one exception is `_is_unnumbered_oneshot`**: wanted issue is #1, the
+  title carries the issue's or the volume's year, and the title is nothing but
+  the series name and that year. Each condition closes a way the bug got in;
+  do not relax one to rescue a single title.
+- **`_strip_site_suffix` removes the trailing " – GetComics" and nothing
+  else.** `scrape_and_score_candidate` used to cut at the *first* dash, so
+  "Astonishing X-Men – Infinity Comic #5 – 7" was scored as "Astonishing
+  X-Men" and a pack "#1 – 80" as issue #1. That, not the scorer, manufactured
+  the bare titles. The scrape indexer still has its own first-dash split; its
+  titles feed `_slugify_entry_title`, so it was left alone and its rows are
+  held back by the cap.
+- **Only text before the issue marker names the series** (`_score_remaining`).
+  "Green Lantern Corps #0 – 37 + Annual" is not Green Lantern: a keyword after
+  the number is an add-on to the run. A range under another series' name is
+  rejected outright, like an arc. A leading "Vol. N" is a volume marker, not
+  other-series text.
+
+Tests: `tests/mocked/test_getcomics_issue_evidence.py`.
 
 ### Range Pack Handling
 

@@ -791,6 +791,89 @@ def test_existing_cbz_in_target_skips_conversion(converting_handler):
     assert calls == [], "must not re-convert an existing CBZ"
 
 
+RAR_BYTES = b"Rar!\x1a\x07\x00" + b"\x00" * 64
+
+
+def test_rar_named_cbz_is_relabelled_and_converted(converting_handler):
+    """A RAR shipped as .cbz used to pass straight through on its name and
+    reach the library as a "CBZ" that nothing could open."""
+    h, watch, target, calls = converting_handler
+    _write(os.path.join(watch, "X-Force 001 (2004).cbz"), RAR_BYTES)
+
+    h.reconcile_directory()
+
+    assert [os.path.basename(c) for c in calls] == ["X-Force 001 (2004).cbr"]
+    with open(_moved_path(target, "X-Force 001 (2004).cbz"), "rb") as f:
+        assert f.read() == b"converted"
+
+
+def test_rar_named_cbz_becomes_cbr_when_autoconvert_is_off(handler):
+    """Without conversion it at least carries the extension CLU reads it by."""
+    h, watch, target = handler
+    _write(os.path.join(watch, "X-Force 002 (2004).cbz"), RAR_BYTES)
+
+    h.reconcile_directory()
+
+    assert os.path.exists(_moved_path(target, "X-Force 002 (2004).cbr"))
+    assert not os.path.exists(_moved_path(target, "X-Force 002 (2004).cbz"))
+
+
+def test_real_cbz_is_not_relabelled(converting_handler):
+    h, watch, target, calls = converting_handler
+    _write(os.path.join(watch, "X-Force 003 (2004).cbz"), b"PK\x03\x04zip")
+
+    h.reconcile_directory()
+
+    assert calls == []
+    assert os.path.exists(_moved_path(target, "X-Force 003 (2004).cbz"))
+
+
+SEVENZ_BYTES = b"7z\xbc\xaf\x27\x1c\x00\x04" + b"\x00" * 64
+
+
+def test_7z_named_cbz_is_converted(converting_handler):
+    """The reported case: a pack of 7-Zip archives named .cbz. The conversion
+    tools read content, so the CBR branch handles it."""
+    h, watch, target, calls = converting_handler
+    _write(os.path.join(watch, "X-Force 004 (2004).cbz"), SEVENZ_BYTES)
+
+    h.reconcile_directory()
+
+    assert [os.path.basename(c) for c in calls] == ["X-Force 004 (2004).cbr"]
+    with open(_moved_path(target, "X-Force 004 (2004).cbz"), "rb") as f:
+        assert f.read() == b"converted"
+
+
+def test_7z_named_cbz_keeps_its_name_when_autoconvert_is_off(handler):
+    """.cbr would be one more wrong label; it stays put for Rebuild."""
+    h, watch, target = handler
+    _write(os.path.join(watch, "X-Force 005 (2004).cbz"), SEVENZ_BYTES)
+
+    h.reconcile_directory()
+
+    assert os.path.exists(_moved_path(target, "X-Force 005 (2004).cbz"))
+
+
+def test_archive_format_is_read_from_the_bytes_not_the_name(tmp_path):
+    from helpers import sniff_archive_format, mislabelled_cbz_format
+
+    rar_as_cbz = tmp_path / "a.cbz"
+    rar_as_cbz.write_bytes(RAR_BYTES)
+    real_cbr = tmp_path / "b.cbr"
+    real_cbr.write_bytes(RAR_BYTES)
+    zip_cbz = tmp_path / "c.cbz"
+    zip_cbz.write_bytes(b"PK\x03\x04zip")
+    sevenz_as_cbz = tmp_path / "d.cbz"
+    sevenz_as_cbz.write_bytes(SEVENZ_BYTES)
+
+    assert mislabelled_cbz_format(str(rar_as_cbz)) == "rar"
+    assert mislabelled_cbz_format(str(sevenz_as_cbz)) == "7z"
+    assert sniff_archive_format(str(real_cbr)) == "rar"
+    assert mislabelled_cbz_format(str(real_cbr)) is None
+    assert sniff_archive_format(str(zip_cbz)) is None
+    assert sniff_archive_format(str(tmp_path / "missing.cbz")) is None
+
+
 def test_empty_cbr_not_converted(converting_handler):
     """A zero-byte CBR is skipped rather than fed to the converter."""
     h, watch, target, calls = converting_handler

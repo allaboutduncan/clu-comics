@@ -1702,6 +1702,177 @@ def search_series_list(
     return matches
 
 
+# Metron's own default for ``cover_hash_near``: on digital files the right issue
+# is within 10 bits 98.6% of the time and is the only result 92% of the time.
+COVER_MATCH_DISTANCE = 10
+# The retry for print-vs-digital trade dress (no price box or barcode on the
+# digital cover), which lands 12-18 bits off. Only ever sent with a cover year:
+# unfiltered, every query at 16 also returns unrelated covers.
+COVER_MATCH_WIDE_DISTANCE = 16
+# Metron requests one file may spend on the cover lookup.
+COVER_MATCH_MAX_CALLS = 2
+
+
+def _norm_issue_number(number) -> str:
+    """Issue number for comparison: leading zeros dropped, the sign kept."""
+    text = str(number if number is not None else "").strip().lower().lstrip("#")
+    if not text:
+        return ""
+    sign = "-" if text.startswith("-") else ""
+    return sign + (text.lstrip("-").lstrip("0") or "0")
+
+
+def find_issues_by_cover(
+    api,
+    cover_hash: str,
+    max_distance: int = COVER_MATCH_DISTANCE,
+    cover_year: Optional[int] = None,
+    context: str = "",
+) -> Optional[List[Dict[str, Any]]]:
+    """Issues whose main cover is within ``max_distance`` bits of ``cover_hash``.
+
+    Closest first. Returns ``None`` when Metron could not be asked and ``[]``
+    when it answered with nothing, so a caller never reads an outage as "no
+    such cover".
+
+    The distance is recomputed here from each row's own ``cover_hash`` and rows
+    outside the limit are dropped. A server that does not know the filter
+    ignores it and returns unfiltered issues; without the recheck those would
+    be taken for matches.
+    """
+    from core.cover_hash import hamming
+
+    if not api or not cover_hash:
+        return None
+    params: Dict[str, Any] = {
+        "cover_hash_near": cover_hash,
+        "cover_hash_max_distance": max_distance,
+    }
+    if cover_year:
+        params["cover_year"] = cover_year
+
+    label = f"matching cover {cover_hash} {context}".strip()
+    results = api.using(context=label).issues_list(params)
+    if results is None:
+        return None
+
+    found = []
+    for issue in list(results):
+        stored = getattr(issue, "cover_hash", "") or ""
+        try:
+            distance = hamming(cover_hash, stored)
+        except ValueError:
+            continue
+        if distance > max_distance:
+            continue
+        series = getattr(issue, "series", None)
+        cover_date = getattr(issue, "cover_date", None)
+        found.append({
+            "id": getattr(issue, "id", None),
+            "number": str(getattr(issue, "number", "") or ""),
+            "series_id": getattr(series, "id", None),
+            "series_name": getattr(series, "name", "") or "",
+            "series_year": getattr(series, "year_began", None),
+            "cover_year": getattr(cover_date, "year", None),
+            "cover_hash": stored,
+            "distance": distance,
+        })
+    found.sort(key=lambda c: c["distance"])
+    return found
+
+
+def _cover_candidate_corroborated(
+    candidate: Dict[str, Any], series_name: str, issue_number, year, wide: bool
+) -> bool:
+    """Whether the filename agrees that ``candidate`` is this file.
+
+    A close hash is not proof on its own: unrelated covers come as near as 8
+    bits, and a collected edition often carries an issue's cover exactly (a
+    trade at 0 bits, ahead of the issue itself). So the filename has to agree
+    on two of series, number and year, and a number it does give must not
+    contradict. A wide search returns more strangers, so it needs the series
+    and the number.
+    """
+    want_number = _norm_issue_number(issue_number)
+    number_ok = bool(want_number) and want_number == _norm_issue_number(candidate["number"])
+    if want_number and not number_ok:
+        return False
+
+    want_words = _norm_series_words(series_name)
+    have_words = _norm_series_words(candidate["series_name"])
+    series_ok = bool(want_words and have_words) and (
+        want_words <= have_words or have_words <= want_words
+    )
+    if wide:
+        return number_ok and series_ok
+
+    year_ok = False
+    if year:
+        cover_year = candidate.get("cover_year")
+        year_ok = (
+            cover_year is not None and abs(cover_year - year) <= 1
+        ) or candidate.get("series_year") == year
+    return (number_ok + series_ok + year_ok) >= 2
+
+
+def match_issue_by_cover(
+    api, file_path: str, series_name: str, issue_number, year: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """Identify a file's Metron issue from its cover image.
+
+    For a file with no cvinfo, where the alternative is guessing the series
+    from the filename. Returns the one candidate the filename corroborates
+    (see ``_cover_candidate_corroborated``), or ``None`` -- in which case the
+    caller matches by name exactly as it did before. Never a list: showing
+    uncorroborated candidates is a picker's job, not this function's.
+
+    Costs at most ``COVER_MATCH_MAX_CALLS`` requests: the default distance for
+    the cover (a wraparound spread is split, front half first), then, if that
+    found nothing at all and the filename has a year, one wider search within
+    that cover year.
+    """
+    from core.cover_hash import cover_hashes
+    from core.settings import get_bool
+
+    if not api or not file_path or not get_bool("METRON_COVER_MATCH"):
+        return None
+    hashes = cover_hashes(file_path)
+    if not hashes:
+        return None
+
+    name = os.path.basename(file_path)
+    attempts = [(h, COVER_MATCH_DISTANCE, None) for h in hashes]
+    if len(hashes) == 1 and year:
+        attempts.append((hashes[0], COVER_MATCH_WIDE_DISTANCE, year))
+
+    for cover_hash, distance, cover_year in attempts[:COVER_MATCH_MAX_CALLS]:
+        candidates = find_issues_by_cover(
+            api, cover_hash, distance, cover_year, context=f"for {name}"
+        )
+        if candidates is None:
+            return None  # Metron is unavailable; do not spend the second call.
+        if not candidates:
+            continue
+        wide = distance > COVER_MATCH_DISTANCE
+        agreed = [
+            c for c in candidates
+            if _cover_candidate_corroborated(c, series_name, issue_number, year, wide)
+        ]
+        if len(agreed) == 1:
+            hit = agreed[0]
+            app_logger.info(
+                f"Metron cover match for {name}: {hit['series_name']} "
+                f"({hit['series_year']}) #{hit['number']}, {hit['distance']} bits off"
+            )
+            return hit
+        app_logger.debug(
+            f"Metron cover search for {name}: {len(candidates)} within {distance} "
+            f"bits, {len(agreed)} agree with the filename -- matching by name"
+        )
+        return None
+    return None
+
+
 def get_series_details(api, series_id: int) -> Optional[Dict[str, Any]]:
     """
     Get full details for a Metron series including cv_id, publisher, year_began.

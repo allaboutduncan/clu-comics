@@ -33,7 +33,7 @@ DATABASE_PY = os.path.join(
 )
 
 # Leak-shaped writers on the day this test was written. Only ever lower it.
-BASELINE = 94
+BASELINE = 93
 
 # Converted for #723 -- they are on the TARGET -> library path, which runs once
 # per completed download, and must never regress.

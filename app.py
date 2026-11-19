@@ -63,6 +63,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 import core.app_state as app_state
+import core.stream_ops as stream_ops
 from routes.favorites import favorites_bp
 
 from routes.opds import opds_bp
@@ -645,6 +646,7 @@ def scheduled_series_sync():
         fail_count = 0
 
         from helpers.comicvine_ids import is_comicvine_series_id
+        from core.series_sync import should_skip_issue_fetch
 
         for series in series_list:
             series_id = series["id"]
@@ -655,7 +657,9 @@ def scheduled_series_sync():
                 continue
             # These values should come from your local database
             local_status = series.get("status")
-            local_issue_count = series.get("issue_count", 0)
+            # NULL until the series has been synced once; the skip decision
+            # below treats that as "unknown", never as 0 (#779).
+            local_issue_count = series.get("issue_count")
             try:
                 # 1. Fetch BASIC series info (1 API call, with rate-limit handling)
                 series_info = api.using(
@@ -677,19 +681,12 @@ def scheduled_series_sync():
                 )
                 api_issue_count = series_info.issue_count
 
-                # Logical check to skip
-                should_skip = False
-
-                # Skip if completed/cancelled and we already have all issues
-                if (
-                    api_status in ["Ended", "Completed", "Cancelled"]
-                    and local_issue_count >= api_issue_count
-                ):
-                    should_skip = True
-
-                # Skip if issue count hasn't changed (API modified date is unreliable for new issues)
-                elif local_issue_count == api_issue_count:
-                    should_skip = True
+                # Skip when finished and complete, or when the count has not
+                # moved. A never-synced series always falls through to the
+                # fetch -- see core.series_sync.
+                should_skip = should_skip_issue_fetch(
+                    local_issue_count, api_status, api_issue_count
+                )
 
                 if should_skip:
                     skip_count += 1
@@ -1001,16 +998,13 @@ def process_incoming_wanted_issues():
             continue
 
         # Move file with original name first -- but never onto a comic already
-        # in the series folder. move_file is os.replace underneath, which
-        # replaces an existing destination without a word (#723).
-        from cbz_ops.rename import free_destination
-
-        temp_dest = free_destination(src, os.path.join(dest_dir, filename))
-        if os.path.basename(temp_dest) != filename:
-            app_logger.warning(
-                f"{filename} already exists in {dest_dir}; filing this copy as "
-                f"{os.path.basename(temp_dest)} so neither is overwritten"
-            )
+        # in the series folder (#723). The move itself refuses an existing
+        # destination (replace=False): an os.path.exists check beforehand left
+        # a window in which a comic created at that name was replaced, and
+        # filing the download as "Name (1)" put a second copy of an issue the
+        # library already had beside the first (#731). A refused download stays
+        # in TARGET for the user to decide about.
+        temp_dest = os.path.join(dest_dir, filename)
 
         try:
             # move_file, not shutil.move: shutil.move's cross-device fallback
@@ -1020,9 +1014,25 @@ def process_incoming_wanted_issues():
             # *after* the library copy is complete. moved_count never
             # incremented, the TARGET source was never unlinked, and the same
             # comic was re-copied into the library on every subsequent sweep.
-            from helpers import move_file
+            from helpers import move_file, rename_no_clobber
 
-            move_file(src, temp_dest)
+            try:
+                move_file(src, temp_dest, replace=False)
+            except FileExistsError:
+                # Not moved: no moved_count, no queue-stamp clear, no index
+                # row. Announced once per file -- it is matched again on
+                # every pass while the issue stays wanted.
+                try:
+                    src_stat = os.stat(src)
+                    fingerprint = (src_stat.st_mtime, src_stat.st_size)
+                except OSError:
+                    fingerprint = None
+                refusal = f"Not filing {filename}: {temp_dest} already exists"
+                if app_state.first_filing_refusal(src, fingerprint):
+                    app_logger.warning(f"{refusal}. Left in TARGET: {src}")
+                else:
+                    app_logger.debug(refusal)
+                continue
             app_logger.info(f"Moved: {filename} -> {dest_dir}")
             moved_count += 1
             affected_series.add(issue["series_id"])
@@ -1066,18 +1076,20 @@ def process_incoming_wanted_issues():
                 new_filename = get_renamed_filename(filename, file_path=temp_dest)
                 if new_filename and new_filename != filename:
                     # Two different issues can render to one name; a bare
-                    # os.rename onto it destroyed the first one (#723).
-                    final_path = free_destination(
-                        temp_dest, os.path.join(dest_dir, new_filename)
-                    )
-                    if os.path.basename(final_path) != new_filename:
+                    # os.rename onto it destroyed the first one (#723). The
+                    # comic is already filed, so on a collision it simply
+                    # keeps the name it arrived with.
+                    renamed_path = os.path.join(dest_dir, new_filename)
+                    try:
+                        rename_no_clobber(temp_dest, renamed_path)
+                        final_path = renamed_path
+                    except FileExistsError:
                         app_logger.warning(
                             f"Rename target {new_filename} already exists in "
-                            f"{dest_dir}; using {os.path.basename(final_path)} "
-                            f"so neither comic is overwritten"
+                            f"{dest_dir}; keeping {filename} so neither comic "
+                            f"is overwritten"
                         )
                 if final_path != temp_dest:
-                    os.rename(temp_dest, final_path)
                     app_logger.info(
                         f"Renamed: {os.path.basename(temp_dest)} -> "
                         f"{os.path.basename(final_path)}"
@@ -1301,6 +1313,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             get_series_alias_list,
             select_download_url,
             PROVIDER_LABELS,
+            repair_series_tags,
         )
         from api import download_queue, download_progress
         from datetime import date
@@ -1356,6 +1369,14 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
 
         app_logger.info("Starting scheduled GetComics auto-download...")
         start_time = time.time()
+
+        # One-time (#777): re-file scrape-index entries stored under a series
+        # their title does not name. A no-op once its flag is set, and a
+        # failure must not cost the sweep -- the index only prefilters.
+        try:
+            repair_series_tags()
+        except Exception as e:
+            app_logger.warning(f"GetComics series-tag repair failed: {e}")
 
         today = date.today().isoformat()
         cooldown_now = datetime.now()
@@ -2231,11 +2252,21 @@ def scheduled_scrape_index_build(batch_size: int = 300):
     """
     try:
         from core.database import get_db_connection
-        from models.getcomics import _scrape_url_to_index as _scrape_url_for_index, _ensure_urls_table
+        from models.getcomics import (
+            _scrape_url_to_index as _scrape_url_for_index,
+            _ensure_urls_table,
+            repair_series_tags,
+        )
         import time
 
         # Ensure table exists before querying
         _ensure_urls_table()
+
+        # One-time (#777), before the batch below groups by series_norm.
+        try:
+            repair_series_tags()
+        except Exception as e:
+            app_logger.warning(f"GetComics series-tag repair failed: {e}")
 
         app_logger.info(f"Starting scrape index build (batch={batch_size})...")
 
@@ -7092,15 +7123,17 @@ def stream_logs(script_type):
 
         script_module = f"cbz_ops.{script_type}"
 
+        # Resolved here, inside the request: the generator below runs after the
+        # request context is gone, and an op with no owner is hidden from the
+        # user who started it.
+        op_user_id = current_user_id()
+
         def generate_logs():
-            # Track single-file convert/rebuild operations
-            op_id = None
-            if script_type == "single_file":
-                op_id = app_state.register_operation(
-                    "convert", os.path.basename(file_path)
-                )
-            _progress_re = re.compile(r"Compression progress: ([\d.]+)% \((\d+)/(\d+)")
-            _step_re = re.compile(r"Step (\d+)/(\d+): (.+)")
+            # Every single-file action is registered, so it shows in the header
+            # operations indicator on every page (core/stream_ops.py).
+            op_id = stream_ops.register_single_file_op(
+                script_type, file_path, user_id=op_user_id
+            )
 
             process = subprocess.Popen(
                 ["python", "-u", "-m", script_module, file_path],
@@ -7112,54 +7145,18 @@ def stream_logs(script_type):
             # Capture both stdout and stderr
             try:
                 for line in process.stdout:
-                    if op_id:
-                        m = _progress_re.search(line)
-                        if m:
-                            pct = int(float(m.group(1)))
-                            app_state.update_operation(
-                                op_id,
-                                current=pct,
-                                total=100,
-                                detail=f"Compressing ({m.group(2)}/{m.group(3)} files)",
-                            )
-                        else:
-                            m2 = _step_re.search(line)
-                            if m2:
-                                app_state.update_operation(
-                                    op_id, detail=m2.group(3).strip(".\n")
-                                )
+                    stream_ops.track_line(op_id, line)
                     yield f"data: {line}\n\n"  # Format required by SSE
                 for line in process.stderr:
                     yield f"data: ERROR: {line}\n\n"
             except GeneratorExit:
-                # Client disconnected — continue monitoring subprocess in background
-                if process.poll() is None and op_id:
-
-                    def _drain_and_track():
-                        try:
-                            for line in process.stdout:
-                                m = _progress_re.search(line)
-                                if m:
-                                    pct = int(float(m.group(1)))
-                                    app_state.update_operation(
-                                        op_id,
-                                        current=pct,
-                                        total=100,
-                                        detail=f"Compressing ({m.group(2)}/{m.group(3)} files)",
-                                    )
-                            process.wait()
-                            app_state.complete_operation(
-                                op_id, error=(process.returncode != 0)
-                            )
-                        except Exception:
-                            app_state.complete_operation(op_id, error=True)
-
-                    threading.Thread(target=_drain_and_track, daemon=True).start()
+                # The page went away. The subprocess keeps running; keep
+                # reading its pipes and finish the op when it exits.
+                stream_ops.follow_in_background(process, op_id)
                 return
 
             process.wait()
-            if op_id:
-                app_state.complete_operation(op_id, error=(process.returncode != 0))
+            stream_ops.finish(op_id, process.returncode)
             if process.returncode != 0:
                 yield f"data: An error occurred while streaming logs. Return code: {process.returncode}.\n\n"
             else:

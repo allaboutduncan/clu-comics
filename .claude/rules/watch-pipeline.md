@@ -259,6 +259,24 @@ destination instead of nesting into it as `shutil.move` did. Tests:
 `tests/unit/test_library_moves_cross_device.py`,
 `tests/routes/test_move_batch_cross_device.py`.
 
+- **Filing a download never overwrites, and never invents a name (#731).**
+  `process_incoming_wanted_issues` calls `move_file(src, dst, replace=False)`;
+  the refusal comes from the rename itself (`helpers.no_clobber.rename_no_clobber`:
+  Windows `os.rename`, `renameat2(RENAME_NOREPLACE)`, `link`+`unlink`, and only
+  then check-then-rename on a mount with neither), not from an `os.path.exists`
+  check made earlier. A download whose name is taken **stays in TARGET**: it
+  used to be filed as `Name (1)`, a second copy of an issue the library already
+  had. The handler `continue`s before `moved_count`, the queue-stamp clear and
+  the index insert, and announces through `app_state.first_filing_refusal`
+  (WARNING once per file, DEBUG after), because the file is matched again on
+  every pass. The rename *after* filing is different: the comic is already in
+  the library, so on a collision it keeps the name it arrived with.
+  `rename_comic_from_metadata` uses the same primitive. `replace=True` stays
+  the default: every in-place CBZ rewrite relies on the overwrite.
+  `rename_files`/`rename_file` still use `free_destination` and ` (1)`.
+  **A manual `/move` or `/move-batch` overwrites on purpose**
+  (`routes.files._move_item`): dragging a better copy onto a comic in the File
+  Manager is how users replace one. Do not pass `replace=False` there.
 - **Only the metadata failure is demoted.** A failed `copyfile` and a source
   that cannot be removed both still raise: the second is the #582 failure mode
   above, and in TARGET a leftover source is re-matched forever.
@@ -311,6 +329,27 @@ Retry for that source points at **Rebuild**, which is
 `CLU.executeStreamingOp('single_file', path)` — literally `convert_to_cbz`, and
 already streamed; re-running it inside the request would outlive gunicorn's
 timeout on a 500MB pack.
+
+#### A RAR or 7z named `.cbz` is recognised by its bytes
+
+Every conversion decision used to be made on the extension, so a RAR or 7-Zip
+archive shipped as `.cbz` (the report was a pack of six 7z files) reached the
+library as a "CBZ" nothing could preview, tag or edit ("File is not a zip
+file"), while a reader that sniffs content opened it.
+`helpers.mislabelled_cbz_format` (a six-byte read, `'rar'`/`'7z'`/None) is
+checked in three places. Both formats convert through the RAR ladder, whose
+tools read content:
+
+- `monitor._move_file` renames it to `.cbr` in TARGET, so the existing CBR
+  branch converts it. With AUTOCONVERT off a RAR is still renamed (that is its
+  right label); a 7z keeps its name and is only logged.
+- `routes.files._do_move_batch` lists it on Library Health (`SOURCE_CONVERT`,
+  advice Rebuild). The move phase is the step that always runs.
+- `routes.files._do_tag_batch` converts it first when AUTOCONVERT is on, and
+  otherwise skips the providers for it.
+
+`api._finish_download_in_watch` still decides on the name; the two `routes`
+checks are the net for files that arrive that way.
 
 #### A RAR extraction is all or nothing
 

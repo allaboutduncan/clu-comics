@@ -207,6 +207,10 @@ Things that look arbitrary and are not:
     (never at boot), from one long-lived thread, and stops it when idle. It
     binds **127.0.0.1 only**, and its own process group dies with the worker
     through `PR_SET_PDEATHSIG` (`core/flaresolverr_launch.py`).
+  - Its port is **18191, deliberately not FlareSolverr's default 8191**
+    (`FLARESOLVERR_PORT` overrides it). Under `network_mode: service:<vpn>`
+    containers share one loopback, and on 8191 the bundled solver and a
+    standalone one for Prowlarr killed whichever started second (#782).
   - `/app/chromedriver` is a build-time **pre-patched** copy of the apt driver.
     FlareSolverr hard-codes that path, and patching at runtime fails as PUID.
   - Do not add Playwright or a second browser, and do not route downloads
@@ -295,6 +299,7 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 - `.claude/rules/file-job-queue.md` - File job queue
 - `.claude/rules/reading-lists.md` - Reading list sync and reading-list gaps on the Wanted list
 - `.claude/rules/target-scan.md` - TARGET scan, series identity and filename matching
+- `.claude/rules/series-name-matching.md` - Series-name matching: the three systems, and the one table of filing rules (`core/series_names.py`)
 - `.claude/rules/filename-chars.md` - Filesystem-hostile characters (the one sanitizer)
 - `.claude/rules/path-references.md` - Path references and deletion hooks
 - `.claude/rules/notifications.md` - Notification hook sites and the status page stores

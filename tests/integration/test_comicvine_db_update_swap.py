@@ -14,7 +14,6 @@ because every one of these was a way to lose a working database:
 * and a failure has to be a no-op, leaving the original byte-for-byte.
 """
 
-import hashlib
 import io
 import os
 import sqlite3
@@ -23,6 +22,8 @@ import zipfile
 import pytest
 
 from core import comicvine_db_update as mod
+
+TOKEN = '"6afd6bf4-21f96a43"'
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +72,7 @@ def _install_fake_download(monkeypatch, payload, recorder=None):
             fh.write(payload)
         if recorder is not None:
             recorder.append(("downloaded", dest))
-        return len(payload)
+        return None
 
     monkeypatch.setattr(mod, "_download_zip", _fake)
 
@@ -79,8 +80,7 @@ def _install_fake_download(monkeypatch, payload, recorder=None):
 class TestSwap:
     def test_installs_the_new_database(self, library, tmp_path, monkeypatch):
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         result = mod.run_update()
@@ -92,8 +92,7 @@ class TestSwap:
         """A staged file on another filesystem turns the atomic rename into a
         copy, which is neither atomic nor guaranteed to fit."""
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
 
         seen = {}
 
@@ -102,7 +101,6 @@ class TestSwap:
             seen["db_dir"] = os.path.dirname(dest)
             with open(dest, "wb") as fh:
                 fh.write(fresh)
-            return digest
 
         _install_fake_download(monkeypatch, _zip_of(fresh))
         monkeypatch.setattr(mod, "_extract_db", _fake_extract)
@@ -115,8 +113,7 @@ class TestSwap:
     def test_archive_is_deleted_before_the_swap(self, library, tmp_path, monkeypatch):
         """Peak disk has to be old + new, not old + new + a 541 MB archive."""
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         zip_present_at_swap = {}
@@ -140,8 +137,7 @@ class TestSwap:
         """Otherwise a root-fallback start leaves the new file root:0600 and the
         provider, which only ever opens it read-only, stops working silently."""
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         order = []
@@ -178,8 +174,7 @@ class TestSwap:
         shm.write_bytes(b"stale shm")
 
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         mod.run_update()
@@ -189,8 +184,7 @@ class TestSwap:
 
     def test_no_staged_files_are_left_behind(self, library, tmp_path, monkeypatch):
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         mod.run_update()
@@ -200,18 +194,49 @@ class TestSwap:
         assert leftovers == []
 
 
-class TestFailureIsANoOp:
-    def test_a_bad_checksum_leaves_the_original_and_cleans_up(
-        self, library, tmp_path, monkeypatch, isolated_prefs
+    def test_a_wal_mode_database_leaves_no_staged_sidecars(
+        self, library, tmp_path, monkeypatch
     ):
-        original = library["db"].read_bytes()
-        fresh = _db_bytes(tmp_path)
-        monkeypatch.setattr(mod, "probe", lambda: ("f" * 32, None))
+        """The real dump is in WAL mode: verifying it creates ``-wal``/``-shm``
+        beside the staged name, which the rename then orphans."""
+        seed = tmp_path / "wal.db"
+        conn = sqlite3.connect(str(seed))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE cv_volume (id INTEGER PRIMARY KEY, name TEXT)")
+        conn.execute("CREATE TABLE cv_issue (id INTEGER PRIMARY KEY, volume_id INTEGER)")
+        conn.commit()
+        conn.close()
+        fresh = seed.read_bytes()
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         result = mod.run_update()
 
+        assert result["success"] is True, result.get("error")
+        leftovers = [p.name for p in library["dir"].iterdir()
+                     if "clu_incoming" in p.name]
+        assert leftovers == []
+
+
+class TestFailureIsANoOp:
+    def test_a_damaged_archive_leaves_the_original_and_cleans_up(
+        self, library, tmp_path, monkeypatch, isolated_prefs
+    ):
+        """The half-written staged database must go too, not just the zip."""
+        original = library["db"].read_bytes()
+        fresh = _db_bytes(tmp_path)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+            zf.writestr("localcv.db", fresh)
+        payload = bytearray(buf.getvalue())
+        payload[len(payload) // 2] ^= 0xFF  # inside the member: its CRC fails
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
+        _install_fake_download(monkeypatch, bytes(payload))
+
+        result = mod.run_update()
+
         assert result["success"] is False
+        assert "damaged" in result["error"]
         assert library["db"].read_bytes() == original
         leftovers = [p.name for p in library["dir"].iterdir()
                      if "clu_incoming" in p.name]
@@ -224,8 +249,7 @@ class TestFailureIsANoOp:
     ):
         original = library["db"].read_bytes()
         fresh = _db_bytes(tmp_path)
-        digest = hashlib.md5(fresh, usedforsecurity=False).hexdigest()
-        monkeypatch.setattr(mod, "probe", lambda: (digest, None))
+        monkeypatch.setattr(mod, "probe", lambda: (TOKEN, None))
         _install_fake_download(monkeypatch, _zip_of(fresh))
 
         def _boom(src, dst):

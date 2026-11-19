@@ -45,6 +45,8 @@ the other **as a whole word**, and the leftover after subtracting it must pass
   `generate_filename_pattern` uses), so `Batman - The Dark Knight` and
   `Batman: The Dark Knight` are one series. Parentheses and brackets are
   deliberately *kept*: `_BENIGN_SERIES_EXTRA` reads them to recognise `(2025)`.
+  That class, the apostrophe rule and the leading article now live once, in
+  `core/series_names.py`; see `series-name-matching.md`.
 - **The verdict is memoized on the normalised pair.** This is asked per wanted
   issue × per remaining file; without the memo a large library pays the regex
   millions of times.

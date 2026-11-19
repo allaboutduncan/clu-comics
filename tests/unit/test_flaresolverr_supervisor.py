@@ -51,7 +51,8 @@ class Harness:
     """A supervisor whose solver becomes ready ``ready_after`` probes after spawn."""
 
     def __init__(self, ready_after=1, exit_code=None, installed=True, threaded=False,
-                 idle_seconds=600.0, start_timeout=30.0, spawn_error=None):
+                 idle_seconds=600.0, start_timeout=30.0, spawn_error=None,
+                 port_busy=False):
         self.clock = Clock()
         self.spawned = []
         self.ready = False
@@ -63,7 +64,7 @@ class Harness:
             spawn=self._spawn, probe=self._probe, installed=lambda: installed,
             clock=self.clock, sleep=self.clock.sleep,
             idle_seconds=lambda: idle_seconds, start_timeout=start_timeout,
-            threaded=threaded,
+            threaded=threaded, port_busy=lambda: port_busy,
         )
 
     def _spawn(self):
@@ -100,7 +101,7 @@ class TestEnsureRunning:
 
     def test_starts_on_first_call_and_returns_the_local_url(self):
         h = Harness(ready_after=3)
-        assert h.sup.ensure_running() == "http://127.0.0.1:8191"
+        assert h.sup.ensure_running() == sup.BASE_URL
         assert len(h.spawned) == 1
 
     def test_reuses_a_running_solver(self):
@@ -113,7 +114,7 @@ class TestEnsureRunning:
         # An orphan from a killed worker, or one run by hand.
         h = Harness()
         h.ready = True
-        assert h.sup.ensure_running() == "http://127.0.0.1:8191"
+        assert h.sup.ensure_running() == sup.BASE_URL
         assert h.spawned == []
 
     def test_child_that_exits_during_startup_fails(self):
@@ -128,6 +129,74 @@ class TestEnsureRunning:
     def test_launch_error_is_swallowed(self):
         h = Harness(spawn_error=OSError("no such file"))
         assert h.sup.ensure_running() is None
+
+
+class TestPort:
+    """#782: on FlareSolverr's own 8191 the bundled solver and a standalone
+    one in the same network namespace killed whichever started second."""
+
+    def test_default_is_not_the_standalone_default(self):
+        assert sup.UPSTREAM_DEFAULT_PORT == 8191
+        assert sup.DEFAULT_PORT != sup.UPSTREAM_DEFAULT_PORT
+        assert sup._env_port({}) == sup.DEFAULT_PORT
+
+    def test_default_is_below_the_ephemeral_range(self):
+        # Linux hands out 32768+ to outgoing connections; a port up there
+        # could be taken at random by any client in the namespace.
+        assert 1024 < sup.DEFAULT_PORT < 32768
+
+    def test_env_overrides(self):
+        assert sup._env_port({"FLARESOLVERR_PORT": "8192"}) == 8192
+        assert sup._env_port({"FLARESOLVERR_PORT": " 8191 "}) == 8191
+
+    @pytest.mark.parametrize("raw", ["abc", "0", "70000", "-1", "81.91"])
+    def test_a_bad_value_falls_back_and_says_so(self, raw):
+        with patch.object(sup.app_logger, "warning") as warn:
+            assert sup._env_port({"FLARESOLVERR_PORT": raw}) == sup.DEFAULT_PORT
+        assert "FLARESOLVERR_PORT" in warn.call_args.args[0]
+
+    def test_empty_value_is_the_default_without_a_warning(self):
+        with patch.object(sup.app_logger, "warning") as warn:
+            assert sup._env_port({"FLARESOLVERR_PORT": ""}) == sup.DEFAULT_PORT
+        warn.assert_not_called()
+
+    def test_base_url_and_child_env_use_the_same_port(self):
+        assert sup.BASE_URL == f"http://127.0.0.1:{sup.PORT}"
+        assert sup._child_env()["PORT"] == str(sup.PORT)
+
+    def test_a_taken_port_is_named_with_the_variable_that_moves_it(self):
+        h = Harness(exit_code=1, port_busy=True)
+        with patch.object(sup.app_logger, "warning") as warn:
+            assert h.sup.ensure_running() is None
+        message = warn.call_args.args[0]
+        assert f"127.0.0.1:{sup.PORT}" in message
+        assert "FLARESOLVERR_PORT" in message
+
+    def test_any_other_startup_exit_keeps_the_exit_code(self):
+        h = Harness(exit_code=3, port_busy=False)
+        with patch.object(sup.app_logger, "warning") as warn:
+            h.sup.ensure_running()
+        assert "exited during startup (code 3)" in warn.call_args.args[0]
+        assert "FLARESOLVERR_PORT" not in warn.call_args.args[0]
+
+    def test_a_failing_port_check_does_not_break_the_start_path(self):
+        h = Harness(exit_code=1)
+        h.sup._port_busy = MagicMock(side_effect=RuntimeError("boom"))
+        with patch.object(sup.app_logger, "warning") as warn:
+            assert h.sup.ensure_running() is None
+        assert "exited during startup (code 1)" in warn.call_args.args[0]
+
+    def test_port_in_use_sees_a_listener_and_its_absence(self):
+        import socket
+        srv = socket.socket()
+        try:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            port = srv.getsockname()[1]
+            assert sup.port_in_use(port=port) is True
+        finally:
+            srv.close()
+        assert sup.port_in_use(port=port, timeout=0.5) is False
 
 
 class TestBackoff:
@@ -237,7 +306,7 @@ class TestThreaded:
             for w in workers:
                 w.join(10)
             assert len(spawned) == 1
-            assert results == ["http://127.0.0.1:8191"] * 3
+            assert results == [sup.BASE_URL] * 3
             assert s._thread is not None and s._thread.name == "flaresolverr-supervisor"
         finally:
             s.stop()

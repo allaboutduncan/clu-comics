@@ -5,15 +5,19 @@ path typed into Settings. Until now that file was entirely the user's problem:
 find it, download it, remember to refresh it. A stale dump means missing issues
 and missing credits, and nothing in the UI said how old it was.
 
-A public mirror republishes that database alongside a 69-byte ``checksum`` file
-in ``md5sum`` format, holding the MD5 of the **extracted** ``.db``. That gives
-the probe/apply split ``core.reading_list_sync`` already uses::
+A public mirror republishes that database as one zip. A ``HEAD`` on the archive
+yields its validators (``ETag``, else ``Last-Modified`` + ``Content-Length``),
+which gives the probe/apply split ``core.reading_list_sync`` already uses::
 
-    probe()      -- one 69-byte GET that yields a change token
+    probe()      -- one body-less HEAD that yields a change token
     run_update() -- the ~541 MB download, run only when the token moved
 
-and the same value doubles as the integrity check on the unpacked file, so
-nothing else has to be invented to verify the download.
+The mirror used to publish a ``checksum`` file (the MD5 of the extracted
+``.db``) and stopped (#785): the probe 404'd, so every update failed before it
+downloaded anything. Nothing the mirror publishes *beside* the archive is relied
+on any more. Integrity is what the archive carries itself -- the byte count
+against ``Content-Length``, then the member's CRC-32 as it is unpacked -- plus
+the schema probe in ``verify_database()``.
 
 **The URL never reaches the UI.** It is a module constant here; the settings
 page says "every 2 weeks" and nothing more.
@@ -21,14 +25,13 @@ page says "every 2 weeks" and nothing more.
 Opt-in (``comicvine_sqlite_auto_update``, default off). A 541 MB download and a
 multi-gigabyte disk write must not start unannounced on upgrade.
 """
-import hashlib
 import os
-import re
 import shutil
 import sqlite3
 import threading
 import time
 import zipfile
+import zlib
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -38,7 +41,6 @@ from core.app_logging import app_logger
 # Not rendered anywhere. The settings page describes the cadence, not the host.
 _BASE_URL = "https://localcv.nerdfirehurricane.com/"
 _ZIP_URL = _BASE_URL + "localcv.zip"
-_CHECKSUM_URL = _BASE_URL + "checksum"
 
 UPDATE_INTERVAL_DAYS = 14
 
@@ -62,8 +64,6 @@ PREF_LAST_ERROR = "comicvine_sqlite_last_error"
 # destination directory. Whoever is second stands down -- the work is
 # idempotent, so standing down costs nothing.
 _run_lock = threading.Lock()
-
-_MD5_RE = re.compile(r"\b([0-9a-fA-F]{32})\b")
 
 _DOWNLOAD_CHUNK_LARGE = 4 * 1024 * 1024
 _DOWNLOAD_CHUNK_MEDIUM = 1024 * 1024
@@ -156,16 +156,27 @@ def get_status():
 # Probe
 # ---------------------------------------------------------------------------
 
-def _parse_checksum(text):
-    """Pull the MD5 out of ``md5sum`` output. None when there isn't one."""
-    if not text:
-        return None
-    match = _MD5_RE.search(text)
-    return match.group(1).lower() if match else None
+def _change_token(headers):
+    """The archive's change token from its response headers, or None.
+
+    The ``ETag`` when there is one; otherwise ``Last-Modified`` and
+    ``Content-Length`` together. Never one of that pair alone: a republished
+    archive can keep its size, and a size is all a server without a clock on
+    the file would send.
+    """
+    headers = headers or {}
+    etag = (headers.get("ETag") or "").strip()
+    if etag:
+        return etag
+    modified = (headers.get("Last-Modified") or "").strip()
+    length = (headers.get("Content-Length") or "").strip()
+    if modified and length:
+        return f"{modified}|{length}"
+    return None
 
 
 def probe():
-    """One 69-byte request. Returns ``(token, error)``.
+    """One ``HEAD`` on the archive. Returns ``(token, error)``.
 
     Returns ``(None, message)`` on any failure and **never** an empty token for
     a reachable-but-unreadable response. Collapsing "I could not ask" into
@@ -174,15 +185,20 @@ def probe():
     ``models.metron.list_reading_lists_modified_since``.
     """
     try:
-        resp = requests.get(_CHECKSUM_URL, timeout=(10, 30))
+        resp = requests.head(_ZIP_URL, allow_redirects=True, timeout=(10, 30))
         resp.raise_for_status()
-        text = resp.text
+        headers = resp.headers
     except Exception as e:
         return None, f"Could not reach the update server: {e}"
 
-    token = _parse_checksum(text)
+    # An error or login page served with a 200 has validators of its own, and
+    # they would be stamped as the database's.
+    if (headers.get("Content-Type") or "").lower().startswith("text/html"):
+        return None, "The update server returned a web page instead of the database."
+
+    token = _change_token(headers)
     if not token:
-        return None, "The update server returned an unreadable checksum."
+        return None, "The update server did not say which version it has."
     return token, None
 
 
@@ -289,7 +305,13 @@ def _noop_progress(detail, current=None, total=None):
 # ---------------------------------------------------------------------------
 
 def _download_zip(dest, say):
-    """Stream the archive to ``dest``. Returns the byte count."""
+    """Stream the archive to ``dest``.
+
+    Returns the change token of the response that was actually downloaded (None
+    when it carried none). That, not the probe's, is what gets stamped: the
+    mirror can republish between the two requests, and a stale stamp over a
+    fresh database costs a second 541 MB download at the next check.
+    """
     with requests.get(_ZIP_URL, stream=True, timeout=(30, 300)) as resp:
         # A 403/404 is an answer, not a hiccup -- retrying only burns time.
         if resp.status_code in (403, 404):
@@ -298,6 +320,7 @@ def _download_zip(dest, say):
             )
         resp.raise_for_status()
 
+        token = _change_token(resp.headers)
         content_type = (resp.headers.get("content-type") or "").lower()
         if content_type.startswith("text/html"):
             raise UpdateError(
@@ -344,15 +367,25 @@ def _download_zip(dest, say):
         raise UpdateError(
             f"The download stopped early ({_human(done)} of {_human(total)})."
         )
-    return done
+    return token
 
 
 def _extract_db(zip_path, dest, say):
-    """Unpack the single ``.db`` member to ``dest``, returning its MD5.
+    """Unpack the single ``.db`` member to ``dest``.
 
-    Hashed while it is written: one pass over several gigabytes instead of a
-    write followed by a full re-read.
+    Reading the member to its end is the integrity check: ``zipfile`` verifies
+    the CRC-32 as it goes and raises at EOF on a mismatch, so a damaged archive
+    is caught in the same single pass that writes it.
     """
+    try:
+        _extract_db_member(zip_path, dest, say)
+    except (zipfile.BadZipFile, zlib.error, EOFError) as e:
+        raise UpdateError(
+            f"The downloaded archive is damaged ({e}). Nothing was changed."
+        )
+
+
+def _extract_db_member(zip_path, dest, say):
     with zipfile.ZipFile(zip_path, "r") as zf:
         members = [
             info for info in zf.infolist()
@@ -373,7 +406,6 @@ def _extract_db(zip_path, dest, say):
             "unpacking the update",
         )
 
-        digest = hashlib.md5(usedforsecurity=False)
         done = 0
         last_report = 0.0
         with zf.open(member, "r") as src:
@@ -383,7 +415,6 @@ def _extract_db(zip_path, dest, say):
                     if not block:
                         break
                     out.write(block)
-                    digest.update(block)
                     done += len(block)
                     now = time.monotonic()
                     if now - last_report >= _PROGRESS_INTERVAL:
@@ -394,18 +425,16 @@ def _extract_db(zip_path, dest, say):
                             current=done,
                             total=member.file_size or None,
                         )
-    return digest.hexdigest()
 
 
 def verify_database(path):
     """Cheap structural check on a staged database. Returns ``(ok, message)``.
 
     Deliberately **not** ``check_integrity()``: ``quick_check`` reads every page
-    of a multi-gigabyte file, and a byte-exact MD5 match against the
-    publisher's own hash is stronger evidence than a structural scan of bytes
-    already proven correct. What that hash cannot prove is that the file is the
-    database this provider expects, which is what this checks -- the same
-    tables ``ComicVineSqliteProvider.test_connection`` looks for.
+    of a multi-gigabyte file, and the archive's CRC-32 has already proven the
+    bytes are the ones the publisher packed. What a CRC cannot prove is that
+    the file is the database this provider expects, which is what this checks
+    -- the same tables ``ComicVineSqliteProvider.test_connection`` looks for.
     """
     conn = None
     try:
@@ -504,21 +533,16 @@ def _run_update_locked(say, force):
         _discard(db_staged)
 
         say("downloading the database")
-        _download_zip(zip_staged, say)
+        token = _download_zip(zip_staged, say) or token
 
         say("unpacking the database")
-        digest = _extract_db(zip_staged, db_staged, say)
+        _extract_db(zip_staged, db_staged, say)
 
         # Before the swap, not after: peak disk is then old + new, rather than
         # old + new + a 541 MB archive nothing needs any more.
         _discard(zip_staged)
 
         say("verifying the database")
-        if digest != token:
-            raise UpdateError(
-                "The downloaded database did not match the published checksum. "
-                "Nothing was changed."
-            )
         ok, why = verify_database(db_staged)
         if not ok:
             raise UpdateError(f"The downloaded database failed its check: {why}")
@@ -547,7 +571,7 @@ def _run_update_locked(say, force):
 
         # Stamped only now. Writing the token any earlier would make the next
         # sweep skip a database that was never installed.
-        _set_pref(PREF_DB_TOKEN, digest)
+        _set_pref(PREF_DB_TOKEN, token)
         _set_pref(PREF_LAST_UPDATE, _now_iso())
         _set_pref(PREF_LAST_ERROR, None)
 
@@ -573,6 +597,11 @@ def _run_update_locked(say, force):
         # successful swap these are already gone, so this is a no-op there.
         _discard(zip_staged)
         _discard(db_staged)
+        # The published database is in WAL mode, so even the read-only open in
+        # verify_database() creates sidecars beside the *staged* name, and the
+        # rename leaves them behind as orphans.
+        _discard(db_staged + "-wal")
+        _discard(db_staged + "-shm")
 
 
 def run_scheduled_update():

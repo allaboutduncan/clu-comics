@@ -45,6 +45,7 @@
   var _viewerPageCount = 0;
   var _viewerCurrentPage = 0;
   var _viewerPreloadedPages = {};
+  var _viewerRev = '';            // the archive's mtime, from /cbz-metadata
 
   // Metadata editing state
   var _currentComicInfo = {};     // tags as last read from the archive
@@ -61,6 +62,18 @@
   function _encodePathForReader(path) {
     var clean = path.charAt(0) === '/' ? path.substring(1) : path;
     return clean.split('/').map(function (c) { return encodeURIComponent(c); }).join('/');
+  }
+
+  /**
+   * URL of one page image. The archive's mtime rides along as `v`: the page
+   * route's URL does not change when a crop, edit or rebuild rewrites the
+   * file, and a browser reuses an image it already loaded from the same URL
+   * in this document, so the preview kept showing the old cover. Never a
+   * timestamp -- an unchanged file must keep its URL.
+   */
+  function _pageUrl(path, pageNum) {
+    var url = '/api/read/' + _encodePathForReader(path) + '/page/' + pageNum;
+    return _viewerRev ? url + '?v=' + encodeURIComponent(_viewerRev) : url;
   }
 
   // ── Field groups definition ───────────────────────────────────────────────
@@ -231,8 +244,7 @@
     if (!_viewerPath || pageNum < 0 || pageNum >= _viewerPageCount) return;
 
     var container = document.getElementById('cbzPreviewContainer');
-    var encoded = _encodePathForReader(_viewerPath);
-    var imageUrl = '/api/read/' + encoded + '/page/' + pageNum;
+    var imageUrl = _pageUrl(_viewerPath, pageNum);
 
     // Build wrapper if needed
     if (!container.querySelector('.cbz-preview-wrapper')) {
@@ -309,7 +321,7 @@
     [currentPage + 1, currentPage + 2, currentPage - 1].forEach(function (pn) {
       if (pn >= 0 && pn < _viewerPageCount && !_viewerPreloadedPages[pn]) {
         var img = new Image();
-        img.src = '/api/read/' + _encodePathForReader(_viewerPath) + '/page/' + pn;
+        img.src = _pageUrl(_viewerPath, pn);
         _viewerPreloadedPages[pn] = true;
       }
     });
@@ -835,8 +847,9 @@
         if (filePath !== _currentFilePath) return;   // superseded by Prev/Next
         _currentComicInfo = data.comicinfo || {};
         _hasComicInfo = !!data.comicinfo;
+        _viewerRev = data.modified ? String(data.modified) : '';
 
-        var html = '<div class="row"><div class="col-md-7">' +
+        var html ='<div class="row"><div class="col-md-7">' +
           '<div id="cbzComicInfoSection">' + _renderComicInfoSection() + '</div>';
 
         // Preview column with optional page viewer

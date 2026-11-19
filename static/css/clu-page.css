@@ -699,3 +699,31 @@ a.clu-stat:focus-visible .clu-stat-value {
     outline: 2px solid var(--bs-focus-ring-color, var(--bs-primary));
     outline-offset: 1px;
 }
+
+/* A file an action is rewriting (clu-streaming.js). The overlay sits on the
+   cover in a grid and on the row in a list, and blocks clicks on it. */
+.clu-file-busy {
+    position: relative;
+}
+
+.clu-file-busy-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.25rem;
+    border-radius: inherit;
+    background: rgba(var(--bs-body-bg-rgb), 0.75);
+    color: var(--bs-body-color);
+    font-size: 0.8rem;
+    text-align: center;
+    cursor: progress;
+}
+
+/* On a cover the label goes under the spinner. */
+.thumbnail-container > .clu-file-busy-overlay {
+    flex-direction: column;
+}

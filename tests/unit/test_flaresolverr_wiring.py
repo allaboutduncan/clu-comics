@@ -155,7 +155,9 @@ class TestDockerfile:
         assert dockerfile.index("COPY . .") < dockerfile.index("cp /usr/bin/chromedriver")
 
     def test_solver_port_is_never_exposed(self, dockerfile):
+        from core import flaresolverr_supervisor
         assert "8191" not in dockerfile
+        assert str(flaresolverr_supervisor.DEFAULT_PORT) not in dockerfile
 
     def test_dummy_packages_installed_before_apt(self, dockerfile):
         final = dockerfile.split("Stage 2: Final")[1]
@@ -167,3 +169,14 @@ class TestDocs:
         md = _read("CLAUDE.md")
         assert "Do not reintroduce Playwright/Chromium" not in md
         assert "core.flaresolverr.clear_challenge" in md
+
+    def test_the_port_and_its_variable_are_documented(self):
+        # #782: FLARESOLVERR_PORT was the only fix for a port clash and
+        # appeared nowhere a user would look.
+        from core import flaresolverr_supervisor
+        port = str(flaresolverr_supervisor.DEFAULT_PORT)
+        readme = _read("README.md")
+        assert "FLARESOLVERR_PORT" in readme and port in readme
+        assert "FLARESOLVERR_PORT" in _read("FEATURES.md")
+        assert f"FLARESOLVERR_PORT={port}" in _read("docker-compose.yaml")
+        assert "FLARESOLVERR_PORT" in _read("CLAUDE.md")
