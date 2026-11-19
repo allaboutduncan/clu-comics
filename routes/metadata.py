@@ -191,6 +191,28 @@ def extract_series_name_from_filename(filename):
     return (stripped or s).strip()
 
 
+def cover_series_samples(files):
+    """The first files of a folder, parsed for ``metron.resolve_series_by_cover``.
+
+    ``[(path, series, issue, year), ...]`` in name order, which is issue order
+    for a series folder. The issue is left as ``None`` when the name has none:
+    defaulting it to "1" would let the cover check agree on a number the
+    filename never gave.
+    """
+    samples = []
+    for path in sorted(files, key=lambda p: os.path.basename(p).lower()):
+        name = os.path.basename(path)
+        samples.append((
+            path,
+            extract_series_name_from_filename(name),
+            comicvine.extract_issue_number(name),
+            extract_year_from_name(name),
+        ))
+        if len(samples) >= metron.COVER_SERIES_MAX_FILES:
+            break
+    return samples
+
+
 def series_issue_year_from_filename(filename):
     """``(series, issue, year)`` for a provider lookup, from a filename alone.
 
@@ -1609,6 +1631,50 @@ def validate_gcd_issue():
 # Batch Metadata
 # =============================================================================
 
+def _metron_series_for_folder(metron_api, directory, comic_files, series_name, file_year):
+    """Which Metron series a folder with no cvinfo holds.
+
+    Strongest evidence first: an id the folder's series.json already records,
+    then the covers of its first files, then the name search. The name search
+    used to run alone and took the first substring hit, so a "Crimson" folder
+    of 24 issues became the one-issue "Batman: Crimson Mist". Returns the dict
+    ``search_series_by_name`` returns, or None.
+    """
+    def from_id(series_id, fallback_name="", fallback_year=None):
+        details = metron.get_series_details(metron_api, series_id) or {}
+        return {
+            "id": series_id,
+            "name": fallback_name,
+            "cv_id": details.get("cv_id"),
+            "publisher_name": details.get("publisher_name"),
+            "year_began": details.get("year_began") or fallback_year,
+        }
+
+    try:
+        from core.series_json_builder import folder_ids
+        recorded = folder_ids(directory)
+    except Exception as e:
+        app_logger.debug(f"Could not read series.json ids in {directory}: {e}")
+        recorded = {}
+    if recorded.get("metron_id"):
+        app_logger.info(f"Using Metron series_id {recorded['metron_id']} from series.json")
+        return from_id(recorded["metron_id"])
+    if recorded.get("cv_id"):
+        series_id = metron.get_series_id_by_comicvine_id(metron_api, recorded["cv_id"])
+        if series_id:
+            app_logger.info(f"Using ComicVine id {recorded['cv_id']} from series.json")
+            return from_id(series_id)
+
+    hit = metron.resolve_series_by_cover(metron_api, cover_series_samples(comic_files))
+    if hit:
+        return from_id(hit["series_id"], hit["series_name"], hit["series_year"])
+
+    # The folder's year is the series' start year; a file's is its issue's.
+    series_year = extract_year_from_name(os.path.basename(directory)) or file_year
+    return metron.search_series_by_name(
+        metron_api, series_name, series_year, file_count=len(comic_files))
+
+
 @metadata_bp.route('/api/batch-metadata', methods=['POST'])
 def batch_metadata():
     """
@@ -1795,7 +1861,8 @@ def batch_metadata():
             if metron_api and not skip_comic_cvinfo:
                 app_logger.info("Trying Metron first for cvinfo creation...")
                 try:
-                    metron_series = metron.search_series_by_name(metron_api, series_name, extracted_year)
+                    metron_series = _metron_series_for_folder(
+                        metron_api, directory, comic_files, series_name, extracted_year)
                     if metron_series:
                         # Create cvinfo with all Metron data
                         metron.create_cvinfo_file(

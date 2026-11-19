@@ -325,3 +325,81 @@ class TestReadExistingComicinfo:
         data = _read_existing_comicinfo_bytes(str(p))
         assert data is not None
         assert b'<Series>X</Series>' in data
+
+
+class TestSeriesFolderCoverLookup:
+    """A series folder with no cvinfo asks the covers before the name search."""
+
+    HIT = {"series_id": 55, "series_name": "Crimson", "series_year": 1998,
+           "issue_number": "1", "file": "x"}
+
+    def _run(self, tmp_path, hit, providers=('metron', 'comicvine'),
+             folder_name='Crimson', series_year=1998):
+        from core import bulk_metadata as bm
+
+        folder = tmp_path / folder_name
+        folder.mkdir()
+        files = []
+        for n in (2, 1):
+            cbz = folder / f'Crimson {n:03d} (1999).cbz'
+            with zipfile.ZipFile(cbz, 'w') as z:
+                z.writestr('001.jpg', b'x')
+            files.append(str(cbz))
+
+        fake = MagicMock()
+        fake.get_series.return_value = _make_search(
+            ProviderType.METRON, '', series_year, id='55', publisher='Image')
+        fake.get_issues.return_value = []
+        fake.search_series.return_value = []
+
+        with patch.object(bm, '_is_oneshot_folder', return_value=False), \
+                patch.object(bm, '_instantiate_provider', return_value=fake), \
+                patch('models.metron.resolve_series_by_cover', return_value=hit) as cover, \
+                patch.object(bm, '_resolve_series_auto', return_value=(None, None, [])) as by_name, \
+                patch.object(bm, 'ensure_folder_sidecars') as sidecars, \
+                patch.object(bm, 'add_review_item') as review, \
+                patch.object(bm, 'update_bulk_job_counts'), \
+                patch.object(bm, 'app_state'):
+            bm._process_folder(
+                job_id='job-1', op_id='op-1', folder_path=str(folder), files=files,
+                providers=list(providers), overwrite_existing=False,
+                progress={"done": 0},
+            )
+        return cover, by_name, sidecars, review, sorted(files)
+
+    def test_a_cover_hit_names_the_series_and_skips_the_name_search(self, tmp_path):
+        cover, by_name, sidecars, _, files = self._run(tmp_path, self.HIT)
+
+        by_name.assert_not_called()
+        # Hashed in issue order, whatever order the bucket listed them in.
+        assert [s[0] for s in cover.call_args.args[1]] == files
+        folder, provider, series = sidecars.call_args.args
+        assert provider == 'metron'
+        assert series.id == '55'
+        # Metron's series detail carries no name; the cover hit's is kept.
+        assert series.title == 'Crimson'
+
+    def test_no_cover_answer_resolves_by_name_as_before(self, tmp_path):
+        _, by_name, sidecars, review, _ = self._run(tmp_path, None)
+
+        by_name.assert_called_once()
+        sidecars.assert_not_called()
+        assert review.call_args.kwargs['reason'] == 'series_no_match'
+
+    def test_covers_are_not_asked_when_metron_is_not_a_job_provider(self, tmp_path):
+        cover, by_name, _, _, _ = self._run(tmp_path, self.HIT, providers=('comicvine',))
+
+        cover.assert_not_called()
+        by_name.assert_called_once()
+
+    def test_a_folder_year_that_contradicts_the_series_still_goes_to_review(
+            self, tmp_path, monkeypatch):
+        from core.metadata_dates import MODE_ENFORCE
+
+        monkeypatch.setattr("core.metadata_dates.date_check_mode", lambda: MODE_ENFORCE)
+        monkeypatch.setattr("core.metadata_dates.date_check_tolerance", lambda: 2)
+        _, _, sidecars, review, _ = self._run(
+            tmp_path, self.HIT, folder_name='Crimson (2015)', series_year=1998)
+
+        assert review.call_args.kwargs['reason'] == 'date_conflict'
+        sidecars.assert_not_called()

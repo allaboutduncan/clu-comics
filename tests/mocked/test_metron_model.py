@@ -641,6 +641,59 @@ class TestSearchSeriesByName:
         result = search_series_by_name(_client(mock_api), "Batman", year=2016)
         assert result["id"] == 2  # Closer to 2016
 
+    def test_a_title_that_is_the_name_beats_one_that_contains_it(self):
+        # Metron's name filter is a substring match. A folder of Crimson issues
+        # dated 1999 was filed under the one-issue "Batman: Crimson Mist".
+        from models.metron import search_series_by_name
+
+        mock_api = MagicMock()
+        mist = make_mock_series(id=1, name="Batman: Crimson Mist", year_began=1999)
+        crimson = make_mock_series(id=2, name="Crimson", year_began=1998)
+        mock_api.series_list.return_value = [mist, crimson]
+
+        assert search_series_by_name(_client(mock_api), "Crimson", year=1999)["id"] == 2
+        assert search_series_by_name(_client(mock_api), "Crimson")["id"] == 2
+
+    def test_punctuation_does_not_stop_a_name_being_exact(self):
+        from models.metron import search_series_by_name
+
+        mock_api = MagicMock()
+        mock_api.series_list.return_value = [
+            make_mock_series(id=1, name="Spider-Man: Blue Annual", year_began=2002),
+            make_mock_series(id=2, name="Spider-Man: Blue", year_began=2002),
+        ]
+        assert search_series_by_name(_client(mock_api), "Spider-Man - Blue")["id"] == 2
+
+    def test_a_series_too_short_for_the_folder_ranks_last(self):
+        from models.metron import search_series_by_name
+
+        mock_api = MagicMock()
+        oneshot = make_mock_series(id=1, name="Crimson", year_began=1998)
+        oneshot.issue_count = 1
+        run = make_mock_series(id=2, name="Crimson", year_began=1998)
+        run.issue_count = 24
+        mock_api.series_list.return_value = [oneshot, run]
+
+        result = search_series_by_name(_client(mock_api), "Crimson", file_count=24)
+        assert result["id"] == 2
+        assert result["issue_count"] == 24
+        # Without a file count the issue count says nothing: Metron's order stands.
+        assert search_series_by_name(_client(mock_api), "Crimson")["id"] == 1
+
+    def test_the_year_outranks_the_issue_count(self):
+        # The count only ranks: a folder can hold variants and extras.
+        from models.metron import search_series_by_name
+
+        mock_api = MagicMock()
+        right_year = make_mock_series(id=1, name="Crimson", year_began=1998)
+        right_year.issue_count = 20
+        wrong_year = make_mock_series(id=2, name="Crimson", year_began=2015)
+        wrong_year.issue_count = 30
+        mock_api.series_list.return_value = [wrong_year, right_year]
+
+        result = search_series_by_name(_client(mock_api), "Crimson", year=1998, file_count=24)
+        assert result["id"] == 1
+
     def test_no_results(self):
         from models.metron import search_series_by_name
 
