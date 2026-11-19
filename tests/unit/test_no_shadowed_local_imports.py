@@ -36,6 +36,8 @@ import pytest
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 SKIP_DIRS = {
+    # Agent worktrees: full copies of the repo, at other commits.
+    ".claude",
     ".git",
     ".pytest_cache",
     ".venv",
