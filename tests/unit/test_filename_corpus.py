@@ -119,3 +119,83 @@ class TestPrimitive:
         from helpers import collection
         assert collection._SIGN_CHARS is SIGN_CHARS
         assert SIGN_CHARS[0] == "-"
+
+
+# --- the metadata-lookup path -------------------------------------------------
+# routes.metadata.series_issue_year_from_filename is what a provider is asked
+# for when there is no cvinfo. Single-file ComicVine search, batch and bulk all
+# read the name through the same two functions; the ComicVine route and the GCD
+# directory search used to carry a pattern list each.
+LOOKUP = [
+    ("Batman 001 (2016).cbz", ("Batman", "1", 2016)),
+    ("Avengers Assemble Featuring Captain Citrus 001 (2014) - Choose Wisely.cbr",
+     ("Avengers Assemble Featuring Captain Citrus", "1", 2014)),
+    ("Batman 497 (1993) - Knightfall, Part 11.cbz", ("Batman", "497", 1993)),
+    ("Detective Comics 156 (1937) - Batmobile of 1950.cbz", ("Detective Comics", "156", 1937)),
+    # The old route read these as issue 1 of a series called "Spider-Man -1".
+    ("Spider-Man -1 (1990).cbz", ("Spider-Man", "-1", 1990)),
+    ("Amazing Spider-Man -001 (1997) - Flashback.cbz", ("Amazing Spider-Man", "-1", 1997)),
+    ("X-Force (1991) Issue -1.cbz", ("X-Force", "-1", 1991)),
+    ("Amazing Spider-Man (2018) Issue 080.BEY.cbz", ("Amazing Spider-Man", "80.BEY", 2018)),
+    # Only ONE trailing number is the issue.
+    ("Spider-Man 2099 001 (1992).cbz", ("Spider-Man 2099", "1", 1992)),
+    ("Batman 2016 001.cbz", ("Batman 2016", "1", None)),
+    ("Area 51 05 (2000).cbz", ("Area 51", "5", 2000)),
+    ("Spider-Man 2099 - Dark Genesis 001 (2023).cbz",
+     ("Spider-Man 2099 - Dark Genesis", "1", 2023)),
+    # Counts, point issues, explicit markers.
+    ("Is Ted Ok 001 of 5.cbz", ("Is Ted Ok", "1", None)),
+    ("Series 05 (of 12) (2020).cbz", ("Series", "5", 2020)),
+    ("Batman 700.1 (2011).cbz", ("Batman", "700.1", 2011)),
+    ("Nightwing #117 - Absolute Power.cbz", ("Nightwing", "117", None)),
+    ("Sicko #01 [July 2026].cbz", ("Sicko", "1", None)),
+    ("Batman Issue 5.cbz", ("Batman", "5", None)),
+    # Separators left by "Series - 003" naming are dropped.
+    ("Black Cat - 001 (October, 2025).cbz", ("Black Cat", "1", None)),
+    ("Batman - 003.cbz", ("Batman", "3", None)),
+    ("Comic-001.cbz", ("Comic", "1", None)),
+    # No issue number: a one-shot, looked up as issue 1.
+    ("Hellboy (2019).cbz", ("Hellboy", "1", 2019)),
+    ("Watchmen.cbz", ("Watchmen", "1", None)),
+    ("Batman - Year One (1987).cbz", ("Batman - Year One", "1", 1987)),
+    # A name that is only a number keeps it.
+    ("300 (1998).cbz", ("300", "1", 1998)),
+]
+
+
+@pytest.mark.parametrize("filename,expected", LOOKUP)
+def test_metadata_lookup_parse(filename, expected):
+    from routes.metadata import series_issue_year_from_filename
+    assert series_issue_year_from_filename(filename) == expected
+
+
+def test_lookup_series_is_the_one_bulk_metadata_uses():
+    # Bulk imports the route module's functions rather than copying them.
+    import core.bulk_metadata as bulk
+    import routes.metadata as routes_metadata
+    assert (bulk.extract_series_name_from_filename
+            is routes_metadata.extract_series_name_from_filename)
+    assert (bulk.extract_series_name_from_folder
+            is routes_metadata.extract_series_name_from_folder)
+
+
+def test_folder_name_strip_has_one_copy():
+    # Eight call sites in routes/metadata.py pasted the folder-name regexes;
+    # only the function's own body may carry them now.
+    import inspect
+    import routes.metadata as routes_metadata
+    source = inspect.getsource(routes_metadata)
+    # (The Inducks lookup strips the year alone, on purpose: it is not a copy.)
+    assert source.count(r"re.sub(r'\s*v\d+.*$'") == 1
+
+
+@pytest.mark.parametrize("folder,expected", [
+    ("Batman (2016)", "Batman"),
+    ("Batman v3 (2016)", "Batman"),
+    ("Naruto - Complete", "Naruto"),
+    ("Saga", "Saga"),
+    ("v2015", ""),
+])
+def test_series_name_from_folder(folder, expected):
+    from routes.metadata import extract_series_name_from_folder
+    assert extract_series_name_from_folder(folder) == expected
