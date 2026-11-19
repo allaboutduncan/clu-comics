@@ -25,6 +25,7 @@ from flask import (Blueprint, request, jsonify, Response,
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.auth import require_role
+from core.series_names import ascii_words
 from core.filename_parse import (
     SIGN_CLASS,
     TRAILING_ISSUE,
@@ -4089,10 +4090,13 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
             if not candidates:
                 return None, None, None
 
-            search_words = metron._norm_series_words(series_name)
+            # The words IN ORDER. This compared word sets, so "Superman/Batman"
+            # was a confident match for "Batman/Superman" and was tagged
+            # without asking -- two different series.
+            search_words = ascii_words(series_name)
             confident = next(
                 (c for c in candidates
-                 if metron._norm_series_words(c.get('name') or '') == search_words),
+                 if ascii_words(c.get('name')) == search_words),
                 None
             )
             if confident:

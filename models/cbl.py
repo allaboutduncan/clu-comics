@@ -11,6 +11,7 @@ from core.database import (
 )
 from core.metadata_dates import years_in_path
 from helpers.collection import (
+    _APOS_CLASS,
     _LEADING_ARTICLE,
     names_other_publication_type,
     series_names_compatible,
@@ -70,6 +71,13 @@ def _normalise_series(name):
     return " ".join(text.split())
 
 
+_APOSTROPHE = re.compile(_APOS_CLASS)
+_WORD = re.compile(r"\w+")
+# "world's" as ONE token. The apostrophe must sit between word characters, so
+# a quoted or spaced one ("Marvel 's") is still a break.
+_WORD_WITH_APOSTROPHES = re.compile(r"\w+(?:" + _APOS_CLASS + r"\w+)*")
+
+
 def _starts_with_series(name, wanted):
     """Whether ``name`` begins with the whole word(s) of ``wanted``."""
     return bool(wanted) and (name == wanted or name.startswith(wanted + " "))
@@ -86,21 +94,37 @@ def _series_remainder(filename, series):
     the issue number lives there and its punctuation matters.
     """
     stem = os.path.splitext(os.path.basename(filename or ""))[0]
-    spans = list(re.finditer(r"\w+", stem.lower()))
-    name_words = [m.group() for m in spans]
-    wanted = _normalise_series(series).split()
-    if not name_words or not wanted:
-        return None
 
     def article_len(words):
         return 1 if words and _LEADING_ARTICLE.match(words[0] + " ") else 0
 
-    for skip_name in dict.fromkeys((0, article_len(name_words))):
-        for skip_wanted in dict.fromkeys((0, article_len(wanted))):
-            target = wanted[skip_wanted:]
-            end = skip_name + len(target)
-            if target and name_words[skip_name:end] == target:
-                return stem[spans[end - 1].end():]
+    # An apostrophe is read two ways on each side: as a word break (the
+    # original rule, which is what matches GetComics' "Marvel 's Voices") and
+    # as nothing at all. Without the second reading "World's Finest" was the
+    # words "world s finest" and could never match "Worlds Finest 001.cbz" --
+    # a spelling the filing matcher has always accepted.
+    readings = []
+    for token_re in (_WORD, _WORD_WITH_APOSTROPHES):
+        spans = list(token_re.finditer(stem.lower()))
+        words = [_APOSTROPHE.sub("", m.group()) for m in spans]
+        if words and (words, spans) not in readings:
+            readings.append((words, spans))
+    wanted_readings = list(dict.fromkeys((
+        tuple(_normalise_series(series).split()),
+        tuple(_normalise_series(_APOSTROPHE.sub("", series or "")).split()),
+    )))
+
+    for name_words, spans in readings:
+        for wanted in wanted_readings:
+            if not wanted:
+                continue
+            wanted = list(wanted)
+            for skip_name in dict.fromkeys((0, article_len(name_words))):
+                for skip_wanted in dict.fromkeys((0, article_len(wanted))):
+                    target = wanted[skip_wanted:]
+                    end = skip_name + len(target)
+                    if target and name_words[skip_name:end] == target:
+                        return stem[spans[end - 1].end():]
     return None
 
 

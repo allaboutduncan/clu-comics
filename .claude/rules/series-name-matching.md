@@ -41,7 +41,8 @@ filing relaxation is one edit in `core/series_names.py`, never at a call site.**
 | `:` vs ` - ` vs space, `/`, `_`, `,`, `;`, Unicode dashes | All one separator. |
 | `!` and anything in `FILENAME_ILLEGAL_CHARS` | Never required (`NEVER_REQUIRED`). Derived from the sanitizer's list, so a character CLU strips from names can never be demanded of one. |
 | Apostrophes | Optional both ways, and may have a space in front (`Marvel 's`, a GetComics quirk). The space is allowed only *with* the apostrophe. |
-| `&` | Removed from the name; absorbed if the file has it. |
+| `&` | The word "and". The regex then makes it optional (`OPTIONAL_WORDS`) and absorbs the character; the name comparison treats `&` and `and` as equal but never drops the word. The scorer accepts "Batman and Robin #5" for "Batman & Robin", and filing used to refuse that file. |
+| `+` | A separator, like `/`. The scorer reads `/`, `+` and `&` as one crossover separator. |
 | `and`, `the`, `of`, `or`, `vs`, `versus` mid-name | Optional in the regex only (`OPTIONAL_WORDS`). Do not use it for the name comparison: there the leftover is the whole question. |
 | `(...)` and `[...]` | Kept. `_BENIGN_SERIES_EXTRA` reads them. |
 
@@ -50,6 +51,13 @@ Things that look arbitrary and are not:
 - **A name made only of punctuation stays a literal** (`!!!`). Flattened, it
   compiles to an empty series pattern that claims every file with the right
   issue number.
+- **A name made only of optional words stays a literal too** (`&`, `And`).
+  Every word optional is the same empty pattern by another route.
+- **`match_issues_to_collection`'s ComicInfo tier is a raw substring test, and
+  tightening it changes nothing.** Its last tier (4c) accepts any file in the
+  series folder that carries the issue number, with no series check at all, so
+  whatever 4b refused 4c would take. That matcher is loose by design; the one
+  that moves files is `match_wanted_issues_to_files`.
 - **Making "The" optional both ways lets `Flash` and `The Flash` claim one
   file.** That was already true in the other direction. The year ranking in
   `match_wanted_issues_to_files` (`wanted_year_fit`) decides; do not add a
@@ -129,7 +137,13 @@ that the expressions are not pasted again.
   either side changes.
 - **The reading-list matcher has no folder to anchor it** and searches the
   whole `file_index`, so it needs a year and its own first-issue-token rule. It
-  shares `_LEADING_ARTICLE` and `series_names_compatible` and nothing else.
+  shares `_LEADING_ARTICLE`, `_APOS_CLASS` and `series_names_compatible` and
+  nothing else. Its filename tier reads an apostrophe two ways, as a word break
+  and as nothing: the first matches GetComics' `Marvel 's`, the second matches
+  `Worlds Finest` for `World's Finest`. Keep both.
+- **Metron's "confident match" compares words in order** (`ascii_words`), not
+  as a set: it picks a series without asking, and `Superman/Batman` is not
+  `Batman/Superman`.
 
 ### Why a download is matched by name at all
 
