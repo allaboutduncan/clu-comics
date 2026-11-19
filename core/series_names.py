@@ -40,7 +40,10 @@ _DASHES = "‐-―−"
 # "Nemesis: Forever", "Nemesis - Forever" and "Nemesis Forever" are one series,
 # and a "/" can never appear in a filename at all. Parentheses and brackets are
 # deliberately absent: _BENIGN_SERIES_EXTRA reads them to recognise "(2025)".
-_SEPARATOR_BODY = r"\s\-_:;,\./\\" + _DASHES
+# "+" is here because the GetComics scorer reads "/", "+" and "&" as one
+# crossover separator: it accepts "Batman + Superman #5" for "Batman/Superman",
+# and filing has to accept at least what the scorer downloads.
+_SEPARATOR_BODY = r"\s\-_:;,\./\\\+" + _DASHES
 _SEPARATOR_RE = re.compile("[" + _SEPARATOR_BODY + "]+")
 
 # Characters that must never be REQUIRED of a filename.
@@ -60,7 +63,7 @@ _NEVER_REQUIRED_BODY = re.escape(NEVER_REQUIRED)
 SERIES_SEP_RE = re.compile("[" + _SEPARATOR_BODY + _NEVER_REQUIRED_BODY + "]+")
 
 # What may sit between two words of the name inside a FILENAME.
-_WORD_GAP = r"[\s\-_:'\.&" + _DASHES + _NEVER_REQUIRED_BODY + r"]*"
+_WORD_GAP = r"[\s\-_:'\.&\+" + _DASHES + _NEVER_REQUIRED_BODY + r"]*"
 
 # A dropped leading article is the one whole-word relaxation the name
 # comparison allows: "Ultimates" really is how a library spells "The
@@ -109,8 +112,11 @@ def series_name_regex(series_name):
     * A leading "The" is optional in BOTH directions. The GetComics scorer
       already searches with and without it, so it accepts a post the filing
       matcher must then be able to file.
-    * Ampersands are removed ("Black & White" is often "Black White"); the
-      word gap absorbs one that is present.
+    * An ampersand is the word "and", which ``OPTIONAL_WORDS`` then makes
+      optional: "Black & White" files as "Black White", "Black and White" or
+      "Black & White" (the word gap absorbs the character). It used to be
+      deleted, so "Batman & Robin" could never claim "Batman and Robin 005" --
+      a download the scorer had accepted, left in TARGET to be fetched again.
     * Separators and ``NEVER_REQUIRED`` characters become word breaks.
     * ``OPTIONAL_WORDS`` may be missing from the filename.
     """
@@ -118,11 +124,12 @@ def series_name_regex(series_name):
     if working.lower().startswith("the "):
         working = working[4:]
 
-    words = SERIES_SEP_RE.sub(" ", working.replace("&", "")).split()
-    if not words:
-        # A name made only of punctuation ("!!!"). Flattening it would leave an
-        # empty pattern that matches EVERY filename carrying the right issue
-        # number, so it stays a literal -- and gets no optional article.
+    words = SERIES_SEP_RE.sub(" ", working.replace("&", " and ")).split()
+    if all(word.lower() in OPTIONAL_WORDS for word in words):
+        # A name made only of punctuation ("!!!") or only of optional words
+        # ("&"). Either would leave a pattern that can match nothing at all,
+        # and so EVERY filename carrying the right issue number. It stays a
+        # literal -- and gets no optional article.
         return re.escape((series_name or "").strip())
 
     parts = []
@@ -160,7 +167,8 @@ def norm_series_text(value):
     Agrees with ``series_name_regex`` about what is noise: separators and
     ``NEVER_REQUIRED`` characters become one space, and an apostrophe is
     removed outright so "It's Jeff!" and "Its Jeff" are equal. Brackets are
-    kept (see ``_SEPARATOR_BODY``).
+    kept (see ``_SEPARATOR_BODY``). "&" is the word "and", as in the regex --
+    the one place the two differ is that the regex may also drop the word.
     """
-    text = _APOS_RE.sub("", (value or "").lower())
+    text = _APOS_RE.sub("", (value or "").lower()).replace("&", " and ")
     return SERIES_SEP_RE.sub(" ", text).strip()
