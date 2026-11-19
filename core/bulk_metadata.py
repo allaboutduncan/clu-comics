@@ -737,9 +737,15 @@ def _process_folder(
                 app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(fp))
             return
     else:
-        chosen_provider, chosen_series, all_candidates = _resolve_series_auto(
-            providers, parsed_series, parsed_year
-        )
+        # The covers name the series outright; the name search can only guess.
+        chosen_series = _folder_cover_series(providers, files)
+        if chosen_series is not None:
+            chosen_provider = 'metron'
+            matched_via = 'cover'
+        else:
+            chosen_provider, chosen_series, all_candidates = _resolve_series_auto(
+                providers, parsed_series, parsed_year
+            )
         if chosen_series is None:
             reason = 'series_ambiguous' if all_candidates else 'series_no_match'
             add_review_item(
@@ -758,7 +764,7 @@ def _process_folder(
                 progress["done"] += 1
                 app_state.update_operation(op_id, current=progress["done"], detail=os.path.basename(fp))
             return
-        matched_via = 'exact_name_year'
+        matched_via = matched_via or 'exact_name_year'
 
     # A folder year that contradicts the matched series' start year means the
     # *series* is wrong, so nothing in the folder should be written. Checked
@@ -899,6 +905,44 @@ def _process_folder(
                 candidates=[],
             )
             update_bulk_job_counts(job_id, needs_review=1)
+
+
+def _folder_cover_series(providers: List[str], files: List[str]) -> Optional[SearchResult]:
+    """A series folder's Metron series, read from the covers of its first files.
+
+    Asked before the name search for a folder with no cvinfo: Metron's name
+    search is a substring match, and its top hit for "Crimson" can be "Batman:
+    Crimson Mist". Only when Metron is one of the job's providers, so a re-tag
+    forced to another provider never takes a Metron series. None means "match
+    by name as before".
+    """
+    if 'metron' not in providers:
+        return None
+    provider = _instantiate_provider('metron')
+    if provider is None:
+        return None
+    try:
+        from models import metron
+        from models.providers import ProviderType
+        from routes.metadata import cover_series_samples
+
+        hit = metron.resolve_series_by_cover(provider._get_api(), cover_series_samples(files))
+        if not hit:
+            return None
+        series = provider.get_series(str(hit["series_id"]))
+        if series is not None:
+            if not series.title:
+                series.title = hit["series_name"]
+            return series
+        return SearchResult(
+            provider=ProviderType.METRON,
+            id=str(hit["series_id"]),
+            title=hit["series_name"],
+            year=hit["series_year"],
+        )
+    except Exception as e:
+        app_logger.warning(f"Cover series lookup failed for {os.path.dirname(files[0]) if files else ''}: {e}")
+        return None
 
 
 def _oneshot_cover_match(

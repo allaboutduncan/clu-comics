@@ -203,3 +203,63 @@ class TestMatchIssueByCover:
         assert hit is None and library.issues_list.call_count == 0
         hit, library = self._match([[_row(7, "1", HASH)]], enabled=False)
         assert hit is None and library.issues_list.call_count == 0
+
+
+class TestResolveSeriesByCover:
+    """A folder's series, read from the covers of its first files."""
+
+    HIT = {"id": 7, "number": "1", "series_id": 55, "series_name": "Crimson",
+           "series_year": 1998, "cover_year": 1998, "cover_hash": HASH, "distance": 1}
+
+    SAMPLES = [
+        ("/data/Crimson/Crimson 001 (1998).cbz", "Crimson", "1", 1998),
+        ("/data/Crimson/Crimson 002 (1998).cbz", "Crimson", "2", 1998),
+        ("/data/Crimson/Crimson 003 (1998).cbz", "Crimson", "3", 1998),
+        ("/data/Crimson/Crimson 004 (1998).cbz", "Crimson", "4", 1998),
+    ]
+
+    def _resolve(self, answers, enabled=True, paused=None, samples=None):
+        from models import metron
+
+        with patch("models.metron.match_issue_by_cover", side_effect=list(answers)) as match, \
+             patch("models.metron.paused_reason", return_value=paused), \
+             patch("core.settings.get_bool", return_value=enabled):
+            found = metron.resolve_series_by_cover(
+                MagicMock(), self.SAMPLES if samples is None else samples)
+        return found, match
+
+    def test_the_first_file_decides(self):
+        found, match = self._resolve([self.HIT])
+        assert found == {
+            "series_id": 55, "series_name": "Crimson", "series_year": 1998,
+            "issue_number": "1", "file": self.SAMPLES[0][0],
+        }
+        assert match.call_count == 1
+        assert match.call_args.args[1:] == self.SAMPLES[0]
+
+    def test_a_miss_moves_on_to_the_next_file(self):
+        found, match = self._resolve([None, self.HIT])
+        assert found["series_id"] == 55
+        assert found["file"] == self.SAMPLES[1][0]
+        assert match.call_count == 2
+
+    def test_never_more_than_three_files(self):
+        found, match = self._resolve([None, None, None, self.HIT])
+        assert found is None
+        assert match.call_count == 3
+
+    def test_a_paused_metron_stops_after_one_file(self):
+        found, match = self._resolve([None, self.HIT], paused="Metron's daily limit is spent")
+        assert found is None
+        assert match.call_count == 1
+
+    def test_switched_off_or_nothing_to_hash_asks_nothing(self):
+        found, match = self._resolve([self.HIT], enabled=False)
+        assert found is None and match.call_count == 0
+        found, match = self._resolve([self.HIT], samples=[])
+        assert found is None and match.call_count == 0
+
+    def test_no_client_is_none(self):
+        from models import metron
+
+        assert metron.resolve_series_by_cover(None, self.SAMPLES) is None
