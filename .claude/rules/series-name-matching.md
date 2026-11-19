@@ -94,6 +94,28 @@ issue of `Detective Comics 156 (1937) - Batmobile of 1950` (#778) and kept
   (`cbz_ops/rename.py`) decide filenames on disk, so a change re-renames
   libraries. The module is import-free so `monitor.py` can reach it.
 
+### Normalisations with one definition
+
+These are not filing rules; each is an expression that had been pasted.
+
+- **`core.series_names.ascii_words`** — lower-case, every run of non-`a-z0-9`
+  as one space. `library_health._norm_text`, `bulk_metadata._normalize_series`
+  (after its year strip), `gcd.normalize_title` and
+  `collection._normalize_for_keywords` call it. It drops accents, so Inducks
+  is not on it, and it flattens brackets, so the filing comparison
+  (`norm_series_text`) is not either.
+- **`getcomics._norm_series_key`** is the stored key; `_normalize_alias` is the
+  same key with `""` for an empty name. Two pasted copies skipped `.strip()`,
+  so aliases never attached to a series whose normalized name ends in a dash
+  (`Batman - Vol 3`). The alias-CSV writer in `update_series_aliases` still
+  has its own expression: it normalises what the user typed and is stored.
+- **`routes.metadata.comicvine_search_term` and `_same_title`.** `_same_title`
+  is case and outer whitespace only, on purpose: every caller uses it to take
+  a result without asking the user.
+
+`tests/mocked/test_series_normaliser_dedupe.py` asserts the callers agree and
+that the expressions are not pasted again.
+
 ### What is deliberately not shared
 
 - **The scorer's keys are stored.** `_norm_series_key` is `series_norm_norm` in

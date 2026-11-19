@@ -137,6 +137,23 @@ def series_name_regex(series_name):
     return _OPTIONAL_THE + "".join(parts)
 
 
+_NON_ASCII_WORD = re.compile(r"[^a-z0-9]+")
+
+
+def ascii_words(value):
+    """Lower-cased, with every run of anything but ``a-z0-9`` as one space.
+
+    The punctuation-blind form: "Spider-Man: Blue!" -> "spider man blue". Not
+    a filing rule. It keeps no brackets and drops accents with the rest
+    ("Élektra" -> "lektra"), which is why the filing comparison is
+    ``norm_series_text`` below and why Inducks folds accents itself. Four
+    modules each carried this expression; they call it so "what counts as
+    punctuation" cannot drift between a duplicate finder, a provider search
+    and a keyword test.
+    """
+    return _NON_ASCII_WORD.sub(" ", (value or "").lower()).strip()
+
+
 def norm_series_text(value):
     """Lower-cased, punctuation-flattened form for comparing two series names.
 

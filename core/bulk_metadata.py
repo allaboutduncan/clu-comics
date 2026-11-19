@@ -26,6 +26,7 @@ import core.app_state as app_state
 from core.app_logging import app_logger
 from core.comicinfo import find_comicinfo_in_zip
 from core.path_access import filter_buckets
+from core.series_names import ascii_words
 from core.metadata_dates import (
     evaluate as evaluate_issue_date,
     evaluate_series as evaluate_series_year,
@@ -74,10 +75,7 @@ def _normalize_series(name: str) -> str:
     """
     if not name:
         return ""
-    s = re.sub(r'\s*\(\d{4}\)\s*', ' ', name)
-    s = s.lower()
-    s = re.sub(r'[^a-z0-9]+', ' ', s)
-    return s.strip()
+    return ascii_words(re.sub(r'\s*\(\d{4}\)\s*', ' ', name))
 
 
 def _read_existing_comicinfo_bytes(cbz_path: str) -> Optional[bytes]:
