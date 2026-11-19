@@ -58,6 +58,13 @@ Things that look arbitrary and are not:
   series folder that carries the issue number, with no series check at all, so
   whatever 4b refused 4c would take. That matcher is loose by design; the one
   that moves files is `match_wanted_issues_to_files`.
+- **The word gap is derived from `_SEPARATOR_BODY`, never listed by hand.**
+  `_WORD_GAP` (what may sit between two words of the name in a *filename*) was
+  a second hand-written class with no `,` and no `;`. Both split the name into
+  words, so a file carrying the name's own punctuation could not match it:
+  `Patsy Walker, A.K.A. Hellcat! 001` was never filed (#793). A separator added
+  to the table is now absorbable in filenames without a second edit, and
+  `TestSeparatorsInFilenames` checks every one.
 - **Making "The" optional both ways lets `Flash` and `The Flash` claim one
   file.** That was already true in the other direction. The year ranking in
   `match_wanted_issues_to_files` (`wanted_year_fit`) decides; do not add a

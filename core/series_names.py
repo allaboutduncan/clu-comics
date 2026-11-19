@@ -63,7 +63,18 @@ _NEVER_REQUIRED_BODY = re.escape(NEVER_REQUIRED)
 SERIES_SEP_RE = re.compile("[" + _SEPARATOR_BODY + _NEVER_REQUIRED_BODY + "]+")
 
 # What may sit between two words of the name inside a FILENAME.
-_WORD_GAP = r"[\s\-_:'\.&\+" + _DASHES + _NEVER_REQUIRED_BODY + r"]*"
+#
+# Derived from _SEPARATOR_BODY, never listed by hand: every character the NAME
+# is split on has to be absorbable here, or a filename carrying the name's own
+# punctuation cannot match it. This used to be a second, hand-written class
+# with no "," and no ";", so "Patsy Walker, A.K.A. Hellcat! 001" was never
+# filed under "Patsy Walker, A.K.A. Hellcat!" (#793) -- "Walker," could not
+# satisfy the gap between "Walker" and "A".
+#
+# The two extras are not separators in a name: an apostrophe standing where a
+# word break is ("Marvel 's"), and the "&" a filename keeps when the word
+# "and" it stands for is optional.
+_WORD_GAP = "[" + _SEPARATOR_BODY + "'&" + _NEVER_REQUIRED_BODY + "]*"
 
 # A dropped leading article is the one whole-word relaxation the name
 # comparison allows: "Ultimates" really is how a library spells "The
