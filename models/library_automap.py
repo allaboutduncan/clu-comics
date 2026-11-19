@@ -1074,6 +1074,21 @@ def _run_scan_job_inner(op_id, app):
         _update_job(op_id, detail="Applying matches...")
         applied = apply_automap(scan["auto"], api=api)
 
+        # Conflicts are kept in the database for Library Health, so they
+        # outlive this job. Every review item is recorded -- an ignored one too,
+        # or the prune would treat it as resolved -- and ignored folders are
+        # then left out of what the dialog reports.
+        from core.series_conflicts import record_scan
+
+        recorded = record_scan(scan["review"], get_library_roots())
+        conflicts_saved = recorded is not None
+        conflicts_ignored = 0
+        if recorded and recorded["ignored_folders"]:
+            ignored = recorded["ignored_folders"]
+            kept = [it for it in scan["review"] if _norm(it.get("folder")) not in ignored]
+            conflicts_ignored = len(scan["review"]) - len(kept)
+            scan["review"] = kept
+
         review, review_total, review_truncated = _cap_list(scan["review"])
         skipped, skipped_total, skipped_truncated = _cap_list(scan["skipped"])
         errors, errors_total, errors_truncated = _cap_list(scan["errors"])
@@ -1089,6 +1104,8 @@ def _run_scan_job_inner(op_id, app):
             "review": review,
             "review_total": review_total,
             "review_truncated": review_truncated,
+            "conflicts_saved": conflicts_saved,
+            "conflicts_ignored": conflicts_ignored,
             "skipped": skipped,
             "skipped_total": skipped_total,
             "skipped_truncated": skipped_truncated,

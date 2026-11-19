@@ -14,7 +14,7 @@ Heavy imports are done inside the views so the symbols stay patchable in tests.
 import os
 import threading
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 
 from core.app_logging import app_logger
 from helpers.responses import error_response
@@ -27,8 +27,11 @@ _MAX_BATCH = 5000
 @library_health_bp.route("/api/problem-files/health/summary", methods=["GET"])
 def api_summary():
     from core.library_health import get_summary
+    from core.series_conflicts import count_open
 
-    return jsonify({"success": True, **get_summary()})
+    # The conflict count is here, not in get_summary(): the header badge polls
+    # that and has no use for it.
+    return jsonify({"success": True, **get_summary(), "series_conflicts": count_open()})
 
 
 @library_health_bp.route("/api/problem-files/health/badge", methods=["GET"])
@@ -112,6 +115,204 @@ def api_settings():
         "batch": get_int("LIBRARY_HEALTH_BATCH"),
         "recheck_days": get_int("LIBRARY_HEALTH_RECHECK_DAYS"),
     })
+
+
+# ---------------------------------------------------------------------------
+# Series folder conflicts (core/series_conflicts.py)
+# ---------------------------------------------------------------------------
+
+def _conflict_id(data):
+    try:
+        value = int(data.get("id"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+@library_health_bp.route("/library-health/series")
+def series_conflicts_page():
+    return render_template("library_series_conflicts.html", current_page="/library-health")
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts", methods=["GET"])
+def api_series_conflicts():
+    from core.series_conflicts import list_conflicts
+
+    include_ignored = request.args.get("include_ignored") in ("1", "true", "yes")
+    rows = list_conflicts(include_ignored=include_ignored)
+    if rows is None:
+        return error_response("Could not read the series conflicts", code=500)
+    for row in rows:
+        row["reachable"] = os.path.isdir(row["folder"])
+    return jsonify({
+        "success": True,
+        "conflicts": rows,
+        "open": sum(1 for r in rows if not r["ignored"]),
+    })
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/ignore", methods=["POST"])
+def api_series_conflict_ignore():
+    from core.series_conflicts import set_ignored
+
+    data = request.get_json(silent=True) or {}
+    conflict_id = _conflict_id(data)
+    if not conflict_id:
+        return jsonify({"success": False, "error": "Missing id"}), 400
+    if not set_ignored(conflict_id, ignored=data.get("ignored", True) is not False):
+        return error_response("That conflict is no longer listed", code=404)
+    return jsonify({"success": True})
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/remove", methods=["POST"])
+def api_series_conflict_remove():
+    """Forget a row whose folder is gone. A folder still on disk is Ignored instead."""
+    from core.series_conflicts import get_conflict, remove
+
+    data = request.get_json(silent=True) or {}
+    conflict_id = _conflict_id(data)
+    if not conflict_id:
+        return jsonify({"success": False, "error": "Missing id"}), 400
+    row = get_conflict(conflict_id)
+    if not row:
+        return error_response("That conflict is no longer listed", code=404)
+    if os.path.isdir(row["folder"]):
+        return error_response("The folder is still there; choose Ignore instead", code=409)
+    remove(conflict_id)
+    return jsonify({"success": True})
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/switch", methods=["POST"])
+def api_series_conflict_switch():
+    """Make this row's folder the series' folder (Scan Library's old "Apply").
+
+    The previously mapped folder becomes the conflict, so nothing is lost from
+    the list: its comics are now the ones not counted as owned.
+    """
+    from core.path_access import grant_refusal
+    from core.series_conflicts import after_switch, get_conflict
+    from helpers.library import is_valid_library_path
+    from models import library_automap
+
+    data = request.get_json(silent=True) or {}
+    conflict_id = _conflict_id(data)
+    if not conflict_id:
+        return jsonify({"success": False, "error": "Missing id"}), 400
+    row = get_conflict(conflict_id)
+    if not row:
+        return error_response("That conflict is no longer listed", code=404)
+    folder = row["folder"]
+    if not is_valid_library_path(folder):
+        return jsonify({"success": False, "error": "The folder must be inside a library"}), 400
+    if not os.path.isdir(folder):
+        return error_response("The folder no longer exists", code=409)
+    refusal = grant_refusal(folder)
+    if refusal:
+        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
+
+    previous = row.get("mapped_folder")
+    result = library_automap.apply_and_sync([{
+        "folder": folder,
+        "metron_id": row["series_id"],
+        "series_name": row.get("series_name"),
+        "publisher_name": row.get("publisher_name"),
+        "year": row.get("year"),
+        "status": row.get("series_status"),
+        "cv_id": row.get("cv_id"),
+    }])
+    if not result.get("applied"):
+        # apply_automap's failure text can be a raw exception; it is logged there.
+        return error_response("Could not map the folder to this series", code=500)
+    after_switch(conflict_id, previous)
+    return jsonify({"success": True, "folder": folder, "previous": previous})
+
+
+def _merge_plan_or_refusal(conflict_id, mode, keep=None):
+    """``(plan, None)`` or ``(None, response)`` -- path, grant and plan checks in one place."""
+    from core.path_access import grant_refusal
+    from core.series_conflict_merge import MergeRefused, build_plan
+    from core.series_conflicts import get_conflict
+
+    row = get_conflict(conflict_id)
+    try:
+        plan = build_plan(row, mode=mode, keep=keep)
+    except MergeRefused as e:
+        return None, (jsonify({"success": False, "error": str(e)}), e.status)
+    refusal = grant_refusal(plan["folder"], plan["mapped_folder"])
+    if refusal:
+        return None, (jsonify({"success": False, "error": refusal[0]}), refusal[1])
+    plan["series_id"] = row["series_id"]
+    plan["series_name"] = row.get("series_name")
+    return plan, None
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/<int:conflict_id>/plan",
+                         methods=["GET", "POST"])
+def api_series_conflict_plan(conflict_id):
+    """The compare view: both folders' comics, paired by issue, and what a merge would do.
+
+    POST ``{mode, keep}`` is the confirmation step: the same plan with the
+    user's keeper choices applied, so the dialog lists exactly what is trashed.
+    """
+    from core.series_conflict_merge import summary
+
+    data = (request.get_json(silent=True) or {}) if request.method == "POST" else {}
+    mode = data.get("mode") or request.args.get("mode") or "merge"
+    keep = data.get("keep") or {}
+    if not isinstance(keep, dict):
+        return jsonify({"success": False, "error": "keep must be an object"}), 400
+    plan, refused = _merge_plan_or_refusal(conflict_id, mode, keep)
+    if refused:
+        return refused
+    return jsonify({"success": True, "plan": plan, "summary": summary(plan)})
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/merge", methods=["POST"])
+def api_series_conflict_merge():
+    """Queue a merge (or a drop) on the file job queue.
+
+    The request re-plans with the user's keeper choices and refuses when the
+    result differs from the plan the user reviewed (``signature``), so nothing
+    the dialog did not show can be moved or trashed.
+    """
+    from core import series_conflict_merge as merge
+    from core.job_queue import file_jobs
+
+    data = request.get_json(silent=True) or {}
+    conflict_id = _conflict_id(data)
+    if not conflict_id:
+        return jsonify({"success": False, "error": "Missing id"}), 400
+    mode = data.get("mode") or merge.MODE_MERGE
+    keep = data.get("keep") or {}
+    if not isinstance(keep, dict):
+        return jsonify({"success": False, "error": "keep must be an object"}), 400
+    signature = data.get("signature")
+    if not signature:
+        return jsonify({"success": False, "error": "Missing signature"}), 400
+
+    plan, refused = _merge_plan_or_refusal(conflict_id, mode, keep)
+    if refused:
+        return refused
+    if plan["signature"] != signature:
+        return error_response(
+            "The folders changed since you opened the comparison; review it again", code=409)
+    if not plan["actions"]:
+        return jsonify({"success": False, "error": "There is nothing to move or trash"}), 400
+
+    rename = bool(data.get("rename")) and mode == merge.MODE_MERGE
+    label = ("Merging " if mode == merge.MODE_MERGE else "Dropping duplicates from ") + \
+        os.path.basename(plan["folder"])
+    # The trash reads its folder and limits from app.config, and the queue's
+    # worker thread has no app context of its own.
+    app = current_app._get_current_object()
+
+    def job(op):
+        with app.app_context():
+            merge.run(op, conflict_id, mode, keep, rename, signature)
+
+    ahead = file_jobs.pending_count()
+    op_id = file_jobs.submit("series_merge", label, len(plan["actions"]), job)
+    return jsonify({"success": True, "op_id": op_id, "queued": ahead > 0})
 
 
 # ---------------------------------------------------------------------------

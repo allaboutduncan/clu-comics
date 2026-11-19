@@ -1630,7 +1630,7 @@
       counts.appendChild(el('li', null, pair[0] + ' folder' + (pair[0] === 1 ? '' : 's') + ' ' + pair[1]));
     });
     $('pls-review').classList.toggle('d-none', !review);
-    $('pls-review-link').href = URLS.pullList + '?automap_op=' + encodeURIComponent(opId);
+    $('pls-review-link').href = URLS.seriesConflicts;
     $('pls-result').classList.remove('d-none');
   }
 

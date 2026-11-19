@@ -262,30 +262,30 @@
                 <div id="automapResults" class="d-none">
                     <div id="automapSummary" class="alert alert-success"></div>
 
-                    <div id="automapReviewWrap" class="d-none">
-                        <div class="d-flex justify-content-between align-items-center mb-2">
-                            <h6 class="fw-bold mb-0">Needs review</h6>
-                            <button type="button" class="btn btn-sm btn-primary" id="automapApplySelected">
-                                <i class="bi bi-check2 me-1"></i>Apply selected
-                            </button>
-                        </div>
-                        <p class="text-muted small mb-2">These folders resolved to a series that is already
-                            mapped elsewhere, or two folders point at the same series. Pick the ones to map.</p>
-                        <div id="automapReviewNote"></div>
-                        <div class="table-responsive mb-3">
-                            <table class="table table-sm align-middle">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th style="width:2rem;"></th>
-                                        <th>Series</th>
-                                        <th>Folder</th>
-                                        <th>Reason</th>
-                                        <th class="text-center">Files</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="automapReviewBody"></tbody>
-                            </table>
-                        </div>
+                    {# Conflicts are resolved in Library Health, where they are kept
+                       (core/series_conflicts.py). A series points at one folder, so
+                       mapping a conflicting folder here used to un-map the other
+                       one without saying so. Library Health is owner-only. #}
+                    {% set _automap_is_owner = (g.current_user.role if g.get('current_user') else 'owner') == 'owner' %}
+                    <div id="automapReviewWrap" class="d-none alert alert-warning">
+                        <h6 class="fw-bold mb-1">
+                            <i class="bi bi-folder-symlink me-1"></i><span id="automapReviewTitle"></span>
+                        </h6>
+                        <p class="small mb-2">Each one belongs to a series that is already mapped to another
+                            folder, or shares its series with another folder found in this scan. A series
+                            points at one folder, so the comics in these are not counted as owned until you
+                            switch folders or ignore them.</p>
+                        <p class="small mb-2 d-none" id="automapReviewIgnored"></p>
+                        {% if _automap_is_owner %}
+                        <a class="btn btn-sm btn-primary" id="automapReviewLink"
+                            href="{{ url_for('library_health.series_conflicts_page') }}">
+                            <i class="bi bi-arrow-right me-1"></i>Review in Library Health
+                        </a>
+                        {% else %}
+                        <p class="small mb-0">The owner can resolve them from Library Health.</p>
+                        {% endif %}
+                        <p class="small text-danger mb-0 mt-2 d-none" id="automapReviewNotSaved">
+                            These could not be saved for Library Health; run the scan again later.</p>
                     </div>
 
                     <div id="automapSkippedWrap" class="d-none">
@@ -325,7 +325,6 @@
         const automapModalEl = document.getElementById('automapModal');
         const automapModal = automapModalEl ? new bootstrap.Modal(automapModalEl) : null;
         let automapPoll = null;
-        let reviewItems = [];
 
         function resetAutomapUI() {
             document.getElementById('automapProgress').classList.remove('d-none');
@@ -454,21 +453,20 @@
                 errWrap.classList.add('d-none');
             }
 
-            // Review table
-            reviewItems = result.review || [];
+            // Series folder conflicts: a summary and a link to Library Health,
+            // where they are kept and resolved.
             const reviewWrap = document.getElementById('automapReviewWrap');
-            const body = document.getElementById('automapReviewBody');
-            if (reviewItems.length) {
-                document.getElementById('automapReviewNote').innerHTML =
-                    shownNote(reviewItems, reviewN, result.review_truncated);
-                body.innerHTML = reviewItems.map((it, i) => `
-                    <tr>
-                        <td><input class="form-check-input automap-review-cb" type="checkbox" data-idx="${i}"></td>
-                        <td>${CLU.escapeHtml(it.series_name)}${it.year ? ' <span class="text-muted">(' + CLU.escapeHtml(it.year) + ')</span>' : ''}</td>
-                        <td><small class="text-muted">${CLU.escapeHtml(it.folder)}</small></td>
-                        <td><small>${CLU.escapeHtml(it.reason)}</small></td>
-                        <td class="text-center"><span class="badge bg-info">${it.comic_count || 0}</span></td>
-                    </tr>`).join('');
+            const ignoredN = result.conflicts_ignored || 0;
+            if (reviewN) {
+                document.getElementById('automapReviewTitle').textContent =
+                    `${reviewN} folder${reviewN === 1 ? '' : 's'} need${reviewN === 1 ? 's' : ''} a decision`;
+                const ignoredEl = document.getElementById('automapReviewIgnored');
+                ignoredEl.textContent = ignoredN
+                    ? `${ignoredN} more you chose to ignore ${ignoredN === 1 ? 'is' : 'are'} not counted.` : '';
+                ignoredEl.classList.toggle('d-none', !ignoredN);
+                // Older jobs (and the Guided Setup's resume) predate the flag.
+                document.getElementById('automapReviewNotSaved')
+                    .classList.toggle('d-none', result.conflicts_saved !== false);
                 reviewWrap.classList.remove('d-none');
             } else {
                 reviewWrap.classList.add('d-none');
@@ -494,35 +492,6 @@
             if (applied > 0) {
                 document.getElementById('automapReload').classList.remove('d-none');
             }
-        }
-
-        const applySelectedBtn = document.getElementById('automapApplySelected');
-        if (applySelectedBtn) {
-            applySelectedBtn.addEventListener('click', () => {
-                const checked = Array.from(document.querySelectorAll('.automap-review-cb:checked'))
-                    .map(cb => reviewItems[parseInt(cb.dataset.idx, 10)]);
-                if (!checked.length) return;
-                applySelectedBtn.disabled = true;
-                applySelectedBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-                fetch('/api/pull-list/apply', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ items: checked }),
-                })
-                    .then(r => r.json())
-                    .then(data => {
-                        if (!data.success) throw new Error(data.error || 'Apply failed');
-                        document.getElementById('automapSummary').innerHTML =
-                            `<strong>Mapped ${data.applied}</strong> more series. Reload to see them.`;
-                        document.getElementById('automapReviewWrap').classList.add('d-none');
-                        document.getElementById('automapReload').classList.remove('d-none');
-                    })
-                    .catch(err => {
-                        applySelectedBtn.disabled = false;
-                        applySelectedBtn.innerHTML = '<i class="bi bi-check2 me-1"></i>Apply selected';
-                        showAutomapError(err.message);
-                    });
-            });
         }
 
         const scanBtn = document.getElementById('scanLibraryBtn');

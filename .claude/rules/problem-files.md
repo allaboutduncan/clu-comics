@@ -8,8 +8,12 @@ paths:
   - "routes/library_health.py"
   - "templates/problem_files.html"
   - "templates/library_duplicates.html"
+  - "templates/library_series_conflicts.html"
   - "static/js/problem_files.js"
   - "static/js/library_duplicates.js"
+  - "static/js/library_series_conflicts.js"
+  - "core/series_conflicts.py"
+  - "core/series_conflict_merge.py"
   - "cbz_ops/rebuild.py"
   - "cbz_ops/single_file.py"
   - "core/thumbnail_cache.py"
@@ -399,3 +403,76 @@ Tests: `tests/integration/test_library_health.py`,
 `tests/routes/test_library_health_routes.py`, `TestScanDrivenClasses` in
 `tests/unit/test_problem_files_classify.py`, and the wrapper/registration
 assertions in `tests/unit/test_db_shutdown_and_schedule.py`.
+
+### Series Folder Conflicts
+
+`core/series_conflicts.py` owns `series_folder_conflicts` and the owner-only
+`/library-health/series` page. A series holds **one** folder
+(`series.mapped_path`), read by matching, download filing, the series page and
+folder art. That is deliberate and stays (`plans/15-series-folder-conflicts.md`):
+a second folder for the same series is a conflict to resolve, never a second
+mapping. Scan Library (`models/library_automap._run_scan_job_inner`) records
+every review item here. The dialog used to hold them only in the 15-minute job,
+and its *Apply selected* silently un-mapped the other folder. The dialog and
+the Guided Setup now only count them and link here.
+
+- **Every review item is recorded, an ignored one too**, and ignored folders are
+  filtered out of the job result afterwards. Leaving them out of `record_scan`
+  would make the prune treat them as resolved.
+- **Pruning needs positive evidence**, as for `problem_files`. A row the scan
+  did not report is dropped only under a *mounted* root, or when
+  `is_path_provably_gone` says the folder is gone.
+- **Ignore is `ignored_sig == files_sig`**, a hash of the folder's comic file
+  names, the duplicate-dismissal rule. A comic added or removed re-opens it.
+  `set_ignored` re-reads the folder, so the stored sig is the one on disk now.
+- **The mapped folder is read live from `series` at list time.** The stored
+  `mapped_folder` is what the scan saw.
+- **Switch** (`POST /api/problem-files/series-conflicts/switch`) is the old
+  *Apply*, through `apply_and_sync`. `after_switch` then turns the row around:
+  the previously mapped folder becomes the conflict, so no folder drops off the
+  list. A failed apply returns a generic message, because `apply_automap`'s
+  failure text can be a raw exception.
+- The count is on `/api/problem-files/health/summary` only, not in
+  `get_summary()`, because the header badge polls that.
+
+#### Merge and Drop (`core/series_conflict_merge.py`)
+
+*Compare & merge* opens the plan (`GET|POST …/series-conflicts/<id>/plan`);
+`POST …/series-conflicts/merge` queues it as one `file_jobs` job
+(`series_merge`). Merge moves this folder's comics into the mapped folder and
+keeps one copy of each issue in both; Drop only trashes this folder's copies of
+issues the mapped folder has. A folder left with no comics and no subfolders is
+trashed (never a protected root).
+
+- **The plan is built three times** (page, request, job) and the job runs only
+  if `signature` still matches. It covers both folders' paths and sizes, *not*
+  the keeper choices, which travel as `keep` and are re-applied. A different
+  signature means the folders changed: 409 in the request, a failed op in the
+  job, and nothing moved in either.
+- **Never overwrites** (`move_file(replace=False)`). A name taken by a
+  different file is *held* and listed; identical bytes under the same name are
+  a duplicate and trashed. On a "keep this folder's copy" pair the mapped copy
+  is trashed *before* the move, so a failed move leaves the comic where it was.
+- **Pairing is by issue number** (`ci_number`, else the quiet
+  `models.providers.base.extract_issue_number`, never `parse_comic_filename`,
+  which logs per file). A number held by two files on one side is not paired:
+  those files move, so nothing is trashed on a guess.
+- **Keeper:** healthy over damaged, then *clearly* larger; the mapped copy wins
+  ties, and sizes within `SIZE_TIE_FRACTION` (2%) are a tie. Two copies usually
+  differ by a re-tag, and plain "larger wins" picked this folder for 6 of 23
+  issues of one real series over a few KB each, moving 80 MB files for nothing.
+  A `file_health` verdict counts only while its size matches the file.
+- Moves go through `move_indexed_path` (index rows and path references), trashes
+  through the same bookkeeping as `library_health.resolve_group`, and the
+  series is reconciled once at the end.
+- The rename checkbox runs `get_renamed_filename` on each moved file, without
+  overwriting; a taken name keeps the file's own.
+- **The job runs inside `app.app_context()`**, captured in the request.
+  `move_to_trash` reads `current_app.config`, and the queue's worker thread has
+  no context: the first live Drop failed every file with "Working outside of
+  application context", trashed nothing, and left the conflict listed. The
+  route test runs the job on a bare thread with the real trash for that reason.
+
+Tests: `tests/unit/test_series_conflicts.py`,
+`tests/unit/test_series_conflict_merge.py`,
+`tests/routes/test_series_conflicts_routes.py`.

@@ -118,6 +118,11 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
             <i class="bi bi-files me-1"></i>Review duplicates
             <span class="badge bg-secondary ms-1 d-none" id="pf-health-dups"></span>
           </a>
+          <a class="btn btn-outline-primary btn-sm" href="{{ url_for('library_health.series_conflicts_page') }}"
+            title="Folders whose series is already mapped to another folder, found by Scan Library">
+            <i class="bi bi-folder-symlink me-1"></i>Series folder conflicts
+            <span class="badge bg-secondary ms-1 d-none" id="pf-health-conflicts"></span>
+          </a>
           <button class="btn btn-primary btn-sm" id="pf-health-scan"
             title="Check the next batch of files now, plus series.json, stray files, empty folders and ComicInfo counts">
             <i class="bi bi-play-fill me-1"></i>Run scan now

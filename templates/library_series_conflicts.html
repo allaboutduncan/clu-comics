@@ -1,0 +1,135 @@
+{% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/filters.html' import toolbar, search_input, result_count %}
+
+{% block title %}CLU: Series Folder Conflicts{% endblock %}
+
+{% block content %}
+
+<div id="series-conflicts-app">
+  {% call(slot) page_header('Series Folder Conflicts', 'bi-folder-symlink',
+                            subtitle='Folders whose series is already mapped to another folder. Their comics are not counted as owned.') %}
+    {% if slot == 'actions' %}
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('problem_files.page') }}">
+        <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Library Health
+      </a>
+    {% elif slot == 'help' %}
+      <p>
+        A series in CLU points at one folder. Scan Library lists a folder here when its
+        <code>series.json</code> or <code>cvinfo</code> names a series that already points
+        somewhere else, or when two folders name the same series. Only the comics in the
+        mapped folder count as owned, show on the series page and get matched to issues.
+      </p>
+      <p class="mb-0">
+        <strong>Compare &amp; merge</strong> lists both folders' comics side by side, paired by
+        issue number. <em>Merge</em> moves this folder's comics into the mapped folder and, for an
+        issue in both, keeps the copy you pick and trashes the other. <em>Drop duplicates</em> only
+        trashes this folder's copies of issues the mapped folder already has. A folder left with
+        no comics goes to the trash too. Nothing overwrites a file: a name already taken by a
+        different comic is left where it is and reported.
+      </p>
+      <p class="mb-0">
+        <strong>Use this folder instead</strong> makes this folder the series' folder; the old
+        one then takes its place on this list. <strong>Ignore</strong> keeps both folders as they
+        are and stops listing this one until a comic is added to or removed from it.
+      </p>
+    {% endif %}
+  {% endcall %}
+
+  {% call toolbar('Filter series folder conflicts') %}
+    <div class="clu-toolbar-row">
+      {{ search_input('sc-search', 'Search series and folders') }}
+      <div class="clu-toolbar-end">
+        {{ result_count('sc-summary', 0, 'conflicts', one='conflict') }}
+        <div class="form-check form-switch mb-0">
+          <input class="form-check-input" type="checkbox" id="sc-show-ignored">
+          <label class="form-check-label small" for="sc-show-ignored">Show ignored</label>
+        </div>
+      </div>
+    </div>
+  {% endcall %}
+
+  <div class="table-responsive">
+    <table class="table table-hover align-middle">
+      <thead>
+        <tr>
+          <th>Series</th>
+          <th>This folder</th>
+          <th>Mapped folder (counted as owned)</th>
+          <th style="width: 1%;" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="sc-tbody">
+        <tr>
+          <td colspan="4" class="text-center text-muted py-4">Loading&hellip;</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div id="sc-empty"></div>
+</div>
+
+<div class="modal fade" id="sc-switch-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-arrow-left-right me-2"></i>Use this folder instead?</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="mb-1"><strong id="sc-switch-series"></strong> will point at:</p>
+        <p class="text-break small mb-3" id="sc-switch-new"></p>
+        <p class="mb-1">Its comics stop counting as owned and it is listed here instead:</p>
+        <p class="text-break small mb-0" id="sc-switch-old"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="sc-switch-confirm">Use this folder</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="sc-merge-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-intersect me-2"></i><span id="sc-merge-title">Compare folders</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="sc-merge-review">
+          <dl class="row small mb-3">
+            <dt class="col-sm-3">This folder</dt>
+            <dd class="col-sm-9 text-break" id="sc-merge-folder"></dd>
+            <dt class="col-sm-3">Mapped folder</dt>
+            <dd class="col-sm-9 text-break mb-0" id="sc-merge-mapped"></dd>
+          </dl>
+          <div id="sc-merge-body"><div class="text-center text-muted py-4">Loading&hellip;</div></div>
+        </div>
+        <div id="sc-merge-confirm" class="d-none">
+          <p id="sc-merge-confirm-lead" class="mb-2"></p>
+          <div id="sc-merge-confirm-list"></div>
+          <p class="small text-muted mb-0" id="sc-merge-confirm-trash-note"></p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="form-check me-auto" id="sc-merge-rename-wrap">
+          <input class="form-check-input" type="checkbox" id="sc-merge-rename">
+          <label class="form-check-label small" for="sc-merge-rename">Rename moved files to my rename pattern</label>
+        </div>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-outline-secondary d-none" id="sc-merge-back">Back</button>
+        <button type="button" class="btn btn-outline-danger" id="sc-merge-drop" disabled>Drop duplicates only</button>
+        <button type="button" class="btn btn-primary" id="sc-merge-go" disabled>Merge into mapped folder</button>
+        <button type="button" class="btn btn-danger d-none" id="sc-merge-confirm-go">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="{{ asset('js/library_series_conflicts.js') }}"></script>
+{% endblock %}

@@ -1146,6 +1146,12 @@
             dupBadge.textContent = total;
             dupBadge.classList.toggle('d-none', !total);
         }
+        var conflictBadge = document.getElementById('pf-health-conflicts');
+        if (conflictBadge) {
+            var conflicts = Number(h.series_conflicts || 0);
+            conflictBadge.textContent = conflicts;
+            conflictBadge.classList.toggle('d-none', !conflicts);
+        }
 
         var enabled = document.getElementById('pf-health-enabled');
         if (enabled) enabled.checked = !!h.enabled;

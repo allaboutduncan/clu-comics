@@ -309,6 +309,33 @@ def _init_db_locked():
                 "ALTER TABLE duplicate_dismissals ADD COLUMN until_scan INTEGER NOT NULL DEFAULT 0"
             )
 
+        # Series folder conflicts (core/series_conflicts.py): a sidecar folder
+        # that resolves to a series already mapped to another folder. A series
+        # holds one mapped_path, so this folder's issues are not counted as
+        # owned. Written by the Scan Library job, which used to keep them only
+        # in memory. ignored_sig is the files_sig at the time the user chose
+        # Ignore, so a new file in the folder re-opens the row.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS series_folder_conflicts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_id INTEGER NOT NULL,
+                folder TEXT NOT NULL,
+                mapped_folder TEXT,
+                series_name TEXT,
+                year TEXT,
+                publisher_name TEXT,
+                series_status TEXT,
+                cv_id INTEGER,
+                source TEXT,
+                file_count INTEGER NOT NULL DEFAULT 0,
+                files_sig TEXT,
+                ignored_sig TEXT,
+                found_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(series_id, folder)
+            )
+        """)
+
         # Create problem_file_replacements table.
         #
         # A user who searches from the Library Health page and downloads a

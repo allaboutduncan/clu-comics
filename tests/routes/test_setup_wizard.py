@@ -112,10 +112,16 @@ class TestWizardPage:
         assert "{ id: 'personalization', label: 'Personalization', usecases: [], always: true }" in js
         assert "(fresh && !s.existing) || s.always ||" in js
 
-    def test_pull_list_page_reopens_a_wizard_scan(self):
-        """The scan step's review link lands in the Pull List's own review modal."""
+    def test_scan_review_link_goes_to_series_conflicts(self):
+        """The scan step's review link lands on Library Health's series conflicts page.
+
+        Conflicts are kept in the database now, so the link no longer depends
+        on the 15-minute scan job; the Pull List still reopens a job by id.
+        """
         js = self._js()
-        assert "URLS.pullList + '?automap_op=' + encodeURIComponent(opId)" in js
+        assert "$('pls-review-link').href = URLS.seriesConflicts;" in js
+        with open(os.path.join(ROOT, "templates", "setup.html"), encoding="utf-8") as f:
+            assert "url_for('library_health.series_conflicts_page')" in f.read()
         with open(os.path.join(ROOT, "templates", "pull_list.html"), encoding="utf-8") as f:
             page = f.read()
         assert "resumeParams.get('automap_op')" in page
