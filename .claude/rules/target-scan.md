@@ -142,7 +142,9 @@ with it.
 > how the incident came to compare against the one-shot's title. With the
 > identity rule tightened this now causes *under*-matching rather than a wrong
 > move, which is the safe direction, but picking the most common derived name
-> rather than the first would be the real fix.
+> rather than the first would be the real fix. (#790 fixed how *one* file is
+> read — an issue title after the year no longer ends up in the name — and left
+> the choice of file alone.)
 
 `tests/unit/test_wanted_scan_target_guard.py` asserts the app.py half
 structurally; the behaviour itself is in

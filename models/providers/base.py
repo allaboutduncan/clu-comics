@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
+from core.filename_parse import SIGN_CHARS, SIGN_CLASS, prefix_before_first_group
+
 
 # Browser-like User-Agent for provider HTTP clients. Some upstreams (e.g. ComicVine
 # and comics.org, both fronted by Cloudflare) reject default library User-Agents like
@@ -145,6 +147,9 @@ def extract_issue_number(filename: str) -> Optional[str]:
     - "X-Men v2 012.cbz" -> "12"
     - "Gen 13 013A.cbz" -> "13A"  (letter-suffixed variant, stored literally
       by providers like ComicVine)
+    - "Spider-Man -1 (1990).cbz" -> "-1"  (the sign is part of the number)
+    - "Detective Comics 156 (1937) - Batmobile of 1950.cbz" -> "156"
+    - "Absolute Flash V01 - Of Two Worlds 2025.cbz" -> "1"
 
     Args:
         filename: Comic filename
@@ -172,28 +177,60 @@ def extract_issue_number(filename: str) -> Optional[str]:
 
     # Try various patterns (ordered by specificity)
     # Uses lookbehind (?<=\s) instead of \s+ so finditer can find all matches
-    patterns = [
-        rf'\b[Ii]ssue\s+(\d+{_SUFFIX})',        # Issue 080, Issue 700.1, Issue 013A
-        rf'#(\d+{_SUFFIX})',                      # #42 or #42.1 or #42.BEY or #13A
-        rf'(?<=\s)(\d{{3,}}{_SUFFIX})(?:\s|$)',   # Space + 3+ digits (001, 078.BEY, 013A)
-        rf'(?<=\s)(\d{{1,2}}{_SUFFIX})(?:\s|$)',  # Space + 1-2 digits
-        rf'[-_](\d+{_SUFFIX})(?:\s|$)',           # Dash/underscore + digits
+    #
+    # A sign glued to the digits is part of the number (issue -1, #778): it is
+    # accepted after "Issue ", after "#" and after whitespace, never after a
+    # space of its own -- the dash of "Black Cat - 001" is a separator.
+    _S = rf'{SIGN_CLASS}?'
+    explicit = [
+        rf'\b[Ii]ssue\s+({_S}\d+{_SUFFIX})',     # Issue 080, Issue 700.1, Issue -1
+        rf'#({_S}\d+{_SUFFIX})',                 # #42 or #42.1 or #42.BEY or #13A
     ]
+    for pattern in explicit:
+        match = re.search(pattern, name)
+        if match:
+            return _normalize_issue_number(match.group(1))
 
-    for pattern in patterns:
-        # For 3+ digit pattern, use the cleaned name and take the LAST match.
-        # This avoids capturing series numbers like "2099" in "Spider-Man 2099 001".
-        if r'\d{3,}' in pattern:
-            matches = list(re.finditer(pattern, name_clean))
-            if matches:
-                match = matches[-1]
-            else:
-                continue
-        else:
-            match = re.search(pattern, name)
-            if not match:
-                continue
+    # The first "(...)"/"[...]" group is an anchor: the issue number is the
+    # LAST number before it, whatever its width, and everything after it is
+    # title text. Reading the whole name instead took the year out of
+    # "Detective Comics 156 (1937) - Batmobile of 1950" (#778).
+    prefix, has_group = prefix_before_first_group(name)
+    if has_group:
+        # "01 of 12 (2020)": the count is not the issue.
+        prefix = re.sub(r'\s+of\s+\d+\s*$', '', prefix, flags=re.IGNORECASE)
+        matches = list(re.finditer(rf'(?<=\s)({_S}\d+{_SUFFIX})(?:\s|$)', prefix))
+        if matches:
+            return _normalize_issue_number(matches[-1].group(1))
 
+    # No usable anchor. 3+ digits: use the cleaned name and take the LAST
+    # match, which avoids capturing series numbers like "2099" in
+    # "Spider-Man 2099 001".
+    wide = list(re.finditer(rf'(?<=\s)({_S}\d{{3,}}{_SUFFIX})(?:\s|$)', name_clean))
+    narrow = re.search(rf'(?<=\s)({_S}\d{{1,2}}{_SUFFIX})(?:\s|$)', name)
+
+    # Collected-edition naming, "Absolute Flash V01 - Of Two Worlds 2025": the
+    # only bare number is a publication year at the very end, and the volume
+    # token is the number. Any other candidate ("X-Men v2 012") wins as before.
+    if not has_group and not narrow and len(wide) == 1:
+        only = wide[0]
+        if only.end() == len(name_clean) and re.fullmatch(r'(?:19|20)\d{2}', only.group(1)):
+            volume = re.search(
+                r'(?<=\s)[Vv](?:ol(?:ume)?\.?\s*)?(\d{1,3})(?=\s|$)',
+                name_clean[:only.start()],
+            )
+            if volume:
+                return _normalize_issue_number(volume.group(1))
+
+    if wide:
+        return _normalize_issue_number(wide[-1].group(1))
+    if narrow:
+        return _normalize_issue_number(narrow.group(1))
+
+    # Dash/underscore + digits ("Comic-001"). No sign here: this dash IS the
+    # separator.
+    match = re.search(rf'[-_](\d+{_SUFFIX})(?:\s|$)', name)
+    if match:
         return _normalize_issue_number(match.group(1))
 
     return None
@@ -203,7 +240,12 @@ def _normalize_issue_number(num_str: str) -> str:
     """Strip leading zeros from the integer part while preserving a decimal/
     alpha point-suffix ('.1', '.BEY') or a directly-attached letter suffix
     ('A' in '013A'). e.g. '013A' -> '13A', '080.BEY' -> '80.BEY', '001' -> '1'.
+    A leading sign survives, as ASCII: '-001' -> '-1'.
     """
+    sign = ''
+    if num_str and num_str[0] in SIGN_CHARS:
+        sign, num_str = '-', num_str[1:]
+
     # Peel off an optional dot-suffix first ('80.BEY' -> '80' + '.BEY').
     if '.' in num_str:
         int_part, dot_suffix = num_str.split('.', 1)
@@ -217,7 +259,7 @@ def _normalize_issue_number(num_str: str) -> str:
     if m:
         int_part, letter_suffix = m.group(1), m.group(2)
 
-    return str(int(int_part)) + letter_suffix + dot_suffix
+    return sign + str(int(int_part)) + letter_suffix + dot_suffix
 
 
 class BaseProvider(ABC):

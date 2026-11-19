@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from core import series_names
+from core import filename_parse, series_names
 from core.app_logging import app_logger
 
 
@@ -152,15 +152,28 @@ def get_series_name_from_files(mapped_path, db_series_name):
     # "[...]" at the end, so the end-anchored issue strip below never fired and
     # the WHOLE filename ("Sicko #01 [July 2026]") became the series name --
     # baked into the match regex as a literal, so no download was ever filed.
-    name = re.sub(r"\s*\([^)]*\)", "", name)
-    name = re.sub(r"\s*\[[^\]]*\]", "", name)
+    #
+    # When the text before the FIRST group ends in an issue number, that group
+    # is the anchor and everything after it is an issue title, so cut there:
+    # "Batman 497 (1993) - Knightfall, Part 11" is "Batman 497", not
+    # "Batman 497 - Knightfall, Part" (#790). Cutting at the first number
+    # followed by a dash instead would shorten "Spider-Man 2099 - Dark Genesis
+    # 001" to "Spider-Man", and a too-short name claims more files.
+    prefix, has_group = filename_parse.prefix_before_first_group(name)
+    if has_group and filename_parse.ends_with_issue_number(prefix):
+        name = prefix
+    else:
+        name = re.sub(r"\s*\([^)]*\)", "", name)
+        name = re.sub(r"\s*\[[^\]]*\]", "", name)
     # An explicit "#NNN" marks the issue number wherever it sits; anything after
     # it (an issue title, "- Title") is not part of the series name.
     name = re.sub(r"\s*#-?\d.*$", "", name)
     # Remove issue number at end, including "001 of 5" and "#001" forms.
     # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
     # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
-    name = re.sub(r"\s+#?\d+(?:\s+of\s+\d+)?\s*$", "", name, flags=re.IGNORECASE)
+    # A sign glued to the digits ("-001") and a point suffix ("001.5") are part
+    # of the number too.
+    name = filename_parse.TRAILING_ISSUE.sub("", name)
     # Drop a trailing separator left by a "Series - NNN" naming style, so the
     # derived name is "Black Cat" not "Black Cat -". Guarded below so a name
     # that is *only* separators falls back to the DB name.
@@ -196,8 +209,10 @@ _word_regex = series_names.word_regex
 #   * padding is written sign-first ("Amazing Spider-Man -001 (1997).cbz"), so
 #     a "0*" + "-1" pattern hunts for zeros in front of the minus and matches
 #     nothing, while the pattern for #1 happily claims that same file.
-_SIGN_CHARS = "-‐‑‒–—―−"
-_SIGN_CLASS = "[" + _SIGN_CHARS + "]"
+# One definition, in core/filename_parse.py, shared with the provider-side
+# issue-number parser so the two agree on what a sign is.
+_SIGN_CHARS = filename_parse.SIGN_CHARS
+_SIGN_CLASS = filename_parse.SIGN_CLASS
 
 
 def normalize_issue_number(value):

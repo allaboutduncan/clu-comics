@@ -78,3 +78,42 @@ def test_keeps_punctuation_inside_series_name(tmp_path):
 def test_hash_marker_drops_trailing_issue_title(tmp_path):
     _make_comic(tmp_path, "Nightwing #117 - Absolute Power.cbz")
     assert get_series_name_from_files(str(tmp_path), "Nightwing") == "Nightwing"
+
+
+# #790: an issue title after the year. The parentheticals were removed first,
+# so the number was no longer at the end and " 001 - Title" stayed in the name.
+# The wider table is tests/unit/test_filename_corpus.py.
+def test_title_after_year_is_not_part_of_the_series(tmp_path):
+    _make_comic(
+        tmp_path,
+        "Avengers Assemble Featuring Captain Citrus 001 (2014) - Choose Wisely.cbr",
+    )
+    assert (
+        get_series_name_from_files(
+            str(tmp_path), "Avengers Assemble Featuring Captain Citrus"
+        )
+        == "Avengers Assemble Featuring Captain Citrus"
+    )
+
+
+def test_title_ending_in_a_number_is_not_part_of_the_series(tmp_path):
+    _make_comic(tmp_path, "Batman 497 (1993) - Knightfall, Part 11.cbz")
+    assert get_series_name_from_files(str(tmp_path), "Batman") == "Batman"
+
+
+def test_number_inside_series_name_survives(tmp_path):
+    # Cutting at the first number followed by a dash would leave "Spider-Man",
+    # which claims more files than the series owns.
+    _make_comic(tmp_path, "Spider-Man 2099 - Dark Genesis 001 (2023).cbz")
+    assert (
+        get_series_name_from_files(str(tmp_path), "Spider-Man 2099: Dark Genesis")
+        == "Spider-Man 2099 - Dark Genesis"
+    )
+
+
+def test_negative_issue_is_stripped_with_its_sign(tmp_path):
+    _make_comic(tmp_path, "Amazing Spider-Man -001 (1997) - Flashback.cbz")
+    assert (
+        get_series_name_from_files(str(tmp_path), "The Amazing Spider-Man")
+        == "Amazing Spider-Man"
+    )
