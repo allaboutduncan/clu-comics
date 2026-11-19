@@ -1,6 +1,7 @@
 ---
 paths:
   - "core/series_names.py"
+  - "core/filename_parse.py"
   - "helpers/collection.py"
   - "models/cbl.py"
   - "models/getcomics.py"
@@ -59,6 +60,29 @@ Things that look arbitrary and are not:
   matches and the affected files were in TARGET, not in series folders. A
   matcher change that *removes* matches still needs the purge marker and forced
   re-match.
+
+### Reading a name or number out of a filename: the first group is the anchor
+
+`core/filename_parse.py` holds the one rule the filename parsers share. In
+`Series NNN (YYYY) - Title` the issue number is the last token before the
+**first** `(...)`/`[...]` group and everything after it is title text. Parsers
+used to strip the groups and then guess by position, which read `1950` as the
+issue of `Detective Comics 156 (1937) - Batmobile of 1950` (#778) and kept
+`497 - Knightfall, Part` in a series name (#790).
+
+- **Never cut at "the first number followed by a dash".** That was #790's
+  suggested regex. It turns `Spider-Man 2099 - Dark Genesis 001` into
+  `Spider-Man`, and a too-short derived name claims more files.
+- **A sign counts only when glued to the digits and preceded by whitespace,
+  `#` or `Issue `** (`SIGN_CLASS`, aliased by `helpers/collection.py`).
+  `Black Cat - 001` is issue 1.
+- On it so far: `models.providers.base.extract_issue_number` and
+  `helpers.collection.get_series_name_from_files`.
+  `tests/unit/test_filename_corpus.py` is one table of filenames with a column
+  per parser; a parser moved onto the module gets a column.
+- **Not candidates:** `extract_comic_values` and `get_renamed_filename`
+  (`cbz_ops/rename.py`) decide filenames on disk, so a change re-renames
+  libraries. The module is import-free so `monitor.py` can reach it.
 
 ### What is deliberately not shared
 
