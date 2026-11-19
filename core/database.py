@@ -13548,6 +13548,30 @@ def get_series_mapping(series_id):
         return None
 
 
+def find_mapped_series_by_cv_id(cv_id, exclude_id=None):
+    """The mapped series rows that name ComicVine volume ``cv_id``, other than
+    ``exclude_id``: ``[{id, name, mapped_path}]``. Empty on no match or error."""
+    if not cv_id:
+        return []
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            rows = conn.execute(
+                """
+                SELECT id, name, mapped_path FROM series
+                WHERE cv_id = ? AND id != ?
+                  AND mapped_path IS NOT NULL AND mapped_path != ''
+                ORDER BY id
+                """,
+                (cv_id, exclude_id if exclude_id is not None else -1),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to look up series by ComicVine id {cv_id}: {e}")
+        return []
+
+
 def get_series_by_id(series_id):
     """
     Get full series info by ID.

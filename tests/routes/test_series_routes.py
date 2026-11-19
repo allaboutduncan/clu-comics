@@ -337,6 +337,158 @@ class TestSubscribeSeries:
         mock_makedirs.assert_not_called()
 
 
+@pytest.fixture
+def existing_series_folder(tmp_path):
+    """A library folder whose cvinfo names ComicVine volume 91273 and Metron
+    series 100, visible through the cvinfo folder maps."""
+    folder = tmp_path / "X" / "X Volume 01 (2016)"
+    folder.mkdir(parents=True)
+    (folder / "cvinfo").write_text(
+        "https://comicvine.gamespot.com/x/4050-91273/\nseries_id: 100\n")
+    with patch("models.cbl.cv_volume_folders",
+               return_value={91273: [str(folder)]}), \
+         patch("models.cbl.metron_series_folders",
+               return_value={100: [str(folder)]}):
+        yield str(folder)
+
+
+@pytest.mark.usefixtures("data_library_roots")
+class TestSubscribeExistingHome:
+    """#796: subscribing must not make a second folder for a series, or a
+    ComicVine volume, that already has one."""
+
+    SERIES = {"id": 100, "name": "X", "cv_id": 91273, "mapped_path": None}
+
+    def _post(self, client, **body):
+        body.setdefault("path", "/data/X (2016)")
+        return client.post("/api/series/100/subscribe", json=body)
+
+    @patch("core.database.save_series_mapping")
+    @patch("routes.series.os.makedirs")
+    def test_folder_with_matching_cvinfo_is_a_409(
+        self, mock_makedirs, mock_save, client, existing_series_folder,
+    ):
+        with patch("routes.series.get_series_by_id", return_value=dict(self.SERIES)):
+            resp = self._post(client)
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["success"] is False and data["conflict"] is True
+        assert data["reason"] == "cvinfo"
+        assert data["existing_path"] == existing_series_folder
+        assert data["can_reuse"] is True
+        assert existing_series_folder in data["error"]
+        mock_makedirs.assert_not_called()
+        mock_save.assert_not_called()
+
+    @patch("core.database.save_series_mapping")
+    @patch("routes.series.os.makedirs")
+    def test_metron_id_in_cvinfo_is_enough(
+        self, mock_makedirs, mock_save, client, existing_series_folder,
+    ):
+        """A series Metron has no ComicVine id for is still found by the
+        cvinfo's ``series_id:`` line."""
+        series = dict(self.SERIES, cv_id=None)
+        with patch("routes.series.get_series_by_id", return_value=series):
+            resp = self._post(client)
+
+        assert resp.status_code == 409
+        assert resp.get_json()["existing_path"] == existing_series_folder
+        mock_makedirs.assert_not_called()
+
+    @patch("core.database.save_series_mapping")
+    @patch("routes.series.os.makedirs")
+    def test_series_already_mapped_elsewhere_is_a_409(
+        self, mock_makedirs, mock_save, client,
+    ):
+        series = dict(self.SERIES, mapped_path="/data/X/X Volume 01 (2016)")
+        with patch("routes.series.get_series_by_id", return_value=series):
+            resp = self._post(client)
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["reason"] == "mapped"
+        assert data["existing_path"] == "/data/X/X Volume 01 (2016)"
+        assert data["can_reuse"] is False
+        mock_makedirs.assert_not_called()
+        mock_save.assert_not_called()
+
+    @patch("core.database.save_series_mapping")
+    @patch("routes.series.os.makedirs")
+    def test_same_comicvine_volume_mapped_by_another_row_is_a_409(
+        self, mock_makedirs, mock_save, client,
+    ):
+        other = [{"id": 555, "name": "X (other id)",
+                  "mapped_path": "/data/X/X Volume 01 (2016)"}]
+        with patch("routes.series.get_series_by_id", return_value=dict(self.SERIES)), \
+             patch("core.database.find_mapped_series_by_cv_id",
+                   return_value=other) as find:
+            resp = self._post(client)
+
+        find.assert_called_once_with(91273, exclude_id=100)
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["reason"] == "cv_mapped"
+        assert "X (other id)" in data["error"]
+        # Two rows filing into one folder is not offered.
+        assert data["can_reuse"] is False
+        mock_makedirs.assert_not_called()
+        mock_save.assert_not_called()
+
+    @patch("models.series_json.write_series_json")
+    @patch("models.getcomics.prepopulate_series_index")
+    @patch("core.database.save_series_mapping", return_value=True)
+    @patch("routes.series.metron")
+    def test_use_existing_folder_maps_it_as_named(
+        self, mock_metron, mock_save, mock_prepop, mock_write,
+        client, existing_series_folder,
+    ):
+        """The answer to the 409: the existing folder comes back verbatim and
+        is mapped, not sanitized into a new name and not refused again."""
+        mock_metron.create_cvinfo_file.return_value = True
+        mock_metron.get_flask_api.return_value = None
+        with patch("routes.series.get_series_by_id", return_value=dict(self.SERIES)):
+            resp = self._post(client, path=existing_series_folder)
+
+        assert resp.status_code == 200
+        assert resp.get_json()["path"] == existing_series_folder
+        assert mock_save.call_args[0][1] == existing_series_folder
+
+    @patch("models.series_json.write_series_json")
+    @patch("models.getcomics.prepopulate_series_index")
+    @patch("core.database.save_series_mapping", return_value=True)
+    @patch("routes.series.metron")
+    @patch("routes.series.os.makedirs")
+    def test_force_creates_the_second_folder(
+        self, mock_makedirs, mock_metron, mock_save, mock_prepop, mock_write,
+        client, existing_series_folder,
+    ):
+        mock_metron.create_cvinfo_file.return_value = True
+        mock_metron.get_flask_api.return_value = None
+        with patch("routes.series.get_series_by_id", return_value=dict(self.SERIES)):
+            resp = self._post(client, force=True)
+
+        assert resp.status_code == 200
+        assert mock_makedirs.call_args[0][0] == "/data/X (2016)"
+
+    @patch("core.database.save_series_mapping")
+    @patch("routes.series.os.makedirs")
+    def test_folder_is_not_named_to_a_user_without_a_grant_on_it(
+        self, mock_makedirs, mock_save, client, existing_series_folder,
+    ):
+        with patch("routes.series.get_series_by_id", return_value=dict(self.SERIES)), \
+             patch("core.path_access.grant_refusal",
+                   side_effect=lambda *p, **k: None if p == ("/data/X (2016)",)
+                   else ("Access denied", 403)):
+            resp = self._post(client)
+
+        assert resp.status_code == 409
+        data = resp.get_json()
+        assert data["existing_path"] is None
+        assert data["can_reuse"] is False
+        assert existing_series_folder not in data["error"]
+
+
 class TestDeleteSeriesMapping:
 
     @patch("core.database.remove_series_mapping", return_value=True)

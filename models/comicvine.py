@@ -7,7 +7,7 @@ including volume (series) search, issue search, and metadata mapping to ComicInf
 
 from core.app_logging import app_logger
 from datetime import datetime, date
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 import os
 import re
 import threading
@@ -1772,21 +1772,30 @@ def parse_cvinfo_volume_id(cvinfo_path: str) -> Optional[int]:
     Returns:
         Volume ID as integer, or None if not found/parseable
     """
+    return parse_cvinfo_ids(cvinfo_path)[0]
+
+
+def parse_cvinfo_ids(cvinfo_path: str) -> Tuple[Optional[int], Optional[int]]:
+    """``(ComicVine volume id, Metron series id)`` from one read of a cvinfo.
+
+    Either is None when the file does not carry it (or cannot be read). The
+    folder maps read a cvinfo per indexed folder, so both ids come from a
+    single open.
+    """
     import re
 
     try:
         with open(cvinfo_path, 'r', encoding='utf-8') as f:
             content = f.read().strip()
-
-        # Match pattern: 4050-{volume_id}
-        match = re.search(r'/4050-(\d+)', content)
-        if match:
-            return int(match.group(1))
-
-        return None
     except Exception as e:
         app_logger.error(f"Error parsing cvinfo file {cvinfo_path}: {e}")
-        return None
+        return None, None
+
+    # Match pattern: 4050-{volume_id}
+    volume = re.search(r'/4050-(\d+)', content)
+    series = re.search(r'series_id:\s*(\d+)', content, re.IGNORECASE)
+    return (int(volume.group(1)) if volume else None,
+            int(series.group(1)) if series else None)
 
 
 def find_cvinfo_in_folder(folder_path: str) -> Optional[str]:

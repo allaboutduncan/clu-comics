@@ -845,6 +845,22 @@
                     <input type="text" class="form-control" id="subscribePath">
                     <small class="text-muted">Based on your CUSTOM_MOVE_PATTERN setting</small>
                 </div>
+                <div class="alert alert-warning d-none mb-0" id="subscribeConflict" role="alert">
+                    <div class="fw-bold mb-1">
+                        <i class="bi bi-exclamation-triangle me-1"></i>Already in your library
+                    </div>
+                    <div class="text-break" id="subscribeConflictMessage"></div>
+                    <div class="d-flex flex-wrap gap-2 mt-2">
+                        <button type="button" class="btn btn-sm btn-success d-none" id="subscribeUseExistingBtn"
+                            onclick="subscribeUseExisting()">
+                            <i class="bi bi-folder-check me-1"></i>Use existing folder
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="subscribeForceBtn"
+                            onclick="confirmSubscribe({ force: true })">
+                            Create new folder anyway
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
@@ -993,6 +1009,7 @@
     }
 
     function openSubscribeModal() {
+        hideSubscribeConflict();
         document.getElementById('subscribePath').value = buildSubscribePath();
         new bootstrap.Modal(document.getElementById('subscribeModal')).show();
     }
@@ -1114,33 +1131,68 @@
         document.getElementById('subscribePath').value = buildSubscribePath();
     }
 
-    async function confirmSubscribe() {
-        const path = document.getElementById('subscribePath').value.trim();
+    // The folder the server said this series already lives in (a 409 from
+    // /subscribe), offered back as "Use existing folder".
+    let subscribeExistingPath = null;
+
+    function hideSubscribeConflict() {
+        subscribeExistingPath = null;
+        document.getElementById('subscribeConflict').classList.add('d-none');
+    }
+
+    function showSubscribeConflict(data) {
+        subscribeExistingPath = data.can_reuse ? data.existing_path : null;
+        document.getElementById('subscribeConflictMessage').textContent = data.error;
+        document.getElementById('subscribeUseExistingBtn')
+            .classList.toggle('d-none', !subscribeExistingPath);
+        document.getElementById('subscribeConflict').classList.remove('d-none');
+    }
+
+    function subscribeUseExisting() {
+        if (subscribeExistingPath) confirmSubscribe({ path: subscribeExistingPath });
+    }
+
+    // options.path maps onto an existing folder instead of the typed one;
+    // options.force creates the typed folder although the series has another.
+    async function confirmSubscribe(options) {
+        const opts = options || {};
+        const path = (opts.path || document.getElementById('subscribePath').value).trim();
         if (!path) return;
 
         const btn = document.getElementById('subscribeBtn');
+        const conflictBtns = [
+            document.getElementById('subscribeUseExistingBtn'),
+            document.getElementById('subscribeForceBtn'),
+        ];
+        const restore = () => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-folder-plus me-1"></i>Create & Map';
+            conflictBtns.forEach(b => { b.disabled = false; });
+        };
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Creating...';
+        conflictBtns.forEach(b => { b.disabled = true; });
 
         try {
             const resp = await fetch('/api/series/{{ series.id }}/subscribe', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: path })
+                body: JSON.stringify({ path: path, force: !!opts.force })
             });
             const data = await resp.json();
 
             if (data.success) {
                 location.reload();
+            } else if (resp.status === 409 && data.conflict) {
+                showSubscribeConflict(data);
+                restore();
             } else {
                 CLU.toast('Error: ' + data.error, 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-folder-plus me-1"></i>Create & Map';
+                restore();
             }
         } catch (e) {
             CLU.toast('Error: ' + e.message, 'error');
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-folder-plus me-1"></i>Create & Map';
+            restore();
         }
     }
 
