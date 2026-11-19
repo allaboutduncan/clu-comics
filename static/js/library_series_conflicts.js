@@ -23,8 +23,6 @@
         });
     }
 
-    function esc(text) { return CLU.escapeHtml(text == null ? '' : String(text)); }
-
     function filesBadge(n) {
         var count = Number(n || 0);
         return '<span class="badge bg-secondary ms-1">' + count + (count === 1 ? ' file' : ' files') + '</span>';
@@ -38,11 +36,11 @@
     }
 
     function renderRow(row, i) {
-        var series = esc(row.series_name || ('Series ' + row.series_id)) +
-            (row.year ? ' <span class="text-muted">(' + esc(row.year) + ')</span>' : '');
-        if (row.publisher_name) series += '<div class="small text-muted">' + esc(row.publisher_name) + '</div>';
+        var series = CLU.escapeHtml(row.series_name || ('Series ' + row.series_id)) +
+            (row.year ? ' <span class="text-muted">(' + CLU.escapeHtml(row.year) + ')</span>' : '');
+        if (row.publisher_name) series += '<div class="small text-muted">' + CLU.escapeHtml(row.publisher_name) + '</div>';
 
-        var here = '<span class="text-break small">' + esc(row.folder) + '</span>' + filesBadge(row.file_count);
+        var here = '<span class="text-break small">' + CLU.escapeHtml(row.folder) + '</span>' + filesBadge(row.file_count);
         if (!row.reachable) here += ' <span class="badge bg-warning text-dark">Folder not found</span>';
         if (row.ignored) here += ' <span class="badge bg-light text-dark border">Ignored</span>';
         if (row.likely_same) {
@@ -51,7 +49,7 @@
         }
 
         var mapped = row.mapped_folder
-            ? '<span class="text-break small">' + esc(row.mapped_folder) + '</span>'
+            ? '<span class="text-break small">' + CLU.escapeHtml(row.mapped_folder) + '</span>'
             : '<span class="text-muted small">Not mapped any more</span>';
 
         var actions;
@@ -134,8 +132,8 @@
             return '<div class="card mb-2"><div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">' +
                 '<i class="bi bi-collection text-primary fs-5" aria-hidden="true"></i>' +
                 '<div class="me-auto small">' +
-                '<strong>' + g.count + ' series</strong> in <code class="text-break">' + esc(g.parent) + '</code>' +
-                ' are already mapped under <code class="text-break">' + esc(g.mapped_parent) + '</code>' +
+                '<strong>' + g.count + ' series</strong> in <code class="text-break">' + CLU.escapeHtml(g.parent) + '</code>' +
+                ' are already mapped under <code class="text-break">' + CLU.escapeHtml(g.mapped_parent) + '</code>' +
                 (g.likely_same ? ' <span class="badge bg-info text-dark">Likely the same folder</span>' : '') +
                 '</div>' +
                 '<button class="btn btn-sm btn-primary text-nowrap" data-group="' + i + '">' +
@@ -162,20 +160,20 @@
             state.bulk.items = items;
             var rows = items.map(function (it) {
                 if (!it.ok) {
-                    return '<tr class="text-muted"><td>' + esc(it.series_name || ('Conflict ' + it.id)) + '</td>' +
-                        '<td colspan="3"><span class="badge bg-secondary">Skipped</span> ' + esc(it.error) + '</td></tr>';
+                    return '<tr class="text-muted"><td>' + CLU.escapeHtml(it.series_name || ('Conflict ' + it.id)) + '</td>' +
+                        '<td colspan="3"><span class="badge bg-secondary">Skipped</span> ' + CLU.escapeHtml(it.error) + '</td></tr>';
                 }
                 var s = it.summary;
                 var trash = it.trash.length
                     ? '<details><summary class="small">' + s.trash + '</summary><ul class="small text-break mb-0">' +
-                      it.trash.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></details>'
+                      it.trash.map(function (p) { return '<li>' + CLU.escapeHtml(p) + '</li>'; }).join('') + '</ul></details>'
                     : '0';
                 var held = s.held
-                    ? '<span class="text-warning" title="' + esc(it.held.map(function (h) { return h.name; }).join(', ')) + '">' +
+                    ? '<span class="text-warning" title="' + CLU.escapeHtml(it.held.map(function (h) { return h.name; }).join(', ')) + '">' +
                       s.held + '</span>'
                     : '0';
-                return '<tr><td>' + esc(it.series_name || '') +
-                    '<div class="small text-muted text-break">' + esc(it.folder.split('/').pop()) + '</div></td>' +
+                return '<tr><td>' + CLU.escapeHtml(it.series_name || '') +
+                    '<div class="small text-muted text-break">' + CLU.escapeHtml(it.folder.split('/').pop()) + '</div></td>' +
                     '<td>' + s.move + '</td><td>' + trash + '</td><td>' + held +
                     (it.folder_emptied ? '<div class="small text-muted">folder removed</div>' : '') + '</td></tr>';
             }).join('');
@@ -188,7 +186,7 @@
             go.disabled = !t.series;
             go.textContent = 'Merge ' + t.series + ' series';
         }).catch(function (err) {
-            body.innerHTML = '<p class="text-danger mb-0">' + esc(err.message) + '</p>';
+            body.innerHTML = '<p class="text-danger mb-0">' + CLU.escapeHtml(err.message) + '</p>';
         });
     }
 
@@ -234,7 +232,7 @@
             })
             .catch(function (err) {
                 document.getElementById('sc-tbody').innerHTML =
-                    '<tr><td colspan="4" class="text-center text-danger py-4">' + esc(err.message) + '</td></tr>';
+                    '<tr><td colspan="4" class="text-center text-danger py-4">' + CLU.escapeHtml(err.message) + '</td></tr>';
             });
     }
 
@@ -282,23 +280,23 @@
             '<div class="d-flex justify-content-between align-items-center gap-2 small mb-1">' + tag +
             (p.default === side ? '<span class="badge rounded-pill ' + (kept ? 'bg-light text-success' : 'bg-secondary') +
                 '">Suggested</span>' : '') + '</div>' +
-            '<div class="text-break small">' + esc(f.name) + '</div>' +
-            '<div class="small">' + esc(size(f.size)) +
+            '<div class="text-break small">' + CLU.escapeHtml(f.name) + '</div>' +
+            '<div class="small">' + CLU.escapeHtml(size(f.size)) +
             (f.damaged ? ' <span class="badge bg-danger ms-1">Damaged</span>' : '') + '</div>' +
             '</button>';
     }
 
     function section(title, count, inner, open) {
         return '<details class="mb-3"' + (open ? ' open' : '') + '>' +
-            '<summary class="fw-semibold mb-2">' + esc(title) +
+            '<summary class="fw-semibold mb-2">' + CLU.escapeHtml(title) +
             ' <span class="badge bg-secondary">' + count + '</span></summary>' + inner + '</details>';
     }
 
     function fileList(items, extra) {
         if (!items.length) return '<p class="small text-muted ms-3">None.</p>';
         return '<ul class="list-unstyled small ms-3 mb-0">' + items.map(function (m) {
-            return '<li class="text-break">' + esc(m.name) +
-                (m.size != null ? ' <span class="text-muted">' + esc(size(m.size)) + '</span>' : '') +
+            return '<li class="text-break">' + CLU.escapeHtml(m.name) +
+                (m.size != null ? ' <span class="text-muted">' + CLU.escapeHtml(size(m.size)) + '</span>' : '') +
                 (extra ? extra(m) : '') + '</li>';
         }).join('') + '</ul>';
     }
@@ -306,7 +304,7 @@
     function renderPlan() {
         var m = state.merge, plan = m.plan;
         var pairs = plan.pairs.map(function (p, i) {
-            return '<tr><td class="text-nowrap">' + esc(p.label) + '</td>' +
+            return '<tr><td class="text-nowrap">' + CLU.escapeHtml(p.label) + '</td>' +
                 '<td>' + pickCard(p, i, 'here') + '</td><td>' + pickCard(p, i, 'mapped') + '</td></tr>';
         }).join('');
         var pairsHtml = plan.pairs.length
@@ -331,7 +329,7 @@
         if (plan.held.length) {
             html += section('Left where they are', plan.held.length,
                 fileList(plan.held, function (h) {
-                    return '<div class="text-warning">' + esc(h.reason) + '</div>';
+                    return '<div class="text-warning">' + CLU.escapeHtml(h.reason) + '</div>';
                 }), true);
         }
         html += section('Only in the mapped folder: untouched', plan.only_mapped.length,
@@ -375,7 +373,7 @@
             state.merge.plan = res.data.plan;
             renderPlan();
         }).catch(function (err) {
-            $('sc-merge-body').innerHTML = '<p class="text-danger mb-0">' + esc(err.message) + '</p>';
+            $('sc-merge-body').innerHTML = '<p class="text-danger mb-0">' + CLU.escapeHtml(err.message) + '</p>';
         });
     }
 
@@ -410,7 +408,7 @@
             $('sc-merge-confirm-lead').textContent = lead;
             $('sc-merge-confirm-list').innerHTML = trash.length
                 ? '<p class="fw-semibold small mb-1">Going to the trash:</p>' +
-                  '<ul class="small text-break mb-2">' + trash.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul>'
+                  '<ul class="small text-break mb-2">' + trash.map(function (p) { return '<li>' + CLU.escapeHtml(p) + '</li>'; }).join('') + '</ul>'
                 : '';
             $('sc-merge-confirm-trash-note').textContent =
                 'Trashed files can be restored from the trash while it has room for them.';

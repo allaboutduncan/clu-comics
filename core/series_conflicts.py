@@ -49,7 +49,7 @@ def folder_files(folder):
 
 
 def files_signature(names):
-    return hashlib.sha1("\n".join(names).encode("utf-8", "surrogateescape")).hexdigest()
+    return hashlib.sha1("\n".join(names).encode("utf-8", "surrogateescape"), usedforsecurity=False).hexdigest()
 
 
 def _under(path, root):

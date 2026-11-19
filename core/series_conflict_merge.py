@@ -160,7 +160,7 @@ def _signature(members):
     the folders are the ones the user looked at.
     """
     parts = sorted(f"{m['path']}|{m['size']}" for m in members)
-    return hashlib.sha1("\n".join(parts).encode("utf-8", "surrogateescape")).hexdigest()
+    return hashlib.sha1("\n".join(parts).encode("utf-8", "surrogateescape"), usedforsecurity=False).hexdigest()
 
 
 def validate(row):
