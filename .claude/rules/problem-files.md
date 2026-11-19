@@ -278,6 +278,23 @@ so the CRC check alone would launder a broken page that the user kept; that page
 is recorded again as `UnreadablePage` with its name. Tests:
 `tests/unit/test_edit_damaged_pages.py`.
 
+> **Never join a raw archive member name onto a directory.** `zipfile.extract`
+> strips `..`, leading separators and drive letters; a member written by hand
+> gets none of that. Both CRC fallbacks (`cbz_ops/edit.py` and
+> `add_comicinfo_to_cbz` in `routes/metadata.py`) rebuilt the destination as
+> `os.path.join(folder, <raw name>)`, so an entry named `../../config/x` with a
+> deliberately wrong CRC-32 was written outside the extraction folder, and the
+> metadata one runs on every tag, with nobody opening anything
+> (GHSA-6p2x-pmgg-9qjj). `helpers.archive_paths.safe_member_path(folder, name)`
+> is the one answer: it mirrors `zipfile`'s sanitising step for step (the
+> fallback must land on the file `extract()` already started, because the
+> editor looks a damaged page up by its path on disk) and then checks realpath
+> containment. Both fallbacks read the entry with `read_entry_lenient`; the
+> chunked read the metadata one used lost the final chunk when the CRC check
+> fired, so a damaged page came back short or empty.
+> `tests/unit/test_archive_member_paths.py` pins the mirror against what
+> `extract()` really writes and is an AST ratchet over every module.
+
 `helpers.archive_error_detail()` is the message half of
 `describe_archive_error()` — same sanitising, no class prefix — so the store can
 hold class and message in their own columns. **Do not split the formatted string

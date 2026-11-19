@@ -220,7 +220,9 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
     every re-tag. Pass merge_existing=False for a true replace.
     """
     from cbz_ops.single_file import convert_single_rar_file
+    from cbz_ops.salvage import read_entry_lenient
     from core.comicinfo import merge_comicinfo_bytes
+    from helpers.archive_paths import safe_member_path
 
     # Safety: ensure bytes
     if isinstance(comicinfo_xml_bytes, str):
@@ -263,26 +265,18 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
                     app_logger.warning(f"Corrupted file in archive (bad CRC): {filename} - attempting raw copy")
                     corrupted_files.append(filename)
                     try:
-                        # Try to copy the file data without CRC verification
-                        # Get the ZipInfo object
-                        info = src.getinfo(filename)
-                        # Create the target path
-                        target_path = os.path.join(temp_extract_dir, filename)
+                        # Never join the raw member name onto the folder:
+                        # extract() sanitises it and this fallback did not, so
+                        # a "../" entry with a wrong CRC was written outside
+                        # the extraction folder (GHSA-6p2x-pmgg-9qjj).
+                        target_path = safe_member_path(temp_extract_dir, filename)
+                        # Only the checksum is waived, so the whole entry is
+                        # kept. The old chunked read lost the final chunk when
+                        # the CRC check fired, leaving the page short or empty.
+                        data, _crc_ok = read_entry_lenient(src, src.getinfo(filename))
                         os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                        # Read raw data (may be corrupted but we'll preserve what we can)
-                        with src.open(filename) as zf:
-                            # Read in chunks to handle large files
-                            with open(target_path, 'wb') as out:
-                                while True:
-                                    try:
-                                        chunk = zf.read(8192)
-                                        if not chunk:
-                                            break
-                                        out.write(chunk)
-                                    except zipfile.BadZipFile:
-                                        # Write what we have and stop
-                                        app_logger.warning(f"Partial extraction for corrupted file: {filename}")
-                                        break
+                        with open(target_path, 'wb') as out:
+                            out.write(data)
                     except Exception as copy_error:
                         app_logger.error(f"Failed to copy corrupted file {filename}: {copy_error}")
                         # Skip this file entirely
