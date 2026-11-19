@@ -136,6 +136,7 @@ def series_conflicts_page():
 
 @library_health_bp.route("/api/problem-files/series-conflicts", methods=["GET"])
 def api_series_conflicts():
+    from core.series_conflict_merge import group_by_parent, likely_same_name
     from core.series_conflicts import list_conflicts
 
     include_ignored = request.args.get("include_ignored") in ("1", "true", "yes")
@@ -144,10 +145,12 @@ def api_series_conflicts():
         return error_response("Could not read the series conflicts", code=500)
     for row in rows:
         row["reachable"] = os.path.isdir(row["folder"])
+        row["likely_same"] = likely_same_name(row["folder"], row.get("mapped_folder"))
     return jsonify({
         "success": True,
         "conflicts": rows,
         "open": sum(1 for r in rows if not r["ignored"]),
+        "groups": group_by_parent([r for r in rows if r["reachable"]]),
     })
 
 
@@ -313,6 +316,110 @@ def api_series_conflict_merge():
     ahead = file_jobs.pending_count()
     op_id = file_jobs.submit("series_merge", label, len(plan["actions"]), job)
     return jsonify({"success": True, "op_id": op_id, "queued": ahead > 0})
+
+
+# A dry run lists and pairs every folder in the request; bound it.
+MAX_BULK_CONFLICTS = 100
+
+
+def _bulk_ids(values):
+    ids = []
+    for value in values or []:
+        cid = _conflict_id({"id": value})
+        if cid and cid not in ids:
+            ids.append(cid)
+    return ids
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/bulk-plan", methods=["POST"])
+def api_series_conflict_bulk_plan():
+    """Dry run for merging several conflicts with their default keepers.
+
+    Every conflict is planned on its own; one that cannot be merged reports
+    why and is left out of the totals rather than failing the whole dry run.
+    """
+    from core.series_conflict_merge import summary
+
+    data = request.get_json(silent=True) or {}
+    ids = _bulk_ids(data.get("ids"))
+    if not ids:
+        return jsonify({"success": False, "error": "Missing ids"}), 400
+    if len(ids) > MAX_BULK_CONFLICTS:
+        return jsonify({"success": False,
+                        "error": f"Merge at most {MAX_BULK_CONFLICTS} series at once"}), 400
+
+    items = []
+    totals = {"series": 0, "move": 0, "trash": 0, "held": 0}
+    for cid in ids:
+        plan, refused = _merge_plan_or_refusal(cid, "merge")
+        if refused:
+            body = refused[0].get_json() or {}
+            items.append({"id": cid, "ok": False, "error": body.get("error") or "Cannot be merged"})
+            continue
+        s = summary(plan)
+        items.append({
+            "id": cid, "ok": bool(plan["actions"]),
+            "error": None if plan["actions"] else "Nothing to move or trash",
+            "series_name": plan.get("series_name"),
+            "folder": plan["folder"], "mapped_folder": plan["mapped_folder"],
+            "summary": s, "folder_emptied": plan["folder_emptied"],
+            "trash": [a["trash"] for a in plan["actions"] if a.get("trash")],
+            "held": plan["held"], "signature": plan["signature"],
+        })
+        if plan["actions"]:
+            totals["series"] += 1
+            for key in ("move", "trash", "held"):
+                totals[key] += s[key]
+    return jsonify({"success": True, "items": items, "totals": totals})
+
+
+@library_health_bp.route("/api/problem-files/series-conflicts/bulk-merge", methods=["POST"])
+def api_series_conflict_bulk_merge():
+    """Queue one job that merges every reviewed conflict with its default keepers.
+
+    Each item carries the signature its dry run returned. Any mismatch refuses
+    the whole request (409) before anything is queued: the dry run the user
+    confirmed no longer describes what would happen.
+    """
+    from core import series_conflict_merge as merge
+    from core.job_queue import file_jobs
+
+    data = request.get_json(silent=True) or {}
+    raw = data.get("items")
+    if not isinstance(raw, list) or not raw:
+        return jsonify({"success": False, "error": "Missing items"}), 400
+    if len(raw) > MAX_BULK_CONFLICTS:
+        return jsonify({"success": False,
+                        "error": f"Merge at most {MAX_BULK_CONFLICTS} series at once"}), 400
+
+    items, total = [], 0
+    for entry in raw:
+        cid = _conflict_id(entry if isinstance(entry, dict) else {})
+        signature = entry.get("signature") if isinstance(entry, dict) else None
+        if not cid or not signature:
+            return jsonify({"success": False, "error": "Each item needs an id and a signature"}), 400
+        plan, refused = _merge_plan_or_refusal(cid, "merge")
+        if refused:
+            return refused
+        if plan["signature"] != signature:
+            return error_response(
+                "Some folders changed since the dry run; review it again", code=409)
+        if plan["actions"]:
+            items.append((cid, signature))
+            total += len(plan["actions"])
+    if not items:
+        return jsonify({"success": False, "error": "There is nothing to move or trash"}), 400
+
+    rename = bool(data.get("rename"))
+    app = current_app._get_current_object()
+
+    def job(op):
+        with app.app_context():
+            merge.run_group(op, items, rename)
+
+    ahead = file_jobs.pending_count()
+    op_id = file_jobs.submit("series_merge", f"Merging {len(items)} series", total, job)
+    return jsonify({"success": True, "op_id": op_id, "queued": ahead > 0, "series": len(items)})
 
 
 # ---------------------------------------------------------------------------

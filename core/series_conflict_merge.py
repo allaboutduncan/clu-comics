@@ -365,32 +365,40 @@ def _trash_folder(folder):
     return True
 
 
-def run(op_id, conflict_id, mode, keep, rename, signature):
-    """The ``file_jobs`` body. Re-plans, refuses a changed plan, then acts."""
-    from core import app_state
+def _detail(result):
+    parts = []
+    if result["moved"]:
+        parts.append(f"{result['moved']} moved")
+    if result["trashed"]:
+        parts.append(f"{result['trashed']} trashed")
+    if result["held"]:
+        parts.append(f"{len(result['held'])} kept (name taken)")
+    if result["failed"]:
+        parts.append(f"{len(result['failed'])} failed")
+    if result["folder_removed"]:
+        parts.append("folder removed")
+    return ", ".join(parts) or "Nothing to do"
+
+
+def _execute(conflict_id, mode, keep, rename, signature, progress=None):
+    """Re-plan one conflict, refuse a changed plan, then act. Raises :class:`MergeRefused`.
+
+    ``progress(name)`` is called before each action; it is the op heartbeat.
+    """
     from core import series_conflicts as sc
     from helpers.collection import reconcile_wanted_for_series
 
     row = sc.get_conflict(conflict_id)
-    try:
-        plan = build_plan(row, mode=mode, keep=keep)
-    except MergeRefused as e:
-        app_state.update_operation(op_id, detail=f"Not merged: {e}")
-        app_state.complete_operation(op_id, error=True)
-        return None
+    plan = build_plan(row, mode=mode, keep=keep)
     if plan["signature"] != signature:
-        app_state.update_operation(
-            op_id, detail="Not merged: the folders changed since you reviewed them")
-        app_state.complete_operation(op_id, error=True)
-        return None
+        raise MergeRefused("the folders changed since you reviewed them", 409)
 
-    actions = plan["actions"]
-    app_state.update_operation(op_id, total=len(actions))
     trashed, moved, failed = [], 0, []
     held = list(plan["held"])
-    for i, action in enumerate(actions):
+    for action in plan["actions"]:
         name = os.path.basename(action.get("src") or action["trash"])
-        app_state.update_operation(op_id, current=i, detail=name)
+        if progress:
+            progress(name)
         try:
             if action["op"] == "trash":
                 _trash(action["trash"], trashed)
@@ -429,20 +437,120 @@ def run(op_id, conflict_id, mode, keep, rename, signature):
     except Exception as e:
         app_logger.error(f"series merge: reconcile failed for series {row['series_id']}: {e}")
 
-    parts = []
-    if moved:
-        parts.append(f"{moved} moved")
-    if trashed:
-        parts.append(f"{len(trashed)} trashed")
-    if held:
-        parts.append(f"{len(held)} kept (name taken)")
-    if failed:
-        parts.append(f"{len(failed)} failed")
-    if folder_gone:
-        parts.append("folder removed")
-    detail = ", ".join(parts) or "Nothing to do"
-    app_logger.info(f"series merge ({mode}) {folder} -> {plan['mapped_folder']}: {detail}")
-    app_state.update_operation(op_id, current=len(actions), detail=detail)
-    app_state.complete_operation(op_id, error=bool(failed) and not (moved or trashed))
-    return {"moved": moved, "trashed": len(trashed), "held": held, "failed": failed,
-            "folder_removed": folder_gone}
+    result = {"moved": moved, "trashed": len(trashed), "held": held, "failed": failed,
+              "folder_removed": folder_gone}
+    app_logger.info(f"series merge ({mode}) {folder} -> {plan['mapped_folder']}: {_detail(result)}")
+    return result
+
+
+def run(op_id, conflict_id, mode, keep, rename, signature):
+    """The ``file_jobs`` body for one conflict."""
+    from core import app_state
+
+    done = [0]
+
+    def progress(name):
+        app_state.update_operation(op_id, current=done[0], detail=name)
+        done[0] += 1
+
+    app_state.update_operation(op_id, detail="Checking the folders")
+    try:
+        result = _execute(conflict_id, mode, keep, rename, signature, progress)
+    except MergeRefused as e:
+        app_state.update_operation(op_id, detail=f"Not merged: {e}")
+        app_state.complete_operation(op_id, error=True)
+        return None
+    app_state.update_operation(op_id, current=done[0], detail=_detail(result))
+    app_state.complete_operation(
+        op_id, error=bool(result["failed"]) and not (result["moved"] or result["trashed"]))
+    return result
+
+
+def run_group(op_id, items, rename):
+    """The ``file_jobs`` body for a bulk merge: ``items`` is ``[(conflict_id, signature)]``.
+
+    Each conflict is merged with its default keepers, one after another. A
+    conflict whose folders changed after the dry run is skipped and counted,
+    not merged on a plan nobody reviewed; the others still run.
+    """
+    from core import app_state
+
+    totals = {"series": 0, "moved": 0, "trashed": 0, "held": 0, "failed": 0, "skipped": 0}
+    done = [0]
+
+    def progress(name):
+        app_state.update_operation(op_id, current=done[0], detail=name)
+        done[0] += 1
+
+    for conflict_id, signature in items:
+        try:
+            result = _execute(conflict_id, MODE_MERGE, {}, rename, signature, progress)
+        except MergeRefused as e:
+            app_logger.info(f"series merge: skipped conflict {conflict_id} in a bulk merge: {e}")
+            totals["skipped"] += 1
+            continue
+        except Exception as e:
+            app_logger.error(f"series merge: conflict {conflict_id} failed in a bulk merge: {e}")
+            totals["failed"] += 1
+            continue
+        totals["series"] += 1
+        totals["moved"] += result["moved"]
+        totals["trashed"] += result["trashed"]
+        totals["held"] += len(result["held"])
+        totals["failed"] += len(result["failed"])
+
+    parts = [f"{totals['series']} series merged"]
+    for key, label in (("moved", "moved"), ("trashed", "trashed"),
+                       ("held", "kept (name taken)"), ("skipped", "skipped (changed)"),
+                       ("failed", "failed")):
+        if totals[key]:
+            parts.append(f"{totals[key]} {label}")
+    detail = ", ".join(parts)
+    app_logger.info(f"series merge: bulk merge done: {detail}")
+    app_state.update_operation(op_id, current=done[0], detail=detail)
+    app_state.complete_operation(op_id, error=not totals["series"] and bool(items))
+    return totals
+
+
+def _folder_key(name):
+    """A folder name with case and punctuation removed: ``Boom! Studios`` == ``boom studios``."""
+    import re
+    return re.sub(r"[^0-9a-z]+", "", (name or "").lower())
+
+
+def likely_same_name(a, b):
+    """Two folder names that differ only by case or punctuation (``Thunderhawks``/``ThunderHawks``)."""
+    a, b = os.path.basename(_norm(a)), os.path.basename(_norm(b))
+    return bool(a) and a != b and _folder_key(a) == _folder_key(b)
+
+
+def group_by_parent(rows, minimum=2):
+    """Open conflicts grouped by ``(parent of folder, parent of mapped folder)``.
+
+    The common shape is one parent duplicated (``/data/Image`` beside
+    ``/data/Image Comics``), and resolving those one row at a time is the
+    wrong granularity. Only pairs with at least ``minimum`` conflicts form a
+    group; ignored rows and rows with no mapped folder are left out.
+    """
+    groups = {}
+    for row in rows or []:
+        if row.get("ignored") or not row.get("mapped_folder"):
+            continue
+        key = (os.path.dirname(_norm(row["folder"])), os.path.dirname(_norm(row["mapped_folder"])))
+        if key[0] == key[1]:
+            # Siblings in one parent (case-only variants): not a duplicated parent.
+            continue
+        groups.setdefault(key, []).append(row)
+    out = []
+    for (parent, mapped_parent), members in groups.items():
+        if len(members) < minimum:
+            continue
+        out.append({
+            "parent": parent,
+            "mapped_parent": mapped_parent,
+            "likely_same": likely_same_name(parent, mapped_parent),
+            "ids": [r["id"] for r in members],
+            "count": len(members),
+        })
+    out.sort(key=lambda g: (-g["count"], g["parent"].lower()))
+    return out

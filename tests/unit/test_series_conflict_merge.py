@@ -275,3 +275,68 @@ class TestRun:
         assert out["trashed"] == 1 and out["moved"] == 0
         assert os.listdir(here) == ["Kaya 009.cbz"]
         assert sc.get_conflict(row["id"])["file_count"] == 1
+
+
+class TestGroups:
+    def _row(self, i, folder, mapped, ignored=False):
+        return {"id": i, "folder": folder, "mapped_folder": mapped, "ignored": ignored}
+
+    def test_a_duplicated_parent_forms_a_group(self):
+        rows = [self._row(1, "/d/Image/Kaya", "/d/Image Comics/Kaya"),
+                self._row(2, "/d/Image/Monstress", "/d/Image Comics/Monstress"),
+                self._row(3, "/d/Boom/Lumberjanes", "/d/Boom! Studios/Lumberjanes")]
+        groups = merge.group_by_parent(rows)
+        assert [(g["parent"], g["ids"]) for g in groups] == [("/d/Image", [1, 2])]
+
+    def test_ignored_and_unmapped_rows_stay_out(self):
+        rows = [self._row(1, "/d/Image/Kaya", "/d/Image Comics/Kaya"),
+                self._row(2, "/d/Image/Feral", "/d/Image Comics/Feral", ignored=True),
+                self._row(3, "/d/Image/Redcoat", None)]
+        assert merge.group_by_parent(rows) == []
+
+    def test_siblings_in_one_parent_are_not_a_duplicated_parent(self):
+        rows = [self._row(1, "/d/DC/Thunderhawks", "/d/DC/ThunderHawks"),
+                self._row(2, "/d/DC/Batman - X", "/d/DC/Batman: X")]
+        assert merge.group_by_parent(rows) == []
+
+    def test_punctuation_only_parent_is_likely_the_same(self):
+        rows = [self._row(1, "/d/Boom Studios/A", "/d/Boom! Studios/A"),
+                self._row(2, "/d/Boom Studios/B", "/d/Boom! Studios/B")]
+        assert merge.group_by_parent(rows)[0]["likely_same"] is True
+
+    @pytest.mark.parametrize("a, b, same", [
+        ("/d/Thunderhawks", "/d/ThunderHawks", True),
+        ("/d/Boom Studios", "/d/Boom! Studios", True),
+        ("/d/Image", "/d/Image Comics", False),
+        ("/d/Kaya", "/e/Kaya", False),       # identical names are not "likely": they are the same name
+        ("/d/Kaya", None, False),
+    ])
+    def test_likely_same_name(self, a, b, same):
+        assert merge.likely_same_name(a, b) is same
+
+
+class TestRunGroup:
+    def test_merges_each_and_skips_a_changed_one(self, env):
+        a_here, a_mapped = env["lib"] / "Image" / "Kaya", env["lib"] / "Image Comics" / "Kaya"
+        b_here, b_mapped = env["lib"] / "Image" / "Feral", env["lib"] / "Image Comics" / "Feral"
+        _comic(a_here, "Kaya 001.cbz")
+        a_mapped.mkdir(parents=True)
+        _comic(b_here, "Feral 001.cbz")
+        b_mapped.mkdir(parents=True)
+        a = _conflict(env, a_here, a_mapped, series_id=1)
+        sc.record_scan([
+            {"folder": str(a_here), "metron_id": 1, "series_name": "Kaya", "conflict_with": str(a_mapped)},
+            {"folder": str(b_here), "metron_id": 2, "series_name": "Feral", "conflict_with": str(b_mapped)},
+        ], [str(env["lib"])])
+        b = next(r for r in sc.list_conflicts() if r["series_id"] == 2)
+        items = [(a["id"], merge.build_plan(a)["signature"]),
+                 (b["id"], merge.build_plan(b)["signature"])]
+        _comic(b_here, "Feral 002.cbz")      # changed after the dry run
+
+        with patch("core.app_state.update_operation"), patch("core.app_state.complete_operation") as done:
+            totals = merge.run_group("op", items, rename=False)
+
+        assert totals["series"] == 1 and totals["skipped"] == 1 and totals["moved"] == 1
+        assert os.listdir(a_mapped) == ["Kaya 001.cbz"]
+        assert sorted(os.listdir(b_here)) == ["Feral 001.cbz", "Feral 002.cbz"]
+        done.assert_called_once_with("op", error=False)

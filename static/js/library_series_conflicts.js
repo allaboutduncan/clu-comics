@@ -9,7 +9,7 @@
 (function () {
     'use strict';
 
-    var state = { rows: [], showIgnored: false, query: '', pending: null };
+    var state = { rows: [], groups: [], showIgnored: false, query: '', pending: null, bulk: null };
 
     function postJson(url, body) {
         return fetch(url, {
@@ -45,6 +45,10 @@
         var here = '<span class="text-break small">' + esc(row.folder) + '</span>' + filesBadge(row.file_count);
         if (!row.reachable) here += ' <span class="badge bg-warning text-dark">Folder not found</span>';
         if (row.ignored) here += ' <span class="badge bg-light text-dark border">Ignored</span>';
+        if (row.likely_same) {
+            here += ' <span class="badge bg-info text-dark" title="The two folder names differ only by case or punctuation">' +
+                'Likely the same folder</span>';
+        }
 
         var mapped = row.mapped_folder
             ? '<span class="text-break small">' + esc(row.mapped_folder) + '</span>'
@@ -121,6 +125,102 @@
         tbody.innerHTML = shown.map(function (p) { return renderRow(p[0], p[1]); }).join('');
     }
 
+    // ---- Parent-folder groups ---------------------------------------------
+
+    function renderGroups() {
+        var box = document.getElementById('sc-groups');
+        if (!state.groups.length) { box.innerHTML = ''; return; }
+        box.innerHTML = state.groups.map(function (g, i) {
+            return '<div class="card mb-2"><div class="card-body py-2 d-flex flex-wrap align-items-center gap-2">' +
+                '<i class="bi bi-collection text-primary fs-5" aria-hidden="true"></i>' +
+                '<div class="me-auto small">' +
+                '<strong>' + g.count + ' series</strong> in <code class="text-break">' + esc(g.parent) + '</code>' +
+                ' are already mapped under <code class="text-break">' + esc(g.mapped_parent) + '</code>' +
+                (g.likely_same ? ' <span class="badge bg-info text-dark">Likely the same folder</span>' : '') +
+                '</div>' +
+                '<button class="btn btn-sm btn-primary text-nowrap" data-group="' + i + '">' +
+                '<i class="bi bi-intersect me-1"></i>Merge all&hellip;</button>' +
+                '</div></div>';
+        }).join('');
+    }
+
+    function openBulk(group) {
+        state.bulk = { group: group, items: [] };
+        document.getElementById('sc-bulk-parent').textContent = group.parent;
+        document.getElementById('sc-bulk-mapped-parent').textContent = group.mapped_parent;
+        document.getElementById('sc-bulk-rename').checked = false;
+        var go = document.getElementById('sc-bulk-go');
+        go.disabled = true;
+        go.textContent = 'Merge';
+        var body = document.getElementById('sc-bulk-body');
+        body.innerHTML = '<div class="text-center text-muted py-4">Working out what would change&hellip;</div>';
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('sc-bulk-modal')).show();
+
+        postJson('/api/problem-files/series-conflicts/bulk-plan', { ids: group.ids }).then(function (res) {
+            if (!res.ok) throw new Error(res.data.error || 'Could not prepare the dry run');
+            var items = res.data.items || [], t = res.data.totals;
+            state.bulk.items = items;
+            var rows = items.map(function (it) {
+                if (!it.ok) {
+                    return '<tr class="text-muted"><td>' + esc(it.series_name || ('Conflict ' + it.id)) + '</td>' +
+                        '<td colspan="3"><span class="badge bg-secondary">Skipped</span> ' + esc(it.error) + '</td></tr>';
+                }
+                var s = it.summary;
+                var trash = it.trash.length
+                    ? '<details><summary class="small">' + s.trash + '</summary><ul class="small text-break mb-0">' +
+                      it.trash.map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('') + '</ul></details>'
+                    : '0';
+                var held = s.held
+                    ? '<span class="text-warning" title="' + esc(it.held.map(function (h) { return h.name; }).join(', ')) + '">' +
+                      s.held + '</span>'
+                    : '0';
+                return '<tr><td>' + esc(it.series_name || '') +
+                    '<div class="small text-muted text-break">' + esc(it.folder.split('/').pop()) + '</div></td>' +
+                    '<td>' + s.move + '</td><td>' + trash + '</td><td>' + held +
+                    (it.folder_emptied ? '<div class="small text-muted">folder removed</div>' : '') + '</td></tr>';
+            }).join('');
+            body.innerHTML =
+                '<p class="mb-2"><strong>' + t.series + ' series</strong>: ' + t.move + ' comics move, ' +
+                t.trash + ' files go to the trash' + (t.held ? ', ' + t.held + ' stay where they are (name taken)' : '') + '.</p>' +
+                '<div class="table-responsive"><table class="table table-sm align-middle mb-0">' +
+                '<thead><tr><th>Series</th><th>Move</th><th>Trash</th><th>Left in place</th></tr></thead>' +
+                '<tbody>' + rows + '</tbody></table></div>';
+            go.disabled = !t.series;
+            go.textContent = 'Merge ' + t.series + ' series';
+        }).catch(function (err) {
+            body.innerHTML = '<p class="text-danger mb-0">' + esc(err.message) + '</p>';
+        });
+    }
+
+    function runBulk() {
+        var bulk = state.bulk;
+        if (!bulk) return;
+        var items = bulk.items.filter(function (it) { return it.ok; })
+            .map(function (it) { return { id: it.id, signature: it.signature }; });
+        var go = document.getElementById('sc-bulk-go');
+        go.disabled = true;
+        postJson('/api/problem-files/series-conflicts/bulk-merge', {
+            items: items, rename: document.getElementById('sc-bulk-rename').checked
+        }).then(function (res) {
+            go.disabled = false;
+            if (!res.ok) {
+                CLU.toast(res.data.error || 'Could not start the merge', 'error');
+                if (res.status === 409) openBulk(bulk.group);
+                return;
+            }
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('sc-bulk-modal')).hide();
+            CLU.toast((res.data.queued ? 'Queued behind another file job: ' : 'Merging ') +
+                res.data.series + ' series. Progress shows in the header.', 'success');
+            followOperation(res.data.op_id, function (op) {
+                var detail = op && op.detail ? op.detail : 'Finished';
+                var failed = op && (op.status === 'error' || / failed/.test(detail));
+                CLU.toast('Merge all: ' + detail + (failed ? '. The app log says why.' : ''),
+                    failed ? 'error' : 'success');
+                load();
+            });
+        });
+    }
+
     function load() {
         var url = '/api/problem-files/series-conflicts' + (state.showIgnored ? '?include_ignored=1' : '');
         return fetch(url)
@@ -128,6 +228,8 @@
             .then(function (data) {
                 if (!data.success) throw new Error(data.error || 'Could not load the conflicts');
                 state.rows = data.conflicts || [];
+                state.groups = data.groups || [];
+                renderGroups();
                 render();
             })
             .catch(function (err) {
@@ -375,6 +477,13 @@
         $('sc-merge-drop').addEventListener('click', function () { askConfirm('drop'); });
         $('sc-merge-confirm-go').addEventListener('click', runMerge);
         $('sc-merge-back').addEventListener('click', function () { showStep(false); });
+        $('sc-groups').addEventListener('click', function (e) {
+            var btn = e.target.closest('button[data-group]');
+            if (!btn) return;
+            var group = state.groups[parseInt(btn.dataset.group, 10)];
+            if (group) openBulk(group);
+        });
+        $('sc-bulk-go').addEventListener('click', runBulk);
 
         document.getElementById('sc-tbody').addEventListener('click', function (e) {
             var btn = e.target.closest('button[data-act]');

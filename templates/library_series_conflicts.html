@@ -29,12 +29,21 @@
         different comic is left where it is and reported.
       </p>
       <p class="mb-0">
+        When several series in one parent folder are all mapped under another parent
+        (<code>/data/Image</code> beside <code>/data/Image Comics</code>), a card above the list
+        offers <strong>Merge all</strong>. It shows a dry run first, then merges each series with
+        the suggested copies kept. Folder names that differ only by case or punctuation are marked
+        <em>likely the same folder</em>.
+      </p>
+      <p class="mb-0">
         <strong>Use this folder instead</strong> makes this folder the series' folder; the old
         one then takes its place on this list. <strong>Ignore</strong> keeps both folders as they
         are and stops listing this one until a comic is added to or removed from it.
       </p>
     {% endif %}
   {% endcall %}
+
+  <div id="sc-groups" class="mb-3"></div>
 
   {% call toolbar('Filter series folder conflicts') %}
     <div class="clu-toolbar-row">
@@ -123,6 +132,39 @@
         <button type="button" class="btn btn-outline-danger" id="sc-merge-drop" disabled>Drop duplicates only</button>
         <button type="button" class="btn btn-primary" id="sc-merge-go" disabled>Merge into mapped folder</button>
         <button type="button" class="btn btn-danger d-none" id="sc-merge-confirm-go">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="sc-bulk-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-collection me-2"></i>Merge all: dry run</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <dl class="row small mb-3">
+          <dt class="col-sm-3">From</dt>
+          <dd class="col-sm-9 text-break" id="sc-bulk-parent"></dd>
+          <dt class="col-sm-3">Into</dt>
+          <dd class="col-sm-9 text-break mb-0" id="sc-bulk-mapped-parent"></dd>
+        </dl>
+        <p class="small text-muted">
+          Nothing has changed yet. Each series is merged with the suggested copy of every
+          duplicated issue kept; open a series below to see what goes to the trash. To choose
+          copies yourself, use Compare &amp; merge on that series instead.
+        </p>
+        <div id="sc-bulk-body"><div class="text-center text-muted py-4">Working out what would change&hellip;</div></div>
+      </div>
+      <div class="modal-footer">
+        <div class="form-check me-auto">
+          <input class="form-check-input" type="checkbox" id="sc-bulk-rename">
+          <label class="form-check-label small" for="sc-bulk-rename">Rename moved files to my rename pattern</label>
+        </div>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="sc-bulk-go" disabled>Merge</button>
       </div>
     </div>
   </div>

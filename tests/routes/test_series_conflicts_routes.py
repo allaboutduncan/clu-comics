@@ -247,3 +247,108 @@ class TestMerge:
         assert "SD 001.cbz" in os.listdir(trash)
         assert not os.path.exists(os.path.join(conflict["folder"], "SD 001.cbz"))
         assert sc.get_conflict(conflict["id"]) is None
+
+
+@pytest.fixture
+def group(tmp_path_library, tmp_path):
+    """Two series in /Image, both mapped under /Image Comics."""
+    from core import series_conflicts as sc
+
+    review = []
+    for sid, name in ((201, "Kaya"), (202, "Feral")):
+        here = tmp_path / "Image" / name
+        here.mkdir(parents=True)
+        (here / f"{name} 001.cbz").write_bytes(b"PK")
+        mapped = tmp_path / "Image Comics" / name
+        mapped.mkdir(parents=True)
+        review.append({"folder": str(here), "metron_id": sid, "series_name": name,
+                       "conflict_with": str(mapped)})
+    sc.record_scan(review, [tmp_path_library])
+    return sorted(r["id"] for r in sc.list_conflicts())
+
+
+class TestGroupsList:
+    def test_list_carries_the_group(self, client, group):
+        data = client.get("/api/problem-files/series-conflicts").get_json()
+        assert len(data["groups"]) == 1
+        assert sorted(data["groups"][0]["ids"]) == group
+        assert data["groups"][0]["parent"].endswith("/Image")
+
+
+class TestBulkPlan:
+    def test_dry_run_totals(self, client, group):
+        data = client.post("/api/problem-files/series-conflicts/bulk-plan", json={"ids": group}).get_json()
+        assert data["success"] is True
+        assert data["totals"] == {"series": 2, "move": 2, "trash": 0, "held": 0}
+        assert all(it["ok"] and it["signature"] for it in data["items"])
+
+    def test_an_unknown_id_is_reported_not_fatal(self, client, group):
+        data = client.post("/api/problem-files/series-conflicts/bulk-plan",
+                           json={"ids": group + [999]}).get_json()
+        assert data["totals"]["series"] == 2
+        assert [it for it in data["items"] if it["id"] == 999][0]["ok"] is False
+
+    @pytest.mark.parametrize("body", [{}, {"ids": []}, {"ids": ["x"]}])
+    def test_missing_ids_is_400(self, client, body):
+        assert client.post("/api/problem-files/series-conflicts/bulk-plan", json=body).status_code == 400
+
+    def test_too_many_is_400(self, client):
+        resp = client.post("/api/problem-files/series-conflicts/bulk-plan",
+                           json={"ids": list(range(1, 200))})
+        assert resp.status_code == 400
+
+
+class TestBulkMerge:
+    def _items(self, client, ids):
+        data = client.post("/api/problem-files/series-conflicts/bulk-plan", json={"ids": ids}).get_json()
+        return [{"id": it["id"], "signature": it["signature"]} for it in data["items"] if it["ok"]]
+
+    def test_queues_one_job(self, client, group):
+        items = self._items(client, group)
+        with patch("core.job_queue.file_jobs.submit", return_value="op-b") as submit:
+            resp = client.post("/api/problem-files/series-conflicts/bulk-merge", json={"items": items})
+        assert resp.status_code == 200
+        assert resp.get_json()["series"] == 2
+        submit.assert_called_once()
+
+    def test_a_changed_folder_refuses_everything(self, client, group, tmp_path):
+        items = self._items(client, group)
+        (tmp_path / "Image" / "Kaya" / "Kaya 002.cbz").write_bytes(b"PK")
+        with patch("core.job_queue.file_jobs.submit") as submit:
+            resp = client.post("/api/problem-files/series-conflicts/bulk-merge", json={"items": items})
+        assert resp.status_code == 409
+        submit.assert_not_called()
+
+    def test_grant_refusal_queues_nothing(self, client, group):
+        items = self._items(client, group)
+        with patch("core.path_access.grant_refusal", return_value=("No access", 403)), \
+                patch("core.job_queue.file_jobs.submit") as submit:
+            resp = client.post("/api/problem-files/series-conflicts/bulk-merge", json={"items": items})
+        assert resp.status_code == 403
+        submit.assert_not_called()
+
+    @pytest.mark.parametrize("items", [None, [], [{"id": 1}], ["x"]])
+    def test_bad_items_is_400(self, client, items):
+        resp = client.post("/api/problem-files/series-conflicts/bulk-merge", json={"items": items})
+        assert resp.status_code == 400
+
+    def test_the_job_merges_every_series_on_a_worker_thread(self, app, client, group, tmp_path):
+        import threading
+
+        from core import series_conflicts as sc
+
+        items = self._items(client, group)
+        captured = {}
+        with patch("core.job_queue.file_jobs.submit",
+                   side_effect=lambda *a, **k: captured.setdefault("fn", a[3]) and "op-c"), \
+                patch("helpers.collection.reconcile_wanted_for_series"), \
+                patch("helpers.trash.move_to_trash",
+                      side_effect=lambda p: __import__("shutil").rmtree(p) or {"trashed": False}):
+            assert client.post("/api/problem-files/series-conflicts/bulk-merge",
+                               json={"items": items}).status_code == 200
+            worker = threading.Thread(target=captured["fn"], args=("op-c",))
+            worker.start()
+            worker.join(30)
+        assert os.listdir(tmp_path / "Image Comics" / "Kaya") == ["Kaya 001.cbz"]
+        assert os.listdir(tmp_path / "Image Comics" / "Feral") == ["Feral 001.cbz"]
+        assert sc.list_conflicts() == []

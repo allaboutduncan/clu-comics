@@ -473,6 +473,24 @@ trashed (never a protected root).
   application context", trashed nothing, and left the conflict listed. The
   route test runs the job on a bare thread with the real trash for that reason.
 
+#### Merge all by parent folder
+
+`group_by_parent` groups open, reachable conflicts by `(parent of folder,
+parent of mapped folder)`; two or more make a card (`groups` on the list
+response). Siblings in one parent (`Thunderhawks`/`ThunderHawks`) are not a
+duplicated parent and get no card, only the row's *likely the same folder*
+badge (`likely_same_name`: differs only by case or punctuation).
+
+- **A dry run first, always** (`POST …/bulk-plan`, at most
+  `MAX_BULK_CONFLICTS`). Each conflict is planned on its own with its default
+  keepers; one that cannot be merged is reported and left out, not fatal.
+- **`POST …/bulk-merge` re-plans every item and refuses all of them (409) if
+  any signature changed**, before anything is queued. The single job
+  (`run_group`) re-checks each conflict as it reaches it and *skips* a changed
+  one rather than stopping, since the others were reviewed and are unaffected.
+- Bulk merges use the default keepers only; choosing copies is what the
+  per-series Compare & merge is for.
+
 Tests: `tests/unit/test_series_conflicts.py`,
 `tests/unit/test_series_conflict_merge.py`,
 `tests/routes/test_series_conflicts_routes.py`.
