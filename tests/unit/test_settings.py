@@ -154,7 +154,8 @@ class TestIniIsRetired:
     """Nothing writes config.ini any more; the import is the only reader."""
 
     ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    SKIP_DIRS = {"tests", ".git", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
+    # .claude holds agent worktrees: full copies of the repo, at other commits.
+    SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
 
     def _sources(self):
         for base, dirs, files in os.walk(self.ROOT):
@@ -208,7 +209,8 @@ class TestNoNewIniStyleReads:
 
     REMAINING = {
     }
-    SKIP_DIRS = {"tests", ".git", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
+    # .claude holds agent worktrees: full copies of the repo, at other commits.
+    SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
 
     @classmethod
     def _count(cls):
@@ -263,7 +265,8 @@ class TestEveryKeyUsedExists:
     schema."""
 
     ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    SKIP_DIRS = {"tests", ".git", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
+    # .claude holds agent worktrees: full copies of the repo, at other commits.
+    SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
 
     def test_literal_keys_are_in_the_schema(self):
         import re

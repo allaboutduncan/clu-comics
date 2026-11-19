@@ -323,5 +323,8 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 
 - Every new route in `routes/` must have a corresponding test in `tests/routes/`.
 - Any modification to `cbz_ops/` or file operations must include a pytest fixture check.
-- **Verification:** Before finishing any task, run `pytest` and ensure 100% pass rate.
+- **Verification:** Before finishing any task, run `pytest -n auto -q` and ensure 100% pass rate.
+  Parallel (`pytest-xdist`) the full suite takes about 2 minutes; serial it takes about 25. While
+  iterating, run only the test files for the area you changed and save the full run for the end.
+  A test that walks the repo must skip `.claude` (agent worktrees are full copies of the repo).
 - **Maintenance:** If a feature is updated, the corresponding test file MUST be updated in the same PR.
