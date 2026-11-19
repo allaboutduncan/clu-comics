@@ -55,6 +55,7 @@ import time
 import zipfile
 
 from core.app_logging import app_logger
+from core.series_names import ascii_words
 from core.problem_files import (
     CLASS_CBR_BESIDE_CBZ,
     CLASS_EMPTY_FOLDER,
@@ -843,7 +844,7 @@ _CLAIM_SUFFIX = re.compile(r"_\d{1,3}$")
 
 
 def _norm_text(value):
-    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+    return ascii_words(value)
 
 
 def _norm_number(value):

@@ -12,6 +12,7 @@ import sqlite3
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple, Set
 from core.app_logging import app_logger
+from core.series_names import ascii_words
 
 # =============================================================================
 # Constants
@@ -93,10 +94,7 @@ _AVAILABLE_TABLES_LOGGED: bool = False
 
 def normalize_title(s: str) -> str:
     """Normalize a title string for better matching."""
-    s = s.lower()
-    s = re.sub(r"[^a-z0-9]+", " ", s)   # remove punctuation/hyphens
-    s = " ".join(s.split())              # collapse spaces
-    return s
+    return ascii_words(s)
 
 
 def rank_key(query_name: str, year, candidate):

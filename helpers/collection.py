@@ -560,7 +560,7 @@ def _publication_type_keywords():
 
 def _normalize_for_keywords(text):
     """Lower-case, punctuation-free, space-padded form for whole-word tests."""
-    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+    return " " + series_names.ascii_words(text) + " "
 
 
 def names_other_publication_type(filename, series_name):

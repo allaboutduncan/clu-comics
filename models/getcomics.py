@@ -3904,7 +3904,7 @@ def _migrate_from_old_tables(conn) -> int:
                     row.get('url'),  # full_url = url for scrape entries
                     row.get('url_slug'),
                     norm_series,
-                    norm_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if norm_series else None,
+                    _norm_series_key(norm_series),
                     row.get('search_aliases'),
                     row.get('title'),
                     row.get('issue_num'),
@@ -3943,7 +3943,7 @@ def _migrate_from_old_tables(conn) -> int:
                     url,
                     row.get('url_slug'),
                     norm_series,
-                    norm_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if norm_series else None,
+                    _norm_series_key(norm_series),
                     row.get('category'),
                     row.get('lastmod'),
                     row.get('indexed_at'),
@@ -3971,8 +3971,12 @@ def _migrate_from_old_tables(conn) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize_alias(name: str) -> str:
-    """Normalize a series name for alias storage and lookup."""
-    return name.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
+    """Normalize a series name for alias storage and lookup.
+
+    The same key as ``_norm_series_key`` -- the alias table and the URL index
+    are joined on it -- except that an empty name stays "" instead of None.
+    """
+    return _norm_series_key(name) or ''
 
 
 _ALIASES_PURGED = False
@@ -5150,8 +5154,11 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
 
     conn = get_db_connection()
     norm_series, _ = normalize_series_name(series_name)
-    # Match series_norm after normalization
-    norm_series_lower = norm_series.lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
+    # The stored key, from its one definition. This was a pasted copy without
+    # the .strip(): "Batman - Vol 3" normalizes to "Batman -", which the copy
+    # keyed as "batman  " while every writer stored "batman", so the UPDATE
+    # below matched no rows and the aliases were never attached.
+    norm_series_lower = _norm_series_key(norm_series) or ''
 
     updated = conn.execute("""
         UPDATE getcomics_urls
@@ -5205,7 +5212,7 @@ def get_series_aliases(series_name: str) -> str:
     _ensure_alias_table()
 
     norm_series, _ = normalize_series_name(series_name)
-    norm_series_lower = norm_series.lower().replace('-', ' ').replace('–', ' ').replace('—', ' ')
+    norm_series_lower = _norm_series_key(norm_series) or ''
 
     conn = get_db_connection()
     try:
@@ -5329,7 +5336,7 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
     # Normalize series_norm to match sitemap convention: hyphens → spaces
     # The sitemap stores 'spider man', 'batman', etc. (spaces, lowercase)
     # The search query might use 'Spider-Man' (hyphens) or 'Spider Man' (spaces)
-    norm_series = resolved_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
+    norm_series = _norm_series_key(resolved_series) or ''
 
     # Use series_norm_norm (pre-computed, indexed) when available.
     # Falls back to LOWER/REPLACE for existing installs that haven't migrated.

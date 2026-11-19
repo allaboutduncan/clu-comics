@@ -129,6 +129,21 @@ def _volume_year_of(metadata, fallback=None):
     return year_of(fallback)
 
 
+def comicvine_search_term(series_name):
+    """A series name as ComicVine's volume search wants it: the punctuation
+    that splits or breaks a query becomes a space. The single-file route, the
+    cascade and the local-dump lookup each pasted this."""
+    term = re.sub(r'[:\-\u2013\u2014\'\"\.\,\!\?]', ' ', series_name or '')
+    return re.sub(r'\s+', ' ', term).strip()
+
+
+def _same_title(a, b):
+    """Exact title equality for "is this the one result we may take without
+    asking": case and outer whitespace only. Deliberately strict -- a looser
+    comparison here auto-selects a series the user never saw."""
+    return (a or '').lower().strip() == (b or '').lower().strip()
+
+
 def extract_series_name_from_folder(folder_name):
     """Strip year/volume/'- complete' suffixes from a folder name to get the series."""
     if not folder_name:
@@ -2197,10 +2212,9 @@ def batch_metadata():
                             results = mangadex.search_series(series_name, gcd_year)
                             if results:
                                 # Prefer exact title match
-                                search_lower = series_name.lower().strip()
                                 match = None
                                 for r in results:
-                                    if r.title.lower().strip() == search_lower:
+                                    if _same_title(r.title, series_name):
                                         match = r
                                         break
                                 if not match and len(results) == 1:
@@ -2254,10 +2268,9 @@ def batch_metadata():
                             results = mu.search_series(series_name, gcd_year)
                             if results:
                                 # Prefer exact title match
-                                search_lower = series_name.lower().strip()
                                 match = None
                                 for r in results:
-                                    if r.title.lower().strip() == search_lower:
+                                    if _same_title(r.title, series_name):
                                         match = r
                                         break
                                 if not match and len(results) == 1:
@@ -2315,8 +2328,7 @@ def batch_metadata():
                                 return False
 
                             # For batch, require a single exact title match
-                            search_lower = gcd_api_series_name.lower().strip()
-                            exact = [r for r in results if r.title.lower().strip() == search_lower]
+                            exact = [r for r in results if _same_title(r.title, gcd_api_series_name)]
                             if len(exact) == 1:
                                 match = exact[0]
                             elif len(results) == 1:
@@ -4211,8 +4223,7 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
             return None, None, None, None
 
         # Normalize series name for searching
-        normalized_series = re.sub(r'[:\-\u2013\u2014\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         volumes = comicvine.search_volumes(api_key, normalized_series, year)
         if not volumes:
@@ -4283,8 +4294,7 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, n
         if not series_name:
             return None, None, None, None
 
-        normalized_series = re.sub(r'[:\-–—\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         volumes = comicvine_sqlite.search_volumes(normalized_series, year)
         if not volumes:
@@ -4512,8 +4522,7 @@ def _try_gcd_api_single(series_name, issue_number, year, file_path=None, user_st
         # ONE exact title match with start_year known (from folder/user).
         # Without a year, multiple series may share the same name across
         # different years (e.g. "Sherlock Holmes" 1955 vs 1976).
-        search_lower = series_name.lower().strip()
-        exact_matches = [r for r in raw_results if (r.get('name', '') or '').lower().strip() == search_lower]
+        exact_matches = [r for r in raw_results if _same_title(r.get('name'), series_name)]
 
         if len(exact_matches) == 1 and start_year:
             match_id = _extract_id_from_url(exact_matches[0].get('api_url'))
@@ -5548,10 +5557,9 @@ def search_metadata():
                     results = prov.search_series(manga_series_name, year)
                     if results:
                         # Check for confident match: exact (case-insensitive) title match
-                        search_lower = manga_series_name.lower().strip()
                         confident_match = None
                         for r in results:
-                            if r.title.lower().strip() == search_lower:
+                            if _same_title(r.title, manga_series_name):
                                 confident_match = r
                                 break
 
@@ -5853,8 +5861,7 @@ def search_comicvine_metadata():
             }), 400
 
         # Normalize series name for searching - remove special characters
-        normalized_series = re.sub(r'[:\-–—\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         # Search ComicVine for volumes using normalized name
         app_logger.info(f"Searching ComicVine for '{normalized_series}' (original: '{series_name}') issue #{issue_number}")
