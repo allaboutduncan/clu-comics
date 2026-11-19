@@ -329,20 +329,33 @@ _cv_folder_cache = {"at": 0.0, "map": None}
 _cv_folder_build_lock = threading.Lock()
 
 
-def _build_cv_volume_map():
-    """The map from disk, or None when the folder list could not be read."""
+def _build_cv_volume_map(metron_out=None):
+    """The map from disk, or None when the folder list could not be read.
+
+    ``metron_out``, when given, is filled with ``{metron series id: [folder]}``
+    from the same read of each cvinfo (its ``series_id:`` line).
+    """
     from core.database import list_comic_dirs
-    from models.comicvine import find_cvinfo_in_folder, parse_cvinfo_volume_id
+    from models.comicvine import find_cvinfo_in_folder, parse_cvinfo_ids
     folders = list_comic_dirs()
     if folders is None:
         return None
     mapping = {}
     for folder in folders:
         cvinfo = find_cvinfo_in_folder(folder)
-        volume_id = parse_cvinfo_volume_id(cvinfo) if cvinfo else None
+        volume_id, metron_id = parse_cvinfo_ids(cvinfo) if cvinfo else (None, None)
         if volume_id:
             mapping.setdefault(volume_id, []).append(folder)
+        if metron_id and metron_out is not None:
+            metron_out.setdefault(metron_id, []).append(folder)
     return mapping
+
+
+def metron_series_folders():
+    """``{metron series id: [folder, ...]}`` from every indexed folder's
+    cvinfo. Built with, and exactly as fresh as, :func:`cv_volume_folders`."""
+    cv_volume_folders()
+    return _cv_folder_cache.get("metron") or {}
 
 
 def cv_volume_folders():
@@ -364,11 +377,12 @@ def cv_volume_folders():
         if (current["map"] is not None
                 and time.monotonic() - current["at"] < _CV_FOLDER_TTL):
             return current["map"]
-        mapping = _build_cv_volume_map()
+        metron = {}
+        mapping = _build_cv_volume_map(metron)
         if mapping is None:
             # A failed read is not "no cvinfo anywhere": don't cache it.
             return current["map"] or {}
-        _cv_folder_cache.update(at=time.monotonic(), map=mapping)
+        _cv_folder_cache.update(at=time.monotonic(), map=mapping, metron=metron)
         return mapping
     finally:
         _cv_folder_build_lock.release()
