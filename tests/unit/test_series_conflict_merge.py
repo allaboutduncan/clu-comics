@@ -69,6 +69,36 @@ class TestPlan:
         assert [p["label"] for p in plan["pairs"]] == ["#1"]
         assert plan["only_here"] == []
 
+    def test_an_annual_does_not_pair_with_the_issue(self, env):
+        """Same number, different book: pairing them trashed the real #1."""
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya Annual 001 (2023).cbz", b"PK" + b"x" * 500)
+        _comic(mapped, "Kaya 001 (2022).cbz")
+        plan = merge.build_plan(_conflict(env, here, mapped))
+        assert plan["pairs"] == []
+        assert [a["op"] for a in plan["actions"]] == ["move"]
+        assert not any(a.get("trash") for a in plan["actions"])
+
+    def test_a_volume_marker_does_not_pair_either(self, env):
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya v2 001.cbz")
+        _comic(mapped, "Kaya 001.cbz")
+        assert merge.build_plan(_conflict(env, here, mapped))["pairs"] == []
+
+    def test_brackets_and_punctuation_do_not_block_a_pair(self, env):
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya - 003 (2022) (Digital).cbz")
+        _comic(mapped, "kaya_003.cbz")
+        assert [p["label"] for p in merge.build_plan(_conflict(env, here, mapped))["pairs"]] == ["#3"]
+
+    def test_a_leading_article_and_ampersand_still_pair(self, env):
+        here, mapped = env["lib"] / "A" / "Hulk", env["lib"] / "B" / "Hulk"
+        _comic(here, "Infernal Hulk #005 (2026).cbz")
+        _comic(here, "Batman and Robin #002.cbz")
+        _comic(mapped, "The Infernal Hulk #005 (2026).cbz")
+        _comic(mapped, "Batman & Robin #002.cbz")
+        assert len(merge.build_plan(_conflict(env, here, mapped))["pairs"]) == 2
+
     def test_mapped_copy_wins_a_tie(self, env):
         here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
         _comic(here, "Kaya 002.cbz", b"PK123")
@@ -244,6 +274,76 @@ class TestRun:
         out = _run(_conflict(env, here, mapped))
         assert out["moved"] == 1 and not out["folder_removed"]
         assert here.is_dir()
+
+    def test_a_hidden_subfolder_keeps_the_folder(self, env):
+        """``is_hidden`` is true for ``_Specials``; the folder must not be trashed with it."""
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya 001.cbz")
+        _comic(here / "_Specials", "Kaya Special 001.cbz")
+        mapped.mkdir(parents=True)
+        row = _conflict(env, here, mapped)
+        assert merge.build_plan(row)["folder_emptied"] is False
+        out = _run(row)
+        assert out["moved"] == 1 and not out["folder_removed"]
+        assert (here / "_Specials" / "Kaya Special 001.cbz").exists()
+
+    def test_an_unlisted_file_keeps_the_folder(self, env):
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya 001.cbz")
+        _comic(here, "Kaya 002.epub")
+        (here / "cover.jpg").write_bytes(b"x")
+        mapped.mkdir(parents=True)
+        out = _run(_conflict(env, here, mapped))
+        assert not out["folder_removed"]
+        assert (here / "Kaya 002.epub").exists()
+
+    def test_sidecars_alone_do_not_keep_the_folder(self, env):
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya 001.cbz")
+        (here / "series.json").write_text("{}")
+        (here / "cvinfo").write_text("x")
+        (here / "folder.jpg").write_bytes(b"x")
+        mapped.mkdir(parents=True)
+        row = _conflict(env, here, mapped)
+        assert merge.build_plan(row)["folder_emptied"] is True
+        assert _run(row)["folder_removed"]
+
+    def test_a_same_name_replace_keeps_the_index_row_and_references(self, env):
+        """The kept copy lands on the trashed copy's path; that path is not forgotten."""
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        src = _comic(here, "Kaya 001.cbz", b"PK" + b"x" * 500)
+        dst = _comic(mapped, "Kaya 001.cbz", b"PK")
+        db = env["db"]
+        for path, folder in ((src, here), (dst, mapped)):
+            db.execute("INSERT INTO file_index (path, name, type, parent, ci_number) "
+                       "VALUES (?, 'Kaya 001.cbz', 'file', ?, '1')", (path, str(folder)))
+        db.execute("INSERT INTO reading_lists (id, name) VALUES (1, 'Arc')")
+        db.execute("INSERT INTO reading_list_entries (reading_list_id, series, issue_number, "
+                   "matched_file_path) VALUES (1, 'Kaya', '1', ?)", (dst,))
+        db.commit()
+        row = _conflict(env, here, mapped)
+        assert merge.build_plan(row)["actions"][0]["op"] == "replace"
+
+        out = _run(row)
+
+        assert out["moved"] == 1 and out["trashed"] == 1
+        assert (mapped / "Kaya 001.cbz").stat().st_size == 502
+        paths = [r[0] for r in db.execute("SELECT path FROM file_index WHERE type='file'")]
+        assert paths == [dst]
+        matched = db.execute("SELECT matched_file_path FROM reading_list_entries").fetchone()[0]
+        assert matched == dst
+
+    def test_a_failed_move_after_the_trash_is_named(self, env):
+        here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"
+        _comic(here, "Kaya 001.cbz", b"PK" + b"x" * 500)
+        _comic(mapped, "Kaya 001.cbz", b"PK")
+        row = _conflict(env, here, mapped)
+        with patch("helpers.move_file", side_effect=OSError("disk full")):
+            out = _run(row)
+        assert out["moved"] == 0 and out["trashed"] == 1
+        assert "in the trash" in out["failed"][0]
+        assert "Kaya 001.cbz" in merge._detail(out)
+        assert (here / "Kaya 001.cbz").exists()
 
     def test_index_rows_follow_the_move(self, env):
         here, mapped = env["lib"] / "A" / "Kaya", env["lib"] / "B" / "Kaya"

@@ -6,7 +6,7 @@
 
 {% block content %}
 
-<div id="series-conflicts-app">
+<div id="series-conflicts-app" data-trash-enabled="{{ '1' if trash_enabled else '0' }}">
   {% call(slot) page_header('Series Folder Conflicts', 'bi-folder-symlink',
                             subtitle='Folders whose series is already mapped to another folder. Their comics are not counted as owned.') %}
     {% if slot == 'actions' %}
@@ -156,6 +156,10 @@
           duplicated issue kept; open a series below to see what goes to the trash. To choose
           copies yourself, use Compare &amp; merge on that series instead.
         </p>
+        {% if not trash_enabled %}
+        <div class="alert alert-danger small py-2">The trash is turned off in Settings, so the
+          duplicates and the emptied folders are deleted permanently.</div>
+        {% endif %}
         <div id="sc-bulk-body"><div class="text-center text-muted py-4">Working out what would change&hellip;</div></div>
       </div>
       <div class="modal-footer">

@@ -420,8 +420,16 @@ the Guided Setup now only count them and link here.
   filtered out of the job result afterwards. Leaving them out of `record_scan`
   would make the prune treat them as resolved.
 - **Pruning needs positive evidence**, as for `problem_files`. A row the scan
-  did not report is dropped only under a *mounted* root, or when
-  `is_path_provably_gone` says the folder is gone.
+  did not report is dropped only when the scan resolved its folder (to a mapping
+  of its own, passed as `resolved`, or to another series), the folder is now a
+  series' own `mapped_path`, or `is_path_provably_gone` says it vanished. "Not
+  in `review`" alone is not evidence: a Metron outage moves folders to the
+  scan's `errors`/`skipped`, and one such scan used to clear the list and every
+  Ignore. A folder with no sidecar is never a scan candidate (the old folder a
+  Switch leaves behind, when it was mapped by hand), so it stays until resolved.
+- **`record_scan` reads the disk before it writes.** Folder listings and the
+  gone checks run first; the write is one short transaction, so a few hundred
+  NAS folders never hold the WAL write lock.
 - **Ignore is `ignored_sig == files_sig`**, a hash of the folder's comic file
   names, the duplicate-dismissal rule. A comic added or removed re-opens it.
   `set_ignored` re-reads the folder, so the stored sig is the one on disk now.
@@ -441,8 +449,11 @@ the Guided Setup now only count them and link here.
 `POST …/series-conflicts/merge` queues it as one `file_jobs` job
 (`series_merge`). Merge moves this folder's comics into the mapped folder and
 keeps one copy of each issue in both; Drop only trashes this folder's copies of
-issues the mapped folder has. A folder left with no comics and no subfolders is
-trashed (never a protected root).
+issues the mapped folder has. A folder left with nothing but sidecars (series
+json, cvinfo, folder art, OS litter) is trashed, never a protected root. **Any
+subfolder keeps it**, hidden or not (`is_hidden` is true for `_Specials`), and
+so does any file that is neither a comic nor a known sidecar. With the trash
+off, `move_to_trash` deletes outright, and the page says so before it runs.
 
 - **The plan is built three times** (page, request, job) and the job runs only
   if `signature` still matches. It covers both folders' paths and sizes, *not*
@@ -452,11 +463,21 @@ trashed (never a protected root).
 - **Never overwrites** (`move_file(replace=False)`). A name taken by a
   different file is *held* and listed; identical bytes under the same name are
   a duplicate and trashed. On a "keep this folder's copy" pair the mapped copy
-  is trashed *before* the move, so a failed move leaves the comic where it was.
-- **Pairing is by issue number** (`ci_number`, else the quiet
-  `models.providers.base.extract_issue_number`, never `parse_comic_filename`,
-  which logs per file). A number held by two files on one side is not paired:
-  those files move, so nothing is trashed on a guess.
+  is trashed *before* the move, so a failed move leaves the comic where it was,
+  and the failure names the file and says its other copy is in the trash.
+- **A same-name replace keeps the destination's records.** The kept copy lands
+  on the trashed copy's path, so that path is *not* forgotten
+  (`_forget_trashed(paths, replaced)`): only its health verdicts are cleared,
+  and `move_indexed_path` carries the kept file's row and references onto it.
+  Forgetting it wiped the kept file's index row and its reading-list matches.
+- **Pairing is by issue number and the title before it** (`ci_number`, else
+  the quiet `models.providers.base.extract_issue_number`, never
+  `parse_comic_filename`, which logs per file; `_title_key` is the words before
+  the first number token, brackets dropped, case and punctuation ignored). The
+  number alone paired `Kaya Annual 001` with `Kaya 001` and trashed the real
+  #1, in the bulk path without anyone looking. Titles that differ are not a
+  pair, and a key held by two files on one side is not paired either: those
+  files move, so nothing is trashed on a guess.
 - **Keeper:** healthy over damaged, then *clearly* larger; the mapped copy wins
   ties, and sizes within `SIZE_TIE_FRACTION` (2%) are a tie. Two copies usually
   differ by a re-tag, and plain "larger wins" picked this folder for 6 of 23

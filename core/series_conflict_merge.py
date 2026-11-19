@@ -22,14 +22,23 @@ Things that look arbitrary and are not:
 - **A move never overwrites** (``move_file(replace=False)``, #731). A name
   already taken in the mapped folder by a *different* file is held and
   reported, never ``(1)``-suffixed; an identical file there is a duplicate.
-- **Issues are paired by number**: ``ci_number`` from the index when known,
-  else ``models.providers.base.extract_issue_number``, which is quiet.
-  ``parse_comic_filename`` logs at INFO per file. A number held by two files
-  on one side (variants) is not paired: those files move, so nothing is
-  trashed on a guess.
+- **Issues are paired by number and by the name in front of it**: the number
+  is ``ci_number`` from the index when known, else
+  ``models.providers.base.extract_issue_number``, which is quiet
+  (``parse_comic_filename`` logs at INFO per file). The number alone paired
+  ``Kaya Annual 001`` with ``Kaya 001`` and trashed the real #1, so the words
+  before the first number (brackets dropped, case and punctuation ignored)
+  must agree too. Two names that do not agree are not a pair: both files are
+  kept. A key held by two files on one side (variants) is not paired either:
+  those files move, so nothing is trashed on a guess.
 - **The keeper is healthy over damaged, then the larger file, and the mapped
   folder wins ties** (plan 15). The healthy-first rule is the one from
   ``core.library_health._suggest_keeper``.
+- **A folder is trashed only when nothing but sidecars is left in it**: no
+  subfolder of any name (``is_hidden`` treats ``_Specials`` as junk, the trap
+  the directory-deletion rule warns about), and no file that is neither a
+  comic nor a known sidecar, so a format ``folder_files`` does not list is
+  never swept up with the folder.
 - **One reconcile per merge**, at the end, as ``_do_move_batch`` does.
 - Runs on ``core.job_queue.file_jobs``: a 300-issue folder is a lot of moves on
   a NAS, and a merge must not move a path out from under a queued rename.
@@ -38,6 +47,7 @@ Things that look arbitrary and are not:
 import filecmp
 import hashlib
 import os
+import re
 
 from core.app_logging import app_logger
 from core.series_conflicts import folder_files
@@ -66,6 +76,28 @@ def _inside(path, folder):
     return path == folder or path.startswith(folder + os.sep)
 
 
+_BRACKETS = re.compile(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}")
+_NUMBER_TOKEN = re.compile(r"^#?-?\d")
+
+
+def _title_key(name):
+    """The words before the first number token, without case or punctuation.
+
+    ``Kaya 001 (2022)`` and ``Kaya #1`` both give ``kaya``; ``Kaya Annual 001``
+    gives ``kayaannual``, so it can never pair with issue #1. A leading "The"
+    and ``&`` for "and" are spelling, not a different book: both folders are
+    already the same series (``The Infernal Hulk`` / ``Infernal Hulk``).
+    """
+    stem = _BRACKETS.sub(" ", os.path.splitext(name)[0]).replace("&", " and ")
+    stem = re.sub(r"^\s*the\s+", "", stem, flags=re.I)
+    words = []
+    for token in re.split(r"[\s_]+", stem):
+        if _NUMBER_TOKEN.match(token):
+            break
+        words.append(token)
+    return re.sub(r"[^0-9a-z]+", "", " ".join(words).lower())
+
+
 def _issue_key(name, ci_number):
     from core.library_health import _norm_number, name_key
     from models.providers.base import extract_issue_number
@@ -74,7 +106,7 @@ def _issue_key(name, ci_number):
     if not number:
         number = _norm_number(extract_issue_number(name) or "")
     if number:
-        return "n:" + number, "#" + number
+        return "n:" + _title_key(name) + "|" + number, "#" + number
     return "name:" + name_key(name), os.path.splitext(name)[0]
 
 
@@ -268,7 +300,7 @@ def build_plan(row, mode=MODE_MERGE, keep=None):
                               key=lambda m: m["name"].lower()),
         "held": held,
         "actions": actions,
-        "folder_emptied": bool(here) and len(leaving) == len(here),
+        "folder_emptied": bool(here) and len(leaving) == len(here) and not _has_other_entries(folder),
     }
     plan["signature"] = _signature(here + there)
     return plan
@@ -283,30 +315,41 @@ def summary(plan):
     }
 
 
-def _forget_trashed(paths):
-    """The bookkeeping ``library_health.resolve_group`` does after a trash."""
+def _forget_trashed(paths, replaced=()):
+    """The bookkeeping ``library_health.resolve_group`` does after a trash.
+
+    ``replaced`` are trashed paths that the kept copy then moved onto. Their
+    index row and path references now belong to the kept file (the move
+    carried them over), so only the verdicts about the old bytes are cleared:
+    forgetting the path would wipe the kept file's row and its reading-list
+    matches.
+    """
     from core.database import db_conn, forget_deleted_paths
     from core.problem_files import clear_problem
 
-    if not paths:
+    paths, replaced = list(paths or []), list(replaced or [])
+    if not paths and not replaced:
         return
     try:
-        forget_deleted_paths(paths)
-        for path in paths:
+        if paths:
+            forget_deleted_paths(paths)
+        for path in paths + replaced:
             clear_problem(path)
         with db_conn() as conn:
             if conn:
-                conn.executemany("DELETE FROM file_health WHERE path = ?", [(p,) for p in paths])
+                conn.executemany("DELETE FROM file_health WHERE path = ?",
+                                 [(p,) for p in paths + replaced])
                 conn.commit()
     except Exception as e:
         app_logger.error(f"series merge: bookkeeping after trash failed: {e}")
 
 
-def _trash(path, trashed):
+def _trash(path, trashed=None):
     from helpers.trash import move_to_trash
 
     move_to_trash(path)
-    trashed.append(path)
+    if trashed is not None:
+        trashed.append(path)
 
 
 def _move(src, dst, rename):
@@ -336,17 +379,38 @@ def _move(src, dst, rename):
     return dst
 
 
-def _folder_is_empty_of_comics(folder):
-    """True when ``folder`` holds no comics and no subfolders (sidecars may remain)."""
-    from helpers import is_hidden
+# What may be left in a folder that is trashed once its comics have gone: the
+# series sidecars, folder art and OS litter. Anything else keeps the folder.
+_SIDECAR_NAMES = {"cvinfo", "cvinfo.txt", "series.json", "comicinfo.xml",
+                  ".ds_store", "thumbs.db", "desktop.ini"}
+_SIDECAR_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".nfo", ".txt", ".json", ".xml")
+
+
+def _has_other_entries(folder):
+    """True when ``folder`` holds a subfolder or a file that is neither a comic nor a sidecar.
+
+    Any subfolder counts, hidden or not: ``is_hidden`` is true for
+    ``_Specials``, which can hold comics.
+    """
+    from core.series_conflicts import COMIC_EXTENSIONS
 
     try:
         for entry in os.scandir(folder):
-            if entry.is_dir() and not is_hidden(entry.path):
-                return False
+            if entry.is_dir(follow_symlinks=False) or entry.is_symlink():
+                return True
+            name = entry.name.lower()
+            if name.endswith(COMIC_EXTENSIONS) or name in _SIDECAR_NAMES:
+                continue
+            if not name.endswith(_SIDECAR_EXTENSIONS):
+                return True
     except OSError:
-        return False
-    return not folder_files(folder)
+        return True
+    return False
+
+
+def _folder_is_empty_of_comics(folder):
+    """True when ``folder`` holds no comics, no subfolders and nothing but sidecars."""
+    return not _has_other_entries(folder) and not folder_files(folder)
 
 
 def _trash_folder(folder):
@@ -374,7 +438,10 @@ def _detail(result):
     if result["held"]:
         parts.append(f"{len(result['held'])} kept (name taken)")
     if result["failed"]:
-        parts.append(f"{len(result['failed'])} failed")
+        names = result["failed"][:3]
+        more = len(result["failed"]) - len(names)
+        parts.append(f"{len(result['failed'])} failed: " + "; ".join(names)
+                     + (f" and {more} more" if more > 0 else ""))
     if result["folder_removed"]:
         parts.append("folder removed")
     return ", ".join(parts) or "Nothing to do"
@@ -393,32 +460,43 @@ def _execute(conflict_id, mode, keep, rename, signature, progress=None):
     if plan["signature"] != signature:
         raise MergeRefused("the folders changed since you reviewed them", 409)
 
-    trashed, moved, failed = [], 0, []
+    trashed, replaced, moved, failed = [], [], 0, []
     held = list(plan["held"])
     for action in plan["actions"]:
         name = os.path.basename(action.get("src") or action["trash"])
         if progress:
             progress(name)
+        other_trashed = False
         try:
             if action["op"] == "trash":
                 _trash(action["trash"], trashed)
             elif action["op"] == "replace":
                 # Trash first: the move must not overwrite, and a failed move
                 # then leaves this folder's copy where it was.
-                _trash(action["trash"], trashed)
-                _move(action["src"], action["dst"], rename)
+                _trash(action["trash"])
+                other_trashed = True
+                landed = _move(action["src"], action["dst"], rename)
                 moved += 1
+                # Landed on the trashed copy's path: that path is the kept file
+                # now. Renamed elsewhere: the old path is simply gone.
+                (replaced if landed == action["dst"] else trashed).append(action["trash"])
             else:
                 _move(action["src"], action["dst"], rename)
                 moved += 1
         except FileExistsError:
+            if other_trashed:
+                trashed.append(action["trash"])
             held.append({"path": action["src"], "name": name,
                          "reason": "A file with this name appeared in the mapped folder"})
         except Exception as e:
             app_logger.error(f"series merge: {action['op']} failed for {name}: {e}")
-            failed.append(name)
+            if other_trashed:
+                trashed.append(action["trash"])
+                failed.append(f"{name} (still in this folder; the mapped folder's copy is in the trash)")
+            else:
+                failed.append(name)
 
-    _forget_trashed(trashed)
+    _forget_trashed(trashed, replaced)
 
     folder = plan["folder"]
     folder_gone = False
@@ -437,7 +515,7 @@ def _execute(conflict_id, mode, keep, rename, signature, progress=None):
     except Exception as e:
         app_logger.error(f"series merge: reconcile failed for series {row['series_id']}: {e}")
 
-    result = {"moved": moved, "trashed": len(trashed), "held": held, "failed": failed,
+    result = {"moved": moved, "trashed": len(trashed) + len(replaced), "held": held, "failed": failed,
               "folder_removed": folder_gone}
     app_logger.info(f"series merge ({mode}) {folder} -> {plan['mapped_folder']}: {_detail(result)}")
     return result

@@ -1080,7 +1080,10 @@ def _run_scan_job_inner(op_id, app):
         # then left out of what the dialog reports.
         from core.series_conflicts import record_scan
 
-        recorded = record_scan(scan["review"], get_library_roots())
+        recorded = record_scan(
+            scan["review"], get_library_roots(),
+            resolved=[it.get("folder") for it in scan["auto"]],
+        )
         conflicts_saved = recorded is not None
         conflicts_ignored = 0
         if recorded and recorded["ignored_folders"]:

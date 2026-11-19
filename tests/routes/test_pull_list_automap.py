@@ -116,30 +116,3 @@ class TestRematchRoute:
         assert resp.get_json()["result"]["rematched"] == 12
 
 
-class TestApplyRoute:
-    def test_no_items_is_400(self, client):
-        resp = client.post("/api/pull-list/apply", json={"items": []})
-        assert resp.status_code == 400
-
-    def test_invalid_items_is_400(self, client):
-        # items present but none have both folder and metron_id
-        resp = client.post("/api/pull-list/apply", json={"items": [{"folder": "/x"}]})
-        assert resp.status_code == 400
-
-    def test_valid_items_applied(self, client):
-        fake = {"applied": 1, "failed": []}
-        # Every folder must be inside a library (routes.series apply route).
-        with patch("models.library_automap.apply_and_sync", return_value=fake) as apply, \
-                patch("helpers.library.get_library_roots", return_value=["/data"]):
-            resp = client.post(
-                "/api/pull-list/apply",
-                json={"items": [{"folder": "/data/Batman", "metron_id": 555}]},
-            )
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["success"] is True
-        assert data["applied"] == 1
-        # Only cleaned fields are forwarded
-        forwarded = apply.call_args[0][0]
-        assert forwarded[0]["folder"] == "/data/Batman"
-        assert forwarded[0]["metron_id"] == 555

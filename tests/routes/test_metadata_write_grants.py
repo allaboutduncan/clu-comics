@@ -716,27 +716,6 @@ class TestSeriesMappingWrites:
         assert resp.status_code == 403
         add.assert_not_called()
 
-    def test_clerk_cannot_apply_automap_to_ungranted_folder(self, client, multi_user):
-        _as_clerk(client)
-        with patch("models.library_automap.apply_and_sync") as apply:
-            resp = client.post("/api/pull-list/apply", json={"items": [
-                {"folder": multi_user.grant, "metron_id": 1},
-                {"folder": multi_user.sibling, "metron_id": 2},
-            ]})
-        assert resp.status_code == 403
-        apply.assert_not_called()
-
-    def test_apply_automap_refuses_folder_outside_every_library(self, client, multi_user):
-        _as_owner(client)
-        with patch("models.library_automap.apply_and_sync") as apply:
-            resp = client.post("/api/pull-list/apply", json={"items": [
-                {"folder": multi_user.grant, "metron_id": 1},
-                {"folder": multi_user.outside, "metron_id": 7},
-            ]})
-        assert resp.status_code == 400
-        assert "inside a library" in resp.get_json()["error"]
-        apply.assert_not_called()
-
 
 # ---------------------------------------------------------------------------
 # Folder thumbnails

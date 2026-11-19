@@ -173,7 +173,7 @@
                       s.held + '</span>'
                     : '0';
                 return '<tr><td>' + CLU.escapeHtml(it.series_name || '') +
-                    '<div class="small text-muted text-break">' + CLU.escapeHtml(it.folder.split('/').pop()) + '</div></td>' +
+                    '<div class="small text-muted text-break">' + CLU.escapeHtml(baseName(it.folder)) + '</div></td>' +
                     '<td>' + s.move + '</td><td>' + trash + '</td><td>' + held +
                     (it.folder_emptied ? '<div class="small text-muted">folder removed</div>' : '') + '</td></tr>';
             }).join('');
@@ -324,7 +324,7 @@
                 fileList(plan.only_here), true);
         if (dupes.length) {
             html += section('Identical file already in the mapped folder: trashed', dupes.length,
-                fileList(dupes.map(function (a) { return { name: a.trash.split('/').pop() }; })), false);
+                fileList(dupes.map(function (a) { return { name: baseName(a.trash) }; })), false);
         }
         if (plan.held.length) {
             html += section('Left where they are', plan.held.length,
@@ -410,26 +410,41 @@
                 ? '<p class="fw-semibold small mb-1">Going to the trash:</p>' +
                   '<ul class="small text-break mb-2">' + trash.map(function (p) { return '<li>' + CLU.escapeHtml(p) + '</li>'; }).join('') + '</ul>'
                 : '';
-            $('sc-merge-confirm-trash-note').textContent =
-                'Trashed files can be restored from the trash while it has room for them.';
+            var note = $('sc-merge-confirm-trash-note');
+            note.textContent = trashEnabled()
+                ? 'Trashed files can be restored from the trash while it has room for them.'
+                : 'The trash is turned off in Settings, so these files' +
+                  (plan.folder_emptied ? ' and the folder' : '') + ' are deleted permanently.';
+            note.classList.toggle('text-danger', !trashEnabled());
+            note.classList.toggle('text-muted', trashEnabled());
             $('sc-merge-confirm-go').textContent = mode === 'merge' ? 'Merge' : 'Drop duplicates';
             showStep(true);
         });
     }
 
+    function trashEnabled() {
+        var app = $('series-conflicts-app');
+        return !app || app.dataset.trashEnabled !== '0';
+    }
+
+    /** The last path segment, for either separator (a native Windows run). */
+    function baseName(path) {
+        return String(path || '').split(/[\\/]/).pop();
+    }
+
     function followOperation(opId, done) {
-        var busy = false;
-        var timer = setInterval(function () {
-            if (busy) return;
-            busy = true;
-            fetch('/api/operation/' + encodeURIComponent(opId)).then(function (r) { return r.json(); })
+        // /api/operation/<id>, never /api/operations (see base.html).
+        var timer = CLU.startPoll(function (signal) {
+            return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                .then(function (r) { return r.json(); })
                 .then(function (data) {
                     var op = data.operation || null;
+                    // A finished op is pruned after a TTL: missing means done.
                     if (op && (op.status === 'running' || op.status === 'queued')) return;
                     clearInterval(timer);
                     done(op);
-                }).catch(function () {}).finally(function () { busy = false; });
-        }, 2000);
+                });
+        }, 2000, { immediate: false });
         setTimeout(function () { clearInterval(timer); }, 1800000);
     }
 

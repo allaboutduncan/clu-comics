@@ -131,7 +131,12 @@ def _conflict_id(data):
 
 @library_health_bp.route("/library-health/series")
 def series_conflicts_page():
-    return render_template("library_series_conflicts.html", current_page="/library-health")
+    # With the trash off, move_to_trash deletes outright: the page must say so.
+    return render_template(
+        "library_series_conflicts.html",
+        current_page="/library-health",
+        trash_enabled=bool(current_app.config.get("TRASH_ENABLED", True)),
+    )
 
 
 @library_health_bp.route("/api/problem-files/series-conflicts", methods=["GET"])

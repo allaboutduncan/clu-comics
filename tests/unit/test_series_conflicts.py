@@ -62,11 +62,71 @@ class TestRecordScan:
         assert len(rows) == 1
         assert rows[0]["mapped_folder"] == "/m2"
 
-    def test_resolved_row_is_pruned_under_a_mounted_root(self, store, library):
+    def test_a_folder_the_scan_resolved_is_pruned(self, store, library):
         a = _folder(library, "Image/Feral")
         sc.record_scan([_review(a, "/m")], [str(library)])
+        sc.record_scan([], [str(library)], resolved=[a])
+        assert sc.list_conflicts() == []
+
+    def test_a_vanished_folder_is_pruned(self, store, library):
+        a = _folder(library, "Image/Feral")
+        sc.record_scan([_review(a, "/m")], [str(library)])
+        import shutil
+        shutil.rmtree(a)
         sc.record_scan([], [str(library)])
         assert sc.list_conflicts() == []
+
+    def test_a_folder_that_became_the_series_folder_is_pruned(self, store, library):
+        a = _folder(library, "Image/Feral")
+        sc.record_scan([_review(a, "/m")], [str(library)])
+        store.execute("INSERT INTO series (id, name, mapped_path) VALUES (101, 'Feral', ?)", (a,))
+        store.commit()
+        sc.record_scan([], [str(library)])
+        assert sc.list_conflicts() == []
+
+    def test_a_folder_now_reported_for_another_series_drops_the_old_row(self, store, library):
+        a = _folder(library, "Image/Feral")
+        sc.record_scan([_review(a, "/m", series_id=101)], [str(library)])
+        sc.record_scan([_review(a, "/m2", series_id=202)], [str(library)])
+        assert [r["series_id"] for r in sc.list_conflicts()] == [202]
+
+    def test_an_unreported_folder_is_kept_with_its_ignore(self, store, library):
+        """Metron down: the folder lands in the scan's errors or skipped, not in review.
+
+        Missing from review is no evidence the conflict is gone, and one such
+        scan used to clear the list and every Ignore.
+        """
+        a = _folder(library, "Image/Feral")
+        sc.record_scan([_review(a, "/m")], [str(library)])
+        sc.set_ignored(sc.list_conflicts()[0]["id"])
+        sc.record_scan([], [str(library)])
+        rows = sc.list_conflicts(include_ignored=True)
+        assert len(rows) == 1 and rows[0]["ignored"] is True
+
+    def test_disk_is_read_before_the_write_transaction(self, store, library):
+        """Listing folders on a NAS must not hold the WAL write lock."""
+        a = _folder(library, "Image/Feral")
+        b = _folder(library, "Image/Redcoat")
+        calls = []
+        real = sc.folder_files
+
+        def spy(folder):
+            from core.database import get_db_connection
+            probe = get_db_connection()
+            try:
+                # Fails at once with "database is locked" if a writer holds the lock.
+                probe.execute("PRAGMA busy_timeout=0")
+                probe.execute("BEGIN IMMEDIATE")
+                probe.rollback()
+                calls.append(folder)
+            finally:
+                probe.close()
+            return real(folder)
+
+        with patch.object(sc, "folder_files", side_effect=spy):
+            out = sc.record_scan([_review(a, "/m"), _review(b, "/m", series_id=102)], [str(library)])
+        assert calls == [a, b]
+        assert out["open"] == 2
 
     def test_row_under_an_unmounted_root_is_kept(self, store, library):
         """An asleep NAS is an empty directory, not proof the conflict is resolved."""

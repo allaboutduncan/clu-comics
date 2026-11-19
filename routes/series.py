@@ -816,54 +816,6 @@ def rematch_library_collection():
     return jsonify({"success": True, "op_id": op_id})
 
 
-@series_bp.route("/api/pull-list/apply", methods=["POST"])
-def apply_library_automap():
-    """Apply user-selected review matches from the auto-map scan."""
-    from models import library_automap
-
-    data = request.get_json(silent=True) or {}
-    items = data.get("items")
-    if not isinstance(items, list) or not items:
-        return jsonify({"success": False, "error": "No items provided"}), 400
-
-    clean = [
-        {
-            "folder": it.get("folder"),
-            "metron_id": it.get("metron_id"),
-            "series_name": it.get("series_name"),
-            "publisher_name": it.get("publisher_name"),
-            "year": it.get("year"),
-            "status": it.get("status"),
-            "cv_id": it.get("cv_id"),
-        }
-        for it in items
-        if isinstance(it, dict) and it.get("folder") and it.get("metron_id")
-    ]
-    if not clean:
-        return jsonify({"success": False, "error": "No valid items provided"}), 400
-
-    # The folders come back from the browser. Sidecars are written into each
-    # and downloads filed into it: every one must be inside a library, for
-    # every user, and a non-owner needs a full grant on it. One refusal
-    # refuses the batch.
-    from core.path_access import grant_refusal
-    from helpers.library import is_valid_library_path
-    if not all(isinstance(it["folder"], str) and is_valid_library_path(it["folder"])
-               for it in clean):
-        return jsonify({"success": False,
-                        "error": "Every folder must be inside a library"}), 400
-    refusal = grant_refusal(*[it["folder"] for it in clean])
-    if refusal:
-        return jsonify({"success": False, "error": refusal[0]}), refusal[1]
-
-    result = library_automap.apply_and_sync(clean)
-    return jsonify({
-        "success": True,
-        "applied": result["applied"],
-        "failed": result["failed"],
-    })
-
-
 @series_bp.route("/api/pull-list/add-folder", methods=["POST"])
 def add_folder_to_pull_list():
     """Add one folder to the Pull List -- Scan Library for a single folder.

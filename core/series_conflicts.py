@@ -11,9 +11,11 @@ them only in memory, so closing the dialog lost them.
 Things that look arbitrary and are not:
 
 - **Pruning needs positive evidence** (as for ``problem_files``). A row not
-  reported by a scan is dropped only when its library root is mounted, and a
-  vanished folder only when ``is_path_provably_gone`` says so. An asleep NAS is
-  an empty directory, and treating that as "resolved" would empty the table.
+  reported by a scan is dropped only when the scan resolved its folder to
+  something else, the folder became a series' own folder, or
+  ``is_path_provably_gone`` says it vanished. "Not reported" alone is not
+  evidence: a provider outage puts folders in the scan's ``errors`` or
+  ``skipped``, and an asleep NAS is an empty directory.
 - **Ignore is keyed on the folder's file list** (``files_sig``), not on a flag:
   a new comic in an ignored folder re-opens it, for the same reason a dismissed
   duplicate group re-opens when another copy turns up.
@@ -68,30 +70,71 @@ def _row_out(row):
     return item
 
 
-def record_scan(review, roots):
+def record_scan(review, roots, resolved=()):
     """Store a scan's review items and prune rows the scan resolved.
 
     ``review`` is ``scan_library_for_automap()["review"]``; ``roots`` the library
-    roots the scan walked. Returns ``{"open": n, "ignored": n, "ignored_folders":
-    set}`` (``ignored_folders`` holds normalised paths), or None when the database
-    could not be written -- the caller then reports the scan as before.
+    roots the scan walked; ``resolved`` the folders the scan matched to a series
+    of their own (its ``auto`` list). Returns ``{"open": n, "ignored": n,
+    "ignored_folders": set}`` (``ignored_folders`` holds normalised paths), or
+    None when the database could not be written -- the caller then reports the
+    scan as before.
+
+    A row the scan did not report is dropped only on positive evidence that it
+    is resolved: its folder is provably gone, the scan resolved the folder to a
+    mapping of its own or to another series, or the folder is now a series'
+    own folder. Not being reported is not evidence: a folder in the scan's
+    ``errors`` or ``skipped`` (Metron down, an unreadable sidecar) is missing
+    from ``review`` too, and so is a folder with no sidecar at all, which is
+    what a Switch leaves behind when the old folder was mapped by hand.
+
+    All disk reads happen before the write transaction opens: listing a few
+    hundred folders on a NAS must not hold the WAL write lock.
     """
     from core.database import db_conn
-    from helpers.library import is_path_provably_gone, is_root_mounted
+    from helpers.library import is_path_provably_gone
 
-    mounted = [r for r in (roots or []) if r and is_root_mounted(r)]
-    seen = set()
+    # --- Disk and reads first, no write lock held. ---
+    items = []
+    for it in review or []:
+        series_id = it.get("metron_id")
+        folder = it.get("folder")
+        if not series_id or not folder:
+            continue
+        names = folder_files(folder)
+        items.append((it, series_id, folder, len(names), files_signature(names)))
+    seen = {(series_id, folder) for _, series_id, folder, _, _ in items}
+
+    with db_conn() as conn:
+        if conn is None:
+            return None
+        try:
+            existing = [dict(r) for r in conn.execute(
+                "SELECT id, series_id, folder FROM series_folder_conflicts").fetchall()]
+            mapped = {_norm(r[0]) for r in conn.execute(
+                "SELECT mapped_path FROM series WHERE mapped_path IS NOT NULL").fetchall() if r[0]}
+        except Exception as e:
+            app_logger.error(f"series conflicts: could not read conflicts before a scan: {e}")
+            return None
+
+    settled = {_norm(f) for f in resolved or () if f} | mapped | {_norm(f) for _, _, f, _, _ in items}
+    stale = []
+    mounted_cache = {}
+    for row in existing:
+        if (row["series_id"], row["folder"]) in seen:
+            continue
+        if _norm(row["folder"]) in settled or is_path_provably_gone(
+            row["folder"], roots=roots, mounted=mounted_cache
+        ):
+            stale.append(row["id"])
+
+    # --- One short write transaction. ---
     with db_conn() as conn:
         if conn is None:
             return None
         try:
             c = conn.cursor()
-            for it in review or []:
-                series_id = it.get("metron_id")
-                folder = it.get("folder")
-                if not series_id or not folder:
-                    continue
-                names = folder_files(folder)
+            for it, series_id, folder, count, sig in items:
                 c.execute(
                     """
                     INSERT INTO series_folder_conflicts
@@ -116,22 +159,9 @@ def record_scan(review, roots):
                         it.get("series_name"),
                         None if it.get("year") is None else str(it.get("year")),
                         it.get("publisher_name"), it.get("status"), it.get("cv_id"),
-                        it.get("source"), len(names), files_signature(names),
+                        it.get("source"), count, sig,
                     ),
                 )
-                seen.add((series_id, folder))
-
-            c.execute("SELECT id, series_id, folder FROM series_folder_conflicts")
-            stale = []
-            mounted_cache = {}
-            for row in c.fetchall():
-                key = (row["series_id"], row["folder"])
-                if key in seen:
-                    continue
-                if any(_under(row["folder"], r) for r in mounted) or is_path_provably_gone(
-                    row["folder"], roots=roots, mounted=mounted_cache
-                ):
-                    stale.append(row["id"])
             c.executemany(
                 "DELETE FROM series_folder_conflicts WHERE id = ?", [(i,) for i in stale]
             )
