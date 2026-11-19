@@ -76,10 +76,20 @@ issue of `Detective Comics 156 (1937) - Batmobile of 1950` (#778) and kept
 - **A sign counts only when glued to the digits and preceded by whitespace,
   `#` or `Issue `** (`SIGN_CLASS`, aliased by `helpers/collection.py`).
   `Black Cat - 001` is issue 1.
-- On it so far: `models.providers.base.extract_issue_number` and
-  `helpers.collection.get_series_name_from_files`.
+- On it so far: `models.providers.base.extract_issue_number`,
+  `helpers.collection.get_series_name_from_files` and
+  `routes.metadata.extract_series_name_from_filename`.
   `tests/unit/test_filename_corpus.py` is one table of filenames with a column
   per parser; a parser moved onto the module gets a column.
+- **A metadata lookup with no cvinfo reads the name through
+  `routes.metadata.series_issue_year_from_filename`** (series from
+  `extract_series_name_from_filename`, issue from `extract_issue_number`).
+  The ComicVine search route and the GCD directory search carried a pattern
+  list each, and eight sites pasted `extract_series_name_from_folder`'s
+  regexes. Single-file, batch and bulk now share the functions; do not add a
+  pattern list to a route.
+- **Strip exactly one trailing number.** A second strip takes the `2099` out
+  of `Spider-Man 2099 001`.
 - **Not candidates:** `extract_comic_values` and `get_renamed_filename`
   (`cbz_ops/rename.py`) decide filenames on disk, so a change re-renames
   libraries. The module is import-free so `monitor.py` can reach it.
