@@ -50,6 +50,11 @@
     color: var(--bs-warning);
 }
 
+.stat-card .stat-icon.danger {
+    background: rgba(var(--bs-danger-rgb), 0.15);
+    color: var(--bs-danger);
+}
+
 .stat-card .stat-value {
     font-size: 2rem;
     font-weight: 700;

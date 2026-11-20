@@ -20,6 +20,7 @@ from flask import Blueprint, jsonify, request, Response
 
 from core.app_logging import app_logger
 from core.database import (
+    clear_stats_cache_prefix,
     compute_volumes_for_paths,
     current_user_id,
     filesystem_browse_issues,
@@ -1040,4 +1041,7 @@ def post_issue_read():
     )
     if not ok:
         return jsonify({"error": "save_failed"}), 500
+    # Same invalidation as the web reader's mark-read: without it a read from
+    # an API client left Insights on its cached counts.
+    clear_stats_cache_prefix(f"u{current_user_id()}:")
     return jsonify({"ok": True})
