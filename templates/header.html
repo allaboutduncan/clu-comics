@@ -9,7 +9,7 @@
 
 <nav class="navbar navbar-expand-lg bg-primary navbar-dark" data-bs-theme="dark">
   <div class="{{ page_width_chrome(_shell) if _shell is defined else 'container-lg' }}">
-    <a class="navbar-brand d-flex align-items-center" href="/">
+    <a class="navbar-brand d-flex align-items-center" href="{{ request.script_root }}/">
       <img src="{{ url_for('static', filename='images/clu.png') }}" alt="CLU Logo" width="40" class="me-2">
       CLU
     </a>
@@ -255,7 +255,7 @@
             {% endif %}
             {% if g.get('current_user') and g.current_user.role == 'owner' %}
             <li>
-              <a href="/users"
+              <a href="{{ request.script_root }}/users"
                 class="dropdown-item {% if current_page == '/users' %}active{% endif %}">
                 <i class="bi bi-people me-2"></i>Users
               </a>
@@ -274,7 +274,7 @@
             </li>
             {% endif %}
             <li>
-              <a href="/api/v1/docs"
+              <a href="{{ request.script_root }}/api/v1/docs"
                 class="dropdown-item {% if current_page == '/api/v1/docs' %}active{% endif %}">
                 <i class="bi bi-code-slash me-2"></i>API Docs
               </a>

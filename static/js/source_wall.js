@@ -1733,7 +1733,7 @@ function updateXmlSW() {
     CLU.openUpdateXmlModal(swCurrentPath, folderName);
 }
 
-function reconcileSelectedFromDb() {
+async function reconcileSelectedFromDb() {
     if (swSelectedFiles.size === 0) return;
 
     const paths = [...swSelectedFiles];
@@ -1750,9 +1750,14 @@ function reconcileSelectedFromDb() {
         return;
     }
 
-    const msg = `Rebuild ComicInfo.xml for ${paths.length} file${paths.length === 1 ? '' : 's'} ` +
-                `from the database? This overwrites any existing ComicInfo.xml on disk.`;
-    if (!confirm(msg)) return;
+    const ok = await CLU.confirm({
+        title: 'Write XML from database',
+        message: `Rebuild ComicInfo.xml for ${paths.length} file${paths.length === 1 ? '' : 's'} from the database?`,
+        detail: 'This overwrites any existing ComicInfo.xml on disk.',
+        confirmText: 'Rebuild',
+        variant: 'warning'
+    });
+    if (!ok) return;
 
     fetch('/api/source-wall/reconcile-from-db', {
         method: 'POST',

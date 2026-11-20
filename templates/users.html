@@ -412,7 +412,13 @@ async function createToken() {
 }
 
 async function revokeToken(tokenId) {
-  if (!confirm("Revoke this token? Any client using it will lose access.")) return;
+  const ok = await CLU.confirm({
+    title: "Revoke token",
+    message: "Revoke this token?",
+    detail: "Any client using it will lose access.",
+    confirmText: "Revoke"
+  });
+  if (!ok) return;
   const resp = await fetch(`/api/admin/tokens/${tokenId}`, { method: "DELETE" });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.success) { alertMsg(data.error || "Failed to revoke token."); return; }
@@ -464,7 +470,13 @@ async function saveUser() {
 }
 
 async function deleteUser(id, name) {
-  if (!confirm(`Delete user "${name}"? This cannot be undone.`)) return;
+  const ok = await CLU.confirm({
+    title: "Delete user",
+    message: `Delete user "${name}"?`,
+    detail: "This cannot be undone.",
+    confirmText: "Delete user"
+  });
+  if (!ok) return;
   const resp = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok || !data.success) { alertMsg(data.error || "Delete failed."); return; }

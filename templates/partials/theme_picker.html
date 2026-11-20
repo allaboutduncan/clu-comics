@@ -37,7 +37,7 @@
         <label class="form-label">Theme Preview</label>
         <div class="border rounded p-2 text-center">
             <img id="{{ _img_id }}" src="{{ _previews.get(_selected, '') }}" alt="Theme preview"
-                class="img-fluid rounded" style="max-height: 200px;" onerror="this.src='/static/images/default.png'">
+                class="img-fluid rounded" style="max-height: 200px;" onerror="this.onerror=null; this.src=CLU.staticUrl('images/default.png')">
             <div class="mt-2">
                 <strong id="{{ _name_id }}">{{ (bootswatch_themes|selectattr(0, 'equalto', _selected)|map(attribute=1)|first|default(_selected|title)).replace(' (Dark)', '') }}</strong>
                 <br><small class="text-muted">{{ preview_note|default('Save settings to apply this theme.') }}</small>

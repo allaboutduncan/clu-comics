@@ -260,10 +260,13 @@ function selectDirectory(path) {
 /**
  * Confirm removal of mapping
  */
-function removeMappingConfirm() {
-    if (!confirm('Remove the collection mapping for this series?')) {
-        return;
-    }
+async function removeMappingConfirm() {
+    const ok = await CLU.confirm({
+        title: 'Remove mapping',
+        message: 'Remove the collection mapping for this series?',
+        confirmText: 'Remove mapping'
+    });
+    if (!ok) return;
 
     if (!seriesData || !seriesData.id) {
         console.error('No series data available');

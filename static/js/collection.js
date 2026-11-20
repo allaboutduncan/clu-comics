@@ -2181,7 +2181,7 @@ function renderGrid(items) {
 
             if (item.hasThumbnail) {
                 // Set placeholder initially, real source in data-src for lazy loading
-                img.src = '/static/images/loading.svg';
+                img.src = CLU.staticUrl('images/loading.svg');
                 img.dataset.src = item.thumbnailUrl;
                 img.dataset.thumbnailPath = item.thumbnailUrl; // loadThumbnail's probe URL
                 img.classList.add('lazy');
@@ -2189,7 +2189,7 @@ function renderGrid(items) {
 
                 // Handle error loading thumbnail
                 img.onerror = function () {
-                    this.src = '/static/images/error.svg';
+                    this.src = CLU.staticUrl('images/error.svg');
                     this.classList.remove('lazy');
                     this.classList.remove('polling'); // Stop polling on error
                 };
@@ -3265,7 +3265,9 @@ function _redirectedTo(response, name) {
  * @param {{reload?: boolean}} [opts] - reload: bypass and overwrite the HTTP cache
  */
 function loadThumbnail(img, opts) {
-    const url = img.dataset.thumbnailPath;
+    // CLU.url: the same URL is fetched and then set as img.src, so it has to
+    // carry a path prefix before either (see clu-url.js).
+    const url = CLU.url(img.dataset.thumbnailPath);
     if (!url || !img.classList.contains('polling')) return;
     const reload = !!(opts && opts.reload) || _refreshedCovers.has(url);
     // one in-flight probe per image, unless this one is a reload
@@ -3304,7 +3306,7 @@ function loadThumbnail(img, opts) {
                 // or a 5xx that outlasted its retries)
                 img.dataset.isPolling = 'false';
                 img.classList.remove('polling', 'lazy');
-                img.src = '/static/images/error.svg';
+                img.src = CLU.staticUrl('images/error.svg');
                 return;
             }
             img.dataset.serverErrors = '0';
@@ -3352,7 +3354,7 @@ function initSwiperThumbnails(container) {
         img.classList.add('polling');
 
         img.onerror = function () {
-            this.src = '/static/images/error.svg';
+            this.src = CLU.staticUrl('images/error.svg');
             this.classList.remove('polling');
         };
         loadThumbnail(img);
@@ -3796,7 +3798,7 @@ function refreshThumbnail(filePath) {
                 // cache: 'reload' bypasses the cached cover and overwrites it,
                 // so the next page view gets the new one too.
                 img.classList.add('polling');
-                img.src = '/static/images/loading.svg';
+                img.src = CLU.staticUrl('images/loading.svg');
                 loadThumbnail(img, { reload: true });
             }
         }
@@ -4753,7 +4755,7 @@ async function loadNewReleasesSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${name}">${name}</div>
@@ -4820,7 +4822,7 @@ async function loadRecentlyAddedSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${name}">${name}</div>
@@ -4886,7 +4888,7 @@ async function loadContinueReadingSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
@@ -4962,7 +4964,7 @@ async function loadOnTheStackSwiper() {
                 <div class="dashboard-card has-thumbnail" data-path="${CLU.escapeHtml(item.file_path)}"
                      data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${fileName}">${fileName}</div>
@@ -5327,7 +5329,7 @@ function onDashboardClick(event) {
             openReaderForFile(d.path);
             break;
         case 'open-reading-list':
-            window.location.href = '/reading-lists/' + encodeURIComponent(d.readingListId);
+            window.location.href = CLU.url('/reading-lists/' + encodeURIComponent(d.readingListId));
             break;
         case 'remove-favorite':
             removeFavoriteFromDashboard(d.path, d.name, el);

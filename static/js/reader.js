@@ -1209,7 +1209,7 @@ function loadComicPage(pageNum) {
 
     // Encode the path properly for URL
     const encodedPath = encodeFilePath(currentComicPath);
-    const imageUrl = `/api/read/${encodedPath}/page/${pageNum}`;
+    const imageUrl = CLU.url(`/api/read/${encodedPath}/page/${pageNum}`);
 
     // Create image element
     const img = document.createElement('img');

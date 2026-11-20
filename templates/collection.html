@@ -206,7 +206,7 @@
             <div class="d-flex justify-content-between align-items-center mb-3 px-2">
                 <h4 class="m-0"><i class="bi {{ section.icon }} me-2"></i>{{ section.title }}</h4>
                 {% if section.get('view_all_type') == 'link' %}
-                <a href="{{ section.view_all_href }}" class="btn btn-sm btn-link text-decoration-none">{{
+                <a href="{{ request.script_root }}{{ section.view_all_href }}" class="btn btn-sm btn-link text-decoration-none">{{
                     section.view_all_text }}</a>
                 {% else %}
                 <button class="btn btn-sm btn-link text-decoration-none" {% if section.get('view_all_onclick') %}
