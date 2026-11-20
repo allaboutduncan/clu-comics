@@ -149,7 +149,7 @@
                             <img src="{{ url_for('get_thumbnail', path=file.path) }}"
                                  alt="{{ file.name }}"
                                  loading="lazy"
-                                 onerror="this.src='/static/images/no-cover.svg'">
+                                 onerror="this.onerror=null; this.src='{{ url_for('static', filename='images/error.svg') }}'">
                         </div>
                         <div class="item-info">
                             <div class="item-name" title="{{ file.name }}">
@@ -185,7 +185,7 @@
                         <img src="{{ url_for('get_thumbnail', path=file.path) }}"
                              alt="{{ file.name }}"
                              loading="lazy"
-                             onerror="this.src='/static/images/no-cover.svg'">
+                             onerror="this.onerror=null; this.src='{{ url_for('static', filename='images/error.svg') }}'">
                     </div>
                     <div class="item-info">
                         <div class="item-name" title="{{ file.name }}">

@@ -127,9 +127,16 @@ on the Library Health page do nothing, with no error anywhere.
 (confirmations, anything needing a decision or input) or a **Toast** (success,
 error, and status messages).
 
-- Confirmations: `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
-  (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`), or a
-  purpose-built modal in the page template.
+- Confirmations: `await CLU.confirm({title, message, detail, confirmText})`
+  (`static/js/clu-confirm.js`, loaded by `base.html`; text only, resolves
+  `true` only on the confirm button). Deleting a file or folder is
+  `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
+  (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`). A
+  purpose-built modal is for a confirmation that needs more than text.
+- Recurring fetches: `CLU.startPoll(fn, intervalMs)` (`base.html`), passing its
+  `signal` to `fetch`. Never a bare `setInterval`;
+  `tests/unit/test_pollers_are_guarded.py` allow-lists the timers that fetch
+  nothing.
 - Messages: `CLU.toast(message, type)`, `CLU.showToast(title, message, type)`,
   `CLU.showSuccess()`, `CLU.showError()` from `static/js/clu-toast.js`.
   `base.html` loads it and renders the one container
@@ -138,7 +145,7 @@ error, and status messages).
 - Empty states: `empty_state()` from `partials/empty_state.html`
   (`CLU.emptyState()` in page scripts).
 - `tests/unit/test_feedback.py` is the ratchet: no local toast, no page-built
-  toast container, no `alert()`.
+  toast container, no `alert()`, `confirm()` or `prompt()`.
 
 ## Configuration
 

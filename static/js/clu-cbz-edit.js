@@ -467,14 +467,25 @@
     if (!modalEl || !CLU._editState || CLU._editState.closeGuardAttached) return;
     CLU._editState.closeGuardAttached = true;
 
+    // hide.bs.modal cannot wait for an answer, so a dirty editor always
+    // refuses the first close and asks. "Discard" clears the flag and closes
+    // again; that second close finds nothing dirty and goes through.
     modalEl.addEventListener('hide.bs.modal', function (e) {
       if (!CLU._editState || !CLU._editState.dirty) return;
-      var ok = window.confirm('You have unsaved changes. Discard them?');
-      if (!ok) {
-        e.preventDefault();
-        return;
-      }
-      _clearDirty();
+      e.preventDefault();
+      if (CLU._editState.closePrompted) return;
+      CLU._editState.closePrompted = true;
+      CLU.confirm({
+        title: 'Unsaved changes',
+        message: 'You have unsaved changes. Discard them?',
+        confirmText: 'Discard changes',
+        cancelText: 'Keep editing'
+      }).then(function (ok) {
+        if (CLU._editState) CLU._editState.closePrompted = false;
+        if (!ok) return;
+        _clearDirty();
+        bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+      });
     });
   }
 

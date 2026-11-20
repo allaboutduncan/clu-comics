@@ -1,6 +1,6 @@
 {# One parameterised confirmation modal for every destructive Database action.
 
-   The Database panel used window.confirm() for restore and delete, which
+   The Database panel used a native confirm dialog for restore and delete, which
    CLAUDE.md forbids outright. It needs to serve five different confirmations
    (restore, delete a backup, compact, apply a salvage, discard a salvage), and
    the salvage one has to render a whole row-count diff table in its body, so a

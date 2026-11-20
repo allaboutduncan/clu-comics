@@ -368,11 +368,8 @@
         }
 
         function pollScan(opId) {
-            let busy = false;  // skip a tick if the previous poll is still in-flight
-            automapPoll = setInterval(() => {
-                if (busy) return;
-                busy = true;
-                fetch('/api/pull-list/scan/status?op_id=' + encodeURIComponent(opId))
+            automapPoll = CLU.startPoll(signal => {
+                return fetch('/api/pull-list/scan/status?op_id=' + encodeURIComponent(opId), { signal })
                     .then(r => r.json())
                     .then(data => {
                         if (!data.success) throw new Error(data.error || 'Scan status unavailable');
@@ -391,8 +388,13 @@
                             showAutomapError(data.error || 'Scan failed');
                         }
                     })
-                    .catch(err => { clearInterval(automapPoll); showAutomapError(err.message); })
-                    .finally(() => { busy = false; });
+                    .catch(err => {
+                        // A request cut off by the poll's own timeout is retried
+                        // on the next tick; anything else ends the scan view.
+                        if (signal.aborted) return;
+                        clearInterval(automapPoll);
+                        showAutomapError(err.message);
+                    });
             }, 1000);
         }
 

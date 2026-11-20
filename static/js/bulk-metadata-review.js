@@ -54,9 +54,9 @@ window.BulkMetadataReview = (function () {
         if (el) el.textContent = 'Job: ' + jobId.slice(0, 8);
     }
 
-    async function _pollOnce(jobId) {
+    async function _pollOnce(jobId, signal) {
         try {
-            const r = await fetch(`/api/bulk-metadata/progress/${jobId}`);
+            const r = await fetch(`/api/bulk-metadata/progress/${jobId}`, { signal });
             if (!r.ok) return null;
             return await r.json();
         } catch (e) {
@@ -67,8 +67,10 @@ window.BulkMetadataReview = (function () {
     function _startPolling(jobId, onDone) {
         _stopPolling();
         let lastDetail = '';
-        _pollTimer = setInterval(async () => {
-            const data = await _pollOnce(jobId);
+        // CLU.startPoll: a 1s poll with no guard stacked a request per second
+        // behind a slow reverse proxy until the tab froze.
+        _pollTimer = CLU.startPoll(async (signal) => {
+            const data = await _pollOnce(jobId, signal);
             if (!data || !data.success) return;
             _setProgress(data.current || 0, data.total || 0);
             if (data.job) _setCounters(data.job);

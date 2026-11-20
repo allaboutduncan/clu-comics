@@ -32,11 +32,12 @@
     var pending = null;         // row awaiting a modal confirmation
     var sourceSearch = null;    // lazily built CLU.createSourceSearch instance
 
-    function postJson(url, body) {
+    function postJson(url, body, signal) {
         return fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body || {})
+            body: JSON.stringify(body || {}),
+            signal: signal
         }).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (data) {
                 return { ok: res.ok, status: res.status, data: data };
@@ -418,8 +419,11 @@
         if (replacementPoll) return;
         // The pass also runs server-side from the download pipeline; this is
         // what makes the page react promptly while it is open.
-        replacementPoll = setInterval(function () {
-            postJson('/api/problem-files/replacements/apply').then(function (res) {
+        // Not immediate: the claim was made a moment ago and nothing has
+        // landed yet. The pass moves files, so it gets a long timeout; a
+        // second request while one is running would only stand down.
+        replacementPoll = CLU.startPoll(function (signal) {
+            return postJson('/api/problem-files/replacements/apply', null, signal).then(function (res) {
                 if (!res.ok || !res.data.success) return;
                 state.replacements = res.data.replacements || [];
                 renderReplacements();
@@ -434,7 +438,7 @@
                 if (res.data.changed && res.data.changed.length) refresh();
                 if (!hasPendingReplacement()) stopReplacementPoll();
             });
-        }, 10000);
+        }, 10000, { immediate: false, timeout: 60000 });
     }
 
     function stopReplacementPoll() {

@@ -3297,14 +3297,11 @@
 
                 // Poll until last_sync changes (sync completed)
                 let attempts = 0;
-                let busy = false;  // skip a tick if the previous poll is still in-flight
                 const maxAttempts = 20;
-                const pollInterval = setInterval(async () => {
-                    if (busy) return;
-                    busy = true;
+                const pollInterval = CLU.startPoll(async (signal) => {
                     attempts++;
                     try {
-                        const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' } });
+                        const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' }, signal });
                         const statusData = await statusResp.json();
 
                         if (statusData.success && statusData.last_sync !== previousLastSync) {
@@ -3323,10 +3320,8 @@
                         }
                     } catch (e) {
                         // Keep polling on transient errors
-                    } finally {
-                        busy = false;
                     }
-                }, 3000);
+                }, 3000, { immediate: false });
             } else {
                 CLU.toast('Error: ' + (data.error || 'Failed to start sync'), 'error');
                 btn.innerHTML = originalHtml;
@@ -3751,9 +3746,13 @@
     }
 
     async function deleteLibrary(id, name) {
-        if (!confirm(`Are you sure you want to delete the library "${name}"?\n\nThis will not delete any files, only the library configuration.`)) {
-            return;
-        }
+        const ok = await CLU.confirm({
+            title: 'Delete library',
+            message: `Delete the library "${name}"?`,
+            detail: 'This will not delete any files, only the library configuration.',
+            confirmText: 'Delete library'
+        });
+        if (!ok) return;
 
         try {
             const response = await fetch(`/api/libraries/${id}`, {
@@ -4670,9 +4669,12 @@
     }
 
     async function deleteProviderCredentials(providerType) {
-        if (!confirm('Are you sure you want to delete credentials for this provider?')) {
-            return;
-        }
+        const ok = await CLU.confirm({
+            title: 'Delete credentials',
+            message: 'Delete the stored credentials for this provider?',
+            confirmText: 'Delete credentials'
+        });
+        if (!ok) return;
 
         try {
             const response = await fetch(`/api/providers/${providerType}/credentials`, {
@@ -4947,7 +4949,12 @@
     }
 
     async function deleteDownloadClientConfig(clientType) {
-        if (!confirm('Delete the configuration for this download client?')) return;
+        const ok = await CLU.confirm({
+            title: 'Delete download client',
+            message: 'Delete the configuration for this download client?',
+            confirmText: 'Delete'
+        });
+        if (!ok) return;
         try {
             const response = await fetch(`/api/download-clients/${clientType}/config`, { method: 'DELETE' });
             const data = await readJsonResponse(response);
@@ -5105,7 +5112,12 @@
     }
 
     async function deleteIndexer(indexerId) {
-        if (!confirm('Delete this indexer?')) return;
+        const ok = await CLU.confirm({
+            title: 'Delete indexer',
+            message: 'Delete this indexer?',
+            confirmText: 'Delete'
+        });
+        if (!ok) return;
         try {
             const response = await fetch(`/api/indexers/${indexerId}`, { method: 'DELETE' });
             const data = await readJsonResponse(response);
