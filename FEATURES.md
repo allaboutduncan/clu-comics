@@ -195,7 +195,7 @@ Turn it on under **Settings → File Processing → Folder Monitoring**; the cha
 - **Reading clock** — when you read, by hour of day and by weekday, built from reading sessions recorded in the CLU reader. Click a day to see its sittings on a 24-hour ruler.
 - **Constellation** — a graph of the characters (or creators) in what you read, sized by appearances and joined when they share an issue.
 - **Timeline** — a full chronological history of everything you have read, filterable by year and month.
-- **CLU Wrapped** — a full-screen, tap-through recap of your year *or* month: totals, goal, streaks, time and pages, top series, creators and characters, your reading clock and a reading personality. Pick a style (your theme, Halftone, Newsprint, Neon, or the classic comic panels), add text or emoji to any slide, and download them all to share.
+- **CLU Wrapped** — a full-screen, tap-through recap of your year *or* month: totals, goal, streaks, time and pages, top series, creators and characters, your reading clock and a reading personality. Pick a style (your theme, Comic Panels, Halftone, Newsprint or Neon), add text or emoji to any slide, and download them all to share.
 - **Insights API** — exposes the same numbers for dashboards such as [gethomepage.dev](https://gethomepage.dev/), with per-user bearer-token support.
 
 📖 [Insights docs](https://clucomics.org/features/insights/) · [Timeline](https://clucomics.org/features/insights/timeline/) · [Insights API](https://clucomics.org/features/insights/api/)

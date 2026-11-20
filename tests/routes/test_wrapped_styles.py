@@ -47,9 +47,9 @@ class TestRegistry:
         assert STYLES["theme"].palette is None and STYLES["theme"].paint is None
 
     def test_scopes(self):
-        assert [s.id for s in styles_for(YEARLY)] == ["theme", "halftone", "newsprint", "neon"]
-        assert [s.id for s in styles_for(MONTHLY)] == [
-            "theme", "classic", "halftone", "newsprint", "neon"]
+        every = ["theme", "classic", "halftone", "newsprint", "neon"]
+        assert [s.id for s in styles_for(YEARLY)] == every
+        assert [s.id for s in styles_for(MONTHLY)] == every
 
     def test_defaults_are_the_look_each_recap_always_had(self):
         assert wrapped_styles.DEFAULTS == {YEARLY: "theme", MONTHLY: "classic"}
@@ -57,7 +57,7 @@ class TestRegistry:
     @pytest.mark.parametrize("style,scope,expected", [
         ("neon", YEARLY, "neon"),
         ("classic", MONTHLY, "classic"),
-        ("classic", YEARLY, "theme"),          # monthly only
+        ("classic", YEARLY, "classic"),
         ("vaporwave", MONTHLY, "classic"),
         ("", YEARLY, "theme"),
         (None, MONTHLY, "classic"),
@@ -142,11 +142,94 @@ class TestEveryStyleDrawsEverySlide:
         assert sum(_pixel(classic, (4, 4))) < 200
 
 
+class TestComicPanelsArtwork:
+    """The panel artwork has "READING RECAP" painted into its top. Monthly
+    slides are laid out under it; a yearly slide draws its own logo or title
+    there, so it gets the artwork from below that title."""
+
+    def test_yearly_background_is_the_art_without_its_title(self):
+        img = wrapped_styles.paint_comic_panels(1080, 1920, STYLES["classic"].palette)
+        assert img.size == (1080, 1920)
+        # The painted title is near-white lettering across the top; with it
+        # cropped away nothing in that band is bright.
+        band = img.crop((200, 20, 880, 190)).convert("L")
+        assert band.getextrema()[1] < 140
+
+    def test_the_whole_file_does_have_the_title(self):
+        # Guards the crop above: if the artwork is ever replaced by one with
+        # no title, PANEL_TITLE_SHARE should go, not silently crop good art.
+        art = Image.open(wrapped_styles.PANEL_ARTWORK).convert("L")
+        band = art.crop((int(art.width * 0.2), 0, int(art.width * 0.8),
+                         int(art.height * wrapped_styles.PANEL_TITLE_SHARE)))
+        assert band.getextrema()[1] > 200
+
+    def test_a_missing_file_falls_back_to_the_panel_colour(self, monkeypatch):
+        monkeypatch.setattr(wrapped_styles, "PANEL_ARTWORK", "/nope/recap-bg.png")
+        img = wrapped_styles.paint_comic_panels(1080, 1920, STYLES["classic"].palette)
+        assert img.size == (1080, 1920)
+        assert img.getpixel((540, 960)) == (30, 37, 46)
+
+    def test_monthly_still_uses_the_whole_artwork(self, reads):
+        data = wrapped_slides.render_slide(MONTHLY, "recap", 2024, 6, style="classic", user_id=1)
+        band = Image.open(io.BytesIO(data)).crop((200, 20, 880, 190)).convert("L")
+        assert band.getextrema()[1] > 200
+
+
+class TestBooksGridFollowsTheStyle:
+    """The yearly grid of everything read builds its own, variable-height
+    background, so it was the one slide a style's background did not reach."""
+
+    @pytest.mark.parametrize("style,frame", [
+        ("halftone", (17, 17, 17)),       # the ink border
+        ("newsprint", (27, 27, 27)),
+    ])
+    def test_designed_background(self, reads, style, frame):
+        data = wrapped_slides.render_slide(YEARLY, "books-grid", 2024, style=style, user_id=1)
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        assert img.getpixel((26, img.height // 2)) == frame
+
+    def test_theme_style_keeps_its_gradient(self, reads):
+        data = wrapped_slides.render_slide(YEARLY, "books-grid", 2024, theme="default",
+                                           style="theme", user_id=1)
+        assert sum(_pixel(data, (4, 4))) > 700
+
+
+class TestMonthlyEdgeMargin:
+    """Covers on the monthly recap and all-issues slides sat 10px from the
+    edge of the image."""
+
+    SOURCE = (ROOT / "wrapped.py").read_text(encoding="utf-8")
+
+    def test_margin_is_generous_and_used_by_every_grid(self):
+        assert wrapped.MONTHLY_EDGE_MARGIN >= 20
+        assert "margin_x = 10" not in self.SOURCE
+        assert self.SOURCE.count("margin_x = MONTHLY_EDGE_MARGIN") == 2
+        assert "IMAGE_WIDTH - 2 * MONTHLY_EDGE_MARGIN" in self.SOURCE
+
+    @pytest.mark.parametrize("slide", ["recap", "all-issues"])
+    def test_nothing_is_drawn_in_the_margin(self, db_connection, slide):
+        # Enough issues to fill the grids edge to edge. On the flat-colour
+        # fallback background (no artwork), any pixel in the margin that is
+        # not the background colour is a cover or a placeholder.
+        for n in range(60):
+            mark_issue_read(f"/data/S{n % 12}/S{n % 12} {n:03d}.cbz",
+                            read_at=f"2024-06-{n % 28 + 1:02d}T10:00:00", page_count=20)
+        with patch("wrapped.os.path.exists", return_value=False):
+            with wrapped.use_style("classic"):
+                generator = (wrapped.generate_monthly_recap_slide if slide == "recap"
+                             else wrapped.generate_monthly_all_issues_slide)
+                img = Image.open(io.BytesIO(generator(2024, 6, "default"))).convert("RGB")
+        margin = wrapped.MONTHLY_EDGE_MARGIN - 4
+        for strip in (img.crop((0, 260, margin, 1650)), img.crop((1080 - margin, 260, 1080, 1650))):
+            assert strip.getcolors() == [(strip.width * strip.height, (30, 37, 46))]
+
+
 class TestRoutes:
     def test_manifest_lists_the_scope_styles(self, client, reads):
         yearly = client.get("/api/wrapped/2024/manifest").get_json()
         assert yearly["style"] == "theme"
-        assert [s["id"] for s in yearly["styles"]] == ["theme", "halftone", "newsprint", "neon"]
+        assert [s["id"] for s in yearly["styles"]] == [
+            "theme", "classic", "halftone", "newsprint", "neon"]
         assert all(s["label"] for s in yearly["styles"])
         monthly = client.get("/api/wrapped/monthly/2024/6/manifest").get_json()
         assert "classic" in [s["id"] for s in monthly["styles"]]
@@ -158,8 +241,24 @@ class TestRoutes:
         assert theme["version"] != neon["version"]
         assert "immutable" in client.get(neon["url"]).headers["Cache-Control"]
 
-    def test_a_style_the_scope_lacks_falls_back(self, client, reads):
-        assert client.get("/api/wrapped/2024/manifest?style=classic").get_json()["style"] == "theme"
+    def test_year_wrapped_can_be_drawn_in_comic_panels(self, client, reads):
+        body = client.get("/api/wrapped/2024/manifest?style=classic").get_json()
+        assert body["style"] == "classic"
+        assert "classic" in [s["id"] for s in body["styles"]]
+        for slide in body["slides"]:
+            r = client.get(slide["url"])
+            assert r.status_code == 200, slide["id"]
+            # Dark panel art in the corner, not a light theme gradient.
+            assert sum(_pixel(r.data, (6, 960))) < 250, slide["id"]
+
+    def test_a_style_a_scope_lacks_falls_back(self, client, reads, monkeypatch):
+        # Every style suits both recaps today; the fallback still has to hold
+        # for one that does not.
+        from dataclasses import replace
+
+        monkeypatch.setitem(STYLES, "neon", replace(STYLES["neon"], scopes=(MONTHLY,)))
+        assert client.get("/api/wrapped/2024/manifest?style=neon").get_json()["style"] == "theme"
+        assert client.get("/api/wrapped/monthly/2024/6/manifest?style=neon").get_json()["style"] == "neon"
 
     def test_each_style_is_cached_separately(self, client, reads):
         with patch("wrapped.generate_summary_slide", return_value=PNG_MAGIC + b"x") as generator:
@@ -192,9 +291,9 @@ class TestSavedPreference:
         self._save(client, "neon")
         assert client.get("/api/wrapped/2024/manifest?style=halftone").get_json()["style"] == "halftone"
 
-    def test_a_monthly_only_choice_leaves_yearly_on_its_default(self, client, reads):
+    def test_choosing_comic_panels_applies_to_both_recaps(self, client, reads):
         self._save(client, "classic")
-        assert client.get("/api/wrapped/2024/manifest").get_json()["style"] == "theme"
+        assert client.get("/api/wrapped/2024/manifest").get_json()["style"] == "classic"
         assert client.get("/api/wrapped/monthly/2024/6/manifest").get_json()["style"] == "classic"
 
     def test_site_default_applies_until_the_user_chooses(self, client, reads):

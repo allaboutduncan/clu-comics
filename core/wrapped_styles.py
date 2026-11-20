@@ -7,9 +7,11 @@ slide, present and future, follows a style without knowing styles exist.
 
 - ``theme`` follows the user's CLU theme: no palette of its own.
 - ``classic`` is the dark comic-panel artwork Monthly Wrapped has always used
-  (``static/images/recap-bg.png``, with its title painted in). It is monthly
-  only -- the yearly slides put a logo where that title sits -- and it stays
-  the monthly default so nobody's recap changes look unasked.
+  (``static/images/recap-bg.png``). The file has "READING RECAP" painted into
+  its top, which the monthly slides are laid out around; a yearly slide puts
+  its own logo or title there, so for those ``paint_comic_panels`` uses the
+  artwork below the title. It stays the monthly default so nobody's recap
+  changes look unasked.
 - ``halftone``, ``newsprint`` and ``neon`` are drawn here, from nothing but
   Pillow primitives and the fonts the image already ships (Liberation and
   DejaVu): no bundled font files, nothing to download.
@@ -18,6 +20,8 @@ Adding a style is one entry in ``STYLES``. Every palette needs the keys the
 theme palettes have (``wrapped.THEME_COLORS``); a test checks that, and that
 every style draws every slide.
 """
+import math
+import os
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -105,6 +109,32 @@ def paint_neon(width, height, palette):
     return img
 
 
+# The panel artwork, and how much of its height the painted-in title takes.
+PANEL_ARTWORK = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "static", "images", "recap-bg.png",
+)
+PANEL_TITLE_SHARE = 0.105
+
+
+def paint_comic_panels(width, height, palette):
+    """The comic-panel artwork without its painted-in title: the part below
+    the title, scaled to cover the slide. Falls back to the flat panel colour
+    if the file cannot be read."""
+    from PIL import Image
+
+    try:
+        art = Image.open(PANEL_ARTWORK).convert("RGB")
+        art = art.crop((0, int(art.height * PANEL_TITLE_SHARE), art.width, art.height))
+        ratio = max(width / art.width, height / art.height)
+        art = art.resize((math.ceil(art.width * ratio), math.ceil(art.height * ratio)),
+                         Image.Resampling.LANCZOS)
+        left, top = (art.width - width) // 2, (art.height - height) // 2
+        return art.crop((left, top, left + width, top + height))
+    except Exception:
+        return Image.new("RGB", (width, height), _rgb(palette["bg"]))
+
+
 @dataclass(frozen=True)
 class Style:
     id: str
@@ -117,7 +147,9 @@ class Style:
     # (width, height, palette) -> Image, or None for wrapped.py's own
     # background (a blurred cover or a gradient in the theme's colours).
     paint: Optional[Callable] = None
-    # The monthly slides load recap-bg.png, whose title is part of the art.
+    # The monthly slides load recap-bg.png whole, title and all, and lay
+    # themselves out under it (wrapped._monthly_canvas); ``paint`` is then
+    # only used by the yearly slides.
     classic_artwork: bool = False
 
 
@@ -125,13 +157,14 @@ STYLES = {
     style.id: style for style in (
         Style("theme", "Theme", (YEARLY, MONTHLY)),
         Style(
-            "classic", "Comic Panels", (MONTHLY,),
+            "classic", "Comic Panels", (YEARLY, MONTHLY),
             palette={
                 "primary": "#ffd700", "secondary": "#b0c4de", "success": "#3cf281",
                 "info": "#b0c4de", "warning": "#ffd700", "danger": "#ff6b6b",
                 "bg": "#1e252e", "bg_secondary": "#2a333f",
                 "text": "#ffffff", "text_muted": "#b0c4de", "is_dark": True,
             },
+            paint=paint_comic_panels,
             classic_artwork=True,
         ),
         Style(
