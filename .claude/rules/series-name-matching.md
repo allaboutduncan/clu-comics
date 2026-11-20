@@ -54,10 +54,30 @@ Things that look arbitrary and are not:
 - **A name made only of optional words stays a literal too** (`&`, `And`).
   Every word optional is the same empty pattern by another route.
 - **`match_issues_to_collection`'s ComicInfo tier is a raw substring test, and
-  tightening it changes nothing.** Its last tier (4c) accepts any file in the
-  series folder that carries the issue number, with no series check at all, so
-  whatever 4b refused 4c would take. That matcher is loose by design; the one
-  that moves files is `match_wanted_issues_to_files`.
+  tightening it changes nothing.** Its last tier (4c) has no series check at
+  all, so whatever 4b refused 4c would take. That matcher is loose *about the
+  series* by design; the one that moves files is `match_wanted_issues_to_files`.
+- **4c is not loose about the number (#792, #795).** It used to search each
+  filename for the wanted number anywhere, so `Batman 400 - Knightfall Part 1`
+  was also #1 and `Spider-Man 2099 005` was also #2099; those issues read as
+  owned and were never searched. It now reads each file once
+  (`fallback_issue_numbers` → `filename_parse.issue_numbers`) and compares.
+  The series name is skipped when the file starts with it, which is what
+  keeps `2099`, `X-23` and `New 52` out. The tiers run as **passes** (every
+  issue through 4a, then 4b, then 4c), so a precise claim anywhere beats a
+  loose one. 4c never claims, and skips a claimed file unless it names a range
+  (`001-006`). A ComicInfo `<Number>` for this series that names another issue
+  refuses the filename.
+- **A volume marker is the number only for a collected series**
+  (`is_collected_series`: a format word in the name, or half the issue names
+  start "Vol. N"). `Series V02 - Title 2026` is volume 2 there; `Batman v2 012`
+  is #12 and `Batman v2 (2011)` is nothing. A spelled-out `Volume 003` is read
+  on any series, but only when the name carries no other number.
+- **4a's gap is a wildcard, so it refuses a number that follows "of"**
+  (`X 012 of 6` is not #6). That check is in the scan, not in
+  `generate_filename_pattern`, which the filing matcher shares.
+- **#792 shipped a purge** (`collection_status_issue_position_purge`): it
+  removes matches.
 - **The word gap is derived from `_SEPARATOR_BODY`, never listed by hand.**
   `_WORD_GAP` (what may sit between two words of the name in a *filename*) was
   a second hand-written class with no `,` and no `;`. Both split the name into
@@ -92,8 +112,10 @@ issue of `Detective Comics 156 (1937) - Batmobile of 1950` (#778) and kept
   `#` or `Issue `** (`SIGN_CLASS`, aliased by `helpers/collection.py`).
   `Black Cat - 001` is issue 1.
 - On it so far: `models.providers.base.extract_issue_number`,
-  `helpers.collection.get_series_name_from_files` and
-  `routes.metadata.extract_series_name_from_filename`.
+  `helpers.collection.get_series_name_from_files`,
+  `routes.metadata.extract_series_name_from_filename` and the library scan's
+  last tier (`filename_parse.issue_numbers`, its own table `NAMED` in the
+  corpus test because it also takes the series name).
   `tests/unit/test_filename_corpus.py` is one table of filenames with a column
   per parser; a parser moved onto the module gets a column.
 - **A metadata lookup with no cvinfo reads the name through
