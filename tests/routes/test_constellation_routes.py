@@ -133,7 +133,91 @@ class TestLayoutGraph:
 
     def test_two_nodes_fill_the_width(self):
         (ax, _), (bx, _) = layout_graph(2, [{"source": 0, "target": 1, "weight": 1}])
-        assert abs(ax - bx) == pytest.approx(0.88, abs=0.01)
+        assert abs(ax - bx) == pytest.approx(0.9, abs=0.01)
+
+
+def _pixels(positions):
+    """Positions as clu-constellation.js draws them: 1000 x 560, inset."""
+    return [(40 + x * 920, 30 + y * 500) for x, y in positions]
+
+
+def _closest(positions):
+    points = _pixels(positions)
+    return min(math.dist(a, b) for i, a in enumerate(points) for b in points[i + 1:])
+
+
+def _clique(members, weight=1):
+    return [{"source": a, "target": b, "weight": weight}
+            for i, a in enumerate(members) for b in members[i + 1:]]
+
+
+class TestNodesKeepTheirDistance:
+    """Real reading history is cliques: every character in a team book shares
+    every issue with every other. The spring layout pulled each clique onto a
+    point, and stretching the result to fill the card left three piles of
+    overlapping nodes with unreadable labels."""
+
+    # The largest node is 44px across; anything under that is an overlap.
+    MIN_PIXELS = 70
+
+    def test_cliques_do_not_collapse(self):
+        edges = _clique(range(0, 12)) + _clique(range(12, 23)) + _clique(range(23, 28))
+        edges += [{"source": a, "target": b, "weight": 1} for a, b in ((3, 28), (28, 29), (29, 30))]
+        assert _closest(layout_graph(31, edges)) >= self.MIN_PIXELS
+
+    def test_one_clique_of_the_node_limit(self):
+        from models.reading_insights import CONSTELLATION_NODE_LIMIT
+
+        positions = layout_graph(CONSTELLATION_NODE_LIMIT, _clique(range(CONSTELLATION_NODE_LIMIT)))
+        assert _closest(positions) >= self.MIN_PIXELS
+
+    def test_no_edges_at_all(self):
+        assert _closest(layout_graph(40, [])) >= self.MIN_PIXELS
+
+    def test_a_star(self):
+        edges = [{"source": 0, "target": i, "weight": 5} for i in range(1, 25)]
+        assert _closest(layout_graph(25, edges)) >= self.MIN_PIXELS
+
+    def test_more_nodes_than_fit_at_the_full_gap_still_spread_and_stay_inside(self):
+        positions = layout_graph(90, _clique(range(30)))
+        assert all(0 <= x <= 1 and 0 <= y <= 1 for x, y in positions)
+        assert _closest(positions) > 30
+
+    def test_groups_stay_together(self):
+        # Spacing must not scatter a group among strangers.
+        edges = _clique(range(0, 8), 5) + _clique(range(8, 16), 5)
+        points = _pixels(layout_graph(16, edges))
+
+        def centre(ids):
+            return (sum(points[i][0] for i in ids) / len(ids), sum(points[i][1] for i in ids) / len(ids))
+
+        a, b = centre(range(0, 8)), centre(range(8, 16))
+        for i in range(0, 8):
+            assert math.dist(points[i], a) < math.dist(points[i], b)
+
+    def test_still_deterministic(self):
+        edges = _clique(range(0, 10)) + _clique(range(10, 18))
+        assert layout_graph(20, edges) == layout_graph(20, edges)
+
+
+class TestLabelsAvoidCollisions:
+    JS = (__import__("pathlib").Path(__file__).resolve().parents[2]
+          / "static" / "js" / "clu-constellation.js").read_text(encoding="utf-8")
+
+    def test_no_fixed_number_of_always_on_labels(self):
+        assert "ALWAYS_LABELLED" not in self.JS
+
+    def test_a_label_is_placed_only_where_it_is_free(self):
+        place = self.JS[self.JS.index("function labelPlace(node, index)"):]
+        place = place[:place.index("const labels = nodes.map(labelPlace);")]
+        assert "!placed.some(taken => overlaps(option.rect, taken))" in place
+        assert "!hitsNode(option.rect, index)" in place
+        # Four places are tried, and a label never runs off the drawing.
+        assert place.count("anchor:") == 4
+        assert "option.rect.x + option.rect.w <= WIDTH" in place
+
+    def test_unplaced_labels_are_hidden_until_lit(self):
+        assert "if (labels[index].shown) link.classList.add('labelled');" in self.JS
 
 
 @pytest.fixture

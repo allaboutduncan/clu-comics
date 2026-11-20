@@ -710,15 +710,37 @@ def character_graph(events, kind="characters", limit=CONSTELLATION_NODE_LIMIT,
     }
 
 
+# The card the graph is drawn in is wider than tall (clu-constellation.js draws
+# 1000 x 560). Spacing is enforced in that shape, not in the unit square.
+CONSTELLATION_ASPECT = 0.56
+# Closest two node centres may sit, as a share of the drawing's width. The
+# largest node is 44px across in a 1000px drawing, so 0.105 leaves room
+# between any two for a line to be seen.
+CONSTELLATION_MIN_GAP = 0.105
+CONSTELLATION_MARGIN = 0.05
+
+
 def layout_graph(node_count, edges, iterations=220):
     """Positions in the unit square for a small graph, as ``[(x, y), ...]``.
 
-    A Fruchterman-Reingold spring layout: every pair of nodes repels, every
-    edge pulls (harder the heavier it is), and a weak pull to the centre keeps
-    unconnected nodes from drifting off. Computed here rather than in the
-    browser so that it is **deterministic** -- the same reading history draws
-    the same sky on every load and every device -- and so the rule has a test.
-    There is no randomness: nodes start on a golden-angle spiral in id order.
+    Two passes:
+
+    1. A Fruchterman-Reingold spring layout decides the *shape*: every pair of
+       nodes repels, every edge pulls, and a pull to the centre keeps separate
+       groups from drifting to the corners. An edge's pull is divided by how
+       many ties its ends have, because real data is cliques -- every
+       character in a team book shares every issue with every other -- and
+       with an undivided pull a ten-node clique collapses onto one point.
+    2. A spacing pass then guarantees *legibility*: any two nodes closer than
+       ``CONSTELLATION_MIN_GAP`` are pushed apart, measured in the drawing's
+       real proportions. The spring pass alone cannot promise that, and
+       stretching its result to fill the card (which this used to do) kept
+       tight groups tight while moving them further from each other.
+
+    Computed here rather than in the browser so that it is **deterministic**
+    -- the same reading history draws the same sky on every load and every
+    device -- and so the rules have tests. There is no randomness: nodes start
+    on a golden-angle spiral in id order.
     """
     import math
 
@@ -734,9 +756,18 @@ def layout_graph(node_count, edges, iterations=220):
         xs.append(radius * math.cos(i * golden))
         ys.append(radius * math.sin(i * golden))
 
+    degree = [0] * node_count
+    for edge in edges:
+        degree[edge["source"]] += 1
+        degree[edge["target"]] += 1
+
     k = math.sqrt(1.0 / node_count)
     heaviest = max((e["weight"] for e in edges), default=1)
-    pulls = [(e["source"], e["target"], 0.3 + 0.7 * e["weight"] / heaviest) for e in edges]
+    pulls = [
+        (e["source"], e["target"],
+         (0.3 + 0.7 * e["weight"] / heaviest) / math.sqrt(degree[e["source"]] * degree[e["target"]]))
+        for e in edges
+    ]
 
     for step in range(iterations):
         temperature = 0.1 * (1 - step / iterations)
@@ -762,22 +793,55 @@ def layout_graph(node_count, edges, iterations=220):
             dx[b] += fx
             dy[b] += fy
         for i in range(node_count):
-            dx[i] -= xs[i] * 0.6 * k
-            dy[i] -= ys[i] * 0.6 * k
+            dx[i] -= xs[i] * 1.2 * k
+            dy[i] -= ys[i] * 1.2 * k
             length = math.hypot(dx[i], dy[i]) or 0.001
             move = min(length, temperature)
             xs[i] += dx[i] / length * move
             ys[i] += dy[i] / length * move
 
-    # Fit the result into the unit square with a margin, each axis on its own:
-    # the card is wider than it is tall and the picture should fill it.
-    def fit(values):
+    # Into the drawing's proportions: u across (0..1), v down (0..ASPECT).
+    margin = CONSTELLATION_MARGIN
+    width, height = 1 - 2 * margin, CONSTELLATION_ASPECT - 2 * margin
+
+    def fit(values, size):
         low, high = min(values), max(values)
         if high - low < 1e-9:
-            return [0.5] * len(values)
-        return [round(0.06 + 0.88 * (v - low) / (high - low), 4) for v in values]
+            return [margin + size / 2] * len(values)
+        return [margin + size * (v - low) / (high - low) for v in values]
 
-    return list(zip(fit(xs), fit(ys)))
+    us, vs = fit(xs, width), fit(ys, height)
+
+    # Spacing pass. The gap shrinks if the card cannot hold this many nodes at
+    # the full gap (it can, at the 40-node limit; this is for a caller who
+    # raises the limit).
+    gap = min(CONSTELLATION_MIN_GAP, 0.8 * math.sqrt(width * height / node_count))
+    for _ in range(300):
+        moved = False
+        for i in range(node_count):
+            for j in range(i + 1, node_count):
+                ou, ov = us[i] - us[j], vs[i] - vs[j]
+                distance = math.hypot(ou, ov)
+                if distance >= gap:
+                    continue
+                if distance < 1e-6:
+                    # Exactly coincident: part them along a direction fixed by
+                    # their ids, so the result stays deterministic.
+                    angle = (i * 7 + j * 13) * golden
+                    ou, ov, distance = math.cos(angle), math.sin(angle), 1.0
+                push = (gap - distance) / 2 + 1e-4
+                us[i] += ou / distance * push
+                vs[i] += ov / distance * push
+                us[j] -= ou / distance * push
+                vs[j] -= ov / distance * push
+                moved = True
+        for i in range(node_count):
+            us[i] = min(max(us[i], margin), margin + width)
+            vs[i] = min(max(vs[i], margin), margin + height)
+        if not moved:
+            break
+
+    return [(round(u, 4), round(v / CONSTELLATION_ASPECT, 4)) for u, v in zip(us, vs)]
 
 
 def constellation(user_id=None, year=None, kind="characters", tz_hours=None):
@@ -794,7 +858,7 @@ def constellation(user_id=None, year=None, kind="characters", tz_hours=None):
     uid = current_user_id() if user_id is None else user_id
     hours = user_offset_hours() if tz_hours is None else tz_hours
 
-    cache_key = f"u{uid}:constellation:{kind}:{year or 'all'}:{sql_offset_modifier(hours)}"
+    cache_key = f"u{uid}:constellation2:{kind}:{year or 'all'}:{sql_offset_modifier(hours)}"
     cached = get_cached_stats(cache_key)
     if cached:
         return cached
