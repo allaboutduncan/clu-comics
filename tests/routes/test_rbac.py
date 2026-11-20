@@ -41,6 +41,9 @@ class TestRolePolicy:
         ("POST", "/api/browse-thumbnails", "reader"),  # read-only batch (POST body)
         ("POST", "/api/browse-metadata", "reader"),    # read-only batch (POST body)
         ("GET", "/api/continue-reading", "reader"),
+        # Insights: a Reader sees their own summary and sets their own goal.
+        ("GET", "/api/reading-insights/summary", "reader"),
+        ("POST", "/api/account/reading-goal", "reader"),
         # Bookmarking a reading list is personal data. These live under
         # /api/favorites precisely so _READER_WRITE_PREFIXES classifies them as
         # reader-writable; moving them under /api/reading-lists/* would fall

@@ -183,3 +183,244 @@ def compute_streaks(days, today):
         "longest_start": longest_start.isoformat(),
         "longest_end": longest_end.isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Yearly reading goal
+# ---------------------------------------------------------------------------
+
+# One user_settings row holding {"2026": 150}. It is personal data with no site
+# default, so it is read with get_user_setting_override (no fall-through to a
+# global preference) and is deliberately not in SETTINGS_SCHEMA.
+GOALS_KEY = "reading_goals"
+MAX_GOAL = 100000
+
+
+def get_reading_goal(year, user_id=None):
+    """The user's goal (issues) for *year*, or None when they have not set one."""
+    from core.database import get_user_setting_override
+
+    goals = get_user_setting_override(GOALS_KEY, user_id=user_id, default=None)
+    if not isinstance(goals, dict):
+        return None
+    try:
+        goal = int(goals.get(str(year)))
+    except (TypeError, ValueError):
+        return None
+    return goal if 0 < goal <= MAX_GOAL else None
+
+
+def set_reading_goal(year, goal, user_id=None):
+    """Store *goal* for *year*; ``None`` or 0 removes it. Returns True on success."""
+    from core.database import get_user_setting_override, set_user_setting
+
+    goals = get_user_setting_override(GOALS_KEY, user_id=user_id, default=None)
+    goals = dict(goals) if isinstance(goals, dict) else {}
+    if goal:
+        goals[str(year)] = int(goal)
+    else:
+        goals.pop(str(year), None)
+    return bool(set_user_setting(GOALS_KEY, goals, user_id=user_id))
+
+
+def goal_progress(read, goal, year, today):
+    """Where *read* issues stand against *goal* for *year*, as of *today*.
+
+    Pace is linear over the calendar year: ``expected`` is the share of the
+    goal that should be done by today, ``delta`` how far ahead (positive) or
+    behind that is, and ``projected`` the year-end total at the rate so far.
+    A past year is complete, so its projection is simply what was read; a
+    future year has no pace at all.
+
+    Works without a goal (``goal`` None): the projection is still worth
+    showing, and it is what suggests a goal in the first place.
+    """
+    start = date(year, 1, 1)
+    days_in_year = (date(year + 1, 1, 1) - start).days
+    if today.year > year:
+        elapsed = days_in_year
+    elif today.year < year:
+        elapsed = 0
+    else:
+        elapsed = (today - start).days + 1
+    remaining_days = days_in_year - elapsed
+    fraction = elapsed / days_in_year
+
+    projected = round(read / fraction) if fraction > 0 else 0
+    result = {
+        "year": year,
+        "read": read,
+        "goal": goal,
+        "projected": projected,
+        "days_remaining": remaining_days,
+        "complete": elapsed >= days_in_year,
+        "pct": None, "expected": None, "delta": None,
+        "per_week_needed": None, "on_track": None, "reached": None,
+    }
+    if not goal:
+        return result
+
+    expected = goal * fraction
+    to_go = max(goal - read, 0)
+    weeks_left = remaining_days / 7
+    result.update({
+        "pct": round(read / goal * 100, 1),
+        "expected": round(expected),
+        "delta": round(read - expected),
+        "reached": read >= goal,
+        "on_track": read >= goal or read >= round(expected),
+        # Nothing left to need once the goal is met or the year is over.
+        "per_week_needed": round(to_go / weeks_left, 1) if to_go and weeks_left > 0 else None,
+    })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# This week, last week, and the last five
+# ---------------------------------------------------------------------------
+
+OTHER_SERIES = "Other"
+
+
+def week_start(day):
+    """The Monday of *day*'s week."""
+    return day - timedelta(days=day.weekday())
+
+
+def _week_totals(events):
+    by_day = [0] * 7
+    for event in events:
+        by_day[event.day.weekday()] += 1
+    return {
+        "issues": len(events),
+        "pages": sum(e.pages for e in events),
+        "seconds": sum(e.seconds for e in events),
+        "by_day": by_day,
+    }
+
+
+def week_compare(events, today):
+    """This week (Monday to today) against last week.
+
+    ``last_week_to_date`` is last week's count up to the same weekday: on a
+    Wednesday, "3 this week vs 7 last week" reads as falling behind when last
+    Wednesday the count was 2. Both figures are returned so the page can say
+    the fair one and still draw the whole of last week.
+    """
+    this_start = week_start(today)
+    last_start = this_start - timedelta(days=7)
+    this_week = [e for e in events if this_start <= e.day <= today]
+    last_week = [e for e in events if last_start <= e.day < this_start]
+    cutoff = last_start + timedelta(days=today.weekday())
+    return {
+        "week_start": this_start.isoformat(),
+        "weekday": today.weekday(),
+        "this_week": _week_totals(this_week),
+        "last_week": _week_totals(last_week),
+        "last_week_to_date": sum(1 for e in last_week if e.day <= cutoff),
+    }
+
+
+def five_week_series_stack(events, today, weeks=5, top_n=5):
+    """Issues per week for the last *weeks* weeks, split by series.
+
+    The busiest *top_n* series over the whole window get a band each and the
+    rest are folded into "Other", so the chart has a readable legend however
+    widely someone reads. A hidden read is counted (the totals must match the
+    stat tiles, which include hidden reads) but never named: it goes into
+    "Other" whatever its series.
+    """
+    first = week_start(today) - timedelta(days=7 * (weeks - 1))
+    starts = [first + timedelta(days=7 * n) for n in range(weeks)]
+    window = [e for e in events if first <= e.day <= today]
+
+    def label(event):
+        return OTHER_SERIES if event.hidden else (event.series or OTHER_SERIES)
+
+    totals = {}
+    for event in window:
+        totals[label(event)] = totals.get(label(event), 0) + 1
+    named = sorted(
+        (name for name in totals if name != OTHER_SERIES),
+        key=lambda name: (-totals[name], name.casefold()),
+    )[:top_n]
+
+    counts = {name: [0] * weeks for name in named}
+    other = [0] * weeks
+    for event in window:
+        index = (event.day - first).days // 7
+        counts.get(label(event), other)[index] += 1
+
+    series = [{"name": name, "counts": counts[name]} for name in named]
+    if any(other):
+        series.append({"name": OTHER_SERIES, "counts": other})
+    return {
+        "weeks": [{"start": s.isoformat(), "label": f"{s.strftime('%b')} {s.day}"} for s in starts],
+        "series": series,
+        "totals": [sum(row["counts"][i] for row in series) for i in range(weeks)],
+    }
+
+
+# ---------------------------------------------------------------------------
+# The shelf, and the summary the Insights page loads
+# ---------------------------------------------------------------------------
+
+def finished_shelf(events, limit=12):
+    """The most recently finished issues, newest first. Hidden reads are not
+    shown: hiding a read is asking for it not to be displayed."""
+    visible = [e for e in events if not e.hidden]
+    return [
+        {
+            "path": e.path,
+            "name": e.path.replace("\\", "/").rsplit("/", 1)[-1],
+            "series": e.series,
+            "read_at": e.at.isoformat(),
+        }
+        for e in reversed(visible[-limit:])
+    ]
+
+
+def open_shelf(user_id=None, limit=8):
+    """Comics the user is part-way through, most recently opened first."""
+    from core.database import get_continue_reading_items
+
+    return [
+        {
+            "path": item["comic_path"],
+            "name": item["file_name"],
+            "page": item["page_number"],
+            "total_pages": item["total_pages"],
+            "percent": item["progress_percent"],
+        }
+        for item in get_continue_reading_items(limit=limit, user_id=user_id)
+    ]
+
+
+def insights_summary(user_id=None, year=None, today=None, tz_hours=None):
+    """Everything the top of the Insights page shows, from one read of the
+    history.
+
+    Hidden reads are **counted** here (goal, streaks, week totals), matching
+    the page's existing tiles, and never **named** (shelf, series bands).
+    """
+    from core.user_time import user_today
+
+    uid = current_user_id() if user_id is None else user_id
+    hours = user_offset_hours() if tz_hours is None else tz_hours
+    today = user_today(hours=hours) if today is None else today
+    year = today.year if year is None else year
+
+    events = load_read_events(uid, tz_hours=hours)
+    in_year = sum(1 for e in events if e.day.year == year)
+
+    return {
+        "today": today.isoformat(),
+        "goal": goal_progress(in_year, get_reading_goal(year, uid), year, today),
+        "streak": compute_streaks(reading_days(events), today),
+        "weeks": week_compare(events, today),
+        "five_weeks": five_week_series_stack(events, today),
+        "shelf": {
+            "finished": finished_shelf(events),
+            "open": open_shelf(uid),
+        },
+    }
