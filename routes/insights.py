@@ -11,6 +11,8 @@ Routes:
     GET /api/recently-read             -- recent reads with thumbnails
     GET /timeline                      -- the reading Timeline page
     GET /api/timeline                  -- lazy-loaded Timeline pages
+    GET /api/reading-insights/summary  -- goal, streaks, weeks, shelf
+    POST /api/account/reading-goal     -- the user's yearly goal
 
 ``/api/insights`` is a login-exempt prefix (routes/auth.py), matched on a
 segment boundary. Do not add a route under ``/api/insights/``: it would be
@@ -33,6 +35,7 @@ from models.stats import (
     get_top_publishers,
     get_top_series_by_count,
 )
+from models.reading_insights import MAX_GOAL, insights_summary, set_reading_goal
 from models.timeline import get_reading_timeline
 
 insights_bp = Blueprint("insights", __name__)
@@ -244,3 +247,50 @@ def api_timeline():
             "stats": data["stats"],
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Reading insights: goal, streaks, weeks, shelf
+# ---------------------------------------------------------------------------
+# Under /api/reading-insights/, never /api/insights/: that prefix is exempt
+# from login (see the module docstring).
+
+
+@insights_bp.route("/api/reading-insights/summary")
+def api_reading_insights_summary():
+    """Goal progress, streaks, week comparison, five-week stack and shelf.
+
+    ``?year=`` selects the year the goal dial describes (default: this year,
+    in the user's timezone). Everything else is about now.
+    """
+    year = request.args.get("year", type=int)
+    if year is not None and not 1900 <= year <= 2200:
+        return jsonify({"success": False, "error": "Invalid year"}), 400
+
+    summary = insights_summary(year=year)
+    for item in summary["shelf"]["finished"] + summary["shelf"]["open"]:
+        item["thumbnail_url"] = url_for("get_thumbnail", path=item["path"])
+    return jsonify({"success": True, **summary})
+
+
+# Under /api/account/ so a Reader may save their own goal: that prefix is what
+# core.auth._READER_WRITE_PREFIXES allows for personal data.
+@insights_bp.route("/api/account/reading-goal", methods=["POST"])
+def account_save_reading_goal():
+    """Set, change or clear (``goal`` 0 / null) the user's goal for a year."""
+    body = request.get_json(silent=True) or {}
+    try:
+        year = int(body.get("year"))
+        goal = int(body.get("goal") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Year and goal must be numbers"}), 400
+    if not 1900 <= year <= 2200:
+        return jsonify({"success": False, "error": "Invalid year"}), 400
+    if not 0 <= goal <= MAX_GOAL:
+        return jsonify(
+            {"success": False, "error": f"Goal must be between 0 and {MAX_GOAL:,}"}
+        ), 400
+
+    if not set_reading_goal(year, goal):
+        return jsonify({"success": False, "error": "Could not save the goal"}), 500
+    return jsonify({"success": True, "year": year, "goal": goal or None})
