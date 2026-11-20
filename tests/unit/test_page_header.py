@@ -37,6 +37,7 @@ WIDE_PAGES = {
     "source_wall.html",
     "releases.html",
     "to_read.html",
+    "recent.html",
 }
 
 

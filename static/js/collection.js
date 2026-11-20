@@ -32,6 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadWantToRead();
         loadContinueReadingSwiper();
         loadOnTheStackSwiper();
+        loadNewReleasesSwiper();
         loadRecentlyAddedSwiper();
     }
 
@@ -1400,7 +1401,7 @@ function returnToFolderView() {
  */
 function loadDirectoryView() {
     // If we're already in directory mode and not in a special mode, do nothing
-    if (!isRecentlyAddedMode && !isContinueReadingMode && !isOnTheStackMode) {
+    if (!inUnsyncedView()) {
         return;
     }
 
@@ -1496,6 +1497,18 @@ async function loadRecentlyAdded(preservePage = false) {
         isRecentlyAddedMode = false;
         setLoading(false);
     }
+}
+
+/**
+ * 'YYYY-MM-DD' as a local date. new Date('2026-11-18') is UTC midnight, which
+ * prints as the 17th anywhere west of Greenwich.
+ */
+function formatStoreDate(storeDate) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(storeDate || '');
+    if (!m) return '';
+    return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric'
+    });
 }
 
 /**
@@ -4701,6 +4714,60 @@ async function loadWantToRead() {
 
     } catch (error) {
         console.error('Error loading want to read items:', error);
+    }
+}
+
+/**
+ * Load new releases into the dashboard swiper
+ */
+async function loadNewReleasesSwiper() {
+    const swiper = document.querySelector('#newReleasesSwiper .swiper-wrapper');
+    if (!swiper) return;
+
+    try {
+        const response = await fetch('/api/new-releases?limit=10');
+        const data = await response.json();
+
+        if (!data.success || !data.items || !data.items.length) {
+            swiper.innerHTML = `
+                <div class="swiper-slide">
+                    <div class="dashboard-card text-center p-4">
+                        <i class="bi bi-calendar-event text-muted" style="font-size: 3rem;"></i>
+                        <p class="text-muted mt-2">No new releases yet. Map a series to see its issues here.</p>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        swiper.innerHTML = data.items.map(item => {
+            const number = (item.issue_number == null ? '' : String(item.issue_number)).trim();
+            const label = number
+                ? `${item.series_name} #${stripIssueZeros(number)}`
+                : item.series_name;
+            const name = CLU.escapeHtml(label);
+            const path = CLU.escapeHtml(item.file_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.file_path)}`;
+            const released = CLU.escapeHtml(formatStoreDate(item.store_date));
+
+            return `
+            <div class="swiper-slide">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
+                    <div class="dashboard-card-img-container">
+                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                    </div>
+                    <div class="dashboard-card-body">
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
+                        <small class="text-muted">${released}</small>
+                    </div>
+                </div>
+            </div>
+        `}).join('');
+
+        initSwiperThumbnails(swiper);
+        initNameTooltips(swiper);
+
+    } catch (error) {
+        console.error('Error loading new releases:', error);
     }
 }
 

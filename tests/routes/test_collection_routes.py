@@ -635,6 +635,138 @@ class TestListRecentFiles:
         assert data["date_range"] is None
 
 
+class TestNewReleases:
+
+    @patch("routes.collection.get_new_release_items", return_value=[
+        {"series_id": 1, "series_name": "Batman", "issue_number": "8",
+         "issue_name": None, "store_date": "2026-11-18",
+         "file_path": "/data/DC/Batman/Batman 008.cbz",
+         "file_name": "Batman 008.cbz", "file_size": 1024},
+    ])
+    def test_new_releases(self, mock_items, client):
+        resp = client.get("/api/new-releases")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["total_count"] == 1
+        assert data["items"][0]["store_date"] == "2026-11-18"
+        assert mock_items.call_args.kwargs["limit"] == 10
+
+    @patch("routes.collection.get_new_release_items", return_value=[])
+    def test_new_releases_empty(self, mock_items, client):
+        data = client.get("/api/new-releases").get_json()
+        assert data == {"success": True, "items": [], "total_count": 0}
+
+    @pytest.mark.parametrize("asked, used", [("500", 100), ("0", 10), ("-3", 1), ("25", 25)])
+    @patch("routes.collection.get_new_release_items", return_value=[])
+    def test_limit_is_bounded(self, mock_items, client, asked, used):
+        client.get(f"/api/new-releases?limit={asked}")
+        assert mock_items.call_args.kwargs["limit"] == used
+
+    @patch("routes.collection.accessible_folder_prefixes", return_value=["/data/DC"])
+    @patch("routes.collection.get_new_release_items", return_value=[])
+    def test_folder_scope_is_passed_to_the_query(self, mock_items, mock_prefixes, client):
+        client.get("/api/new-releases")
+        assert mock_items.call_args.kwargs["allowed_prefixes"] == ["/data/DC"]
+
+
+_RELEASE = {
+    "series_id": 1, "series_name": "Batman", "publisher_name": "DC Comics",
+    "issue_number": "8", "issue_name": None, "store_date": "2026-11-18",
+    "file_path": "/data/DC/Batman/Batman 008.cbz",
+    "file_name": "Batman 008.cbz", "file_size": 1024,
+}
+
+
+class TestNewReleasesPageApi:
+
+    @patch("routes.collection.get_new_releases_page", return_value=([dict(_RELEASE)], 1))
+    def test_page_shape(self, mock_page, client):
+        resp = client.get("/api/new-releases/page")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert (data["total"], data["page"], data["total_pages"]) == (1, 1, 1)
+        assert data["per_page"] == 60
+        assert data["sort"] == "newest"
+        assert "Batman" in data["items"][0]["thumbnail_url"]
+        assert mock_page.call_args.kwargs == {
+            "offset": 0, "limit": 60, "allowed_prefixes": None, "search": "",
+            "publisher_id": None, "year": "", "sort": "newest",
+        }
+
+    @patch("routes.collection.get_new_releases_page", return_value=([], 500))
+    def test_filters_and_paging_reach_the_query(self, mock_page, client):
+        client.get("/api/new-releases/page?q=bat&publisher=20&year=2026"
+                   "&sort=oldest&page=3&per_page=24")
+        kwargs = mock_page.call_args.kwargs
+        assert kwargs["offset"] == 48 and kwargs["limit"] == 24
+        assert kwargs["search"] == "bat"
+        assert kwargs["publisher_id"] == 20
+        assert kwargs["year"] == "2026"
+        assert kwargs["sort"] == "oldest"
+
+    @patch("routes.collection.get_new_releases_page", return_value=([], 0))
+    def test_junk_arguments_fall_back(self, mock_page, client):
+        client.get("/api/new-releases/page?publisher=x&year=20266&sort=bogus"
+                   "&page=-4&per_page=abc")
+        kwargs = mock_page.call_args.kwargs
+        assert kwargs["publisher_id"] is None
+        assert kwargs["year"] == ""
+        assert kwargs["sort"] == "newest"
+        assert kwargs["offset"] == 0 and kwargs["limit"] == 60
+
+    def test_page_past_the_end_shows_the_last_page(self, client):
+        with patch("routes.collection.get_new_releases_page",
+                   side_effect=[([], 30), ([dict(_RELEASE)], 30)]) as mock_page:
+            data = client.get("/api/new-releases/page?page=9&per_page=24").get_json()
+        assert data["page"] == 2 and data["total_pages"] == 2
+        assert len(data["items"]) == 1
+        assert mock_page.call_args.kwargs["offset"] == 24
+
+    @patch("routes.collection.accessible_folder_prefixes", return_value=["/data/DC"])
+    @patch("routes.collection.get_new_releases_page", return_value=([], 0))
+    def test_folder_scope_is_passed_to_the_query(self, mock_page, mock_prefixes, client):
+        client.get("/api/new-releases/page")
+        assert mock_page.call_args.kwargs["allowed_prefixes"] == ["/data/DC"]
+
+    def test_per_page_falls_back_to_the_cookie(self, client):
+        client.set_cookie("clu_per_page_recent", "120")
+        with patch("routes.collection.get_new_releases_page",
+                   return_value=([], 0)) as mock_page:
+            client.get("/api/new-releases/page")
+        assert mock_page.call_args.kwargs["limit"] == 120
+
+
+class TestNewReleasesPage:
+
+    FACETS = {"publishers": [{"id": 20, "name": "DC Comics", "count": 3}],
+              "years": ["2026", "2025"]}
+
+    def test_page_renders_toolbar_from_the_query(self, client):
+        with patch("routes.collection.get_new_release_facets",
+                   return_value=self.FACETS):
+            resp = client.get("/recent?q=bat&publisher=20&year=2025&sort=oldest&page=2")
+        assert resp.status_code == 200
+        html = resp.get_data(as_text=True)
+        assert 'id="recentSearch"' in html and 'value="bat"' in html
+        assert '<option value="20" selected>DC Comics</option>' in html
+        assert '<option value="2025" selected>2025</option>' in html
+        assert '<option value="oldest" selected>' in html
+        assert 'id="recentGroups" data-page="2"' in html
+        assert 'data-per-page-cookie="clu_per_page_recent"' in html
+        assert 'id="recentPagination"' in html
+        assert "js/recent.js" in html
+
+    def test_facets_are_scoped_to_the_user(self, client):
+        with patch("routes.collection.accessible_folder_prefixes",
+                   return_value=["/data/DC"]), \
+             patch("routes.collection.get_new_release_facets",
+                   return_value={"publishers": [], "years": []}) as mock_facets:
+            client.get("/recent")
+        assert mock_facets.call_args.kwargs["allowed_prefixes"] == ["/data/DC"]
+
+
 @pytest.fixture
 def outside_art():
     """A readable ``folder.png`` living outside every configured root.
