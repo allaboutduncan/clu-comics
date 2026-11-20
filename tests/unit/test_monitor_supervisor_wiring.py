@@ -54,8 +54,8 @@ def test_app_never_reads_the_monitor_env_var(tree):
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and node.value == "MONITOR":
             raise AssertionError(
-                f"app.py line {node.lineno} reads MONITOR; the setting replaced it "
-                "(core.config.seed_monitor_from_env imports it once)"
+                f"app.py line {node.lineno} reads MONITOR; the monitor_enabled "
+                "setting replaced it and the env var is no longer read"
             )
 
 
@@ -80,12 +80,6 @@ def test_restart_stops_the_supervisor_before_execv(tree):
     calls = _attr_calls(_function(tree, "restart_app"))
     assert "monitor_supervisor.stop" in calls
     assert calls.index("monitor_supervisor.stop") < calls.index("os.execv")
-
-
-def test_seed_runs_after_init_db(source):
-    init_at = source.index("\ninit_db()")
-    seed_at = source.index("\nseed_monitor_from_env()")
-    assert init_at < seed_at
 
 
 def test_settings_save_pokes_the_supervisor(tree):

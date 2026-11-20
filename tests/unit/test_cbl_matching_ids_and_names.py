@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from core.comicinfo import comicvine_issue_id
-from core.database import normalize_issue_number, _series_like_pattern
+from core.database import issue_identity_key, _series_like_pattern
 from models import cbl
 from models.cbl import CBLLoader, filename_issue_matches, filename_series_matches
 
@@ -72,13 +72,13 @@ class TestNormalizeIssueNumber:
         ("-1", "-1"), ("-01", "-1"), ("#-1", "-1"),
     ])
     def test_forms(self, raw, expected):
-        assert normalize_issue_number(raw) == expected
+        assert issue_identity_key(raw) == expected
 
     def test_a_variant_suffix_is_a_different_issue(self):
-        assert normalize_issue_number("50.LR") != normalize_issue_number("50")
+        assert issue_identity_key("50.LR") != issue_identity_key("50")
 
     def test_the_sign_is_part_of_the_number(self):
-        assert normalize_issue_number("-1") != normalize_issue_number("1")
+        assert issue_identity_key("-1") != issue_identity_key("1")
 
 
 class TestSeriesLikePattern:

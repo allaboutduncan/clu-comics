@@ -233,16 +233,11 @@ load_config()
 # Initialize Database
 init_db()
 
-# api.py filled app.config at import, before this database existed. On the first
-# start after the config.ini import (and on a fresh volume) that was all
-# defaults -- trash, rename pattern, cache paths -- until the next settings save.
-# Re-run it now that the preferences are there. It keeps the secret key.
+# api.py filled app.config at import, before this database existed. On a fresh
+# volume (and after a restore) that was all defaults -- trash, rename pattern,
+# cache paths -- until the next settings save. Re-run it now that the
+# preferences are there. It keeps the secret key.
 load_flask_config(app)
-
-# Folder Monitoring was the MONITOR env var; import it into the setting once.
-from core.config import seed_monitor_from_env  # noqa: E402
-
-seed_monitor_from_env()
 
 # Multi-user: ensure a Store Owner account exists (implicit-owner mode until
 # a password is set; seeded from CLU_USERNAME/CLU_PASSWORD when present).
@@ -292,9 +287,6 @@ from core.database import (
     get_user_setting_override,
     delete_user_setting,
 )
-
-# The database exists now: finish the one-time config.ini import if it is owed.
-load_config()
 
 # Migrate the legacy {year} rename token to {volume_year} (one-time, in-place).
 # Exact literal replace never touches {cover_year}/{store_year}/{issue_year}.

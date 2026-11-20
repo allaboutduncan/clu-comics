@@ -17,9 +17,10 @@ paths:
 
 Whether `monitor.py` runs is the `monitor_enabled` setting (`MONITOR_ENABLED`
 in `SETTINGS_SCHEMA`, default **off**), not the `MONITOR` env var. The env var
-is imported once by `core.config.seed_monitor_from_env` (flag
-`monitor_env_migrated`, never overwrites a stored value) and only logged as
-deprecated after that. `core.download_utils.monitor_enabled()` reads the same
+is no longer read: releases 7.0 to 7.3 imported `MONITOR=yes` into the setting
+once, and that import is gone. The debug package still reports the raw value,
+for the "I set MONITOR=yes and nothing happens" report.
+`core.download_utils.monitor_enabled()` reads the same
 setting, so api.py's DEFER/FULL decision and the running process cannot
 disagree for longer than the 5s settings cache.
 
@@ -56,15 +57,15 @@ Things that look arbitrary and are not:
 Saving Metron credentials returns `suggest_enable_monitor` when monitoring is
 off, and the settings page offers to turn it on with a modal. Tests:
 `tests/unit/test_monitor_supervisor.py`, `test_monitor_lifecycle.py`,
-`test_monitor_env_seed.py`, `test_monitor_supervisor_wiring.py` (AST over
+`test_monitor_supervisor_wiring.py` (AST over
 app.py) and `tests/routes/test_folder_monitor_routes.py`.
 
 # WATCH pipeline: archives, name claims, orphan sweep, moves, conversion
 
 ### Archives in WATCH
 
-Unpacking is **unconditional** — the old `AUTO_UNPACK` setting is gone, and
-`core/config.py`'s `REMOVED_SETTINGS` strips it from an upgraded `config.ini`.
+Unpacking is **unconditional** — the old `AUTO_UNPACK` setting is gone (it is
+named only in `core.settings.NON_SCHEMA_INI_KEYS`, the record of legacy keys).
 Two consequences that are easy to undo by accident:
 
 - **`.zip` and `.rar` bypass `IGNORED_EXTENSIONS`.** They ship *on* that list

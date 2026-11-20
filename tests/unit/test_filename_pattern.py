@@ -16,7 +16,7 @@ from helpers.collection import (
     strip_empty_groups,
     build_series_match_names,
     names_other_publication_type,
-    normalize_issue_number,
+    issue_match_key,
 )
 
 
@@ -557,7 +557,7 @@ class TestNegativeIssueNumbers:
 
 
 class TestNormalizeIssueNumber:
-    """normalize_issue_number is the shared equality form (ComicInfo compares)."""
+    """issue_match_key is the shared equality form (ComicInfo compares)."""
 
     @pytest.mark.parametrize("value,expected", [
         ("1", "1"),
@@ -577,13 +577,13 @@ class TestNormalizeIssueNumber:
         (" -1 ", "-1"),
     ])
     def test_normalizes(self, value, expected):
-        assert normalize_issue_number(value) == expected
+        assert issue_match_key(value) == expected
 
     def test_padded_and_unpadded_negatives_compare_equal(self):
-        assert normalize_issue_number("-01") == normalize_issue_number("-1")
+        assert issue_match_key("-01") == issue_match_key("-1")
 
     def test_negative_never_equals_its_positive(self):
-        assert normalize_issue_number("-1") != normalize_issue_number("1")
+        assert issue_match_key("-1") != issue_match_key("1")
 
 
 class TestNamesOtherPublicationType:
