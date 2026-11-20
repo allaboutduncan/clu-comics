@@ -1123,6 +1123,29 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                 except OSError:
                     pass
 
+            # Detect an issue the cache has never seen (#797). The cache is
+            # written per issue id, and the branch below answers from cached
+            # rows only, so an issue a series re-fetch added afterwards is
+            # simply absent from the result. Every caller reads "absent" as
+            # "missing": the issue went on the wanted list and was downloaded
+            # again while its file sat in the folder. The check above cannot
+            # catch it either -- with every cached row found, it never runs.
+            # Only issues the scan below would cache are compared (number and
+            # id both set), or one that can never get a row would force a
+            # re-scan on every call.
+            if valid_cache:
+                cached_ids = {entry['issue_id'] for entry in cached}
+                for issue in issues:
+                    number = getattr(issue, 'number', '') or (issue.get('number', '') if isinstance(issue, dict) else '')
+                    issue_id = getattr(issue, 'id', None) or (issue.get('id') if isinstance(issue, dict) else None)
+                    if number and issue_id and issue_id not in cached_ids:
+                        valid_cache = False
+                        app_logger.debug(
+                            f"Cache invalid for series {series_id}: issue #{number} "
+                            f"(id {issue_id}) has no cached row"
+                        )
+                        break
+
             if valid_cache:
                 # Return cached results
                 for entry in cached:

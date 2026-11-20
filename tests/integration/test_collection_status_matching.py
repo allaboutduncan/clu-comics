@@ -361,3 +361,78 @@ class TestStaleCacheSelfHeals:
         assert status["-1"]["found"] is True
         assert status["-1"]["file_path"].endswith("Amazing Spider-Man -001 (1997).cbz")
         assert status["1"]["file_path"].endswith("Amazing Spider-Man 001 (1963).cbz")
+
+
+class TestIssueAddedAfterCaching:
+    """A series re-fetch can add an issue the cache has no row for (#797).
+
+    With every cached row found and unchanged the cache read as valid, and the
+    cached branch answers from cached rows only, so the new issue was absent
+    from the result. Callers read absent as missing: it went on the wanted
+    list and was downloaded again while its file sat in the folder.
+    """
+
+    FILES = [f"Nightwing {n:03d} (2016).cbz" for n in range(1, 7)]
+
+    def test_new_issue_with_file_on_disk_is_found(self, db_connection, tmp_path):
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(tmp_path, self.FILES, ["1", "2", "3", "4", "5"])
+        issue_objs, series_obj = _objs(series_id)
+        first = match_issues_to_collection(path, issue_objs, series_obj)
+        assert all(first[str(n)]["found"] for n in range(1, 6))
+
+        # The sync adds #6; 006.cbz was already in the folder.
+        create_issue(series_id=series_id, number="6")
+        issue_objs, series_obj = _objs(series_id)
+        status = match_issues_to_collection(path, issue_objs, series_obj)
+
+        assert status["6"]["found"] is True
+        assert status["6"]["file_path"].endswith("Nightwing 006 (2016).cbz")
+        assert all(status[str(n)]["found"] for n in range(1, 6))
+
+    def test_new_issue_gets_a_cache_row(self, db_connection, tmp_path):
+        from core.database import get_collection_status_for_series
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(tmp_path, self.FILES, ["1", "2", "3", "4", "5"])
+        issue_objs, series_obj = _objs(series_id)
+        match_issues_to_collection(path, issue_objs, series_obj)
+
+        create_issue(series_id=series_id, number="6")
+        issue_objs, series_obj = _objs(series_id)
+        match_issues_to_collection(path, issue_objs, series_obj)
+
+        rows = {r["issue_number"]: r for r in get_collection_status_for_series(series_id)}
+        assert rows["6"]["found"] == 1
+
+    def test_new_issue_without_a_file_is_reported_missing(self, db_connection, tmp_path):
+        """Absent from the result and "not found" are different answers."""
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup(tmp_path, self.FILES[:5], ["1", "2", "3", "4", "5"])
+        issue_objs, series_obj = _objs(series_id)
+        match_issues_to_collection(path, issue_objs, series_obj)
+
+        create_issue(series_id=series_id, number="6")
+        issue_objs, series_obj = _objs(series_id)
+        status = match_issues_to_collection(path, issue_objs, series_obj)
+
+        assert status["6"] == {"found": False, "file_path": None}
+
+    def test_complete_cache_is_still_used(self, db_connection, tmp_path, monkeypatch):
+        """The new check must not turn every call into a re-scan."""
+        import helpers.collection as collection
+
+        series_id, path = _setup(tmp_path, self.FILES[:5], ["1", "2", "3", "4", "5"])
+        issue_objs, series_obj = _objs(series_id)
+        collection.match_issues_to_collection(path, issue_objs, series_obj)
+
+        def _no_rescan(*args, **kwargs):
+            raise AssertionError("a complete cache must not be re-scanned")
+
+        monkeypatch.setattr(collection, "save_collection_status_bulk", _no_rescan, raising=False)
+        monkeypatch.setattr("core.database.save_collection_status_bulk", _no_rescan)
+
+        status = collection.match_issues_to_collection(path, issue_objs, series_obj)
+        assert all(status[str(n)]["found"] for n in range(1, 6))
