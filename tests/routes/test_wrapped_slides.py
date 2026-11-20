@@ -49,7 +49,8 @@ class TestManifest:
         assert (body["scope"], body["year"], body["month"]) == ("yearly", 2024, None)
         assert body["style"] == "theme"
         assert [s["id"] for s in body["slides"]] == [
-            "summary", "most-read-series", "series-highlights", "books-grid"]
+            "summary", "streaks", "time-pages", "most-read-series", "series-highlights",
+            "reading-clock", "personality", "books-grid"]
         assert [s["filename"] for s in body["slides"]][0] == "01_summary.png"
         first = body["slides"][0]
         assert first["url"] == (
@@ -59,7 +60,8 @@ class TestManifest:
     def test_monthly(self, client, reads):
         body = client.get("/api/wrapped/monthly/2024/6/manifest").get_json()
         assert (body["scope"], body["month"]) == ("monthly", 6)
-        assert [s["id"] for s in body["slides"]] == ["recap", "all-issues"]
+        assert [s["id"] for s in body["slides"]] == [
+            "recap", "numbers", "reading-clock", "all-issues"]
         # Monthly keeps its comic-panel look until the user picks another.
         assert body["style"] == "classic"
         assert body["slides"][0]["url"].startswith(
@@ -247,8 +249,8 @@ class TestZip:
         with patch("wrapped.generate_books_grid_slide", return_value=None):
             r = client.get("/api/wrapped/2024/download")
         with zipfile.ZipFile(io.BytesIO(r.data)) as zf:
-            assert "wrapped_2024/04_books_grid.png" not in zf.namelist()
-            assert len(zf.namelist()) == 3
+            assert "wrapped_2024/11_books_grid.png" not in zf.namelist()
+            assert len(zf.namelist()) == 7
 
     @pytest.mark.parametrize("url", ["/api/wrapped/2019/download",
                                      "/api/wrapped/monthly/2024/1/download"])

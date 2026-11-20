@@ -809,3 +809,248 @@ def constellation(user_id=None, year=None, kind="characters", tz_hours=None):
     if graph["nodes"]:
         save_cached_stats(cache_key, graph)
     return graph
+
+
+# ---------------------------------------------------------------------------
+# The story a Wrapped recap tells
+# ---------------------------------------------------------------------------
+
+# Thresholds for the reading personality. Module constants so the rule table
+# in the tests reads against names, not magic numbers.
+PERSONALITY_MIN_ISSUES = 5
+RITUAL_ACTIVE_SHARE = 0.6
+RITUAL_STREAK = {"yearly": 30, "monthly": 14}
+BINGE_DAY_ISSUES = 5
+BINGE_SHARE = 0.5
+BINGE_MAX_ACTIVE_SHARE = 0.25
+DEVOTEE_SERIES_SHARE = 0.5
+EXPLORER_SERIES_RATIO = 0.6
+EXPLORER_MIN_PUBLISHERS = 5
+LOYALIST_PUBLISHER_SHARE = 0.8
+LOYALIST_MIN_SERIES = 5
+CLOCK_TRUST_SHARE = 0.6
+NIGHT_SHARE = 0.5
+MORNING_SHARE = 0.5
+WEEKEND_SHARE = 0.6
+MARATHON_ISSUES = {"yearly": 300, "monthly": 30}
+
+PERSONALITIES = {
+    "starting": ("Just Getting Started", "A few issues in. The story is only beginning."),
+    "ritualist": ("The Daily Ritualist", "Reading is part of the day, most days."),
+    "binger": ("The Binge Reader", "Quiet for a while, then a whole run in one sitting."),
+    "devotee": ("The Devotee", "One series had your attention above all others."),
+    "explorer": ("The Explorer", "Always another series, another publisher, another world."),
+    "loyalist": ("The House Loyalist", "Many series, one publisher."),
+    "night-owl": ("The Night Owl", "The best pages are read after dark."),
+    "early-bird": ("The Early Bird", "Comics before the day gets going."),
+    "weekender": ("The Weekend Warrior", "Saturdays and Sundays are for reading."),
+    "marathoner": ("The Marathoner", "Sheer volume. Issue after issue after issue."),
+    "steady": ("The Steady Reader", "A steady pace and a bit of everything."),
+}
+
+
+def reading_personality(summary):
+    """One label for how someone read in a period. First matching rule wins.
+
+    *summary* is the dict ``period_story`` builds (``_personality_inputs``).
+    The order is deliberate: habits that describe *when and how* someone reads
+    (every day, in bursts) come before *what* they read, and sheer volume comes
+    last so it only names a reader nothing more specific describes. The two
+    time-of-day rules need most of the reading to carry a real reading time;
+    without that the clock is guesswork (see ``ReadEvent.timed``).
+
+    Returns ``{id, label, blurb, evidence}``; *evidence* is the one fact that
+    earned the label, for the slide to show.
+    """
+    scope = summary.get("scope", "yearly")
+    issues = summary.get("issues", 0)
+
+    def result(key, evidence):
+        label, blurb = PERSONALITIES[key]
+        return {"id": key, "label": label, "blurb": blurb, "evidence": evidence}
+
+    def pct(value):
+        return f"{round(value * 100)}%"
+
+    if issues < PERSONALITY_MIN_ISSUES:
+        return result("starting", f"{issues} issue{'' if issues == 1 else 's'} read")
+
+    active_share = summary.get("active_days", 0) / max(summary.get("period_days", 1), 1)
+    streak = summary.get("longest_streak", 0)
+    if active_share >= RITUAL_ACTIVE_SHARE or streak >= RITUAL_STREAK[scope]:
+        if streak >= RITUAL_STREAK[scope]:
+            return result("ritualist", f"A {streak}-day streak")
+        return result("ritualist", f"Read on {pct(active_share)} of days")
+
+    if summary.get("binge_share", 0) >= BINGE_SHARE and active_share < BINGE_MAX_ACTIVE_SHARE:
+        return result("binger", f"{pct(summary['binge_share'])} read on days of "
+                                f"{BINGE_DAY_ISSUES} or more")
+
+    if summary.get("top_series_share", 0) >= DEVOTEE_SERIES_SHARE:
+        return result("devotee", f"{pct(summary['top_series_share'])} of your reading was "
+                                 f"{summary.get('top_series') or 'one series'}")
+
+    series = summary.get("distinct_series", 0)
+    publishers = summary.get("distinct_publishers", 0)
+    if series / issues >= EXPLORER_SERIES_RATIO and publishers >= EXPLORER_MIN_PUBLISHERS:
+        return result("explorer", f"{series} series from {publishers} publishers")
+
+    if summary.get("top_publisher_share", 0) >= LOYALIST_PUBLISHER_SHARE \
+            and series >= LOYALIST_MIN_SERIES:
+        return result("loyalist", f"{pct(summary['top_publisher_share'])} from "
+                                  f"{summary.get('top_publisher') or 'one publisher'}")
+
+    if summary.get("timed_share", 0) >= CLOCK_TRUST_SHARE:
+        if summary.get("night_share", 0) >= NIGHT_SHARE:
+            return result("night-owl", f"{pct(summary['night_share'])} of reading time "
+                                       "between 10pm and 4am")
+        if summary.get("morning_share", 0) >= MORNING_SHARE:
+            return result("early-bird", f"{pct(summary['morning_share'])} of reading time "
+                                        "between 5am and 9am")
+
+    if summary.get("weekend_share", 0) >= WEEKEND_SHARE:
+        return result("weekender", f"{pct(summary['weekend_share'])} read at the weekend")
+
+    if issues >= MARATHON_ISSUES[scope]:
+        return result("marathoner", f"{issues:,} issues")
+
+    return result("steady", f"{issues:,} issues across {series} series")
+
+
+def _counted(names_per_event, limit):
+    """Top names by how many reads they appear in, as ``[{name, count}]``.
+    Case-insensitive, first spelling kept, ties by name."""
+    spelling, counts = {}, {}
+    for names in names_per_event:
+        for key in {name.casefold(): name for name in names}:
+            counts[key] = counts.get(key, 0) + 1
+        for name in names:
+            spelling.setdefault(name.casefold(), name)
+    top = sorted(counts, key=lambda key: (-counts[key], key))[:limit]
+    return [{"name": spelling[key], "count": counts[key]} for key in top]
+
+
+def top_credits(events, limit=5):
+    """The most-read writers, artists, characters and publishers."""
+    return {
+        "writers": _counted((e.writers for e in events), limit),
+        "artists": _counted((e.pencillers for e in events), limit),
+        "characters": _counted((e.characters for e in events), limit),
+        "publishers": _counted(((e.publisher,) if e.publisher else () for e in events), limit),
+    }
+
+
+def _personality_inputs(scope, events, clock, streak, period_days):
+    issues = len(events)
+    by_day, by_series, by_publisher = {}, {}, {}
+    weekend = 0
+    for event in events:
+        by_day[event.day] = by_day.get(event.day, 0) + 1
+        by_series[event.series] = by_series.get(event.series, 0) + 1
+        if event.publisher:
+            key = event.publisher.casefold()
+            by_publisher.setdefault(key, [event.publisher, 0])[1] += 1
+        if event.day.weekday() >= 5:
+            weekend += 1
+    top_series = max(by_series, key=lambda name: (by_series[name], name)) if by_series else None
+    top_publisher = max(by_publisher.values(), key=lambda pair: pair[1]) if by_publisher else None
+
+    clock_total = sum(clock["hours"]) or 0
+    night = sum(clock["hours"][h] for h in (22, 23, 0, 1, 2, 3))
+    morning = sum(clock["hours"][h] for h in (5, 6, 7, 8))
+    with_time = sum(1 for e in events if e.timed)
+
+    return {
+        "scope": scope,
+        "issues": issues,
+        "active_days": len(by_day),
+        "period_days": period_days,
+        "longest_streak": streak,
+        "binge_share": (sum(n for n in by_day.values() if n >= BINGE_DAY_ISSUES) / issues) if issues else 0,
+        "top_series": top_series,
+        "top_series_share": (by_series[top_series] / issues) if top_series else 0,
+        "distinct_series": len(by_series),
+        "distinct_publishers": len(by_publisher),
+        "top_publisher": top_publisher[0] if top_publisher else None,
+        "top_publisher_share": (top_publisher[1] / issues) if top_publisher else 0,
+        "timed_share": (with_time / issues) if issues else 0,
+        "night_share": (night / clock_total) if clock_total else 0,
+        "morning_share": (morning / clock_total) if clock_total else 0,
+        "weekend_share": (weekend / issues) if issues else 0,
+    }
+
+
+def period_story(scope, year, month=None, user_id=None, today=None, tz_hours=None):
+    """Everything the Wrapped story slides say about a year or a month.
+
+    One read of the period, and every slide draws from this dict, so two
+    slides cannot disagree about a number. **Hidden reads are left out
+    entirely**, as they are from the rest of Wrapped and the Timeline: a
+    recap is something people share.
+
+    The streak here is the longest run *inside the period*, and the clock is
+    the period's, which is why neither is taken from ``insights_summary``.
+    """
+    from core.reading_sessions import load_sessions
+    from core.user_time import local_period_bounds_utc, user_today
+
+    uid = current_user_id() if user_id is None else user_id
+    hours = user_offset_hours() if tz_hours is None else tz_hours
+    tz = user_tzinfo(hours)
+    today = user_today(hours=hours) if today is None else today
+    start, end = local_period_bounds_utc(year, month, hours)
+
+    everything = load_read_events(uid, start, end, tz_hours=hours)
+    hidden_paths = {e.path for e in everything if e.hidden}
+    events = [e for e in everything if not e.hidden]
+    sessions = [s for s in load_sessions(uid, start, end) if s["comic_path"] not in hidden_paths]
+
+    first_day = date(year, month or 1, 1)
+    if month:
+        last_day = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, 12, 31)
+    # A period still in progress is judged on the days it has had so far.
+    period_days = (min(last_day, max(today, first_day)) - first_day).days + 1
+
+    days = reading_days(events)
+    # "today" past the end of the period: there is no current streak to keep
+    # alive, only the longest one.
+    streaks = compute_streaks(days, last_day + timedelta(days=2))
+    clock = reading_clock(events, sessions, tz)
+
+    by_day = {}
+    for event in events:
+        by_day[event.day] = by_day.get(event.day, 0) + 1
+    busiest = max(by_day, key=lambda d: (by_day[d], d)) if by_day else None
+    seconds = sum(e.seconds for e in events)
+    pages = sum(e.pages for e in events)
+
+    story = {
+        "scope": scope,
+        "year": year,
+        "month": month,
+        "issues": len(events),
+        "pages": pages,
+        "seconds": seconds,
+        "active_days": len(days),
+        "period_days": period_days,
+        "longest_streak": streaks["longest"],
+        "longest_streak_start": streaks["longest_start"],
+        "longest_streak_end": streaks["longest_end"],
+        "busiest_day": busiest.isoformat() if busiest else None,
+        "busiest_day_issues": by_day[busiest] if busiest else 0,
+        "series": len({e.series for e in events}),
+        "credits": top_credits(events),
+        "clock": clock,
+        "goal": None,
+    }
+    story["personality"] = reading_personality(
+        _personality_inputs(scope, events, clock, streaks["longest"], period_days))
+    if not month:
+        goal = get_reading_goal(year, uid)
+        if goal:
+            # The goal counts hidden reads on Insights; a recap does not show
+            # them, so it reports the visible count against the same goal.
+            story["goal"] = goal_progress(len(events), goal, year, today)
+    return story
