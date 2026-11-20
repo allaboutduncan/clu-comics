@@ -82,6 +82,10 @@ Things that look arbitrary and are not:
   route only returns `error.svg` while `file_changed_since` says the comic has
   not been rewritten. A `.cbz` that is really a RAR fails, gets rebuilt into a
   real CBZ, and must recover without a restart.
+- **A NULL `file_mtime` earns a retry only while the file exists**
+  (`file_changed_since`). A missing comic cannot be stat'd, so its error row is
+  always NULL; reading that as "retry once" never settled, and a card for a
+  moved or deleted file submitted a failing job on every 2s poll (#801).
 - **A `skipped` job *is* permanent — do not generalise the bullet above.**
   `error` means this attempt failed; `skipped` means there is no reader for
   this *type* at all (`can_thumbnail` says so for a `.pdf`, and

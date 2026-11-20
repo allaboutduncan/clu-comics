@@ -152,12 +152,19 @@ def file_changed_since(file_path, recorded_mtime):
     """True when the comic has been rewritten since ``recorded_mtime``.
 
     Used to decide whether a failed thumbnail deserves another attempt. A NULL
-    mtime means the row predates the column, so the answer is "we cannot tell"
-    — and the useful reading of that is *retry once*, after which the row
-    carries a real mtime and settles.
+    mtime means the file could not be stat'd when the row was written (or the
+    row predates the column), so the answer is "we cannot tell" — and the
+    useful reading of that is *retry once*, after which the row carries a real
+    mtime and settles.
+
+    That only settles for a file that is there. A comic that has been moved or
+    deleted fails again, ``set_job_status`` stamps NULL again, and "retry once"
+    became a new doomed job on every 2s grid poll (#801). So a NULL mtime earns
+    a retry only while the file exists: gone means no, and a file that comes
+    back (a remounted library) is retried then.
     """
     if recorded_mtime is None:
-        return True
+        return os.path.exists(file_path)
     try:
         return os.path.getmtime(file_path) > float(recorded_mtime)
     except (OSError, TypeError, ValueError):
