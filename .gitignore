@@ -22,8 +22,6 @@ __pycache__/
 *.pywz
 *.pyzw
 *.pyzwz
-.DS_Store
-CLAUDE.md
 .venv
 *.log
 .claude/settings.local.json

@@ -19,7 +19,7 @@ Production runs `gunicorn -w 1 --threads 8 --timeout 120 app:app` (see Dockerfil
 
 ### Core Application Flow
 - **`api.py`**: Creates the Flask app instance and handles download queue/remote downloads
-- **`app.py`**: Main application - imports Flask app from `api.py`, registers blueprints, defines all routes and API endpoints
+- **`app.py`**: Main application - imports Flask app from `api.py`, registers the blueprints, starts the scheduler and background services, and still defines a minority of routes (config, schedules, thumbnails, `/stream`, GCD). Most routes live in the blueprints under `routes/`. **app.py cannot be imported in tests**, so a new route goes in a blueprint
 - **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is no longer read. See `.claude/rules/watch-pipeline.md`.
 
 ### API v1 docs
@@ -56,7 +56,7 @@ imported in tests.
      It never deletes — or descends into — WATCH, TARGET, TRASH or a library root,
      and refuses to run at all if TARGET resolves inside a library. WATCH nested
      inside TARGET is a supported layout.
-3. SQLite database in `CACHE_DIR` (default `/cache`)
+3. SQLite database and its backups in `CONFIG_DIR` (`/config`); thumbnails and the trash in `CACHE_DIR` (`/cache`)
 4. Settings persisted in the `user_preferences` table (`config.ini` is no longer read)
 
 ### Function-local imports
