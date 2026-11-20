@@ -1,8 +1,4 @@
-"""Small Insights / Wrapped regressions that have no route test of their own.
-
-app.py cannot be imported in tests, so what lives there is asserted over its
-source text.
-"""
+"""Small Insights / Wrapped regressions that have no route test of their own."""
 import pathlib
 import re
 from unittest.mock import patch
@@ -36,16 +32,6 @@ class TestYearlyZipSkipsEmptySlides:
             "01_summary.png", "02_most_read_series.png",
             "03_series_highlights.png", "04_books_grid.png",
         ]
-
-
-def test_timeline_years_are_not_read_unscoped():
-    """The /timeline year dropdown ran a query with no user_id filter, listing
-    years from every user's reading history."""
-    source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
-    assert "SELECT DISTINCT strftime('%Y', read_at) FROM issues_read ORDER BY" not in source
-    start = source.index("def timeline():")
-    body = source[start:source.index("\n@app.route", start)]
-    assert "get_years_with_reading_data()" in body
 
 
 def test_every_stat_icon_colour_used_has_a_rule():

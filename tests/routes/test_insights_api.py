@@ -6,9 +6,8 @@ token: with a `Authorization: Bearer <token>` header the reading counters
 (issues_read / pages_read / time_reading*) are scoped to that user; without a
 token they reflect the Store Owner (backwards compatible).
 
-The route itself lives in app.py (not a blueprint); conftest registers an
-equivalent route against the same real helpers, so these exercise the wiring
-end-to-end. The helpers are also unit-tested directly.
+The route lives in routes/insights.py, so these exercise the real handler. The
+helpers are also unit-tested directly.
 """
 import pytest
 

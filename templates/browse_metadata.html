@@ -114,7 +114,7 @@
                               subtitle='Comics by ' ~ (category_label | lower),
                               stats=[{'value': total, 'label': 'comic' if total == 1 else 'comics', 'keep_zero': True}]) %}
         {% if slot == 'crumbs' %}
-            <li class="breadcrumb-item"><a href="{{ url_for('insights_page') }}">Insights</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('insights.insights_page') }}">Insights</a></li>
             <li class="breadcrumb-item active">{{ category_label }}</li>
         {% endif %}
     {% endcall %}
@@ -204,7 +204,7 @@
 
     {% else %}
     {% call empty_state('No comics found', 'No comics matching "' ~ name ~ '" were found in your library.', 'bi-search') %}
-        <a href="{{ url_for('insights_page') }}" class="btn btn-outline-secondary">
+        <a href="{{ url_for('insights.insights_page') }}" class="btn btn-outline-secondary">
             <i class="bi bi-arrow-left me-1" aria-hidden="true"></i>Back to Insights
         </a>
     {% endcall %}

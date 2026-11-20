@@ -384,7 +384,7 @@ def browse_by_metadata(category, name):
     normalized_category = category_mapping.get(category.lower())
     if not normalized_category:
         flash(f"Invalid browse category: {category}", "error")
-        return redirect(url_for('insights_page'))
+        return redirect(url_for('insights.insights_page'))
 
     # Links from the CBZ Info modal carry the raw XML value, which may still
     # hold a tagger's provider ID ("Ron Lim [3258]"). Show the canonical name.

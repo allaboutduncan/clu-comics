@@ -219,6 +219,10 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(mylar_import_bp)
     test_app.register_blueprint(setup_bp)
     test_app.register_blueprint(download_runs_bp)
+    from routes.insights import insights_bp
+    from routes.wrapped import wrapped_bp
+    test_app.register_blueprint(insights_bp)
+    test_app.register_blueprint(wrapped_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.
     # Templates reference these via url_for().
@@ -233,31 +237,6 @@ def app(db_connection, tmp_path):
     @test_app.route("/config")
     def config_page():
         return "stub", 200
-
-    @test_app.route("/insights")
-    def insights_page():
-        return "stub", 200
-
-    # Mirrors app.py's /api/insights against the real helpers (app.py itself
-    # isn't importable here). Keep in sync with app.py:api_insights.
-    @test_app.route("/api/insights")
-    def api_insights():
-        from flask import jsonify, request as flask_request
-        from core.auth import resolve_optional_bearer_user
-        from core.auth_throttle import too_many_attempts_json
-        from models.stats import get_insights_stats
-
-        status, user = resolve_optional_bearer_user(
-            flask_request.headers.get("Authorization", "")
-        )
-        if status == "throttled":
-            return too_many_attempts_json(user)
-        if status == "invalid":
-            return jsonify({"error": "unauthorized"}), 401
-        payload = get_insights_stats(user_id=user["id"] if user else None)
-        if payload is None:
-            return jsonify({"error": "Failed to get stats"}), 500
-        return jsonify(payload)
 
     @test_app.route("/logs")
     def logs_page():
@@ -283,10 +262,6 @@ def app(db_connection, tmp_path):
         ("/api/config/styling", "save_styling_config", ["POST"]),
     ):
         test_app.add_url_rule(rule, endpoint, lambda: ("stub", 200), methods=methods)
-
-    @test_app.route("/timeline")
-    def timeline():
-        return "stub", 200
 
     @test_app.route("/api/thumbnail")
     def get_thumbnail():
