@@ -153,6 +153,24 @@ These are not filing rules; each is an expression that had been pasted.
 `tests/mocked/test_series_normaliser_dedupe.py` asserts the callers agree and
 that the expressions are not pasted again.
 
+### Issue numbers: seven functions, none interchangeable
+
+Two of these were both called `normalize_issue_number` and gave different
+answers, so a caller importing the wrong one compared values that could never
+be equal. They are renamed, not merged: a merge changes which files an issue
+claims. `tests/unit/test_issue_number_keys.py` tabulates where the two keys
+differ.
+
+| Function | Answers | Notes |
+|----------|---------|-------|
+| `core.database.issue_identity_key` | "Same issue?" for the reading-list matcher | Lowercases, drops a leading `#` and a trailing `.`, empty → `""` |
+| `helpers.collection.issue_match_key` | "Same issue?" for the collection and TARGET matchers | Folds unicode dashes to `-`, keeps case (callers lowercase), empty → `"0"` |
+| `models.providers.base._normalize_issue_number` | The number a filename names, for a provider lookup | Keeps `13A` and `80.BEY`; output of `extract_issue_number` |
+| `models.inducks._normalize_issue_number` | INDUCKS' own padding (`0007` vs `3200`) | Private to that provider |
+| `core.download_utils.issue_number_to_int` | Is this issue inside a downloaded range pack? | `None` for anything that is not a whole number; never use it to de-duplicate |
+| `cbz_ops.rename._pad_issue_number` | The number as written into a filename | Formatting, not comparison; width from `load_issue_pad_width()` |
+| `routes.metadata._issue_sort_key`, and the local one in `routes/series.py` | Display order | Sorting only |
+
 ### What is deliberately not shared
 
 - **The scorer's keys are stored.** `_norm_series_key` is `series_norm_norm` in

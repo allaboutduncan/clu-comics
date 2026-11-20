@@ -29,7 +29,7 @@ import zipfile
 from collections import deque
 
 from core.app_logging import APP_LOG, MONITOR_LOG, LOG_DIR, app_logger
-from core.config import CONFIG_DIR, CONFIG_FILE
+from core.config import CONFIG_DIR
 from core.log_redact import redact_url
 from core.version import __version__
 from models.providers.crypto import mask_credential
@@ -113,29 +113,6 @@ def _redacted_settings() -> str:
         return f"# Failed to read settings: {e}\n"
 
 
-def _redacted_config_ini(config_path: str = CONFIG_FILE) -> str:
-    """Return config.ini as a string with all sensitive values masked."""
-    if not os.path.exists(config_path):
-        return f"# config.ini not found at {config_path}\n"
-
-    parser = configparser.RawConfigParser()
-    parser.optionxform = str  # preserve key case
-    try:
-        parser.read(config_path)
-    except configparser.Error as e:
-        return f"# Failed to parse config.ini: {e}\n"
-
-    for section in parser.sections():
-        for key, value in parser.items(section):
-            sanitized = _sanitize_value(key, value)
-            if sanitized != value:
-                parser.set(section, key, sanitized)
-
-    buf = io.StringIO()
-    parser.write(buf)
-    return buf.getvalue()
-
-
 def _db_settings_json() -> str:
     """Dump the user_preferences table + table list as JSON (secrets redacted)."""
     from core.database import get_db_connection
@@ -192,13 +169,13 @@ def _system_info_json() -> str:
         "paths": {
             "config_dir": CONFIG_DIR,
             "log_dir": LOG_DIR,
-            "config_file": CONFIG_FILE,
         },
-        # The raw env value stays: "I set MONITOR=yes and nothing happens" is
-        # answered by seeing it beside the setting that replaced it.
+        # The raw env value stays although nothing reads it any more: "I set
+        # MONITOR=yes and nothing happens" is answered by seeing it beside the
+        # setting that replaced it.
         "folder_monitor": _folder_monitor_status(),
         "flags": {
-            "MONITOR (deprecated env)": os.environ.get("MONITOR", ""),
+            "MONITOR (ignored env)": os.environ.get("MONITOR", ""),
             "ENABLE_DEBUG_LOGGING": os.environ.get("ENABLE_DEBUG_LOGGING", ""),
             "PUID": os.environ.get("PUID", ""),
             "PGID": os.environ.get("PGID", ""),
@@ -375,7 +352,7 @@ def _readme() -> str:
         "  system_info.json  - version, platform, python, key paths, flags\n"
         "  root_paths.json   - library/WATCH/TARGET roots and which are one folder\n"
         "  preflight.json    - setup checks: volumes writable, database, owner, user\n"
-        "  config.ini        - your config with secrets masked\n"
+        "  config.ini        - your settings (old config.ini layout), secrets masked\n"
         "  db_settings.json  - user_preferences (settings) + table list\n"
         "  download_runs.json - what the last automatic download runs searched,\n"
         "                      queued and failed (series names, issue numbers)\n"

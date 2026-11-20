@@ -96,7 +96,7 @@
 
         const img = clone.querySelector('.thumbnail');
         img.alt = label;
-        img.onerror = function () { this.onerror = null; this.src = '/static/images/error.svg'; };
+        img.onerror = function () { this.onerror = null; this.src = CLU.staticUrl('images/error.svg'); };
         if (item.thumbnail_url) img.src = item.thumbnail_url;
 
         // Always shown for a comic: the read icon lives inside the badge, so

@@ -467,7 +467,7 @@ function pollImportStatus(taskId, filename) {
                 if (data.status === 'complete') {
                     CLU.toast(`Imported "${data.list_name}" (${data.processed} issues)`, 'success', 8000);
                     // Reload if still on the reading lists page
-                    if (window.location.pathname === '/reading-lists') {
+                    if (window.location.pathname === CLU.url('/reading-lists')) {
                         setTimeout(() => window.location.reload(), 2000);
                     }
                 } else if (data.status === 'error') {
@@ -1458,7 +1458,7 @@ function createNewList() {
     .then(r => r.json())
     .then(data => {
         if (data.success) {
-            window.location.href = '/reading-lists/' + data.list_id;
+            window.location.href = CLU.url('/reading-lists/' + data.list_id);
         } else {
             CLU.toast(data.message || 'Something went wrong', 'error');
         }

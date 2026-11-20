@@ -101,6 +101,8 @@ def _make_mock_app_module(data_dir, target_dir):
     mock.clear_browse_cache = MagicMock()
     mock.find_folder_thumbnails_batch = MagicMock(return_value={})
     mock.configure_sync_schedule = MagicMock()
+    mock.configure_komga_sync_schedule = MagicMock()
+    mock.run_komga_sync = MagicMock()
     mock.configure_getcomics_schedule = MagicMock()
     mock.configure_weekly_packs_schedule = MagicMock()
     mock.scheduled_getcomics_download = MagicMock()
@@ -221,8 +223,12 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(download_runs_bp)
     from routes.insights import insights_bp
     from routes.wrapped import wrapped_bp
+    from routes.komga import komga_bp
+    from routes.logs import logs_bp
     test_app.register_blueprint(insights_bp)
     test_app.register_blueprint(wrapped_bp)
+    test_app.register_blueprint(komga_bp)
+    test_app.register_blueprint(logs_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.
     # Templates reference these via url_for().
@@ -236,10 +242,6 @@ def app(db_connection, tmp_path):
 
     @test_app.route("/config")
     def config_page():
-        return "stub", 200
-
-    @test_app.route("/logs")
-    def logs_page():
         return "stub", 200
 
     @test_app.route("/schedules")

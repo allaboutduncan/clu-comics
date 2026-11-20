@@ -7,7 +7,7 @@ from core.database import (
     search_file_index,
     search_file_index_all_words,
     search_by_comic_metadata,
-    normalize_issue_number,
+    issue_identity_key,
 )
 from core.metadata_dates import years_in_path
 from helpers.collection import (
@@ -174,18 +174,18 @@ def issue_token(text):
 def filename_issue_matches(filename, series, number):
     """True when ``filename`` is issue ``number`` of ``series``.
 
-    Compares whole issue tokens through ``normalize_issue_number``, so
+    Compares whole issue tokens through ``issue_identity_key``, so
     "#050.LR" is issue 50.LR and never issue 50 -- the old pattern accepted
     any "50" followed by a non-digit, and "." is one.
     """
     rest = _series_remainder(filename, series)
     if rest is None:
         return False
-    wanted = normalize_issue_number(number)
+    wanted = issue_identity_key(number)
     if not wanted:
         return False
     token = issue_token(rest)
-    return token is not None and normalize_issue_number(token) == wanted
+    return token is not None and issue_identity_key(token) == wanted
 
 
 def year_verdict(candidate_years, volume_year=None, issue_years=None):
@@ -673,7 +673,7 @@ class CBLLoader:
         title ("Spider-Man: Sins Rising Prelude") is still that volume's issue.
         """
         key = _as_id(cv_volume_id)
-        wanted = normalize_issue_number(number)
+        wanted = issue_identity_key(number)
         if not key or not wanted:
             return None
         folders = cv_volume_folders().get(key)
@@ -694,12 +694,12 @@ class CBLLoader:
                 continue
             ci_number = row.get('ci_number')
             if ci_number not in (None, ''):
-                ok = normalize_issue_number(ci_number) == wanted
+                ok = issue_identity_key(ci_number) == wanted
             else:
                 stem = os.path.splitext(name)[0]
                 rest = _series_remainder(name, series)
                 token = issue_token(stem if rest is None else rest)
-                ok = token is not None and normalize_issue_number(token) == wanted
+                ok = token is not None and issue_identity_key(token) == wanted
             if ok:
                 hits.append(row['path'])
         return _preferred(hits)

@@ -285,7 +285,7 @@ document.addEventListener('DOMContentLoaded', function () {
     heatmapContainer.addEventListener('click', function (e) {
         const cell = e.target.closest('.heatmap-cell');
         if (cell && parseInt(cell.dataset.count, 10) > 0) {
-            window.location.href = `/timeline?year=${cell.dataset.year}&month=${cell.dataset.month}`;
+            window.location.href = CLU.url(`/timeline?year=${cell.dataset.year}&month=${cell.dataset.month}`);
         }
     });
 

@@ -33,7 +33,7 @@ DATABASE_PY = os.path.join(
 )
 
 # Leak-shaped writers on the day this test was written. Only ever lower it.
-BASELINE = 93
+BASELINE = 91
 
 # Converted for #723 -- they are on the TARGET -> library path, which runs once
 # per completed download, and must never regress.
@@ -61,6 +61,10 @@ MUST_BE_LEAK_FREE = {
     "save_browse_cache",
     "invalidate_browse_cache",
     "save_reading_position",
+    # A mapping row with no library_id raised after the DELETE and locked the
+    # database for the schedule save that follows it.
+    "save_komga_config",
+    "save_komga_library_mappings",
 }
 
 
@@ -78,8 +82,8 @@ def _calls(node, attr):
     return out
 
 
-def _leak_shaped_writers():
-    with open(DATABASE_PY, encoding="utf-8") as fh:
+def _leak_shaped_writers(path=None):
+    with open(path or DATABASE_PY, encoding="utf-8") as fh:
         tree = ast.parse(fh.read())
 
     leaky = set()
@@ -124,6 +128,45 @@ def test_no_new_leak_shaped_writers():
         f"{len(found)} write functions in core/database.py can abandon an open "
         f"write transaction (baseline {BASELINE}). Use `with db_conn() as conn:` "
         f"or close in a `finally`."
+    )
+
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+# .claude holds agent worktrees: full copies of the repo, at other commits.
+SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__"}
+
+
+def _modules_outside_database_py():
+    for base, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(base, name)
+            if os.path.abspath(path) == os.path.abspath(DATABASE_PY):
+                continue
+            yield os.path.relpath(path, REPO_ROOT).replace(os.sep, "/"), path
+
+
+def test_no_leak_shaped_writer_outside_database_py():
+    """The backlog is in core/database.py only; everywhere else the count is 0.
+
+    The ratchet used to read that one file, while the same shape sat in
+    models/getcomics.py (five writers on the sweep's own tables), app.py and
+    routes/series.py. A writer that leaks holds the WAL write lock whichever
+    module it lives in.
+    """
+    found = {}
+    scanned = 0
+    for rel, path in _modules_outside_database_py():
+        scanned += 1
+        leaky = _leak_shaped_writers(path)
+        if leaky:
+            found[rel] = sorted(leaky)
+    assert scanned > 50, "the walk found almost no modules"
+    assert not found, (
+        f"write functions that can abandon an open write transaction: {found}. "
+        "Use `with db_conn() as conn:` or close in a `finally`."
     )
 
 

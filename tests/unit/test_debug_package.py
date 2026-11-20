@@ -59,32 +59,6 @@ class TestRedactBlob:
         assert dp._redact_blob("") == ""
 
 
-class TestRedactedConfigIni:
-
-    def test_secrets_masked_others_preserved(self, tmp_path):
-        cfg = tmp_path / "config.ini"
-        cfg.write_text(
-            "[SETTINGS]\n"
-            "COMICVINE_API_KEY = SECRET1234VALUE\n"
-            "BOOTSTRAP_THEME = darkly\n"
-        )
-        out = dp._redacted_config_ini(str(cfg))
-        assert "SECRET1234VALUE" not in out
-        assert "BOOTSTRAP_THEME = darkly" in out
-        assert "..." in out  # masked value present
-
-    def test_empty_secret_left_alone(self, tmp_path):
-        cfg = tmp_path / "config.ini"
-        cfg.write_text("[SETTINGS]\nPIXELDRAIN_API_KEY = \n")
-        out = dp._redacted_config_ini(str(cfg))
-        # Empty value stays empty (nothing to mask)
-        assert "PIXELDRAIN_API_KEY" in out
-
-    def test_missing_file_placeholder(self, tmp_path):
-        out = dp._redacted_config_ini(str(tmp_path / "nope.ini"))
-        assert "not found" in out
-
-
 class TestTail:
 
     def test_returns_last_n_lines(self, tmp_path):

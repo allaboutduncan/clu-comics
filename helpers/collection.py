@@ -215,12 +215,16 @@ _SIGN_CHARS = filename_parse.SIGN_CHARS
 _SIGN_CLASS = filename_parse.SIGN_CLASS
 
 
-def normalize_issue_number(value):
+def issue_match_key(value):
     """Canonical form of an issue number for equality comparison.
 
     Drops leading zeros but keeps a leading sign, normalizing every dash
     variant to ASCII "-": "007" -> "7", "-001" -> "-1", "-01" -> "-1".
     Empty input returns "0", matching the historical ``lstrip('0') or '0'``.
+
+    Not interchangeable with ``core.database.issue_identity_key`` (the
+    reading-list matcher's form). Both were called ``normalize_issue_number``
+    once; see that function for how they differ.
     """
     text = str(value if value is not None else "").strip()
     sign = ""
@@ -256,7 +260,7 @@ def issue_number_regex(issue_number):
     ("Batman - 001") or preceded by a digit ("Batman 001-006") is a separator.
     Issue #1 refuses the first form, issue #-1 requires it.
     """
-    clean = normalize_issue_number(issue_number)
+    clean = issue_match_key(issue_number)
     negative = clean.startswith("-")
     digits = clean[1:] if negative else clean
     body = r"0*" + re.escape(digits) + r"(?!\d)(?!\.\d)"
@@ -626,7 +630,7 @@ def fallback_issue_numbers(filename, series_name, collected=False):
     tokens, is_range = filename_parse.issue_numbers(
         stem, start=start, prefer_volume=collected
     )
-    return {normalize_issue_number(t).lower() for t in tokens}, is_range
+    return {issue_match_key(t).lower() for t in tokens}, is_range
 
 
 def names_other_publication_type(filename, series_name):
@@ -1021,7 +1025,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         if debug:
             app_logger.debug(f"Checking: '{actual_series_name}' #{issue_number}")
 
-        check_num = normalize_issue_number(issue_number)
+        check_num = issue_match_key(issue_number)
         for file_order, (filename, src) in enumerate(remaining):
             # A downloaded annual/TPB would otherwise satisfy issue #1 and get
             # moved into (and renamed inside) the series folder — the same
@@ -1040,7 +1044,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
             if not match_result:
                 ci = extract_comicinfo_cached(src, comicinfo_cache)
                 if ci and ci.get("number"):
-                    meta_num = normalize_issue_number(ci["number"])
+                    meta_num = issue_match_key(ci["number"])
                     if meta_num == check_num:
                         meta_series = (ci.get("series") or "").lower()
                         if meta_series and any(
@@ -1323,13 +1327,13 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     for idx, (issue_num, _issue_id) in enumerate(wanted):
         if idx in matched:
             continue
-        check_num = normalize_issue_number(issue_num)
+        check_num = issue_match_key(issue_num)
         for file_path, metadata in file_metadata.items():
             if file_path in claimed:
                 continue
             # Lazy-load ComicInfo.xml only when needed (once per file).
             ci = extract_comicinfo_cached(file_path, comicinfo_cache)
-            if ci.get('number') and normalize_issue_number(ci['number']) == check_num:
+            if ci.get('number') and issue_match_key(ci['number']) == check_num:
                 # Check series name matches (loose match)
                 if _comicinfo_names_this_series(ci, series_name):
                     matched[idx] = (file_path, 'comicinfo')
@@ -1351,7 +1355,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
         for idx, (issue_num, _issue_id) in enumerate(wanted):
             if idx in matched:
                 continue
-            check_num = normalize_issue_number(issue_num).lower()
+            check_num = issue_match_key(issue_num).lower()
             for file_path in file_metadata:
                 numbers, is_range = named[file_path]
                 if check_num not in numbers:
@@ -1369,7 +1373,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                         ci = extract_comicinfo_cached(file_path, comicinfo_cache)
                         if (
                             ci.get('number')
-                            and normalize_issue_number(ci['number']).lower() != check_num
+                            and issue_match_key(ci['number']).lower() != check_num
                             and ci.get('series')
                             and _comicinfo_names_this_series(ci, series_name)
                         ):

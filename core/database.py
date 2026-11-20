@@ -4641,13 +4641,19 @@ def find_file_index_paths_by_name(filename, limit=5):
         return []
 
 
-def normalize_issue_number(number):
+def issue_identity_key(number):
     """An issue number in comparable form: lowercase, trimmed, leading zeros
     off the integer part. "001" -> "1", "050.LR" -> "50.lr", "0" -> "0".
 
     Equality on this is the rule for "same issue". SQLite's CAST is not: it
     reads the numeric prefix, so CAST('50.LR' AS REAL) = 50 and a variant
     issue matched the regular one.
+
+    Not interchangeable with ``helpers.collection.issue_match_key``: both were
+    called ``normalize_issue_number`` once and they disagree on purpose (this
+    one lowercases, drops a leading "#" and a trailing ".", and maps empty to
+    ""; that one folds unicode dashes, keeps case and maps empty to "0").
+    ``tests/unit/test_issue_number_keys.py`` tabulates the differences.
     """
     text = str(number or "").strip().lower().lstrip("#").strip()
     # The sign is part of the number: "#-1" is its own issue, never #1.
@@ -4682,7 +4688,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
     The SQL is a coarse filter -- series words in order, numeric-ish issue
     match -- and the issue number is then checked exactly in Python with
-    :func:`normalize_issue_number`. Series identity is left to the caller,
+    :func:`issue_identity_key`. Series identity is left to the caller,
     which already applies ``series_names_compatible``.
 
     ``limit`` is applied AFTER the exact check, never in SQL: the series
@@ -4692,7 +4698,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
     Returns list of dicts with name, path, type, parent, size, and ci_* fields.
     """
     pattern = _series_like_pattern(series)
-    wanted = normalize_issue_number(number)
+    wanted = issue_identity_key(number)
     if not pattern or not wanted:
         return []
     try:
@@ -4724,7 +4730,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
         results = []
         for row in rows:
-            if normalize_issue_number(row["ci_number"]) != wanted:
+            if issue_identity_key(row["ci_number"]) != wanted:
                 continue
             results.append({
                 "name": row["name"],
@@ -16138,107 +16144,112 @@ def save_komga_config(
     Credentials/paths go to komga_sync_config, schedule fields go to schedules table.
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        # If password is empty, keep existing encrypted credentials
-        credentials_encrypted = None
-        credentials_nonce = None
+            # If password is empty, keep existing encrypted credentials
+            credentials_encrypted = None
+            credentials_nonce = None
 
-        if username or password:
-            # If password is provided (not masked), encrypt new credentials
-            if password and password != "***":
-                try:
-                    from models.providers.crypto import (
-                        encrypt_credentials,
-                        is_crypto_available,
-                    )
-
-                    if is_crypto_available():
-                        creds = {"username": username, "password": password}
-                        credentials_encrypted, credentials_nonce = encrypt_credentials(
-                            creds
-                        )
-                except Exception as e:
-                    app_logger.error(f"Failed to encrypt Komga credentials: {e}")
-                    conn.close()
-                    return False
-            else:
-                # Password is masked ('***'), keep existing credentials but update username
-                c = conn.cursor()
-                c.execute(
-                    "SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1"
-                )
-                row = c.fetchone()
-                if row and row["credentials_encrypted"]:
-                    # Decrypt, update username, re-encrypt
+            if username or password:
+                # If password is provided (not masked), encrypt new credentials
+                if password and password != "***":
                     try:
                         from models.providers.crypto import (
-                            decrypt_credentials,
                             encrypt_credentials,
                             is_crypto_available,
                         )
 
                         if is_crypto_available():
-                            existing_creds = decrypt_credentials(
-                                row["credentials_encrypted"], row["credentials_nonce"]
-                            )
-                            existing_creds["username"] = username
-                            credentials_encrypted, credentials_nonce = (
-                                encrypt_credentials(existing_creds)
+                            creds = {"username": username, "password": password}
+                            credentials_encrypted, credentials_nonce = encrypt_credentials(
+                                creds
                             )
                     except Exception as e:
-                        app_logger.error(f"Failed to update Komga credentials: {e}")
-                        # Keep existing credentials
-                        credentials_encrypted = row["credentials_encrypted"]
-                        credentials_nonce = row["credentials_nonce"]
+                        app_logger.error(f"Failed to encrypt Komga credentials: {e}")
+                        return False
                 else:
-                    # No existing credentials and password is masked - skip
-                    pass
+                    # Password is masked ('***'), keep existing credentials but update username
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1"
+                    )
+                    row = c.fetchone()
+                    if row and row["credentials_encrypted"]:
+                        # Decrypt, update username, re-encrypt
+                        try:
+                            from models.providers.crypto import (
+                                decrypt_credentials,
+                                encrypt_credentials,
+                                is_crypto_available,
+                            )
 
-        if credentials_encrypted is not None:
-            conn.execute(
-                """
-                UPDATE komga_sync_config SET
-                    server_url = ?,
-                    credentials_encrypted = ?,
-                    credentials_nonce = ?,
-                    enabled = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """,
-                (
-                    server_url,
-                    credentials_encrypted,
-                    credentials_nonce,
-                    1 if enabled else 0,
-                ),
-            )
-        else:
-            # Update everything except credentials
-            conn.execute(
-                """
-                UPDATE komga_sync_config SET
-                    server_url = ?,
-                    enabled = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """,
-                (server_url, 1 if enabled else 0),
-            )
+                            if is_crypto_available():
+                                existing_creds = decrypt_credentials(
+                                    row["credentials_encrypted"], row["credentials_nonce"]
+                                )
+                                existing_creds["username"] = username
+                                credentials_encrypted, credentials_nonce = (
+                                    encrypt_credentials(existing_creds)
+                                )
+                        except Exception as e:
+                            app_logger.error(f"Failed to update Komga credentials: {e}")
+                            # Keep existing credentials
+                            credentials_encrypted = row["credentials_encrypted"]
+                            credentials_nonce = row["credentials_nonce"]
+                    else:
+                        # No existing credentials and password is masked - skip
+                        pass
 
-        conn.commit()
+            if credentials_encrypted is not None:
+                conn.execute(
+                    """
+                    UPDATE komga_sync_config SET
+                        server_url = ?,
+                        credentials_encrypted = ?,
+                        credentials_nonce = ?,
+                        enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                    (
+                        server_url,
+                        credentials_encrypted,
+                        credentials_nonce,
+                        1 if enabled else 0,
+                    ),
+                )
+            else:
+                # Update everything except credentials
+                conn.execute(
+                    """
+                    UPDATE komga_sync_config SET
+                        server_url = ?,
+                        enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                    (server_url, 1 if enabled else 0),
+                )
 
-        # Save per-library Komga path mappings
+            conn.commit()
+
+        # Per-library Komga path mappings, on their own connection and only
+        # after this one is closed. A payload they reject (a row with no
+        # library_id) used to raise with its DELETE uncommitted and leak that
+        # connection holding the write lock, so the schedule save below waited
+        # out the 30s busy_timeout and failed -- and this still returned True.
+        mappings_saved = True
         if library_mappings is not None:
-            save_komga_library_mappings(library_mappings)
-
-        conn.close()
+            mappings_saved = save_komga_library_mappings(library_mappings)
 
         # Save schedule fields to unified table
         save_schedule("komga", frequency, time, weekday)
 
+        if not mappings_saved:
+            app_logger.error("Komga config saved, but the library mappings were not")
+            return False
         app_logger.info("Komga config saved successfully")
         return True
     except Exception as e:
@@ -16329,22 +16340,21 @@ def save_komga_library_mappings(mappings):
         mappings: List of dicts with 'library_id' and 'komga_path_prefix'
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        conn.execute("DELETE FROM komga_library_mappings")
-        for m in mappings:
-            prefix = (m.get("komga_path_prefix") or "").strip()
-            if prefix:
-                conn.execute(
-                    """
-                    INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                """,
-                    (m["library_id"], prefix),
-                )
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.execute("DELETE FROM komga_library_mappings")
+            for m in mappings:
+                prefix = (m.get("komga_path_prefix") or "").strip()
+                if prefix:
+                    conn.execute(
+                        """
+                        INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                    """,
+                        (m["library_id"], prefix),
+                    )
+            conn.commit()
         return True
     except Exception as e:
         app_logger.error(f"Failed to save Komga library mappings: {e}")

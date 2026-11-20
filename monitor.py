@@ -35,9 +35,6 @@ load_config()
 # Initialize database
 init_db()
 
-# Re-run load_config so the WATCH/TARGET migration (which needs the DB) can finish.
-load_config()
-
 # No setting is read into a module constant here. They used to be, and the main
 # loop's cleanup/reconcile schedule was built from them once, so changing the
 # cleanup toggle or either interval in Settings did nothing until the monitor

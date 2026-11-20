@@ -265,9 +265,13 @@ def test_shutdown_removes_its_folders_and_owned_root(tmp_path):
     assert cache.entry_count() == 0
 
 
-def test_app_reads_pages_inside_the_cache_reference():
-    """app.py cannot be imported in tests: assert the wiring structurally."""
-    src = (Path(__file__).resolve().parents[2] / "app.py").read_text(encoding="utf-8")
+def test_pages_are_read_inside_the_cache_reference():
+    """The fallback (core/comic_pages.py, moved out of app.py) must hold the
+    cache's reference for as long as it reads from the extracted folder."""
+    root = Path(__file__).resolve().parents[2]
+    src = (root / "core" / "comic_pages.py").read_text(encoding="utf-8")
+    app_src = (root / "app.py").read_text(encoding="utf-8")
+    assert "_rar_cache" not in app_src, "one cache, in core/comic_pages.py"
     tree = ast.parse(src)
     funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     assert "_get_full_rar_extraction" not in funcs

@@ -72,7 +72,7 @@
    * timestamp -- an unchanged file must keep its URL.
    */
   function _pageUrl(path, pageNum) {
-    var url = '/api/read/' + _encodePathForReader(path) + '/page/' + pageNum;
+    var url = CLU.url('/api/read/' + _encodePathForReader(path) + '/page/' + pageNum);
     return _viewerRev ? url + '?v=' + encodeURIComponent(_viewerRev) : url;
   }
 

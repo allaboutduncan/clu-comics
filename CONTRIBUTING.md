@@ -16,7 +16,8 @@ pip install -r requirements.txt
 ```
 
 
-3. **Set up your environment**: Copy `.env.example` to `.env` and add your API keys (ComicVine, Metron, etc.) for testing.
+3. **Run the tests**: `pip install -r requirements-test.txt`, then `pytest -n auto -q`. They need no API keys or network access.
+4. **Run the app** (optional): `python app.py`, then open http://localhost:5577. Provider API keys (ComicVine, Metron, etc.) are entered in the app under **Settings**, not in a file.
 
 ## 📝 Contribution Workflow
 
