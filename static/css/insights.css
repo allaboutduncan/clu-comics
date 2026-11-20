@@ -551,3 +551,86 @@ a.trend-item {
     background: var(--bs-tertiary-bg, var(--bs-secondary-bg));
     flex-shrink: 0;
 }
+
+/* Constellation: an SVG drawn by clu-constellation.js from server positions. */
+.constellation-canvas {
+    min-height: 12rem;
+}
+
+.constellation {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.constellation-edges line {
+    stroke: var(--bs-secondary-color);
+    transition: stroke-opacity 0.15s ease;
+}
+
+.constellation-node {
+    cursor: pointer;
+    outline: none;
+    /* It is an <a>: no link underline on the label. */
+    text-decoration: none;
+}
+
+.constellation-node circle {
+    fill: var(--bs-primary);
+    fill-opacity: 0.85;
+    stroke: var(--bs-body-bg);
+    stroke-width: 1.5;
+    transition: fill-opacity 0.15s ease;
+}
+
+.constellation-node text {
+    fill: var(--bs-body-color);
+    font-size: 13px;
+    /* A halo in the page colour keeps a label readable over lines. */
+    paint-order: stroke;
+    stroke: var(--bs-body-bg);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+    display: none;
+    pointer-events: none;
+}
+
+.constellation-node.labelled text,
+.constellation-node.lit text {
+    display: block;
+}
+
+/* Something is hovered or focused: its ties stay, the rest recede. */
+.constellation.focused .constellation-node:not(.lit) circle {
+    fill-opacity: 0.2;
+}
+
+.constellation.focused .constellation-node:not(.lit) text {
+    display: none;
+}
+
+.constellation.focused .constellation-edges line:not(.lit) {
+    stroke-opacity: 0.06;
+}
+
+.constellation-edges line.lit {
+    stroke: var(--bs-primary);
+    stroke-opacity: 0.9;
+}
+
+.constellation-node.current circle,
+.constellation-node:focus-visible circle {
+    fill: var(--bs-warning);
+    fill-opacity: 1;
+}
+
+.constellation-node.current text {
+    font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .constellation-edges line,
+    .constellation-node circle {
+        transition: none;
+    }
+}
