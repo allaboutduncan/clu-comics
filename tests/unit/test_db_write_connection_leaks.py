@@ -33,7 +33,7 @@ DATABASE_PY = os.path.join(
 )
 
 # Leak-shaped writers on the day this test was written. Only ever lower it.
-BASELINE = 93
+BASELINE = 91
 
 # Converted for #723 -- they are on the TARGET -> library path, which runs once
 # per completed download, and must never regress.
@@ -61,6 +61,10 @@ MUST_BE_LEAK_FREE = {
     "save_browse_cache",
     "invalidate_browse_cache",
     "save_reading_position",
+    # A mapping row with no library_id raised after the DELETE and locked the
+    # database for the schedule save that follows it.
+    "save_komga_config",
+    "save_komga_library_mappings",
 }
 
 

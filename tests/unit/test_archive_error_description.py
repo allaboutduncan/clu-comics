@@ -9,8 +9,9 @@ the log under megabytes of garbage.
 
 helpers.describe_archive_error collapses those messages; these tests pin the two
 properties that matter (binary is stripped, length is capped) and assert the
-reader routes in app.py actually route corrupt-archive errors through it. app.py
-cannot be imported in tests, so that half is checked against the parsed AST.
+reader routes (routes/reading.py, moved out of app.py) route corrupt-archive
+errors through it. tests/routes/test_reader_page_routes.py runs those routes
+against a damaged archive; the AST half here pins the handler's shape.
 """
 
 import ast
@@ -23,7 +24,7 @@ import pytest
 from helpers import describe_archive_error
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-APP_PATH = os.path.join(PROJECT_ROOT, "app.py")
+APP_PATH = os.path.join(PROJECT_ROOT, "routes", "reading.py")
 
 
 def _real_header_mismatch_message():
@@ -91,7 +92,7 @@ def _function(tree, name):
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
-    pytest.fail(f"{name} not found in app.py")
+    pytest.fail(f"{name} not found in routes/reading.py")
 
 
 class TestReaderRoutesUseIt:
