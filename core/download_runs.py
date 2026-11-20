@@ -22,7 +22,15 @@ Things that look arbitrary and are not:
   needed and the table can never outgrow one run's worth of slack.
 - **Recording never raises.** Every call here sits inside a sweep or a download
   worker; a diagnostic must never break the thing it is diagnosing (the same
-  contract as :func:`core.problem_files.record_problem`). Failures are DEBUG.
+  contract as :func:`core.problem_files.record_problem`).
+- **A run that could not be opened is deferred, not dropped.** ``start_run``
+  used to return the null recorder when its INSERT lost to another writer
+  ("database is locked" during a library scan), so a sweep that queued 150
+  downloads left no row at all, and said so only at DEBUG (#806). The recorder
+  now keeps counting and buffering and opens its row on the next flush, with
+  the original start time. Lost history is a WARNING: once per run on the
+  first failed write, and once more if ``finish`` gives up. The retries in
+  between are DEBUG.
 - **Items are buffered and flushed in batches**, not written one per issue: the
   sweep runs for hours against a database the rest of the app is using, and a
   write per searched issue is a write lock per searched issue.
@@ -77,6 +85,9 @@ MAX_AGE_DAYS = 90
 DEFAULT_KEEP = 30
 DETAIL_MAX = 300
 FLUSH_EVERY = 100
+# finish() is the last chance to write a run, so it retries. Each attempt has
+# already waited out the connection's busy_timeout; these are the pauses between.
+FINISH_RETRY_DELAYS = (2, 5)
 
 
 def _now():
@@ -128,7 +139,7 @@ def prune_runs(conn, kind, keep, now=None):
 
 
 class _NullRecorder:
-    """Accepts every call and records nothing (dry runs, failed starts)."""
+    """Accepts every call and records nothing (dry runs)."""
 
     run_id = None
 
@@ -152,16 +163,25 @@ NULL_RECORDER = _NullRecorder()
 
 
 class RunRecorder:
-    """Collects one run's counters and items and writes them in batches."""
+    """Collects one run's counters and items and writes them in batches.
 
-    def __init__(self, run_id):
-        self.run_id = run_id
+    ``run_id`` is None until the ``download_runs`` row exists. Normally
+    :func:`start_run` creates it; if that write failed, every later flush tries
+    again, so a busy database at the start costs nothing but a late row.
+    """
+
+    def __init__(self, kind, trigger=TRIGGER_SCHEDULED, scope=None):
+        self.run_id = None
+        self.kind = kind
+        self.trigger = trigger
         self.counts = {}
+        self._started_at = _now()
         self._pending = []
         self._item_total = 0
         self._truncated = False
         self._finished = False
-        self._scope = None
+        self._scope = _clip(scope, 200)
+        self._warned = False
 
     def count(self, key, n=1):
         self.counts[key] = self.counts.get(key, 0) + n
@@ -184,76 +204,122 @@ class RunRecorder:
             self._truncated = True
             return
         self._item_total += 1
+        # No run_id here: the row may not exist yet. _write prepends it.
         self._pending.append((
-            self.run_id, series_id, _clip(series_name, 200),
+            series_id, _clip(series_name, 200),
             _clip(issue_number, 40), source, provider, outcome, _clip(redact_url(detail)),
             download_id, OUTCOME_QUEUED if download_id else None, _now(),
         ))
         if len(self._pending) >= FLUSH_EVERY:
             self._flush()
 
-    def _flush(self, status=None, error=None):
-        try:
-            from core.database import db_conn
+    def _label(self):
+        return f"{self.kind} run" + (f" {self.run_id}" if self.run_id else "")
 
-            with db_conn() as conn:
-                if not conn:
-                    return
-                if self._pending:
-                    conn.executemany(
-                        """
-                        INSERT INTO download_run_items (
-                            run_id, series_id, series_name, issue_number, source,
-                            provider, outcome, detail, download_id,
-                            download_status, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        self._pending,
-                    )
-                sets = ["counts_json = ?", "items_truncated = ?"]
-                args = [json.dumps(self.counts, sort_keys=True), int(self._truncated)]
-                if self._scope:
-                    sets.append("scope = ?")
-                    args.append(self._scope)
-                if status:
-                    sets += ["status = ?", "finished_at = ?", "error = ?"]
-                    args += [status, _now(), _clip(redact_url(error))]
-                conn.execute(
-                    f"UPDATE download_runs SET {', '.join(sets)} WHERE id = ?",
-                    args + [self.run_id],
+    def _open(self, conn):
+        """Create the run's row (pruning old ones first). Not committed here."""
+        prune_runs(conn, self.kind, _keep_runs())
+        cur = conn.execute(
+            "INSERT INTO download_runs (kind, trigger, scope, started_at, status, "
+            "counts_json, items_truncated) VALUES (?, ?, ?, ?, ?, '{}', 0)",
+            (self.kind, self.trigger, self._scope, self._started_at, STATUS_RUNNING),
+        )
+        return cur.lastrowid
+
+    def _write(self, status=None, error=None):
+        """One attempt at writing everything buffered. Raises on failure, and
+        leaves the buffer and ``run_id`` untouched so the next attempt starts
+        from the same place."""
+        from core.database import db_conn
+
+        with db_conn() as conn:
+            if not conn:
+                raise RuntimeError("no database connection")
+            # One transaction with the items: a rolled-back open must not
+            # leave a run_id that names no row.
+            run_id = self.run_id if self.run_id is not None else self._open(conn)
+            if self._pending:
+                conn.executemany(
+                    """
+                    INSERT INTO download_run_items (
+                        run_id, series_id, series_name, issue_number, source,
+                        provider, outcome, detail, download_id,
+                        download_status, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [(run_id,) + row for row in self._pending],
                 )
-                conn.commit()
-                self._pending = []
+            sets = ["counts_json = ?", "items_truncated = ?"]
+            args = [json.dumps(self.counts, sort_keys=True), int(self._truncated)]
+            if self._scope:
+                sets.append("scope = ?")
+                args.append(self._scope)
+            if status:
+                sets += ["status = ?", "finished_at = ?", "error = ?"]
+                args += [status, _now(), _clip(redact_url(error))]
+            conn.execute(
+                f"UPDATE download_runs SET {', '.join(sets)} WHERE id = ?",
+                args + [run_id],
+            )
+            conn.commit()
+            self.run_id = run_id
+            self._pending = []
+
+    def _flush(self, status=None, error=None):
+        """Write what is buffered. Returns whether it was written; never raises."""
+        try:
+            self._write(status=status, error=error)
         except Exception as e:
-            app_logger.debug(f"Download run {self.run_id}: flush failed: {e}")
+            # The transition is the news; the retries that follow are not.
+            if not self._warned:
+                self._warned = True
+                app_logger.warning(
+                    f"Download History: could not write the {self._label()} ({e}). "
+                    f"The run itself continues and the write will be retried."
+                )
+            else:
+                app_logger.debug(
+                    f"Download History: {self._label()} write failed again: {e}"
+                )
+            return False
+        if self._warned:
+            self._warned = False
+            app_logger.info(f"Download History: the {self._label()} is recorded again")
+        return True
 
     def finish(self, status=STATUS_OK, error=None):
         """Write what is buffered and close the run. Safe to call twice."""
         if self._finished:
             return
         self._finished = True
-        self._flush(status=status, error=error)
+        try:
+            import time
+
+            for delay in (*FINISH_RETRY_DELAYS, None):
+                if self._flush(status=status, error=error):
+                    return
+                if delay is not None:
+                    time.sleep(delay)
+            app_logger.warning(
+                f"Download History is incomplete: the {self._label()} could not be "
+                f"saved after {len(FINISH_RETRY_DELAYS) + 1} attempts "
+                f"({len(self._pending)} item(s) not written"
+                + ("" if self.run_id else ", and the run itself is not listed")
+                + "). The downloads it queued are not affected."
+            )
+        except Exception as e:
+            app_logger.debug(f"Download History: finishing the {self._label()} failed: {e}")
 
 
 def start_run(kind, trigger=TRIGGER_SCHEDULED, scope=None):
-    """Open a run (pruning old ones first). Returns a recorder, never raises."""
-    try:
-        from core.database import db_conn
+    """Open a run (pruning old ones first). Returns a recorder, never raises.
 
-        with db_conn() as conn:
-            if not conn:
-                return NULL_RECORDER
-            prune_runs(conn, kind, _keep_runs())
-            cur = conn.execute(
-                "INSERT INTO download_runs (kind, trigger, scope, started_at, status, "
-                "counts_json, items_truncated) VALUES (?, ?, ?, ?, ?, '{}', 0)",
-                (kind, trigger, _clip(scope, 200), _now(), STATUS_RUNNING),
-            )
-            conn.commit()
-            return RunRecorder(cur.lastrowid)
-    except Exception as e:
-        app_logger.debug(f"Could not open a download run record: {e}")
-        return NULL_RECORDER
+    If the row cannot be written now the recorder is returned anyway and opens
+    it on a later flush -- see the module docstring.
+    """
+    run = RunRecorder(kind, trigger, scope)
+    run._flush()
+    return run
 
 
 def set_download_outcome(download_id, status, detail=None):

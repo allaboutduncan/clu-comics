@@ -42,6 +42,13 @@ Run reports are bounded on purpose: skips are counters, never rows; at most
 `RUN_ITEM_CAP` items a run; `download_run_history_keep` runs per kind and
 nothing older than 90 days, pruned when a run starts.
 
+`start_run` never hands back the null recorder for a real run. If its INSERT
+loses to another writer ("database is locked" during a library scan) the
+recorder keeps buffering and opens the row on the next flush with the original
+start time; `finish` retries before giving up. Lost history is a WARNING, once
+on the first failed write and once if `finish` gives up (#806: 150 downloads
+queued, no run row, one DEBUG line).
+
 Two rules that are easy to break:
 
 - **Cancellations must never notify.** Aborting a transfer is how a cancel
