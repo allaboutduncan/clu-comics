@@ -386,3 +386,32 @@ class TestDecision:
     )
     def test_table(self, existing, mtime, in_flight, expected):
         assert needs_thumbnail(existing, mtime, in_flight) is expected
+
+
+class TestAMissingFilesErrorRowSettles:
+    """#801: set_job_status cannot stat a comic that has been moved or deleted,
+    so its error row always carries a NULL file_mtime. /api/thumbnail read NULL
+    as "retry once", which for a missing file never settles: a failing job on
+    every 2s grid poll."""
+
+    def test_the_row_a_missing_file_leaves_asks_for_no_retry(
+        self, db_connection, tmp_path
+    ):
+        from core.thumbnail_cache import file_changed_since, set_job_status
+
+        gone = str(tmp_path / "library" / "Moved.cbz")
+        set_job_status(gone, "error")
+
+        row = _row(db_connection, gone)
+        assert row["status"] == "error"
+        assert row["file_mtime"] is None
+        assert file_changed_since(gone, row["file_mtime"]) is False
+
+    def test_the_file_coming_back_is_retried(self, db_connection, tmp_path):
+        from core.thumbnail_cache import file_changed_since, set_job_status
+
+        gone = str(tmp_path / "library" / "Moved.cbz")
+        set_job_status(gone, "error")
+        _comic(tmp_path / "library", "Moved.cbz")
+
+        assert file_changed_since(gone, _row(db_connection, gone)["file_mtime"]) is True

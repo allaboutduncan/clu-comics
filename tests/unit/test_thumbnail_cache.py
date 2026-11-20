@@ -290,10 +290,18 @@ class TestFileChangedSince:
         """Rows predating the file_mtime column cannot answer the question, and
         the useful reading of that is 'retry once' — after which the row
         carries a real mtime and settles."""
-        assert file_changed_since(str(tmp_path / "any.cbz"), None) is True
+        cbz = tmp_path / "any.cbz"
+        _make_cbz(str(cbz))
+        assert file_changed_since(str(cbz), None) is True
 
     def test_false_when_the_file_is_gone(self, tmp_path):
         assert file_changed_since(str(tmp_path / "gone.cbz"), 1.0) is False
+
+    def test_false_for_a_null_mtime_when_the_file_is_gone(self, tmp_path):
+        """#801: a missing file's error row always has a NULL mtime, because
+        set_job_status cannot stat it. Answering True made /api/thumbnail
+        submit another doomed job on every 2s grid poll, forever."""
+        assert file_changed_since(str(tmp_path / "gone.cbz"), None) is False
 
 
 class TestInvalidate:
