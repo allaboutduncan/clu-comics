@@ -358,6 +358,29 @@
         </div>
     </div>
 
+    <!-- Constellation: who appears with whom in what was read -->
+    <div class="row g-4 mb-4">
+        <div class="col-12">
+            <div class="section-card">
+                <div class="section-card-header d-flex justify-content-between align-items-center">
+                    <h3><i class="bi bi-stars"></i>Constellation</h3>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Constellation of">
+                        <input type="radio" class="btn-check" name="constellationKind" id="constellationCharacters"
+                            value="characters" autocomplete="off" checked>
+                        <label class="btn btn-outline-secondary" for="constellationCharacters">Characters</label>
+                        <input type="radio" class="btn-check" name="constellationKind" id="constellationCreators"
+                            value="creators" autocomplete="off">
+                        <label class="btn btn-outline-secondary" for="constellationCreators">Creators</label>
+                    </div>
+                </div>
+                <div class="section-card-body">
+                    <div id="constellationCanvas" class="constellation-canvas"></div>
+                    <div class="text-muted small mt-2" id="constellationNote"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Top 20 Series by Issue Count -->
     <div class="row g-4 mb-4">
         <div class="col-12 col-sm-6">
@@ -569,5 +592,6 @@
     'reading_heatmap': reading_heatmap
 } | tojson }}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"></script>
+<script src="{{ asset('js/clu-constellation.js') }}"></script>
 <script src="{{ asset('js/insights.js') }}"></script>
 {% endblock %}

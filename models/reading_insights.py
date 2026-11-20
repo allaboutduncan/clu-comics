@@ -621,3 +621,191 @@ def day_detail(local_day, user_id=None, tz_hours=None):
             + sum(r["seconds"] for r in reads if r["minutes"])
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Constellation: who appears with whom
+# ---------------------------------------------------------------------------
+
+CONSTELLATION_KINDS = ("characters", "creators")
+CONSTELLATION_NODE_LIMIT = 40
+CONSTELLATION_EDGES_PER_NODE = 5
+
+
+def _graph_members(event, kind):
+    """``[(name, role)]`` for one read. *role* is the /browse category the
+    name links to."""
+    if kind == "creators":
+        members = [(name, "writer") for name in event.writers]
+        known = {name.casefold() for name in event.writers}
+        # Someone who both wrote and drew an issue is one node, not two.
+        members += [(name, "penciller") for name in event.pencillers
+                    if name.casefold() not in known]
+        return members
+    return [(name, "characters") for name in event.characters]
+
+
+def character_graph(events, kind="characters", limit=CONSTELLATION_NODE_LIMIT,
+                    edges_per_node=CONSTELLATION_EDGES_PER_NODE):
+    """Who appears together across the issues read.
+
+    A node is a character (or, for ``kind="creators"``, a writer or artist)
+    sized by the number of issues they are in; an edge joins two who share an
+    issue, weighted by how many. Only the *limit* most frequent are kept, and
+    each keeps only its *edges_per_node* strongest ties, so a team book with
+    thirty names in every issue does not turn the picture into a solid ball.
+
+    Hidden reads are left out: the graph names what is in them.
+    Names are matched case-insensitively and shown as first spelled.
+    """
+    spelling, role_of, counts = {}, {}, {}
+    per_issue = []
+    for event in events:
+        if event.hidden:
+            continue
+        keys = []
+        for name, role in _graph_members(event, kind):
+            key = name.casefold()
+            if key in keys:
+                continue
+            spelling.setdefault(key, name)
+            role_of.setdefault(key, role)
+            counts[key] = counts.get(key, 0) + 1
+            keys.append(key)
+        if keys:
+            per_issue.append(keys)
+
+    top = sorted(counts, key=lambda key: (-counts[key], key))[:limit]
+    index = {key: i for i, key in enumerate(top)}
+
+    weights = {}
+    for keys in per_issue:
+        present = sorted(index[key] for key in keys if key in index)
+        for i, a in enumerate(present):
+            for b in present[i + 1:]:
+                weights[(a, b)] = weights.get((a, b), 0) + 1
+
+    # Each node nominates its strongest ties; an edge survives if either end
+    # nominates it.
+    by_node = {}
+    for (a, b), weight in weights.items():
+        by_node.setdefault(a, []).append((weight, a, b))
+        by_node.setdefault(b, []).append((weight, a, b))
+    kept = set()
+    for ties in by_node.values():
+        ties.sort(key=lambda tie: (-tie[0], tie[1], tie[2]))
+        kept.update((a, b) for _, a, b in ties[:edges_per_node])
+
+    return {
+        "nodes": [
+            {"id": i, "name": spelling[key], "count": counts[key], "role": role_of[key]}
+            for i, key in enumerate(top)
+        ],
+        "edges": [
+            {"source": a, "target": b, "weight": weights[(a, b)]}
+            for a, b in sorted(kept)
+        ],
+        "issues": len(per_issue),
+        "total": len(counts),
+    }
+
+
+def layout_graph(node_count, edges, iterations=220):
+    """Positions in the unit square for a small graph, as ``[(x, y), ...]``.
+
+    A Fruchterman-Reingold spring layout: every pair of nodes repels, every
+    edge pulls (harder the heavier it is), and a weak pull to the centre keeps
+    unconnected nodes from drifting off. Computed here rather than in the
+    browser so that it is **deterministic** -- the same reading history draws
+    the same sky on every load and every device -- and so the rule has a test.
+    There is no randomness: nodes start on a golden-angle spiral in id order.
+    """
+    import math
+
+    if node_count == 0:
+        return []
+    if node_count == 1:
+        return [(0.5, 0.5)]
+
+    golden = math.pi * (3 - math.sqrt(5))
+    xs, ys = [], []
+    for i in range(node_count):
+        radius = 0.45 * math.sqrt((i + 0.5) / node_count)
+        xs.append(radius * math.cos(i * golden))
+        ys.append(radius * math.sin(i * golden))
+
+    k = math.sqrt(1.0 / node_count)
+    heaviest = max((e["weight"] for e in edges), default=1)
+    pulls = [(e["source"], e["target"], 0.3 + 0.7 * e["weight"] / heaviest) for e in edges]
+
+    for step in range(iterations):
+        temperature = 0.1 * (1 - step / iterations)
+        dx = [0.0] * node_count
+        dy = [0.0] * node_count
+        for i in range(node_count):
+            for j in range(i + 1, node_count):
+                ox, oy = xs[i] - xs[j], ys[i] - ys[j]
+                distance = math.hypot(ox, oy) or 0.001
+                force = k * k / distance
+                fx, fy = ox / distance * force, oy / distance * force
+                dx[i] += fx
+                dy[i] += fy
+                dx[j] -= fx
+                dy[j] -= fy
+        for a, b, pull in pulls:
+            ox, oy = xs[a] - xs[b], ys[a] - ys[b]
+            distance = math.hypot(ox, oy) or 0.001
+            force = distance * distance / k * pull
+            fx, fy = ox / distance * force, oy / distance * force
+            dx[a] -= fx
+            dy[a] -= fy
+            dx[b] += fx
+            dy[b] += fy
+        for i in range(node_count):
+            dx[i] -= xs[i] * 0.6 * k
+            dy[i] -= ys[i] * 0.6 * k
+            length = math.hypot(dx[i], dy[i]) or 0.001
+            move = min(length, temperature)
+            xs[i] += dx[i] / length * move
+            ys[i] += dy[i] / length * move
+
+    # Fit the result into the unit square with a margin, each axis on its own:
+    # the card is wider than it is tall and the picture should fill it.
+    def fit(values):
+        low, high = min(values), max(values)
+        if high - low < 1e-9:
+            return [0.5] * len(values)
+        return [round(0.06 + 0.88 * (v - low) / (high - low), 4) for v in values]
+
+    return list(zip(fit(xs), fit(ys)))
+
+
+def constellation(user_id=None, year=None, kind="characters", tz_hours=None):
+    """The laid-out graph for one user, a year (None = all time) and a kind.
+
+    Cached in ``stats_cache`` under the user's prefix, which marking a comic
+    read and the metadata backfill both clear -- the two things that change it.
+    """
+    from core.database import get_cached_stats, save_cached_stats
+    from core.user_time import local_period_bounds_utc, sql_offset_modifier
+
+    if kind not in CONSTELLATION_KINDS:
+        kind = "characters"
+    uid = current_user_id() if user_id is None else user_id
+    hours = user_offset_hours() if tz_hours is None else tz_hours
+
+    cache_key = f"u{uid}:constellation:{kind}:{year or 'all'}:{sql_offset_modifier(hours)}"
+    cached = get_cached_stats(cache_key)
+    if cached:
+        return cached
+
+    start, end = local_period_bounds_utc(year, hours=hours) if year else (None, None)
+    graph = character_graph(
+        load_read_events(uid, start, end, include_hidden=False, tz_hours=hours), kind=kind)
+    for node, (x, y) in zip(graph["nodes"], layout_graph(len(graph["nodes"]), graph["edges"])):
+        node["x"], node["y"] = x, y
+    graph["kind"] = kind
+    graph["year"] = year
+    if graph["nodes"]:
+        save_cached_stats(cache_key, graph)
+    return graph

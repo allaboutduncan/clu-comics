@@ -905,8 +905,66 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
+    // =====================================================================
+    // Constellation (/api/reading-insights/constellation)
+    // =====================================================================
+
+    const constellationCanvas = document.getElementById('constellationCanvas');
+    const constellationNote = document.getElementById('constellationNote');
+    let constellationRequest = 0;
+
+    function constellationKind() {
+        return document.querySelector('input[name="constellationKind"]:checked').value;
+    }
+
+    async function loadConstellation() {
+        const kind = constellationKind();
+        const year = trendsYearFilter.value || 'all';
+        // A slow answer for an earlier choice must not overwrite a later one.
+        const request = ++constellationRequest;
+        try {
+            const response = await fetch(
+                `/api/reading-insights/constellation?kind=${encodeURIComponent(kind)}&year=${encodeURIComponent(year)}`);
+            const graph = await response.json();
+            if (request !== constellationRequest) return;
+            if (!graph.success) throw new Error(graph.error || 'No data');
+
+            if (graph.nodes.length === 0) {
+                constellationCanvas.replaceChildren(CLU.emptyState({
+                    icon: 'bi-stars',
+                    title: kind === 'creators' ? 'No creator credits yet' : 'No characters yet',
+                    message: 'This is drawn from the metadata of the comics you have read. Backfill Metadata fills it in for older reads.',
+                    compact: true
+                }));
+                constellationNote.textContent = '';
+                return;
+            }
+
+            CLU.renderConstellation(constellationCanvas, graph, {
+                label: kind === 'creators' ? 'Creators who worked together' : 'Characters who appear together',
+                hrefFor: node => `/browse/${node.role}/${encodeURIComponent(node.name)}`
+            });
+            const noun = kind === 'creators' ? 'creator' : 'character';
+            const shown = graph.nodes.length < graph.total
+                ? `The ${graph.nodes.length} most frequent of ${plural(graph.total, noun)}`
+                : plural(graph.total, noun);
+            constellationNote.textContent =
+                `${shown} across ${plural(graph.issues, 'issue')}. Size is how many issues; a line joins two who share one. Hover to see ties, click to browse.`;
+        } catch (error) {
+            if (request !== constellationRequest) return;
+            console.error('Error loading constellation:', error);
+            constellationCanvas.innerHTML = '<div class="text-center text-danger py-3">Error loading data</div>';
+            constellationNote.textContent = '';
+        }
+    }
+
+    document.querySelectorAll('input[name="constellationKind"]').forEach(input => {
+        input.addEventListener('change', loadConstellation);
+    });
+
     trendsYearFilter.addEventListener('change', function () {
         loadReadingTrends(this.value);
+        loadConstellation();
     });
 
     const backfillConfirmModal = new bootstrap.Modal(document.getElementById('backfillConfirmModal'));
@@ -927,6 +985,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         CLU.showSuccess(`Backfill complete! Updated: ${result.updated} comics, Skipped: ${result.skipped} comics`);
         loadReadingTrends(trendsYearFilter.value);
+        loadConstellation();
 
         const skipped = result.skipped_issues || [];
         if (skipped.length > 0) {
@@ -1091,4 +1150,5 @@ document.addEventListener('DOMContentLoaded', function () {
     loadSummary(null);
     loadClock(new Date().getFullYear());
     loadReadingTrends();
+    loadConstellation();
 });

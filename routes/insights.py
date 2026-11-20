@@ -14,6 +14,7 @@ Routes:
     GET /api/reading-insights/summary  -- goal, streaks, weeks, shelf
     GET /api/reading-insights/clock    -- reading time by hour and weekday
     GET /api/reading-insights/day/<d>  -- one day's sittings and reads
+    GET /api/reading-insights/constellation -- who appears with whom
     POST /api/account/reading-goal     -- the user's yearly goal
 
 ``/api/insights`` is a login-exempt prefix (routes/auth.py), matched on a
@@ -39,7 +40,9 @@ from models.stats import (
 )
 from models.reading_insights import (
     MAX_GOAL,
+    CONSTELLATION_KINDS,
     clock_for_period,
+    constellation,
     day_detail,
     insights_summary,
     set_reading_goal,
@@ -334,3 +337,25 @@ def api_reading_insights_day(day):
     for item in detail["sessions"] + detail["reads"]:
         item["thumbnail_url"] = url_for("get_thumbnail", path=item["path"])
     return jsonify({"success": True, **detail})
+
+
+@insights_bp.route("/api/reading-insights/constellation")
+def api_reading_insights_constellation():
+    """The laid-out graph of who appears together in the issues read.
+
+    ``?kind=characters`` (default) or ``creators``; ``?year=`` limits it to
+    one local year, omitted or ``all`` is all time.
+    """
+    kind = request.args.get("kind", "characters")
+    if kind not in CONSTELLATION_KINDS:
+        return jsonify({"success": False, "error": "Invalid kind"}), 400
+    raw = request.args.get("year")
+    year = None
+    if raw and raw != "all":
+        try:
+            year = int(raw)
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid year"}), 400
+        if not 1900 <= year <= 2200:
+            return jsonify({"success": False, "error": "Invalid year"}), 400
+    return jsonify({"success": True, **constellation(year=year, kind=kind)})
