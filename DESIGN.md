@@ -167,7 +167,7 @@ The palette is borrowed: Bootstrap's semantic roles, filled in by whichever them
 **The Selection Rule.** Selected and drop-target covers use `--clu-select` (the theme primary pushed 30% toward `--bs-emphasis-color`, defined in `collection.css`), so a muted primary still marks a selection clearly and carries a white check.
 
 ### Known drift (to fix)
-`collection.css` is clean. These still ignore the active theme and should move to variables when their file is next touched: the multi-select bulk action bar's navy gradient (`#1a1a2e → #16213e`, duplicated in `collection.css` and `series.html`; `var(--bs-dark)` is the theme-aware equivalent); `.ops-item-error` border `#dc3545` in `base.html` (should be `--bs-danger`); Bootstrap 4's `#28a745` green; and reader progress glows in `rgba(13, 110, 253, …)` instead of `--bs-primary-rgb`. `static/css/zephyr.css` is a vendored Bootswatch file that nothing links; it is not part of the system.
+`collection.css` is clean. These still ignore the active theme and should move to variables when their file is next touched: the multi-select bulk action bar's navy gradient (`#1a1a2e → #16213e`, duplicated in `collection.css` and `series.html`; `var(--bs-dark)` is the theme-aware equivalent); `.ops-item-error` border `#dc3545` in `base.html` (should be `--bs-danger`); Bootstrap 4's `#28a745` green; and reader progress glows in `rgba(13, 110, 253, …)` instead of `--bs-primary-rgb`.
 
 ## Typography
 

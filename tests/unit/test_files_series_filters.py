@@ -26,18 +26,17 @@ def _function(src, name):
 
 def test_letter_bars_are_drawn_by_clu_letter_bar():
     for path, fn in [("static/js/files.js", "updateFilterBar"),
-                     ("static/js/series.js", "updateFilterBar"),
-                     ("static/js/index.js", "updateModalFilterBar")]:
+                     ("static/js/series.js", "updateFilterBar")]:
         body = _function(_read(path), fn)
         assert "CLU.letterBar(" in body, f"{path}: {fn} does not use CLU.letterBar"
-    for path in ["static/js/files.js", "static/js/series.js", "static/js/index.js"]:
+    for path in ["static/js/files.js", "static/js/series.js"]:
         src = _read(path)
         assert "fromCharCode" not in src, path
         assert "filterDirectories(" not in src and "filterModalDirectories(" not in src, path
 
 
 def test_letter_bar_containers():
-    for path in ["templates/files.html", "templates/index.html", "templates/series.html"]:
+    for path in ["templates/files.html", "templates/series.html"]:
         src = _read(path)
         assert "grid-filter-buttons" not in src, path
         assert 'class="clu-letter-bar' in src, path

@@ -1,4 +1,4 @@
-"""Tests for helpers.py -- is_hidden, image math, and utility functions."""
+"""Tests for the helpers package -- is_hidden, image math, and utility functions."""
 import pytest
 import math
 from unittest.mock import patch, MagicMock

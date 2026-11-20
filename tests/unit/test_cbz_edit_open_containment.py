@@ -245,4 +245,5 @@ class TestFrontendCallers:
                 window = src[m.end():m.end() + 200]
                 assert re.match(r"""\s*,\s*\{\s*method:\s*['"]POST['"]""", window), p
                 assert "file_path" in window, p
-        assert calls >= 7
+        # 7 until the unrendered static/js/index.js (one caller) was deleted.
+        assert calls >= 6

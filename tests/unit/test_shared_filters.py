@@ -293,7 +293,6 @@ LETTER_BAR_HOSTS = [
     ("static/js/collection.js", "CLU.letterBar("),
     ("static/js/metadata_browser.js", "CLU.letterBar("),
     ("static/js/files.js", "CLU.letterBar("),
-    ("static/js/index.js", "CLU.letterBar("),
     ("static/js/series.js", "CLU.letterBar("),
     ("static/js/source_wall.js", "CLU.letterBar("),
     ("templates/pull_list.html", "letter_bar("),
@@ -349,8 +348,8 @@ def test_no_select_uses_its_first_option_as_a_label():
 
 
 def test_letter_buckets_come_from_sort_letters():
-    # "First character, or '#'" is CLU.sortLetters' rule. index.js, series.js
-    # and files.js each had their own copy of it.
+    # "First character, or '#'" is CLU.sortLetters' rule. series.js and
+    # files.js each had their own copy of it.
     copy = re.compile(r"letters\.add\([^)]*\?\s*\w+\s*:\s*'#'\)")
     hits = [f"{rel}:{src[:m.start()].count(chr(10)) + 1}"
             for rel, src in _sources() for m in copy.finditer(src)]

@@ -17,7 +17,7 @@ def natural_sort_key(file_path):
     - Files starting with special characters (non-alphanumeric) come first
     - Then case-insensitive natural (numeric-aware) sorting
 
-    This matches the sortInlineEditCards function in static/js/index.js
+    This matches the sortInlineEditCards function in static/js/clu-cbz-edit.js
     """
     # Get just the filename without the path
     filename = os.path.basename(file_path)
@@ -163,7 +163,7 @@ def remove_first_image_file(dir_path):
         app_logger.info(f"No supported image files found in {dir_path} or its subdirectories.")
         return
 
-    # Sort the image files using natural sort (matches JavaScript sorting in index.js)
+    # Sort the image files using natural sort (matches JavaScript sorting in clu-cbz-edit.js)
     # Files starting with special characters come first, then case-insensitive natural sort
     image_files.sort(key=natural_sort_key)
 
