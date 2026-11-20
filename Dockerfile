@@ -121,7 +121,7 @@ RUN dpkg -i /tmp/libgl1-mesa-dri.deb /tmp/adwaita-icon-theme.deb \
 
 # unrar binary built from RARLAB source in the builder stage — matches the
 # target architecture automatically under Buildx multi-arch builds.
-# Falls back to 7z/unar if unavailable — see helpers.py extract_rar_with_unar()
+# Falls back to 7z/unar if unavailable — see helpers.extract_rar_with_unar()
 COPY --from=builder /usr/local/bin/unrar /usr/local/bin/unrar
 
 WORKDIR /app

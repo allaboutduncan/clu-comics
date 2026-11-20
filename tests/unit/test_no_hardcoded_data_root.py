@@ -46,9 +46,6 @@ ALLOWED = {
     "helpers/library.py": 1,
     # API documentation examples.
     "routes/api_v1_docs.py": 12,
-    # templates/index.html is not rendered by any route; index.js is its script.
-    "static/js/index.js": 6,
-    "templates/index.html": 1,
     # Fallbacks behind an injected defaultLibraryPath / the libraries API.
     "static/js/series.js": 3,
     "templates/series.html": 1,
