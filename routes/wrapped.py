@@ -11,6 +11,10 @@ Routes (``<period>`` is ``<year>`` or ``monthly/<year>/<month>``):
     GET /api/wrapped/<period>/slide/<id>.png     -- one slide
     GET /api/wrapped/<period>/download           -- every slide, as a ZIP
     GET /api/wrapped/<period>/image/<n>          -- legacy: slides by number
+    POST /api/account/wrapped-style              -- the user's preferred style
+
+Manifest, slide and download take ``?style=``; without it they use the
+user's saved style (core/wrapped_styles.py).
 
 Every slide shows what the signed-in user read. Nothing here takes a user id.
 """
@@ -46,7 +50,7 @@ def _slide_endpoint(scope):
 
 
 def _manifest_response(scope, year, month=None):
-    style = wrapped_slides.clean_style(request.args.get("style"))
+    style = wrapped_slides.clean_style(request.args.get("style"), scope)
     theme = wrapped_slides.user_wrapped_theme()
     try:
         slides = wrapped_slides.build_manifest(scope, year, month, theme, style)
@@ -56,13 +60,15 @@ def _manifest_response(scope, year, month=None):
 
     period = {"year": year, "month": month} if scope == MONTHLY else {"year": year}
     for slide in slides:
-        query = {"style": style} if style != wrapped_slides.DEFAULT_STYLE else {}
+        # Always in the URL: a slide's address says what it is drawn in.
+        query = {"style": style}
         if slide["version"]:
             query["v"] = slide["version"]
         slide["url"] = url_for(_slide_endpoint(scope), slide_id=slide["id"], **period, **query)
     return jsonify({
         "scope": scope, "year": year, "month": month,
         "style": style, "theme": theme, "slides": slides,
+        "styles": wrapped_slides.style_choices(scope),
     })
 
 
@@ -71,7 +77,7 @@ def _slide_response(scope, slide_id, year, month=None):
     if spec is None:
         return jsonify({"error": "Unknown slide"}), 404
 
-    style = wrapped_slides.clean_style(request.args.get("style"))
+    style = wrapped_slides.clean_style(request.args.get("style"), scope)
     theme = wrapped_slides.user_wrapped_theme()
     try:
         image_bytes = wrapped_slides.render_slide(scope, slide_id, year, month, theme, style)
@@ -100,7 +106,7 @@ def _slide_response(scope, slide_id, year, month=None):
 
 
 def _zip_response(scope, year, month=None):
-    style = wrapped_slides.clean_style(request.args.get("style"))
+    style = wrapped_slides.clean_style(request.args.get("style"), scope)
     if scope == MONTHLY:
         folder = f"monthly_wrapped_{year}_{str(month).zfill(2)}"
     else:
@@ -236,3 +242,27 @@ def api_monthly_wrapped_image(year, month, slide_num):
 def api_monthly_wrapped_download(year, month):
     """Download all monthly wrapped images as ZIP."""
     return _bad_period(year, month) or _zip_response(MONTHLY, year, month)
+
+
+# Under /api/account/ so a Reader may save their own preference: that prefix
+# is what core.auth._READER_WRITE_PREFIXES allows for personal data.
+@wrapped_bp.route("/api/account/wrapped-style", methods=["POST"])
+def account_save_wrapped_style():
+    """Remember the style this user's recaps are drawn in.
+
+    One preference for both recaps. A style that only one of them has (the
+    monthly comic panels) is still stored; the other falls back to its
+    default. An empty value clears the choice.
+    """
+    from core.database import delete_user_setting, set_user_setting
+    from core.wrapped_styles import get_style
+
+    style = (request.get_json(silent=True) or {}).get("style")
+    if not style:
+        delete_user_setting(wrapped_slides.STYLE_SETTING)
+        return jsonify({"success": True, "style": None})
+    if not isinstance(style, str) or get_style(style) is None:
+        return jsonify({"success": False, "error": "Unknown style"}), 400
+    if not set_user_setting(wrapped_slides.STYLE_SETTING, style):
+        return jsonify({"success": False, "error": "Could not save the style"}), 500
+    return jsonify({"success": True, "style": style})

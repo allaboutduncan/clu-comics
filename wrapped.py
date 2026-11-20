@@ -13,6 +13,9 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, 
 from core.database import get_db_connection, current_user_id
 from core.app_logging import app_logger
 from core.user_time import localise_read_at_sql
+from core import wrapped_styles
+import contextlib
+import contextvars
 from core.thumbnail_cache import thumbnail_cache_path, thumbnails_root
 from tools.build_catppuccin_themes import PALETTE as CATPPUCCIN_PALETTE, year_in_review_colours
 import math
@@ -58,8 +61,29 @@ THEME_COLORS.update({
 })
 
 
+# The style the slide being drawn is in (core/wrapped_styles.py). A context
+# variable rather than a parameter: the three functions below are the only
+# places a slide gets its colours, fonts and background, so setting it once
+# around a generator restyles every slide without threading an argument
+# through every helper -- and a new slide follows styles by default.
+_active_style = contextvars.ContextVar("wrapped_style", default=None)
+
+
+@contextlib.contextmanager
+def use_style(style_id):
+    """Draw whatever runs inside the block in *style_id* (None = theme)."""
+    token = _active_style.set(wrapped_styles.get_style(style_id) if style_id else None)
+    try:
+        yield
+    finally:
+        _active_style.reset(token)
+
+
 def get_theme_colors(theme_name: str) -> dict:
-    """Return color palette for the given theme."""
+    """The palette to draw in: the active style's, else the theme's."""
+    style = _active_style.get()
+    if style is not None and style.palette:
+        return style.palette
     return THEME_COLORS.get(theme_name.lower(), THEME_COLORS['default'])
 
 
@@ -284,15 +308,49 @@ def get_all_wrapped_stats(year: int) -> dict:
 # Image Generation Functions
 # ==========================================
 
+# Candidate files per family, regular then bold. The Docker image ships
+# fonts-liberation and fonts-dejavu-core (see the Dockerfile: they are not
+# optional); the Windows entries are for local development.
+_FONT_FILES = {
+    'sans': (
+        ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+         '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+         'C:/Windows/Fonts/arial.ttf'],
+        ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+         '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+         'C:/Windows/Fonts/arialbd.ttf'],
+    ),
+    'serif': (
+        ['/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf',
+         'C:/Windows/Fonts/georgia.ttf', 'C:/Windows/Fonts/times.ttf'],
+        ['/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+         'C:/Windows/Fonts/georgiab.ttf', 'C:/Windows/Fonts/timesbd.ttf'],
+    ),
+    'mono': (
+        ['/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+         'C:/Windows/Fonts/consola.ttf'],
+        ['/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
+         'C:/Windows/Fonts/consolab.ttf'],
+    ),
+}
+
+
 def get_font(size: int, bold: bool = False):
-    font_candidates = [
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf' if bold else '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-        'C:/Windows/Fonts/arialbd.ttf' if bold else 'C:/Windows/Fonts/arial.ttf',
-        'C:/Windows/Fonts/segoeui.ttf',
-    ]
-    for font_path in font_candidates:
+    """A font at *size* in the active style's family, falling back to sans
+    and then to Pillow's built-in face."""
+    style = _active_style.get()
+    family = style.font_family if style is not None else 'sans'
+    candidates = list(_FONT_FILES.get(family, _FONT_FILES['sans'])[1 if bold else 0])
+    if family != 'sans':
+        candidates += _FONT_FILES['sans'][1 if bold else 0]
+    candidates.append('C:/Windows/Fonts/segoeui.ttf')
+    for font_path in candidates:
         try:
             return ImageFont.truetype(font_path, size)
         except (IOError, OSError):
@@ -301,6 +359,7 @@ def get_font(size: int, bold: bool = False):
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
+
 
 def draw_centered_text(draw: ImageDraw, text: str, y: int, font: ImageFont, fill: tuple,
                        max_width: int = None, image_width: int = IMAGE_WIDTH, shadow: bool = False, img_obj: Image.Image = None):
@@ -358,6 +417,10 @@ def draw_centered_text(draw: ImageDraw, text: str, y: int, font: ImageFont, fill
     return end_y
 
 def create_base_image(theme_colors: dict, bg_image_path: str = None) -> Image.Image:
+    # A designed style paints its own background, and does not sit on a cover.
+    style = _active_style.get()
+    if style is not None and style.paint is not None:
+        return style.paint(IMAGE_WIDTH, IMAGE_HEIGHT, theme_colors).convert('RGB')
     if bg_image_path and os.path.exists(bg_image_path):
         try:
             bg = Image.open(bg_image_path).convert('RGB')
@@ -1005,30 +1068,20 @@ def add_monthly_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, 
                        IMAGE_HEIGHT - 100, font_footer, muted_color, shadow=True, img_obj=img)
 
 
-def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
-    """Generate a single combined monthly recap slide (1080x1920) with all reading data.
+def _monthly_canvas(theme: str):
+    """Background and colours for a monthly slide.
 
-    Uses a fixed dark color palette inspired by the CLU design system:
-      --clu-bg-dark: #1e252e      --clu-text-white: #ffffff
-      --clu-text-light-grey: #b0c4de   --clu-accent-gold: #ffd700
+    Returns ``(img, bg, text, muted, accent)``. In the classic style (and with
+    no style at all, as the generators were always called) that is the comic
+    panel artwork, whose title is part of the image, with its fixed palette.
+    In any other style the slide is drawn in that style's palette on its
+    background, and the title is drawn here in the same place.
     """
-    try:
-        # ── Fixed color palette (CSS variables) ──
-        CLU_BG = (30, 37, 46)            # #1e252e
-        CLU_WHITE = (255, 255, 255)       # #ffffff
-        CLU_GREY = (176, 196, 222)        # #b0c4de
-        CLU_GOLD = (255, 215, 0)          # #ffd700
-
-        # ── Gather data ──
-        stats = get_monthly_stats(year, month)
-        most_read = get_monthly_most_read_series(year, month, limit=1)
-        top_series = get_monthly_top_series_with_thumbnails(year, month, limit=9)
-        all_issues = get_monthly_read_issues(year, month)
-        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
-
-        # ── Build background: use recap-bg.png directly (already styled) ──
+    style = _active_style.get()
+    if style is None or style.classic_artwork:
+        bg_color = (30, 37, 46)            # #1e252e
+        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), bg_color)
         bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
-        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
         if os.path.exists(bg_path):
             try:
                 bg = Image.open(bg_path).convert('RGB')
@@ -1040,6 +1093,35 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
                 img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
             except Exception:
                 pass
+        return img, bg_color, (255, 255, 255), (176, 196, 222), (255, 215, 0)
+
+    colors = get_theme_colors(theme)
+    img = create_base_image(colors).convert('RGB')
+    draw = ImageDraw.Draw(img)
+    draw_centered_text(draw, "READING RECAP", 70, get_font(84, bold=True),
+                       hex_to_rgb(colors['primary']))
+    return (img, hex_to_rgb(colors['bg']), hex_to_rgb(colors['text']),
+            hex_to_rgb(colors['text_muted']), hex_to_rgb(colors['primary']))
+
+
+def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
+    """Generate a single combined monthly recap slide (1080x1920) with all reading data.
+
+    Background and colours come from ``_monthly_canvas``: the comic-panel
+    artwork in the classic style, the active style's palette otherwise. The
+    ``CLU_*`` names below are that palette's background, text, muted and
+    accent colours.
+    """
+    try:
+        img, CLU_BG, CLU_WHITE, CLU_GREY, CLU_GOLD = _monthly_canvas(theme)
+
+        # ── Gather data ──
+        stats = get_monthly_stats(year, month)
+        most_read = get_monthly_most_read_series(year, month, limit=1)
+        top_series = get_monthly_top_series_with_thumbnails(year, month, limit=9)
+        all_issues = get_monthly_read_issues(year, month)
+        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
+
         draw = ImageDraw.Draw(img)
 
         # ── Helper: draw a separator line ──
@@ -1303,28 +1385,11 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
 def generate_monthly_all_issues_slide(year: int, month: int, theme: str) -> bytes:
     """Generate a slide showing all issues read in the month as a grid of thumbnails."""
     try:
-        # ── Fixed color palette (same as recap slide) ──
-        CLU_BG = (30, 37, 46)
-        CLU_WHITE = (255, 255, 255)
-        CLU_GREY = (176, 196, 222)
+        img, CLU_BG, CLU_WHITE, CLU_GREY, _accent = _monthly_canvas(theme)
 
         all_issues = get_monthly_read_issues(year, month)
         month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
 
-        # ── Background: same recap-bg.png ──
-        bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
-        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
-        if os.path.exists(bg_path):
-            try:
-                bg = Image.open(bg_path).convert('RGB')
-                ratio = max(IMAGE_WIDTH / bg.width, IMAGE_HEIGHT / bg.height)
-                bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)),
-                               Image.Resampling.LANCZOS)
-                left = (bg.width - IMAGE_WIDTH) // 2
-                top = (bg.height - IMAGE_HEIGHT) // 2
-                img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
-            except Exception:
-                pass
         draw = ImageDraw.Draw(img)
 
         # ── Layout: same spacing as recap slide ──

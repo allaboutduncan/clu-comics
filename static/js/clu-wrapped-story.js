@@ -22,6 +22,10 @@
  *   on a single-worker server; asking for all of them at once queues them
  *   behind each other and behind the rest of the app.
  * - With "reduce motion" on, nothing advances by itself.
+ * - The style picker reloads the manifest in the chosen style and saves it
+ *   as the user's preference. Slide URLs carry the style, so a slide drawn
+ *   in the previous one is never shown. Edits belong to the slides they
+ *   were drawn on and are dropped with them.
  * - "Download All" is the server's ZIP unless a slide was edited here, in
  *   which case the ZIP is built in the browser from the same manifest.
  */
@@ -71,6 +75,7 @@
             next: byId('wrappedStoryNext'),
             customize: byId('wrappedStoryCustomize'),
             download: byId('wrappedStoryDownload'),
+            style: byId('wrappedStoryStyle'),
             canvas: byId('editorCanvas')
         };
         modal = new bootstrap.Modal(root);
@@ -242,6 +247,7 @@
         });
 
         dom.customize.addEventListener('click', () => { if (state) openEditor(); });
+        dom.style.addEventListener('change', changeStyle);
         dom.download.addEventListener('click', downloadAll);
     }
 
@@ -486,19 +492,81 @@
     // Open
     // =====================================================================
 
+    function withStyle(url, style) {
+        return style ? `${url}${url.includes('?') ? '&' : '?'}style=${encodeURIComponent(style)}` : url;
+    }
+
+    async function fetchManifest(options, style) {
+        const response = await fetch(withStyle(options.manifestUrl, style));
+        const manifest = await response.json();
+        if (!response.ok) throw new Error(manifest.error || 'Could not load your Wrapped');
+        return manifest;
+    }
+
+    // Put a manifest on screen, starting at *index*.
+    function load(manifest, index) {
+        state.slides = manifest.slides;
+        state.style = manifest.style;
+        state.edited = {};
+        state.overlays = {};
+        state.loadToken++;
+
+        dom.download.href = withStyle(state.options.downloadUrl, manifest.style);
+        dom.style.replaceChildren(...(manifest.styles || []).map(choice => {
+            const option = document.createElement('option');
+            option.value = choice.id;
+            option.textContent = choice.label;
+            option.selected = choice.id === manifest.style;
+            return option;
+        }));
+        dom.style.style.display = (manifest.styles || []).length > 1 ? '' : 'none';
+        dom.segments.replaceChildren(...manifest.slides.map(() => {
+            const segment = document.createElement('div');
+            segment.className = 'wrapped-story-segment';
+            segment.appendChild(document.createElement('span'));
+            return segment;
+        }));
+        show(Math.min(index, manifest.slides.length - 1));
+    }
+
+    async function changeStyle() {
+        if (!state) return;
+        const style = dom.style.value;
+        const hadEdits = Object.keys(state.edited).length > 0;
+        dom.style.disabled = true;
+        try {
+            const manifest = await fetchManifest(state.options, style);
+            if (!state) return;
+            if (!manifest.slides || manifest.slides.length === 0) throw new Error('No slides');
+            load(manifest, state.index);
+            if (hadEdits) CLU.showToast('Wrapped', 'Your edits were for the previous style and were removed.', 'info');
+            // Remembered for next time; the viewer already shows the choice,
+            // so a failed save is not worth interrupting for.
+            fetch('/api/account/wrapped-style', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ style })
+            }).catch(() => {});
+        } catch (error) {
+            CLU.showError('Could not change the style: ' + error.message);
+            if (state) dom.style.value = state.style;
+        } finally {
+            dom.style.disabled = false;
+        }
+    }
+
     async function open(options) {
         if (!init()) {
             console.error('wrappedStory: partials/wrapped_story.html is not on this page');
             return false;
         }
-        const response = await fetch(options.manifestUrl);
-        const manifest = await response.json();
-        if (!response.ok) throw new Error(manifest.error || 'Could not load your Wrapped');
+        const manifest = await fetchManifest(options, null);
         if (!manifest.slides || manifest.slides.length === 0) return false;
 
         state = {
             options,
-            slides: manifest.slides,
+            slides: [],
+            style: null,
             index: 0,
             elapsed: 0,
             lastTick: null,
@@ -514,18 +582,11 @@
         };
 
         dom.title.textContent = options.title || '';
-        dom.download.href = options.downloadUrl;
-        dom.segments.replaceChildren(...manifest.slides.map(() => {
-            const segment = document.createElement('div');
-            segment.className = 'wrapped-story-segment';
-            segment.appendChild(document.createElement('span'));
-            return segment;
-        }));
         showEditor(false);
         setPaused(reducedMotion(), reducedMotion());
 
         modal.show();
-        show(0);
+        load(manifest, 0);
         state.frame = requestAnimationFrame(tick);
         return true;
     }

@@ -52,14 +52,18 @@ class TestManifest:
             "summary", "most-read-series", "series-highlights", "books-grid"]
         assert [s["filename"] for s in body["slides"]][0] == "01_summary.png"
         first = body["slides"][0]
-        assert first["url"] == f"/api/wrapped/2024/slide/summary.png?v={first['version']}"
+        assert first["url"] == (
+            f"/api/wrapped/2024/slide/summary.png?style=theme&v={first['version']}")
         assert all(s["title"] for s in body["slides"])
 
     def test_monthly(self, client, reads):
         body = client.get("/api/wrapped/monthly/2024/6/manifest").get_json()
         assert (body["scope"], body["month"]) == ("monthly", 6)
         assert [s["id"] for s in body["slides"]] == ["recap", "all-issues"]
-        assert body["slides"][0]["url"].startswith("/api/wrapped/monthly/2024/6/slide/recap.png?v=")
+        # Monthly keeps its comic-panel look until the user picks another.
+        assert body["style"] == "classic"
+        assert body["slides"][0]["url"].startswith(
+            "/api/wrapped/monthly/2024/6/slide/recap.png?style=classic&v=")
 
     def test_a_period_with_no_reads_has_no_slides(self, client, reads):
         assert client.get("/api/wrapped/2019/manifest").get_json()["slides"] == []

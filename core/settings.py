@@ -112,6 +112,10 @@ SETTINGS_SCHEMA = {
     "LIBRARY_HEALTH_RECHECK_DAYS": _s("library_health_recheck_days", _I, 90, "system"),
     # appearance
     "BOOTSTRAP_THEME": _s("bootstrap_theme", _S, "default", "personalization"),
+    # Site-default Wrapped style (core/wrapped_styles.py); users pick their
+    # own in the Wrapped viewer. Blank = each recap's own default. Never in
+    # an ini.
+    "WRAPPED_STYLE": _s("wrapped_style", _S, "", "personalization"),
     # Site-default page width (core/page_width.py); users override it on
     # /account. Never in an ini.
     "PAGE_WIDTH": _s("page_width", _S, "auto", "personalization"),
