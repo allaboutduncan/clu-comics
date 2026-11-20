@@ -3289,68 +3289,66 @@ def update_recent_files_from_scan(comic_files):
             return
 
         # Get database connection
-        conn = get_db_connection()
-        if not conn:
-            app_logger.error(
-                "Could not get database connection for recent files update"
+        with db_conn() as conn:
+            if not conn:
+                app_logger.error(
+                    "Could not get database connection for recent files update"
+                )
+                return
+
+            c = conn.cursor()
+
+            # Check how many files we currently have
+            c.execute("SELECT COUNT(*) FROM recent_files")
+            current_count = c.fetchone()[0]
+
+            # Only do a full rescan if we have fewer than 100 files
+            # This preserves files added via the app (which have accurate timestamps)
+            # while still populating the list for files added externally
+            if current_count >= 100:
+                app_logger.debug(
+                    f"Recent files already has {current_count} entries, skipping scan update"
+                )
+                return
+
+            app_logger.info(
+                f"Populating recent_files database from {len(comic_files)} scanned files ({current_count} existing)..."
             )
-            return
 
-        c = conn.cursor()
+            # Sort by modification time (most recent first) - use heapq for efficiency with large lists
+            # If we have a huge number of files, use heapq.nlargest for better performance
+            if len(comic_files) > 10000:
+                app_logger.info("Large library detected, using optimized sorting...")
+                top_100 = heapq.nlargest(100, comic_files, key=lambda x: x["mtime"])
+            else:
+                sorted_files = sorted(comic_files, key=lambda x: x["mtime"], reverse=True)
+                top_100 = sorted_files[:100]
 
-        # Check how many files we currently have
-        c.execute("SELECT COUNT(*) FROM recent_files")
-        current_count = c.fetchone()[0]
+            # Clear existing entries and insert fresh data
+            c.execute("DELETE FROM recent_files")
 
-        # Only do a full rescan if we have fewer than 100 files
-        # This preserves files added via the app (which have accurate timestamps)
-        # while still populating the list for files added externally
-        if current_count >= 100:
-            conn.close()
-            app_logger.debug(
-                f"Recent files already has {current_count} entries, skipping scan update"
+            # Batch insert for better performance
+            records = [
+                (
+                    file_info["path"],
+                    file_info["name"],
+                    file_info["size"],
+                    datetime.fromtimestamp(file_info["mtime"]).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                )
+                for file_info in top_100
+            ]
+
+            c.executemany(
+                """
+                INSERT INTO recent_files (file_path, file_name, file_size, added_at)
+                VALUES (?, ?, ?, ?)
+            """,
+                records,
             )
-            return
 
-        app_logger.info(
-            f"Populating recent_files database from {len(comic_files)} scanned files ({current_count} existing)..."
-        )
-
-        # Sort by modification time (most recent first) - use heapq for efficiency with large lists
-        # If we have a huge number of files, use heapq.nlargest for better performance
-        if len(comic_files) > 10000:
-            app_logger.info("Large library detected, using optimized sorting...")
-            top_100 = heapq.nlargest(100, comic_files, key=lambda x: x["mtime"])
-        else:
-            sorted_files = sorted(comic_files, key=lambda x: x["mtime"], reverse=True)
-            top_100 = sorted_files[:100]
-
-        # Clear existing entries and insert fresh data
-        c.execute("DELETE FROM recent_files")
-
-        # Batch insert for better performance
-        records = [
-            (
-                file_info["path"],
-                file_info["name"],
-                file_info["size"],
-                datetime.fromtimestamp(file_info["mtime"]).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-            )
-            for file_info in top_100
-        ]
-
-        c.executemany(
-            """
-            INSERT INTO recent_files (file_path, file_name, file_size, added_at)
-            VALUES (?, ?, ?, ?)
-        """,
-            records,
-        )
-
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         app_logger.info(f"✅ Recent files database populated with {len(top_100)} files")
 

@@ -3307,7 +3307,7 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     # one holdout.
     import defusedxml.ElementTree as SafeET
     from urllib.parse import urlparse
-    from core.database import get_db_connection
+    from core.database import db_conn
 
     # Ensure table exists before querying (handles fresh databases)
     _ensure_urls_table()
@@ -3339,23 +3339,21 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     logger.info(f"Checking {len(sitemap_urls)} sitemap(s)")
 
     # ── Load stored page metadata for conditional fetching ─────────────────
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    stored_pages = {}
-    for row in conn.execute("SELECT sitemap_url, last_modified, etag FROM getcomics_sitemap_pages"):
-        stored_pages[row["sitemap_url"]] = {
-            "last_modified": row["last_modified"],
-            "etag": row["etag"],
-        }
-    conn.close()
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        stored_pages = {}
+        for row in conn.execute("SELECT sitemap_url, last_modified, etag FROM getcomics_sitemap_pages"):
+            stored_pages[row["sitemap_url"]] = {
+                "last_modified": row["last_modified"],
+                "etag": row["etag"],
+            }
 
     # ── Pre-load existing URL lastmod values for per-URL incremental skip ──
     existing_lastmod = {}
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    for row in conn.execute("SELECT full_url, lastmod FROM getcomics_urls"):
-        existing_lastmod[row["full_url"]] = row["lastmod"]
-    conn.close()
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute("SELECT full_url, lastmod FROM getcomics_urls"):
+            existing_lastmod[row["full_url"]] = row["lastmod"]
 
     total_indexed = 0
     total_skipped = 0
@@ -3376,14 +3374,13 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
             if resp.status_code == 304:
                 logger.info(f"  [304] {sm_url} — unchanged, skipping")
                 if sm_url in stored_pages:
-                    conn = get_db_connection()
-                    conn.execute(
-                        "UPDATE getcomics_sitemap_pages SET last_checked = CURRENT_TIMESTAMP "
-                        "WHERE sitemap_url = ?",
-                        (sm_url,)
-                    )
-                    conn.commit()
-                    conn.close()
+                    with db_conn() as conn:
+                        conn.execute(
+                            "UPDATE getcomics_sitemap_pages SET last_checked = CURRENT_TIMESTAMP "
+                            "WHERE sitemap_url = ?",
+                            (sm_url,)
+                        )
+                        conn.commit()
                 continue
 
             resp.raise_for_status()
@@ -3455,43 +3452,41 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
                 entries_count += 1
 
             if url_entries:
-                conn = get_db_connection()
-                c = conn.cursor()
-                # Upsert, not INSERT OR REPLACE. A single-comic page that has
-                # already been scraped carries its title, issue number and
-                # download_url on this very row; REPLACE deletes the row and
-                # re-inserts it, so a sitemap refresh would throw all of that
-                # away. COALESCE keeps whatever the scrape learned and lets the
-                # sitemap fill only what is still blank.
-                c.executemany(
-                    "INSERT INTO getcomics_urls "
-                    "(url, full_url, series_norm, series_norm_norm, url_slug, "
-                    " category, lastmod, indexed_at) "
-                    "VALUES (:url, :full_url, :series_norm, :series_norm_norm, "
-                    "        :url_slug, :category, :lastmod, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT(url) DO UPDATE SET "
-                    "  series_norm = COALESCE(getcomics_urls.series_norm, excluded.series_norm), "
-                    "  series_norm_norm = COALESCE(getcomics_urls.series_norm_norm, excluded.series_norm_norm), "
-                    "  url_slug = COALESCE(getcomics_urls.url_slug, excluded.url_slug), "
-                    "  category = COALESCE(getcomics_urls.category, excluded.category), "
-                    "  lastmod = excluded.lastmod, "
-                    "  indexed_at = CURRENT_TIMESTAMP",
-                    url_entries
-                )
-                conn.commit()
-                conn.close()
+                with db_conn() as conn:
+                    c = conn.cursor()
+                    # Upsert, not INSERT OR REPLACE. A single-comic page that has
+                    # already been scraped carries its title, issue number and
+                    # download_url on this very row; REPLACE deletes the row and
+                    # re-inserts it, so a sitemap refresh would throw all of that
+                    # away. COALESCE keeps whatever the scrape learned and lets the
+                    # sitemap fill only what is still blank.
+                    c.executemany(
+                        "INSERT INTO getcomics_urls "
+                        "(url, full_url, series_norm, series_norm_norm, url_slug, "
+                        " category, lastmod, indexed_at) "
+                        "VALUES (:url, :full_url, :series_norm, :series_norm_norm, "
+                        "        :url_slug, :category, :lastmod, CURRENT_TIMESTAMP) "
+                        "ON CONFLICT(url) DO UPDATE SET "
+                        "  series_norm = COALESCE(getcomics_urls.series_norm, excluded.series_norm), "
+                        "  series_norm_norm = COALESCE(getcomics_urls.series_norm_norm, excluded.series_norm_norm), "
+                        "  url_slug = COALESCE(getcomics_urls.url_slug, excluded.url_slug), "
+                        "  category = COALESCE(getcomics_urls.category, excluded.category), "
+                        "  lastmod = excluded.lastmod, "
+                        "  indexed_at = CURRENT_TIMESTAMP",
+                        url_entries
+                    )
+                    conn.commit()
                 total_indexed += len(url_entries)
 
             # Update sitemap page tracking metadata
-            conn = get_db_connection()
-            conn.execute(
-                "INSERT OR REPLACE INTO getcomics_sitemap_pages "
-                "(sitemap_url, last_modified, etag, last_checked) "
-                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (sm_url, last_modified, etag)
-            )
-            conn.commit()
-            conn.close()
+            with db_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO getcomics_sitemap_pages "
+                    "(sitemap_url, last_modified, etag, last_checked) "
+                    "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    (sm_url, last_modified, etag)
+                )
+                conn.commit()
 
             changed = "refreshed" if url_entries else "no changes"
             logger.info(f"  [200] {sm_url}: {entries_count} new/changed URLs ({changed})")
@@ -3664,208 +3659,207 @@ def _ensure_urls_table():
                                 year, volume, is_annual, is_bulk_pack, is_multi_series,
                                 format_variants, download_url, lastmod, indexed_at, search_aliases
     """
-    from core.database import get_db_connection
+    from core.database import db_conn
 
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_urls (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT NOT NULL,
-            full_url TEXT NOT NULL,
-            url_slug TEXT,
-            series_norm TEXT,
-            series_norm_norm TEXT,
-            search_aliases TEXT,
-            title TEXT,
-            issue_num TEXT,
-            issue_range TEXT,
-            year INTEGER,
-            volume INTEGER,
-            is_annual INTEGER DEFAULT 0,
-            is_bulk_pack INTEGER DEFAULT 0,
-            is_multi_series INTEGER DEFAULT 0,
-            format_variants TEXT,
-            download_url TEXT,
-            category TEXT,
-            lastmod TEXT,
-            indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
-            scrape_attempts INTEGER DEFAULT 0,
-            last_scrape_attempt TIMESTAMP,
-            url_last_modified TEXT
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
-
-    # Migration: add scrape_status columns to existing getcomics_urls table
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
-
-    # Migration: add 'id' column for auto-increment PK if it doesn't exist.
-    # Old entries have url as PRIMARY KEY without '#' — migrate them to url || '#canonical'
-    # to avoid conflicts with the new multi-entry-per-page scraping.
-    if 'id' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN id INTEGER")
-        # Use a temp table to avoid SQLite self-reference UPDATE issues
-        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _url_id_map AS SELECT url, ROWID as mapped_id FROM getcomics_urls")
+    with db_conn() as conn:
         conn.execute("""
-            UPDATE getcomics_urls SET id = (
-                SELECT mapped_id FROM _url_id_map WHERE _url_id_map.url = getcomics_urls.url
+            CREATE TABLE IF NOT EXISTS getcomics_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                full_url TEXT NOT NULL,
+                url_slug TEXT,
+                series_norm TEXT,
+                series_norm_norm TEXT,
+                search_aliases TEXT,
+                title TEXT,
+                issue_num TEXT,
+                issue_range TEXT,
+                year INTEGER,
+                volume INTEGER,
+                is_annual INTEGER DEFAULT 0,
+                is_bulk_pack INTEGER DEFAULT 0,
+                is_multi_series INTEGER DEFAULT 0,
+                format_variants TEXT,
+                download_url TEXT,
+                category TEXT,
+                lastmod TEXT,
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
+                scrape_attempts INTEGER DEFAULT 0,
+                last_scrape_attempt TIMESTAMP,
+                url_last_modified TEXT
             )
         """)
-        conn.execute("DROP TABLE IF EXISTS _url_id_map")
-        # Mark old-format entries (no '#' in url) with #canonical suffix
-        conn.execute("UPDATE getcomics_urls SET url = url || '#canonical' WHERE url NOT LIKE '%#%'")
-        logger.info("Migrated getcomics_urls: added id column, suffixed old URLs with #canonical")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
 
-    if 'scrape_status' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_status TEXT DEFAULT 'pending'")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_attempts INTEGER DEFAULT 0")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN last_scrape_attempt TIMESTAMP")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN url_last_modified TEXT")
-        # Backfill: existing rows with download_url are 'success', without are 'empty'
-        conn.execute("UPDATE getcomics_urls SET scrape_status = 'success' WHERE download_url IS NOT NULL AND download_url != ''")
-        conn.execute("UPDATE getcomics_urls SET scrape_status = 'empty' WHERE scrape_status = 'pending'")
-        logger.info("Migrated scrape_status columns for existing getcomics_urls entries")
+        # Migration: add scrape_status columns to existing getcomics_urls table
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
 
-    # Re-read columns after potential ALTER TABLE additions
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
-
-    # Migration: add search_aliases and series_norm_norm columns if missing.
-    # These were added to CREATE TABLE but had no ALTER TABLE migration.
-    if 'search_aliases' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN search_aliases TEXT")
-        logger.info("Migrated getcomics_urls: added search_aliases column")
-
-    if 'series_norm_norm' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN series_norm_norm TEXT")
-        # Backfill: pre-compute normalized series_norm for existing rows
-        conn.execute("""
-            UPDATE getcomics_urls
-            SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\\u2013', ' '), '\\u2014', ' '))
-            WHERE series_norm_norm IS NULL AND series_norm IS NOT NULL
-        """)
-        logger.info("Migrated getcomics_urls: added series_norm_norm column")
-
-    # Migration: remove spurious UNIQUE constraint on full_url.
-    # The old CREATE TABLE had "full_url TEXT NOT NULL UNIQUE" which was
-    # incorrect — multiple page entries can share the same full_url (each
-    # entry has a unique entry_url with fragment). We must rebuild the
-    # table without the UNIQUE constraint on full_url.
-    try:
-        # Check if the UNIQUE index on full_url still exists
-        autoindexes = [r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()
-                       if r[1].startswith('sqlite_autoindex')]
-        has_full_url_unique = any(
-            idx for idx in autoindexes
-            if conn.execute(f"PRAGMA index_info({idx})").fetchall()
-               and conn.execute(f"PRAGMA index_info({idx})").fetchall()[0][2] == 'full_url'
-        )
-        if has_full_url_unique:
-            logger.info("Removing UNIQUE constraint on full_url (rebuilding table)...")
-            # Create new table without UNIQUE on full_url
+        # Migration: add 'id' column for auto-increment PK if it doesn't exist.
+        # Old entries have url as PRIMARY KEY without '#' — migrate them to url || '#canonical'
+        # to avoid conflicts with the new multi-entry-per-page scraping.
+        if 'id' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN id INTEGER")
+            # Use a temp table to avoid SQLite self-reference UPDATE issues
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _url_id_map AS SELECT url, ROWID as mapped_id FROM getcomics_urls")
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS _getcomics_urls_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT NOT NULL,
-                    full_url TEXT NOT NULL,
-                    url_slug TEXT,
-                    series_norm TEXT,
-                    series_norm_norm TEXT,
-                    search_aliases TEXT,
-                    title TEXT,
-                    issue_num TEXT,
-                    issue_range TEXT,
-                    year INTEGER,
-                    volume INTEGER,
-                    is_annual INTEGER DEFAULT 0,
-                    is_bulk_pack INTEGER DEFAULT 0,
-                    is_multi_series INTEGER DEFAULT 0,
-                    format_variants TEXT,
-                    download_url TEXT,
-                    category TEXT,
-                    lastmod TEXT,
-                    indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
-                    scrape_attempts INTEGER DEFAULT 0,
-                    last_scrape_attempt TIMESTAMP,
-                    url_last_modified TEXT
+                UPDATE getcomics_urls SET id = (
+                    SELECT mapped_id FROM _url_id_map WHERE _url_id_map.url = getcomics_urls.url
                 )
             """)
-            conn.execute(f"""
-                INSERT INTO _getcomics_urls_new
-                SELECT id, url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
-                       title, issue_num, issue_range, year, volume, is_annual, is_bulk_pack,
-                       is_multi_series, format_variants, download_url, category, lastmod, indexed_at,
-                       scrape_status, scrape_attempts, last_scrape_attempt, url_last_modified
-                FROM getcomics_urls
-            """)
-            conn.execute("DROP TABLE getcomics_urls")
-            conn.execute("ALTER TABLE _getcomics_urls_new RENAME TO getcomics_urls")
-            # Recreate indexes (without UNIQUE on full_url)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
-            logger.info("Removed UNIQUE constraint on full_url, rebuilt table")
-    except Exception as e:
-        logger.debug(f"UNIQUE constraint removal (may already be done): {e}")
+            conn.execute("DROP TABLE IF EXISTS _url_id_map")
+            # Mark old-format entries (no '#' in url) with #canonical suffix
+            conn.execute("UPDATE getcomics_urls SET url = url || '#canonical' WHERE url NOT LIKE '%#%'")
+            logger.info("Migrated getcomics_urls: added id column, suffixed old URLs with #canonical")
 
-    # Migration: if old tables exist and new table is empty, populate from them
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM getcomics_urls")
-    existing_count = c.fetchone()[0]
+        if 'scrape_status' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_status TEXT DEFAULT 'pending'")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_attempts INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN last_scrape_attempt TIMESTAMP")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN url_last_modified TEXT")
+            # Backfill: existing rows with download_url are 'success', without are 'empty'
+            conn.execute("UPDATE getcomics_urls SET scrape_status = 'success' WHERE download_url IS NOT NULL AND download_url != ''")
+            conn.execute("UPDATE getcomics_urls SET scrape_status = 'empty' WHERE scrape_status = 'pending'")
+            logger.info("Migrated scrape_status columns for existing getcomics_urls entries")
 
-    if existing_count == 0:
-        migrated = _migrate_from_old_tables(conn)
-        logger.info(f"Migrated {migrated} entries from old tables to getcomics_urls")
+        # Re-read columns after potential ALTER TABLE additions
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
 
-    # Migration: make `url` UNIQUE so `INSERT OR REPLACE INTO getcomics_urls`
-    # actually replaces instead of appending a duplicate row. Older builds had
-    # no unique index on `url` (and the spurious one on full_url was removed
-    # above), so every re-scrape accumulated duplicates. De-dupe first (keep the
-    # newest row per url — matches the go-forward replace semantics), then add
-    # the unique index. Gated on the index's absence so it runs at most once.
-    try:
-        idx_names = {r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()}
-        if 'idx_urls_url' not in idx_names:
+        # Migration: add search_aliases and series_norm_norm columns if missing.
+        # These were added to CREATE TABLE but had no ALTER TABLE migration.
+        if 'search_aliases' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN search_aliases TEXT")
+            logger.info("Migrated getcomics_urls: added search_aliases column")
+
+        if 'series_norm_norm' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN series_norm_norm TEXT")
+            # Backfill: pre-compute normalized series_norm for existing rows
             conn.execute("""
-                DELETE FROM getcomics_urls
-                WHERE id NOT IN (SELECT MAX(id) FROM getcomics_urls GROUP BY url)
+                UPDATE getcomics_urls
+                SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\\u2013', ' '), '\\u2014', ' '))
+                WHERE series_norm_norm IS NULL AND series_norm IS NOT NULL
             """)
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urls_url ON getcomics_urls(url)")
-            logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
-    except Exception as e:
-        logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+            logger.info("Migrated getcomics_urls: added series_norm_norm column")
 
-    # Conditional-fetch metadata, one row per post-sitemap. Recreated here
-    # because _migrate_from_old_tables drops it -- and on a fresh database that
-    # migration always runs (getcomics_urls is empty), so build_sitemap_index
-    # raised "no such table: getcomics_sitemap_pages" on its very first query,
-    # before it fetched anything. The weekly job caught that and reported
-    # "0 URLs -- check network access". It holds nothing but HTTP cache hints,
-    # so losing it to the drop costs one unconditional refetch.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
-            sitemap_url TEXT PRIMARY KEY,
-            last_modified TEXT,
-            etag TEXT,
-            last_checked TIMESTAMP
-        )
-    """)
+        # Migration: remove spurious UNIQUE constraint on full_url.
+        # The old CREATE TABLE had "full_url TEXT NOT NULL UNIQUE" which was
+        # incorrect — multiple page entries can share the same full_url (each
+        # entry has a unique entry_url with fragment). We must rebuild the
+        # table without the UNIQUE constraint on full_url.
+        try:
+            # Check if the UNIQUE index on full_url still exists
+            autoindexes = [r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()
+                           if r[1].startswith('sqlite_autoindex')]
+            has_full_url_unique = any(
+                idx for idx in autoindexes
+                if conn.execute(f"PRAGMA index_info({idx})").fetchall()
+                   and conn.execute(f"PRAGMA index_info({idx})").fetchall()[0][2] == 'full_url'
+            )
+            if has_full_url_unique:
+                logger.info("Removing UNIQUE constraint on full_url (rebuilding table)...")
+                # Create new table without UNIQUE on full_url
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS _getcomics_urls_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url TEXT NOT NULL,
+                        full_url TEXT NOT NULL,
+                        url_slug TEXT,
+                        series_norm TEXT,
+                        series_norm_norm TEXT,
+                        search_aliases TEXT,
+                        title TEXT,
+                        issue_num TEXT,
+                        issue_range TEXT,
+                        year INTEGER,
+                        volume INTEGER,
+                        is_annual INTEGER DEFAULT 0,
+                        is_bulk_pack INTEGER DEFAULT 0,
+                        is_multi_series INTEGER DEFAULT 0,
+                        format_variants TEXT,
+                        download_url TEXT,
+                        category TEXT,
+                        lastmod TEXT,
+                        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
+                        scrape_attempts INTEGER DEFAULT 0,
+                        last_scrape_attempt TIMESTAMP,
+                        url_last_modified TEXT
+                    )
+                """)
+                conn.execute(f"""
+                    INSERT INTO _getcomics_urls_new
+                    SELECT id, url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
+                           title, issue_num, issue_range, year, volume, is_annual, is_bulk_pack,
+                           is_multi_series, format_variants, download_url, category, lastmod, indexed_at,
+                           scrape_status, scrape_attempts, last_scrape_attempt, url_last_modified
+                    FROM getcomics_urls
+                """)
+                conn.execute("DROP TABLE getcomics_urls")
+                conn.execute("ALTER TABLE _getcomics_urls_new RENAME TO getcomics_urls")
+                # Recreate indexes (without UNIQUE on full_url)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
+                logger.info("Removed UNIQUE constraint on full_url, rebuilt table")
+        except Exception as e:
+            logger.debug(f"UNIQUE constraint removal (may already be done): {e}")
 
-    conn.commit()
-    conn.close()
+        # Migration: if old tables exist and new table is empty, populate from them
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM getcomics_urls")
+        existing_count = c.fetchone()[0]
+
+        if existing_count == 0:
+            migrated = _migrate_from_old_tables(conn)
+            logger.info(f"Migrated {migrated} entries from old tables to getcomics_urls")
+
+        # Migration: make `url` UNIQUE so `INSERT OR REPLACE INTO getcomics_urls`
+        # actually replaces instead of appending a duplicate row. Older builds had
+        # no unique index on `url` (and the spurious one on full_url was removed
+        # above), so every re-scrape accumulated duplicates. De-dupe first (keep the
+        # newest row per url — matches the go-forward replace semantics), then add
+        # the unique index. Gated on the index's absence so it runs at most once.
+        try:
+            idx_names = {r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()}
+            if 'idx_urls_url' not in idx_names:
+                conn.execute("""
+                    DELETE FROM getcomics_urls
+                    WHERE id NOT IN (SELECT MAX(id) FROM getcomics_urls GROUP BY url)
+                """)
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urls_url ON getcomics_urls(url)")
+                logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
+        except Exception as e:
+            logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+
+        # Conditional-fetch metadata, one row per post-sitemap. Recreated here
+        # because _migrate_from_old_tables drops it -- and on a fresh database that
+        # migration always runs (getcomics_urls is empty), so build_sitemap_index
+        # raised "no such table: getcomics_sitemap_pages" on its very first query,
+        # before it fetched anything. The weekly job caught that and reported
+        # "0 URLs -- check network access". It holds nothing but HTTP cache hints,
+        # so losing it to the drop costs one unconditional refetch.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
+                sitemap_url TEXT PRIMARY KEY,
+                last_modified TEXT,
+                etag TEXT,
+                last_checked TIMESTAMP
+            )
+        """)
+
+        conn.commit()
 
 
 def _migrate_from_old_tables(conn) -> int:
@@ -4049,21 +4043,20 @@ def clear_scrape_generated_aliases() -> int:
 
 def _ensure_alias_table():
     """Create the getcomics_series_aliases table if it doesn't exist."""
-    from core.database import get_db_connection
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_series_aliases (
-            alias TEXT PRIMARY KEY,
-            alias_norm TEXT NOT NULL,
-            canonical TEXT NOT NULL,
-            canonical_norm TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_alias_norm ON getcomics_series_aliases(alias_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_canonical_norm ON getcomics_series_aliases(canonical_norm)")
-    conn.commit()
-    conn.close()
+    from core.database import db_conn
+    with db_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_series_aliases (
+                alias TEXT PRIMARY KEY,
+                alias_norm TEXT NOT NULL,
+                canonical TEXT NOT NULL,
+                canonical_norm TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alias_norm ON getcomics_series_aliases(alias_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canonical_norm ON getcomics_series_aliases(canonical_norm)")
+        conn.commit()
 
     # One-time cleanup of junk aliases stored before write-side validation
     # existed. Guarded by an in-process flag (set first to avoid re-entrancy,
@@ -4232,42 +4225,41 @@ def delete_series_alias(alias: str) -> bool:
     """
     _ensure_alias_table()
     _ensure_urls_table()
-    from core.database import get_db_connection
-    conn = get_db_connection()
+    from core.database import db_conn
+    with db_conn() as conn:
 
-    # First look up the canonical series for this alias so we can update search_aliases
-    norm_alias = _normalize_alias(alias)
-    canonical_row = conn.execute(
-        "SELECT canonical FROM getcomics_series_aliases WHERE alias_norm = ?",
-        (norm_alias,)
-    ).fetchone()
-
-    c = conn.execute(
-        "DELETE FROM getcomics_series_aliases WHERE alias_norm = ?",
-        (norm_alias,)
-    )
-    deleted = c.rowcount > 0
-
-    # Also remove from getcomics_urls.search_aliases so both systems stay in sync
-    if deleted and canonical_row:
-        norm_canonical = _normalize_alias(canonical_row[0])
-        existing_row = conn.execute(
-            "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
-            (norm_canonical,)
+        # First look up the canonical series for this alias so we can update search_aliases
+        norm_alias = _normalize_alias(alias)
+        canonical_row = conn.execute(
+            "SELECT canonical FROM getcomics_series_aliases WHERE alias_norm = ?",
+            (norm_alias,)
         ).fetchone()
-        if existing_row and existing_row[0]:
-            existing_list = [a.strip() for a in existing_row[0].split(',') if a.strip()]
-            if norm_alias in existing_list:
-                existing_list.remove(norm_alias)
-                new_aliases = ','.join(existing_list)
-                conn.execute("""
-                    UPDATE getcomics_urls
-                    SET search_aliases = ?
-                    WHERE series_norm_norm = ?
-                """, (new_aliases, norm_canonical))
 
-    conn.commit()
-    conn.close()
+        c = conn.execute(
+            "DELETE FROM getcomics_series_aliases WHERE alias_norm = ?",
+            (norm_alias,)
+        )
+        deleted = c.rowcount > 0
+
+        # Also remove from getcomics_urls.search_aliases so both systems stay in sync
+        if deleted and canonical_row:
+            norm_canonical = _normalize_alias(canonical_row[0])
+            existing_row = conn.execute(
+                "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
+                (norm_canonical,)
+            ).fetchone()
+            if existing_row and existing_row[0]:
+                existing_list = [a.strip() for a in existing_row[0].split(',') if a.strip()]
+                if norm_alias in existing_list:
+                    existing_list.remove(norm_alias)
+                    new_aliases = ','.join(existing_list)
+                    conn.execute("""
+                        UPDATE getcomics_urls
+                        SET search_aliases = ?
+                        WHERE series_norm_norm = ?
+                    """, (new_aliases, norm_canonical))
+
+        conn.commit()
     return deleted
 
 
@@ -5139,7 +5131,7 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     Returns:
         Number of entries updated
     """
-    from core.database import get_db_connection
+    from core.database import db_conn
     _ensure_urls_table()
     _ensure_alias_table()
 
@@ -5152,42 +5144,41 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
 
     normalized_aliases = ','.join(alias_list)
 
-    conn = get_db_connection()
-    norm_series, _ = normalize_series_name(series_name)
-    # The stored key, from its one definition. This was a pasted copy without
-    # the .strip(): "Batman - Vol 3" normalizes to "Batman -", which the copy
-    # keyed as "batman  " while every writer stored "batman", so the UPDATE
-    # below matched no rows and the aliases were never attached.
-    norm_series_lower = _norm_series_key(norm_series) or ''
+    with db_conn() as conn:
+        norm_series, _ = normalize_series_name(series_name)
+        # The stored key, from its one definition. This was a pasted copy without
+        # the .strip(): "Batman - Vol 3" normalizes to "Batman -", which the copy
+        # keyed as "batman  " while every writer stored "batman", so the UPDATE
+        # below matched no rows and the aliases were never attached.
+        norm_series_lower = _norm_series_key(norm_series) or ''
 
-    updated = conn.execute("""
-        UPDATE getcomics_urls
-        SET search_aliases = ?
-        WHERE series_norm_norm = ?
-    """, (normalized_aliases, norm_series_lower)).rowcount
+        updated = conn.execute("""
+            UPDATE getcomics_urls
+            SET search_aliases = ?
+            WHERE series_norm_norm = ?
+        """, (normalized_aliases, norm_series_lower)).rowcount
 
-    # Sync to getcomics_series_aliases so resolve_series_alias() works
-    # First delete existing alias mappings for this canonical series
-    conn.execute(
-        "DELETE FROM getcomics_series_aliases WHERE canonical_norm = ?",
-        (_normalize_alias(norm_series_lower),)
-    )
-    # Then insert all current aliases
-    for alias_val in alias_list:
-        if alias_val and alias_val != norm_series_lower:
-            conn.execute("""
-                INSERT OR IGNORE INTO getcomics_series_aliases
-                (alias, alias_norm, canonical, canonical_norm)
-                VALUES (?, ?, ?, ?)
-            """, (
-                alias_val,
-                _normalize_alias(alias_val),
-                norm_series_lower,
-                _normalize_alias(norm_series_lower),
-            ))
+        # Sync to getcomics_series_aliases so resolve_series_alias() works
+        # First delete existing alias mappings for this canonical series
+        conn.execute(
+            "DELETE FROM getcomics_series_aliases WHERE canonical_norm = ?",
+            (_normalize_alias(norm_series_lower),)
+        )
+        # Then insert all current aliases
+        for alias_val in alias_list:
+            if alias_val and alias_val != norm_series_lower:
+                conn.execute("""
+                    INSERT OR IGNORE INTO getcomics_series_aliases
+                    (alias, alias_norm, canonical, canonical_norm)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    alias_val,
+                    _normalize_alias(alias_val),
+                    norm_series_lower,
+                    _normalize_alias(norm_series_lower),
+                ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     return updated
 
 
