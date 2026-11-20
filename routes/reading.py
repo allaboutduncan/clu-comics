@@ -2,8 +2,10 @@
 Reading Position Blueprint
 
 Manages the comic reader's "resume where I left off" bookmark:
-``/api/reading-position`` (GET / POST / DELETE), and the Insights page's
-reading-history metadata backfill (``/api/backfill-reading-metadata``).
+``/api/reading-position`` (GET / POST / DELETE), the reader's "I finished
+this" call (``/api/mark-comic-read``, moved here from app.py so it can be
+tested), and the Insights page's reading-history metadata backfill
+(``/api/backfill-reading-metadata``).
 
 Contract notes for anyone touching this file:
 
@@ -22,11 +24,16 @@ Contract notes for anyone touching this file:
 """
 
 import json
+import os
 
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 
+from core.app_logging import app_logger
 from core.auth import enforce_path_access
 from core.database import (
+    clear_stats_cache_prefix,
+    current_user_id,
+    mark_issue_read,
     save_reading_position,
     get_reading_position,
     delete_reading_position,
@@ -150,6 +157,75 @@ def api_reading_position():
 
         success = delete_reading_position(comic_path)
         return jsonify({"success": success})
+
+
+@reading_bp.route("/api/mark-comic-read", methods=["POST"])
+def api_mark_comic_read():
+    """Mark a comic as read in the database."""
+    data = request.get_json()
+    comic_path = data.get("path")
+    read_at = data.get("read_at")  # Optional ISO timestamp for backfilling
+    page_count = data.get("page_count", 0)
+    time_spent = data.get("time_spent", 0)
+
+    if not comic_path:
+        return jsonify({"error": "Missing path parameter"}), 400
+
+    # Extract metadata from ComicInfo.xml if available
+    comic_info = None
+    writer = ""
+    penciller = ""
+    characters = ""
+    publisher = ""
+    try:
+        from core.comicinfo import read_comicinfo_from_zip
+
+        if os.path.exists(comic_path) and comic_path.lower().endswith((".cbz", ".zip")):
+            comic_info = read_comicinfo_from_zip(comic_path)
+            if comic_info:
+                writer = comic_info.get("Writer", "")
+                penciller = comic_info.get("Penciller", "")
+                characters = comic_info.get("Characters", "")
+                publisher = comic_info.get("Publisher", "")
+    except Exception as e:
+        app_logger.warning(f"Could not extract ComicInfo.xml metadata: {e}")
+
+    try:
+        mark_issue_read(
+            comic_path,
+            read_at,
+            page_count,
+            time_spent,
+            writer=writer,
+            penciller=penciller,
+            characters=characters,
+            publisher=publisher,
+        )
+        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
+        app_logger.info(
+            f"Marked comic as read: {comic_path}"
+            + (f" at {read_at}" if read_at else "")
+        )
+    except Exception as e:
+        app_logger.error(f"Error marking comic as read: {e}")
+        return jsonify({"error": str(e)}), 500
+
+    # Scrobble to Metron if configured (non-blocking — local read already saved)
+    try:
+        from models import metron as metron_module
+
+        api = metron_module.get_flask_api(current_app)
+        if api:
+            metron_issue_id = metron_module.resolve_metron_issue_id(
+                api, comic_path, comic_info.get("Number") if comic_info else None
+            )
+            if metron_issue_id:
+                metron_module.scrobble_issue(api, metron_issue_id, read_at)
+                app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
+    except Exception as e:
+        app_logger.warning(f"Metron scrobble failed (non-blocking): {e}")
+
+    return jsonify({"success": True})
 
 
 @reading_bp.route("/api/backfill-reading-metadata", methods=["POST"])

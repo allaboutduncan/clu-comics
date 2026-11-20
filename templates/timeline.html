@@ -299,7 +299,7 @@
             <button class="btn btn-sm btn-primary" id="monthlyWrappedBtn" data-bs-toggle="modal" data-bs-target="#monthlyWrappedModal">
                 <i class="bi bi-gift me-1" aria-hidden="true"></i>Monthly Wrapped
             </button>
-            <a href="{{ url_for('insights_page') }}" class="btn btn-sm btn-outline-secondary">
+            <a href="{{ url_for('insights.insights_page') }}" class="btn btn-sm btn-outline-secondary">
                 <i class="bi bi-graph-up-arrow me-1" aria-hidden="true"></i>Insights
             </a>
         {% endif %}
@@ -326,7 +326,7 @@
                 {# Cards loaded so far: the list scrolls in 50 at a time. #}
                 {{ result_count('timelineCount', timeline | map(attribute='entries') | map('length') | sum, 'issues', one='issue') }}
                 {# Clear drops the year and month (a reload) and the search box. #}
-                <a href="{{ url_for('timeline') }}" id="timelineClear" data-server-filter="{{ '1' if filter_year or filter_month else '' }}"
+                <a href="{{ url_for('insights.timeline') }}" id="timelineClear" data-server-filter="{{ '1' if filter_year or filter_month else '' }}"
                    class="btn btn-sm btn-outline-secondary{% if not (filter_year or filter_month) %} d-none{% endif %}"><i class="bi bi-x-lg me-1" aria-hidden="true"></i>Clear</a>
             </div>
         </div>
@@ -542,7 +542,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (year) params.set('year', year);
         if (month) params.set('month', month);
         const qs = params.toString();
-        window.location.href = {{ url_for('timeline')|tojson }} + (qs ? '?' + qs : '');
+        window.location.href = {{ url_for('insights.timeline')|tojson }} + (qs ? '?' + qs : '');
     }
     document.getElementById('filterYear')?.addEventListener('change', applyDateFilter);
     document.getElementById('filterMonth')?.addEventListener('change', applyDateFilter);

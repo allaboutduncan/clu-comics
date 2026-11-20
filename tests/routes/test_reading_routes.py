@@ -6,6 +6,7 @@ where I left off". It previously lived in app.py, where the route test suite
 could not reach it at all.
 """
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -309,3 +310,78 @@ def _wait_idle(timeout=10):
     deadline = time.time() + timeout
     while bf.is_running() and time.time() < deadline:
         time.sleep(0.02)
+
+
+# ---------------------------------------------------------------------------
+# /api/mark-comic-read (moved from app.py)
+# ---------------------------------------------------------------------------
+
+
+def _read_row(path=COMIC):
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT * FROM issues_read WHERE issue_path = ?", (path,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+class TestMarkComicRead:
+    def test_missing_path_is_400(self, client):
+        r = client.post("/api/mark-comic-read", json={})
+        assert r.status_code == 400
+
+    def test_records_the_read(self, client):
+        r = client.post(
+            "/api/mark-comic-read",
+            json={"path": COMIC, "page_count": 22, "time_spent": 600},
+        )
+        assert r.status_code == 200
+        assert r.get_json() == {"success": True}
+        row = _read_row()
+        assert (row["page_count"], row["time_spent"]) == (22, 600)
+
+    def test_read_at_backfills_the_date(self, client):
+        client.post(
+            "/api/mark-comic-read",
+            json={"path": COMIC, "read_at": "2021-03-04T05:06:07"},
+        )
+        assert _read_row()["read_at"].startswith("2021-03-04")
+
+    def test_credits_come_from_comicinfo(self, client):
+        info = {
+            "Writer": "Tom King", "Penciller": "David Finch",
+            "Characters": "Batman, Robin", "Publisher": "DC Comics", "Number": "1",
+        }
+        with patch("routes.reading.os.path.exists", return_value=True),              patch("core.comicinfo.read_comicinfo_from_zip", return_value=info):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        row = _read_row()
+        assert row["writer"] == "Tom King"
+        assert row["penciller"] == "David Finch"
+        assert row["publisher"] == "DC Comics"
+        assert "Batman" in row["characters"]
+
+    def test_unreadable_comicinfo_still_records_the_read(self, client):
+        with patch("routes.reading.os.path.exists", return_value=True),              patch("core.comicinfo.read_comicinfo_from_zip", side_effect=OSError("bad zip")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        assert _read_row() is not None
+
+    def test_clears_the_users_stats_cache(self, client):
+        with patch("routes.reading.clear_stats_cache_prefix") as clear:
+            client.post("/api/mark-comic-read", json={"path": COMIC})
+        clear.assert_called_once()
+        assert clear.call_args.args[0].startswith("u")
+
+    def test_a_failed_save_is_a_500(self, client):
+        with patch("routes.reading.mark_issue_read", side_effect=RuntimeError("locked")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 500
+        assert r.get_json() == {"error": "locked"}
+
+    def test_a_failed_metron_scrobble_does_not_fail_the_read(self, client):
+        with patch("models.metron.get_flask_api", side_effect=RuntimeError("down")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        assert _read_row() is not None
