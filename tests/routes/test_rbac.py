@@ -43,6 +43,8 @@ class TestRolePolicy:
         ("GET", "/api/continue-reading", "reader"),
         # Insights: a Reader sees their own summary and sets their own goal.
         ("GET", "/api/reading-insights/summary", "reader"),
+        ("GET", "/api/reading-insights/clock", "reader"),
+        ("GET", "/api/reading-insights/day/2024-06-10", "reader"),
         ("POST", "/api/account/reading-goal", "reader"),
         # Bookmarking a reading list is personal data. These live under
         # /api/favorites precisely so _READER_WRITE_PREFIXES classifies them as

@@ -206,12 +206,22 @@ document.addEventListener('DOMContentLoaded', function () {
             responsive: true,
             maintainAspectRatio: false,
             interaction: { intersect: false, mode: 'index' },
+            // A day on the line opens that day. Daily labels are MM-DD-YYYY.
+            onClick: (event, elements) => {
+                if (!elements.length) return;
+                const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(pageData.reading_history[elements[0].index].date || '');
+                if (match) openDay(`${match[3]}-${match[1]}-${match[2]}`);
+            },
+            onHover: (event, elements) => {
+                event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+            },
             plugins: {
                 legend: { display: false },
                 tooltip: {
                     callbacks: {
                         title: context => context[0].label,
-                        label: context => plural(context.parsed.y, 'issue')
+                        label: context => plural(context.parsed.y, 'issue'),
+                        footer: () => 'Click to open the day'
                     }
                 }
             },
@@ -297,6 +307,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const goalModalYear = document.getElementById('goalModalYear');
     const goalSuggestion = document.getElementById('goalSuggestion');
     const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
     let summaryYear = null;       // the year the dial currently describes
     let lastGoal = null;
@@ -402,6 +413,15 @@ document.addEventListener('DOMContentLoaded', function () {
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                // A bar opens that day. Dataset 0 is last week, 1 is this week.
+                onClick: (event, elements) => {
+                    if (!elements.length || !elements[0].element.$context.parsed.y) return;
+                    const offset = elements[0].index - (elements[0].datasetIndex === 0 ? 7 : 0);
+                    openDay(isoDatePlusDays(weeks.week_start, offset));
+                },
+                onHover: (event, elements) => {
+                    event.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+                },
                 plugins: {
                     legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', font: { size: 11 } } },
                     tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${plural(ctx.parsed.y, 'issue')}` } }
@@ -563,6 +583,233 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('clearGoalBtn').addEventListener('click', () => saveGoal(0));
 
     // =====================================================================
+    // Reading clock (/api/reading-insights/clock) and the day view
+    // =====================================================================
+
+    let clockChart = null;
+    let weekdayChart = null;
+
+    function formatDuration(seconds) {
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    }
+
+    function hourLabel(hour) {
+        const h = hour % 12 === 0 ? 12 : hour % 12;
+        return `${h}${hour % 24 < 12 ? 'am' : 'pm'}`;
+    }
+
+    const CLOCK_SOURCE_NOTES = {
+        sessions: 'From your reading sessions.',
+        finish_times: 'Estimated from when each issue was finished. Reading in the CLU reader records exact sessions from now on.',
+        mixed: 'Reading sessions where they exist; earlier days are estimated from when each issue was finished.',
+        none: ''
+    };
+
+    function renderClock(clock) {
+        const hasData = clock.source !== 'none';
+        setVisible(document.getElementById('clockContainer'), hasData);
+        setVisible(document.getElementById('weekdayContainer'), hasData);
+        setVisible(document.getElementById('clockEmpty'), !hasData);
+        if (clockChart) { clockChart.destroy(); clockChart = null; }
+        if (weekdayChart) { weekdayChart.destroy(); weekdayChart = null; }
+
+        const peak = document.getElementById('clockPeak');
+        const note = document.getElementById('clockSourceNote');
+        let noteText = CLOCK_SOURCE_NOTES[clock.source] || '';
+        if (clock.untimed > 0) {
+            noteText += ` ${plural(clock.untimed, 'issue')} marked as read without a reading time ${clock.untimed === 1 ? 'is' : 'are'} not shown.`;
+        }
+        note.textContent = noteText.trim();
+        if (!hasData) { peak.textContent = ''; return; }
+
+        peak.textContent = `Most reading around ${hourLabel(clock.peak_hour)}, and on ${WEEKDAY_NAMES[clock.peak_weekday]}s.`;
+
+        clockChart = new Chart(document.getElementById('readingClockChart'), {
+            type: 'polarArea',
+            data: {
+                labels: clock.hours.map((_, hour) => hourLabel(hour)),
+                datasets: [{
+                    data: clock.hours,
+                    backgroundColor: colorWithOpacity('--bs-primary', '#0d6efd', 0.65),
+                    borderColor: getCssVar('--bs-body-bg', '#fff'),
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            title: items => `${hourLabel(items[0].dataIndex)} – ${hourLabel(items[0].dataIndex + 1)}`,
+                            label: ctx => formatDuration(ctx.parsed.r)
+                        }
+                    }
+                },
+                scales: {
+                    r: {
+                        beginAtZero: true,
+                        ticks: { display: false },
+                        grid: { color: gridColor },
+                        angleLines: { display: false },
+                        // Midnight at the top, like a 24-hour clock face.
+                        pointLabels: {
+                            display: true,
+                            centerPointLabels: true,
+                            font: { size: 10 },
+                            callback: (label, index) => (index % 3 === 0 ? label : '')
+                        }
+                    }
+                }
+            }
+        });
+
+        weekdayChart = new Chart(document.getElementById('weekdayChart'), {
+            type: 'bar',
+            data: {
+                labels: WEEKDAYS,
+                datasets: [{
+                    label: 'Time reading',
+                    data: clock.weekdays,
+                    backgroundColor: colorWithOpacity('--bs-info', '#0dcaf0', 0.7),
+                    hoverBackgroundColor: infoColor,
+                    borderRadius: 4,
+                    borderSkipped: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { callbacks: { label: ctx => formatDuration(ctx.parsed.y) } }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: { font: { size: 11 }, callback: value => formatDuration(value) },
+                        grid: { color: gridColor }
+                    },
+                    x: { ticks: { font: { size: 11 } }, grid: { display: false } }
+                }
+            }
+        });
+    }
+
+    async function loadClock(year) {
+        try {
+            const response = await fetch(`/api/reading-insights/clock?year=${encodeURIComponent(year || 'all')}`);
+            const data = await response.json();
+            if (data.success) renderClock(data);
+        } catch (error) {
+            console.error('Error loading reading clock:', error);
+        }
+    }
+
+    const dayModal = new bootstrap.Modal(document.getElementById('dayModal'));
+
+    function timeOfDay(iso) {
+        // The server sends the user's local wall-clock time; read it as text
+        // so the browser's own timezone never moves it.
+        const [hour, minute] = iso.substring(11, 16).split(':').map(Number);
+        return `${hour % 12 === 0 ? 12 : hour % 12}:${String(minute).padStart(2, '0')}${hour < 12 ? 'am' : 'pm'}`;
+    }
+
+    function rulerBlock(minutes, className, title) {
+        const left = (minutes[0] / 1440) * 100;
+        // A sitting shorter than the ruler can draw is still shown.
+        const width = Math.max(((minutes[1] - minutes[0]) / 1440) * 100, 0.6);
+        return `<div class="day-ruler-block ${className}" style="left: ${Math.min(left, 99.4)}%; width: ${width}%"
+                     title="${CLU.escapeHtml(title)}"></div>`;
+    }
+
+    function dayRow(item, timeText, detailText, estimated) {
+        return `
+            <a class="list-group-item list-group-item-action d-flex align-items-center gap-3"
+               href="${CLU.escapeHtml(folderUrl(item.path))}">
+                <img class="day-thumb" src="${CLU.escapeHtml(item.thumbnail_url)}" alt="" loading="lazy">
+                <div class="flex-grow-1 text-truncate">
+                    <div class="fw-medium text-truncate" title="${CLU.escapeHtml(item.name)}">${CLU.escapeHtml(item.name)}</div>
+                    <div class="text-muted small text-truncate">${CLU.escapeHtml(detailText)}</div>
+                </div>
+                <div class="text-end small text-nowrap">
+                    <div>${CLU.escapeHtml(timeText)}</div>
+                    ${estimated ? '<div class="text-muted">estimated</div>' : ''}
+                </div>
+            </a>`;
+    }
+
+    function renderDay(day) {
+        const date = new Date(day.date + 'T00:00:00');
+        document.getElementById('dayModalTitle').textContent = date.toLocaleDateString(undefined,
+            { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+        document.getElementById('dayTimelineLink').href =
+            `/timeline?year=${date.getFullYear()}&month=${date.getMonth() + 1}`;
+
+        const parts = [plural(day.issues, 'issue') + ' finished'];
+        if (day.pages) parts.push(plural(day.pages, 'page'));
+        if (day.active_seconds) parts.push(formatDuration(day.active_seconds) + ' reading');
+        if (day.hidden) parts.push(`${plural(day.hidden, 'hidden read')} not shown`);
+        document.getElementById('daySummary').textContent = parts.join(' · ');
+
+        const estimates = day.reads.filter(read => read.minutes);
+        document.getElementById('dayRulerTrack').innerHTML =
+            day.sessions.map(s => rulerBlock(s.minutes, 'session',
+                `${s.name}: ${timeOfDay(s.start)} – ${timeOfDay(s.end)}`)).join('') +
+            estimates.map(r => rulerBlock(r.minutes, 'estimate',
+                `${r.name}: finished ${timeOfDay(r.at)}`)).join('');
+        setVisible(document.getElementById('dayRuler'), day.sessions.length + estimates.length > 0);
+
+        const legend = [];
+        if (day.sessions.length) legend.push('<span class="day-ruler-key session"></span>Reading session');
+        if (estimates.length) legend.push('<span class="day-ruler-key estimate"></span>Estimated from finish time');
+        document.getElementById('dayRulerLegend').innerHTML = legend.join(' &nbsp; ');
+
+        const rows = day.sessions.map(s => dayRow(s,
+            `${timeOfDay(s.start)} – ${timeOfDay(s.end)}`,
+            [s.series, s.pages ? plural(s.pages, 'page') : '', formatDuration(s.active_seconds) + ' active',
+                s.finished ? 'finished' : ''].filter(Boolean).join(' · '), false));
+        day.reads.filter(read => !read.has_session).forEach(read => {
+            rows.push(dayRow(read,
+                read.timed ? `Finished ${timeOfDay(read.at)}` : 'Marked as read',
+                [read.series, read.pages ? plural(read.pages, 'page') : '',
+                    read.timed ? formatDuration(read.seconds) + ' in total' : ''].filter(Boolean).join(' · '),
+                Boolean(read.minutes)));
+        });
+
+        const list = document.getElementById('dayList');
+        if (rows.length === 0) {
+            list.replaceChildren(CLU.emptyState({ icon: 'bi-calendar-x', title: 'Nothing to show for this day', compact: true }));
+        } else {
+            list.innerHTML = rows.join('');
+            list.querySelectorAll('img').forEach(img => {
+                img.addEventListener('error', () => { img.src = THUMBNAIL_FALLBACK; }, { once: true });
+            });
+        }
+    }
+
+    async function openDay(isoDate) {
+        try {
+            const response = await fetch(`/api/reading-insights/day/${encodeURIComponent(isoDate)}`);
+            const data = await response.json();
+            if (!data.success) throw new Error(data.error || 'No data');
+            renderDay(data);
+            dayModal.show();
+        } catch (error) {
+            CLU.showError('Could not load that day: ' + error.message);
+        }
+    }
+
+    function isoDatePlusDays(iso, days) {
+        const date = new Date(iso + 'T00:00:00Z');
+        date.setUTCDate(date.getUTCDate() + days);
+        return date.toISOString().substring(0, 10);
+    }
+
+    // =====================================================================
     // Reading stats tiles and the year selector
     // =====================================================================
 
@@ -609,6 +856,7 @@ document.addEventListener('DOMContentLoaded', function () {
     readingStatsYearSelect.addEventListener('change', function () {
         loadReadingStats(this.value);
         loadSummary(this.value);
+        loadClock(this.value);
     });
 
     // =====================================================================
@@ -841,5 +1089,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     initYearFilters();
     loadSummary(null);
+    loadClock(new Date().getFullYear());
     loadReadingTrends();
 });

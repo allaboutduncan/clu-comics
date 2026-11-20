@@ -484,3 +484,70 @@ a.trend-item {
     height: 4px;
     margin-top: 0.375rem;
 }
+
+/* Day view: a 24-hour ruler with a block per sitting. Positions are inline
+   percentages of the day, set from insights.js. */
+.day-ruler {
+    margin-bottom: 0.5rem;
+}
+
+.day-ruler-track {
+    position: relative;
+    height: 2.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--bs-border-color);
+    /* A line every six hours. */
+    background:
+        repeating-linear-gradient(to right,
+            transparent 0, transparent calc(25% - 1px),
+            var(--bs-border-color) calc(25% - 1px), var(--bs-border-color) 25%),
+        var(--bs-tertiary-bg, var(--bs-secondary-bg));
+    overflow: hidden;
+}
+
+.day-ruler-block {
+    position: absolute;
+    top: 0.25rem;
+    bottom: 0.25rem;
+    border-radius: 0.25rem;
+    min-width: 3px;
+}
+
+.day-ruler-block.session,
+.day-ruler-key.session {
+    background: var(--bs-primary);
+}
+
+/* Not a recorded sitting: laid back from the finish time, so drawn lighter. */
+.day-ruler-block.estimate,
+.day-ruler-key.estimate {
+    background: repeating-linear-gradient(135deg,
+        var(--bs-info) 0, var(--bs-info) 4px,
+        rgba(var(--bs-info-rgb), 0.35) 4px, rgba(var(--bs-info-rgb), 0.35) 8px);
+}
+
+.day-ruler-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.6875rem;
+    color: var(--bs-secondary-color);
+    margin-top: 0.25rem;
+}
+
+.day-ruler-key {
+    display: inline-block;
+    width: 0.875rem;
+    height: 0.625rem;
+    border-radius: 2px;
+    margin-right: 0.375rem;
+    vertical-align: baseline;
+}
+
+.day-thumb {
+    width: 2.5rem;
+    aspect-ratio: 2/3;
+    object-fit: cover;
+    border-radius: 0.25rem;
+    background: var(--bs-tertiary-bg, var(--bs-secondary-bg));
+    flex-shrink: 0;
+}

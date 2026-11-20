@@ -12,6 +12,8 @@ Routes:
     GET /timeline                      -- the reading Timeline page
     GET /api/timeline                  -- lazy-loaded Timeline pages
     GET /api/reading-insights/summary  -- goal, streaks, weeks, shelf
+    GET /api/reading-insights/clock    -- reading time by hour and weekday
+    GET /api/reading-insights/day/<d>  -- one day's sittings and reads
     POST /api/account/reading-goal     -- the user's yearly goal
 
 ``/api/insights`` is a login-exempt prefix (routes/auth.py), matched on a
@@ -19,7 +21,7 @@ segment boundary. Do not add a route under ``/api/insights/``: it would be
 served without a login.
 """
 import os
-from datetime import datetime
+from datetime import date, datetime
 
 from flask import (
     Blueprint, flash, jsonify, redirect, render_template, request, url_for,
@@ -35,7 +37,13 @@ from models.stats import (
     get_top_publishers,
     get_top_series_by_count,
 )
-from models.reading_insights import MAX_GOAL, insights_summary, set_reading_goal
+from models.reading_insights import (
+    MAX_GOAL,
+    clock_for_period,
+    day_detail,
+    insights_summary,
+    set_reading_goal,
+)
 from models.timeline import get_reading_timeline
 
 insights_bp = Blueprint("insights", __name__)
@@ -294,3 +302,35 @@ def account_save_reading_goal():
     if not set_reading_goal(year, goal):
         return jsonify({"success": False, "error": "Could not save the goal"}), 500
     return jsonify({"success": True, "year": year, "goal": goal or None})
+
+
+@insights_bp.route("/api/reading-insights/clock")
+def api_reading_insights_clock():
+    """Seconds of reading per hour of day and per weekday.
+
+    ``?year=`` limits it to one local year; omitted or ``all`` is all time.
+    """
+    raw = request.args.get("year")
+    year = None
+    if raw and raw != "all":
+        try:
+            year = int(raw)
+        except ValueError:
+            return jsonify({"success": False, "error": "Invalid year"}), 400
+        if not 1900 <= year <= 2200:
+            return jsonify({"success": False, "error": "Invalid year"}), 400
+    return jsonify({"success": True, "year": year, **clock_for_period(year=year)})
+
+
+@insights_bp.route("/api/reading-insights/day/<day>")
+def api_reading_insights_day(day):
+    """One local day's sittings and finished issues, for the day view."""
+    try:
+        local_day = date.fromisoformat(day)
+    except ValueError:
+        return jsonify({"success": False, "error": "Invalid date"}), 400
+
+    detail = day_detail(local_day)
+    for item in detail["sessions"] + detail["reads"]:
+        item["thumbnail_url"] = url_for("get_thumbnail", path=item["path"])
+    return jsonify({"success": True, **detail})
