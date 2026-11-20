@@ -1338,6 +1338,32 @@ def _init_db_locked():
             except sqlite3.OperationalError:
                 pass
 
+        # Third cause (#792): the scan's last tier searched each filename for
+        # the wanted number anywhere, so "Batman 400 - Knightfall Part 1" was
+        # cached as #1 and "Spider-Man 2099 005" as #2099. Those rows say
+        # "owned" for issues nobody has, and a found row is only re-checked
+        # when its file changes, so they never heal on their own.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_issue_position_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_issue_position_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(issue-position fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (

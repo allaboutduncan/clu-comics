@@ -621,6 +621,15 @@ class TestNamesOtherPublicationType:
             "Nightwing TPB Vol 01 (2017).cbz", "Nightwing"
         )
 
+    def test_epic_collection_is_other_publication(self):
+        # #792: "Alpha Flight Epic Collection 003" was Alpha Flight #3.
+        assert names_other_publication_type(
+            "Alpha Flight Epic Collection 003 (2020).cbz", "Alpha Flight"
+        )
+        assert not names_other_publication_type(
+            "Alpha Flight Epic Collection 003 (2020).cbz", "Alpha Flight Epic Collection"
+        )
+
     def test_plural_form_is_detected(self):
         assert names_other_publication_type(
             "Nightwing Annuals 001 (2023).cbz", "Nightwing"

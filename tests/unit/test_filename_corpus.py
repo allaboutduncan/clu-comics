@@ -199,3 +199,98 @@ def test_folder_name_strip_has_one_copy():
 def test_series_name_from_folder(folder, expected):
     from routes.metadata import extract_series_name_from_folder
     assert extract_series_name_from_folder(folder) == expected
+
+
+# --- which issue a name carries (#792, #795) ---------------------------------
+# core.filename_parse.issue_numbers is what the library scan's last tier reads.
+# (stem, series name at the front or None, collected series?, numbers, range?)
+NAMED = [
+    # A story-part number after the issue is title text.
+    ("Batman 400 - Knightfall Part 1", "Batman", False, ["400"], False),
+    ("Green Lantern 141 (1990) - House on Fire, Part 1", "Green Lantern", False, ["141"], False),
+    ("X 010 (2001) - Chapter 2", "X", False, ["010"], False),
+    ("X 011 (2001) - Book 3", "X", False, ["011"], False),
+    ("X 012 of 6 (2001)", "X", False, ["012"], False),
+    # A number inside the series name is not read, recognised or not.
+    ("Spider-Man 2099 005 (1993)", "Spider-Man 2099", False, ["005"], False),
+    ("Spider-Man 2099 005 (1993)", None, False, ["005"], False),
+    ("Spider-Man 2099 005", None, False, ["005"], False),
+    ("The New 52 - Futures End (2014) Volume 003 - Volume 3",
+     "The New 52 - Futures End", False, ["003"], False),
+    # An explicit marker wins wherever it sits.
+    ("X-23 - Target X (2007) Volume 01 Issue 002 - Part Two",
+     "X-23 - Target X", False, ["002"], False),
+    ("Sicko #01 [July 2026]", "Sicko", False, ["01"], False),
+    ("Batman 100th Anniversary Special #5", "Batman", False, ["5"], False),
+    # Volume markers: the number of a collected series, the series volume of
+    # a single issue.
+    ("Absolute Superman V02 - Son of the Demon 2026", "Absolute Superman", True, ["02"], False),
+    ("Avengers Omnibus V02 2023", "Avengers Omnibus", True, ["02"], False),
+    ("Batman and Robin v07 - Robin Rises (2015)", "Batman and Robin", True, ["07"], False),
+    ("Batman and Robin Book 2 (2015)", "Batman and Robin", True, ["2"], False),
+    ("Avengers Omnibus 002 (2023)", "Avengers Omnibus", True, ["002"], False),
+    ("Batman v2 012", "Batman", False, ["012"], False),
+    ("Batman Vol. 3 050 (2018)", "Batman", False, ["050"], False),
+    ("Batman v2 (2011)", "Batman", False, [], False),
+    # Ranges.
+    ("Nightwing 001-006 (2016)", "Nightwing", False, ["1", "2", "3", "4", "5", "6"], True),
+    # Two years are a run of years, not a pack of 2,000 issues.
+    ("Series 2016-2018", "Series", False, ["2016"], False),
+    # Signs, suffixes, separators.
+    ("Amazing Spider-Man -001 (1997)", "Amazing Spider-Man", False, ["-001"], False),
+    ("Batman-001", "Batman", False, ["001"], False),
+    ("Batman_001_(2016)", "Batman", False, ["001"], False),
+    ("Black Cat - 001 (October, 2025)", "Black Cat", False, ["001"], False),
+    ("Amazing Spider-Man 078.BEY (2022)", "Amazing Spider-Man", False, ["078.BEY"], False),
+    ("Gen 13 013B (1995)", "Gen 13", False, ["013B"], False),
+    ("Sandman 001.5 (2020) - Title", "Sandman", False, ["001.5"], False),
+    # No number at all.
+    ("Batman - Year One", "Batman", False, [], False),
+]
+
+
+@pytest.mark.parametrize("stem,series,collected,numbers,is_range", NAMED)
+def test_issue_numbers(stem, series, collected, numbers, is_range):
+    from core.filename_parse import issue_numbers
+
+    start = len(series) if series else 0
+    assert issue_numbers(stem, start=start, prefer_volume=collected) == (numbers, is_range)
+
+
+class TestFallbackIssueNumbers:
+    """helpers.collection.fallback_issue_numbers: the series-aware wrapper."""
+
+    @pytest.mark.parametrize("filename,series,expected", [
+        ("Spider-Man 2099 005 (1993).cbz", "Spider-Man 2099", {"5"}),
+        # ":" in the name, " - " in the file: one separator.
+        ("X-23 - Target X 004 (2007).cbz", "X-23: Target X", {"4"}),
+        ("The New 52 - Futures End 010 (2014).cbz", "The New 52: Futures End", {"10"}),
+        # A leading "The" on either side.
+        ("The Flash 094 (1987).cbz", "Flash", {"94"}),
+        ("Flash 094 (1987).cbz", "The Flash", {"94"}),
+        # The name must end where a word ends.
+        ("Xena 2 - Title 001.cbz", "X", {"1"}),
+        ("Amazing Spider-Man -001 (1997).cbz", "Amazing Spider-Man", {"-1"}),
+        ("Amazing Spider-Man 078.BEY (2022).cbz", "Amazing Spider-Man", {"78.bey"}),
+    ])
+    def test_numbers(self, filename, series, expected):
+        from helpers.collection import fallback_issue_numbers
+
+        assert fallback_issue_numbers(filename, series) == (expected, False)
+
+    @pytest.mark.parametrize("series,names,expected", [
+        ("Avengers Omnibus", [], True),
+        ("Marvel Masterworks: Marvel Two-In-One", [], True),
+        ("Alpha Flight Epic Collection", [], True),
+        ("Batman", ["Vol. 1: Court of Owls", "Volume 2", "Book 3"], True),
+        ("Batman", ["Vol. 1", "Knightfall"], True),
+        ("Batman", ["Knightfall", "Knightquest", "Vol. 3"], False),
+        ("Batman", [], False),
+        # An issue title adjective is not a format.
+        ("Absolute Batman", ["The Zoo", "Abomination"], False),
+    ])
+    def test_is_collected_series(self, series, names, expected):
+        from helpers.collection import is_collected_series
+
+        issues = [{"number": str(i + 1), "name": name} for i, name in enumerate(names)]
+        assert is_collected_series(series, issues) is expected
