@@ -73,13 +73,10 @@ class TestYearly:
             assert all(zf.read(n).startswith(PNG_MAGIC) for n in names)
 
     def test_download_for_a_year_with_no_reads(self, client, reads):
-        # The books grid has nothing to draw; that used to be written into the
-        # ZIP as None and answer 500.
+        # There are no slides to pack. This was a 500 (None written into the
+        # ZIP); an archive of nothing would be no better.
         r = client.get("/api/wrapped/2019/download")
-        assert r.status_code == 200
-        with zipfile.ZipFile(io.BytesIO(r.data)) as zf:
-            assert "wrapped_2019/04_books_grid.png" not in zf.namelist()
-            assert zf.testzip() is None
+        assert r.status_code == 404
 
     def test_a_render_failure_is_a_500_with_a_message(self, client, reads):
         with patch("wrapped.generate_summary_slide", side_effect=RuntimeError("boom")):
