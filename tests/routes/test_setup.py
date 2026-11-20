@@ -79,7 +79,7 @@ class TestAccess:
 class TestLogsPageSystemCheck:
     """The Logs page's System Check tab renders the preflight.
 
-    ``/logs`` lives in app.py (a stub in the test app), so the real template is
+    ``/logs`` used to live in app.py (a stub in the test app), so the real template is
     rendered directly. Clerks can read the logs, but the tab and the debug
     package are owner-only, so they are not offered to a clerk.
     """

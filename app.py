@@ -35,9 +35,7 @@ import re
 import heapq
 import sqlite3
 import zipfile
-import zlib
 import rarfile
-import tempfile
 import traceback
 
 # Prefer unrar (proprietary, handles solid archives) over unar
@@ -88,7 +86,7 @@ from core.memory_utils import (
     memory_context,
     get_global_monitor,
 )
-from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
+from core.app_logging import app_logger
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from core.version import __version__
@@ -397,6 +395,14 @@ from routes.wrapped import wrapped_bp
 
 app.register_blueprint(insights_bp)
 app.register_blueprint(wrapped_bp)
+
+# Komga sync controls and the Logs page (moved out of app.py so the routes can
+# be tested). The reader's page routes moved into routes/reading.py.
+from routes.komga import komga_bp
+from routes.logs import logs_bp
+
+app.register_blueprint(komga_bp)
+app.register_blueprint(logs_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -4813,7 +4819,6 @@ def inject_metron_available():
 #     Logging Setup     #
 #########################
 
-# app_logger, APP_LOG, and MONITOR_LOG are now imported from app_logging module
 # Set log level from config (default to INFO = debug disabled)
 debug_enabled = get_bool("ENABLE_DEBUG_LOGGING")
 app_logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
@@ -5407,7 +5412,6 @@ def resize_upload(file_path, target_dir):
 from helpers import find_folder_thumbnail  # noqa: E402  (re-export for callers)
 from helpers import FOLDER_THUMBNAIL_EXTENSIONS  # noqa: E402
 from helpers import match_parent_permissions  # noqa: E402
-from helpers import describe_archive_error  # noqa: E402
 
 
 def find_folder_thumbnails_batch(folder_paths):
@@ -5423,432 +5427,6 @@ def find_folder_thumbnails_batch(folder_paths):
         path: (rec["path"] if rec else None)
         for path, rec in folder_art.find_art_batch(folder_paths).items()
     }
-
-
-# ---------------------------------------------------------------------------
-# RAR full-archive extraction cache
-# ---------------------------------------------------------------------------
-# Single-flight per archive, reference-counted eviction: see
-# core/rar_extract_cache.py. The extractor is defined below.
-from core.rar_extract_cache import RarExtractCache  # noqa: E402
-import atexit  # noqa: E402
-
-
-def _find_extracted_file(directory, filename):
-    """Walk *directory* and return the path of the first file matching *filename* (case-insensitive)."""
-    target = filename.lower()
-    for root, _dirs, files in os.walk(directory):
-        for f in files:
-            if f.lower() == target:
-                full = os.path.join(root, f)
-                # Path traversal guard (realpath, separator-bounded)
-                if is_within_roots(full, [directory]):
-                    return full
-    return None
-
-
-def _is_valid_image_data(data):
-    """Check if image data appears complete (not truncated)."""
-    if not data or len(data) < 10:
-        return False
-    # JPEG: must start with FF D8 and end with FF D9
-    if data[:2] == b'\xff\xd8':
-        return data[-2:] == b'\xff\xd9'
-    # PNG: must start with PNG signature and end with IEND chunk
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return b'IEND' in data[-12:]
-    # Other formats — assume valid if non-empty
-    return True
-
-
-
-def _try_full_extraction(tool_cmd, rar_path, tmp_dir):
-    """Run a full-archive extraction with the given tool. Returns True if files were produced."""
-    try:
-        result = subprocess.run(tool_cmd, capture_output=True, timeout=120)
-        has_files = any(os.scandir(tmp_dir))
-        if has_files:
-            tool_name = tool_cmd[0]
-            if result.returncode != 0:
-                app_logger.warning(
-                    f"{tool_name} full extraction partial success (rc={result.returncode}) for {rar_path}"
-                )
-            else:
-                app_logger.info(f"{tool_name} full extraction succeeded for {rar_path}")
-            return True
-    except FileNotFoundError:
-        pass  # tool not installed
-    except Exception as e:
-        app_logger.warning(f"{tool_cmd[0]} full extraction failed for {rar_path}: {e}")
-    return False
-
-
-def _extract_full_rar_into(rar_path, dest_dir):
-    """Extract the whole RAR into *dest_dir* (an empty folder the cache owns).
-
-    Tries unrar first (proprietary, best solid-archive support), then 7z, then
-    unar. Each attempt gets its own sub-folder, created and (on failure)
-    removed here, so a discarded attempt never mixes with the next one.
-    Returns True when an attempt produced files.
-    """
-    tools = [
-        ["unrar", "x", "-y", "-o+", rar_path],       # unrar x -y -o+ archive.rar tmp_dir/
-        ["7z", "x", f"-y", rar_path],                  # 7z x -y archive.rar -o{tmp_dir}
-        ["unar", "-f", "-o", None, rar_path],           # unar -f -o tmp_dir archive.rar
-    ]
-
-    for attempt, tool_cmd in enumerate(tools):
-        tmp_dir = os.path.join(dest_dir, f"attempt{attempt}")
-        os.mkdir(tmp_dir)
-        # Fix up output dir argument per tool
-        tool_name = tool_cmd[0]
-        if tool_name == "unrar":
-            cmd = tool_cmd + [tmp_dir + "/"]
-        elif tool_name == "7z":
-            cmd = tool_cmd[:2] + [f"-o{tmp_dir}"] + tool_cmd[2:]
-        else:  # unar
-            cmd = tool_cmd.copy()
-            cmd[3] = tmp_dir  # replace None placeholder
-
-        if _try_full_extraction(cmd, rar_path, tmp_dir):
-            return True
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    app_logger.error(f"All full extraction tools failed for {rar_path}")
-    return False
-
-
-_rar_cache = RarExtractCache(_extract_full_rar_into, max_entries=3)
-atexit.register(_rar_cache.shutdown)
-
-
-def _extract_single_rar_entry(rar_path, entry_name):
-    """Extract a single file from a RAR archive.
-
-    Fallback chain:
-    1. unrar single-entry (proprietary, handles solid archives)
-    2. 7z single-entry
-    3. unar single-entry
-    4. Full-archive extraction (cached) + file lookup
-    Each step validates image completeness before returning.
-    """
-    rar_path = os.path.realpath(rar_path)
-    from helpers.library import is_allowed_path
-    if not is_allowed_path(rar_path):
-        app_logger.error(f"Path not in allowed directory: {rar_path}")
-        return None
-
-    safe_name = os.path.basename(entry_name)
-    if not safe_name:
-        app_logger.error(f"Invalid RAR entry name: {entry_name}")
-        return None
-
-    # --- Attempts 1-3: single-entry extraction with each tool ---
-    single_tools = [
-        ["unrar", "e", "-y", "-o+"],  # unrar e -y -o+ archive entry dest/
-        ["7z", "e", "-y"],             # 7z e -y -o{dir} archive entry
-        ["unar", "-f", "-o"],          # unar -f -o dir archive entry
-    ]
-    for tool_cmd in single_tools:
-        try:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tool_name = tool_cmd[0]
-                if tool_name == "unrar":
-                    cmd = tool_cmd + [rar_path, entry_name, tmp_dir + "/"]
-                elif tool_name == "7z":
-                    cmd = tool_cmd + [f"-o{tmp_dir}", rar_path, entry_name]
-                else:  # unar
-                    cmd = tool_cmd + [tmp_dir, rar_path, entry_name]
-
-                result = subprocess.run(cmd, capture_output=True, timeout=60)
-                found = _find_extracted_file(tmp_dir, safe_name)
-                if found:
-                    with open(found, "rb") as f:
-                        data = f.read()
-                    if _is_valid_image_data(data):
-                        return data
-                    app_logger.warning(f"{tool_name} extracted truncated data for {entry_name}")
-        except FileNotFoundError:
-            continue  # tool not installed
-        except Exception as e:
-            app_logger.warning(f"{tool_cmd[0]} single-entry extraction failed for {entry_name}: {e}")
-
-    # --- Attempt 4: full-archive extraction (cached) ---
-    app_logger.info(
-        f"Single-entry extraction failed for {entry_name}, trying full archive extraction"
-    )
-    # The folder stays in place for the whole block: the cache holds a
-    # reference until it exits, so eviction cannot remove it mid-read.
-    with _rar_cache.acquire(rar_path) as cache_dir:
-        found = _find_extracted_file(cache_dir, safe_name) if cache_dir else None
-        if found:
-            try:
-                with open(found, "rb") as f:
-                    data = f.read()
-                if _is_valid_image_data(data):
-                    return data
-                app_logger.warning(f"Full extraction produced truncated data for {entry_name}")
-            except Exception as e:
-                app_logger.error(f"Failed to read extracted file {found}: {e}")
-
-    app_logger.error(f"All extraction methods failed for {entry_name} in {rar_path}")
-    return None
-
-
-@app.route("/api/read/<path:comic_path>/page/<int:page_num>")
-def read_comic_page(comic_path, page_num):
-    """Serve a specific page from a comic file."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        app_logger.error(f"Comic file not found: {comic_path}")
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-    try:
-        # Determine archive type
-        ext = os.path.splitext(comic_path)[1].lower()
-
-        # Get list of image files from archive
-        image_files = []
-        archive = None
-
-        if ext in [".cbz", ".zip"]:
-            archive = zipfile.ZipFile(comic_path, "r")
-            all_files = archive.namelist()
-        elif ext == ".cbr":
-            archive = rarfile.RarFile(comic_path, "r")
-            all_files = archive.namelist()
-        else:
-            return jsonify({"error": "Unsupported file format"}), 400
-
-        # Filter for image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        for filename in all_files:
-            if filename.lower().endswith(image_extensions):
-                # Skip macOS metadata files
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        # Sort naturally
-        def natural_sort_key(s):
-            return [
-                int(text) if text.isdigit() else text.lower()
-                for text in re.split("([0-9]+)", s)
-            ]
-
-        image_files.sort(key=natural_sort_key)
-
-        # Check if page number is valid
-        if page_num < 0 or page_num >= len(image_files):
-            return jsonify({"error": "Invalid page number"}), 400
-
-        # Read the requested page
-        target_file = image_files[page_num]
-        image_data = None
-        rar_read_failed = False
-
-        if ext == ".cbr":
-            try:
-                image_data = archive.read(target_file)
-                if not _is_valid_image_data(image_data):
-                    app_logger.warning(
-                        f"rarfile returned truncated data for {target_file} from {comic_path}"
-                    )
-                    image_data = None
-                    rar_read_failed = True
-            except Exception as exc:
-                app_logger.warning(
-                    f"rarfile failed to read {target_file} from {comic_path} "
-                    f"({type(exc).__name__}), falling back to subprocess extraction"
-                )
-                rar_read_failed = True
-
-            if rar_read_failed:
-                if archive:
-                    archive.close()
-                    archive = None
-                image_data = _extract_single_rar_entry(comic_path, target_file)
-                if image_data is None:
-                    return send_file("static/images/error.svg", mimetype="image/svg+xml")
-        else:
-            image_data = archive.read(target_file)
-
-        # Close archive
-        if archive:
-            archive.close()
-
-        # Determine mime type
-        file_ext = os.path.splitext(target_file)[1].lower()
-        mime_types = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-        }
-        mime_type = mime_types.get(file_ext, "image/jpeg")
-
-        # Return image
-        return Response(image_data, mimetype=mime_type)
-
-    except (zipfile.BadZipFile, zlib.error) as e:
-        app_logger.warning(
-            f"Damaged archive, cannot read page {page_num} from {comic_path}: "
-            f"{describe_archive_error(e)}"
-        )
-        if archive:
-            archive.close()
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-    except Exception as e:
-        app_logger.error(f"Error reading comic page {page_num} from {comic_path}: {e}")
-        app_logger.error(traceback.format_exc())
-        if archive:
-            archive.close()
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-
-@app.route("/api/read/<path:comic_path>/page/<int:page_num>/info")
-def read_comic_page_info(comic_path, page_num):
-    """Get information about a specific page in a comic file."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        return jsonify({"success": False, "error": "File not found"}), 404
-
-    try:
-        ext = os.path.splitext(comic_path)[1].lower()
-        archive = None
-
-        if ext in [".cbz", ".zip"]:
-            archive = zipfile.ZipFile(comic_path, "r")
-        elif ext == ".cbr":
-            archive = rarfile.RarFile(comic_path, "r")
-        else:
-            return jsonify({"success": False, "error": "Unsupported format"}), 400
-
-        # Get list of image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        image_files = []
-        for filename in archive.namelist():
-            if filename.lower().endswith(image_extensions):
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        # Sort naturally
-        def natural_sort_key(s):
-            return [
-                int(text) if text.isdigit() else text.lower()
-                for text in re.split("([0-9]+)", s)
-            ]
-
-        image_files.sort(key=natural_sort_key)
-
-        if page_num < 0 or page_num >= len(image_files):
-            archive.close()
-            return jsonify({"success": False, "error": "Invalid page number"}), 400
-
-        target_file = image_files[page_num]
-
-        # Get file info from archive
-        info = archive.getinfo(target_file)
-        file_size = info.file_size if hasattr(info, "file_size") else info.compress_size
-        file_name = os.path.basename(target_file)
-
-        archive.close()
-
-        return jsonify(
-            {
-                "success": True,
-                "page_num": page_num,
-                "file_name": file_name,
-                "file_size": file_size,
-                "archive_path": target_file,
-            }
-        )
-
-    except Exception as e:
-        detail = describe_archive_error(e)
-        app_logger.error(
-            f"Error getting page info for {comic_path} page {page_num}: {detail}"
-        )
-        if archive:
-            archive.close()
-        return jsonify({"success": False, "error": detail}), 500
-
-
-@app.route("/api/read/<path:comic_path>/info")
-def read_comic_info(comic_path):
-    """Get information about a comic file (page count, etc.)."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        return jsonify({"error": "Comic file not found"}), 404
-
-    try:
-        # Determine archive type
-        ext = os.path.splitext(comic_path)[1].lower()
-
-        # Get list of image files from archive
-        image_files = []
-
-        if ext in [".cbz", ".zip"]:
-            with zipfile.ZipFile(comic_path, "r") as archive:
-                all_files = archive.namelist()
-        elif ext == ".cbr":
-            with rarfile.RarFile(comic_path, "r") as archive:
-                all_files = archive.namelist()
-        else:
-            return jsonify({"error": "Unsupported file format"}), 400
-
-        # Filter for image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        for filename in all_files:
-            if filename.lower().endswith(image_extensions):
-                # Skip macOS metadata files
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        return jsonify(
-            {
-                "success": True,
-                "page_count": len(image_files),
-                "filename": os.path.basename(comic_path),
-            }
-        )
-
-    except Exception as e:
-        app_logger.error(f"Error getting comic info for {comic_path}: {e}")
-        app_logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
 
 
 def generate_thumbnail_task(file_path, cache_path):
@@ -7255,46 +6833,6 @@ def schedules_page():
 
 
 #########################
-#        App Logs       #
-#########################
-# Route for app logs page
-@app.route("/logs")
-def logs_page():
-    """Combined logs page with tabs for app and monitor logs."""
-    return render_template("logs.html", config=app.config)
-
-
-@app.route("/app-logs")
-def app_logs_page():
-    return redirect(url_for("logs_page"))
-
-
-# Route for monitor logs page
-@app.route("/mon-logs")
-def mon_logs_page():
-    return redirect(url_for("logs_page"))
-
-
-# Incremental log tail endpoint (polled by the logs page; replaces SSE
-# streaming, which held a gunicorn thread per open tab and grew the browser
-# DOM without bound). Returns only the bytes added since the client's last
-# byte offset.
-_LOG_FILES = {"app": APP_LOG, "mon": MONITOR_LOG}
-
-
-@app.route("/logs/tail")
-def logs_tail():
-    log_type = request.args.get("type", "app")
-    log_file = _LOG_FILES.get(log_type)
-    if log_file is None:
-        return jsonify({"error": "Invalid log type"}), 400
-
-    pos = request.args.get("pos", type=int)
-    lines, new_pos, reset = read_log_tail(log_file, pos=pos)
-    return jsonify({"pos": new_pos, "lines": lines, "reset": reset})
-
-
-#########################
 #    Edit CBZ Routes    #
 #########################
 # Opening renames and extracts the archive, so /edit is a POST (a write, Clerk
@@ -7809,129 +7347,6 @@ def start_background_services():
 
 # Start background services when module is imported (works with Gunicorn)
 start_background_services()
-
-
-#########################
-# Komga API Endpoints   #
-#########################
-
-
-@app.route("/api/komga/config", methods=["GET"])
-def api_get_komga_config():
-    """Get current Komga sync configuration (password masked)."""
-    from core.database import get_komga_config
-
-    cfg = get_komga_config()
-    if cfg:
-        # Mask password for display
-        cfg["password"] = "***" if cfg.get("password") else ""
-    return jsonify({"success": True, "config": cfg or {}})
-
-
-@app.route("/api/komga/config", methods=["POST"])
-def api_save_komga_config():
-    """Save Komga sync configuration."""
-    from core.database import save_komga_config as db_save_komga_config
-
-    data = request.get_json()
-
-    success = db_save_komga_config(
-        server_url=data.get("server_url", ""),
-        username=data.get("username", ""),
-        password=data.get("password", ""),
-        enabled=data.get("enabled", False),
-        frequency=data.get("frequency", "disabled"),
-        time=data.get("time", "05:00"),
-        weekday=data.get("weekday", 0),
-        library_mappings=data.get("library_mappings", []),
-    )
-
-    if success:
-        configure_komga_sync_schedule()
-        return jsonify({"success": True, "message": "Komga configuration saved"})
-    return jsonify({"success": False, "error": "Failed to save configuration"}), 500
-
-
-@app.route("/api/komga/test", methods=["POST"])
-def api_test_komga_connection():
-    """Test Komga server connectivity."""
-    from core.database import get_komga_config, update_komga_connection_valid
-    from models.komga import KomgaClient
-
-    cfg = get_komga_config()
-    if not cfg or not cfg.get("server_url"):
-        return jsonify(
-            {
-                "success": False,
-                "valid": False,
-                "error": "Komga not configured. Save settings first.",
-            }
-        )
-
-    username = cfg.get("username", "")
-    password = cfg.get("password", "")
-
-    app_logger.info(
-        f"Komga test: url={cfg['server_url']}, user={'set' if username else 'empty'}, pass={'set' if password else 'empty'}"
-    )
-
-    if not username or not password:
-        return jsonify(
-            {
-                "success": False,
-                "valid": False,
-                "error": "Komga credentials not set. Save credentials first.",
-            }
-        )
-
-    try:
-        client = KomgaClient(cfg["server_url"], username, password)
-        valid, details = client.test_connection()
-        update_komga_connection_valid(valid)
-        if valid:
-            return jsonify({"success": True, "valid": True, "message": details})
-        else:
-            return jsonify({"success": True, "valid": False, "error": details})
-    except Exception as e:
-        app_logger.error(f"Komga connection test error: {e}")
-        update_komga_connection_valid(False)
-        return jsonify({"success": False, "valid": False, "error": str(e)})
-
-
-@app.route("/api/komga/sync", methods=["POST"])
-def api_sync_komga_now():
-    """Manually trigger Komga reading sync."""
-    threading.Thread(target=run_komga_sync, daemon=True).start()
-    return jsonify({"success": True, "message": "Komga sync started in background"})
-
-
-@app.route("/api/komga/sync/status", methods=["GET"])
-def api_komga_sync_status():
-    """Get Komga sync status and statistics."""
-    from core.database import get_komga_sync_stats, get_komga_config
-
-    stats = get_komga_sync_stats()
-    cfg = get_komga_config()
-
-    # Get next scheduled run
-    next_run_str = get_next_run_for_job("komga_sync")
-    next_run = next_run_str if next_run_str != "Not scheduled" else None
-
-    return jsonify(
-        {
-            "success": True,
-            "total_synced_read": stats.get("total_synced_read", 0),
-            "total_synced_progress": stats.get("total_synced_progress", 0),
-            # Stored UTC, displayed beside next_run, so both go through the
-            # user's offset.
-            "last_sync": format_user_time(stats.get("last_sync")),
-            "last_sync_read_count": cfg.get("last_sync_read_count", 0) if cfg else 0,
-            "last_sync_progress_count": cfg.get("last_sync_progress_count", 0)
-            if cfg
-            else 0,
-            "next_run": next_run,
-        }
-    )
 
 
 @app.route("/api/metadata-scan-status", methods=["GET"])
