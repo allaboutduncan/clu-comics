@@ -285,8 +285,9 @@ WAL write lock** until the cyclic GC happens to run. Every other writer burns
 its 30s `busy_timeout` and fails. One `UNIQUE constraint failed:
 file_index.path` in `update_file_index_entry` produced 93 "database is locked"
 failures in twelve minutes (#723). `tests/unit/test_db_write_connection_leaks.py`
-is a ratchet on writers in `core/database.py` that commit without closing in a
-`finally`/`db_conn()`; lower its `BASELINE` when you convert one.
+is a ratchet on writers that commit without closing in a
+`finally`/`db_conn()`: a `BASELINE` for `core/database.py` (lower it when you
+convert one) and **zero** in every other module.
 
 ## Subsystem notes (`.claude/rules/`)
 

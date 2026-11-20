@@ -2561,7 +2561,7 @@ def api_delete_publisher(publisher_id):
 @series_bp.route("/api/publishers/<signed:publisher_id>", methods=["PUT", "PATCH"])
 def api_update_publisher(publisher_id):
     """Update a publisher."""
-    from core.database import get_db_connection
+    from core.database import db_conn
 
     data = request.get_json() or {}
     name = data.get("name")
@@ -2569,51 +2569,47 @@ def api_update_publisher(publisher_id):
     logo = data.get("logo")
 
     try:
-        conn = get_db_connection()
-        if not conn:
-            return jsonify(
-                {"success": False, "error": "Database connection failed"}
-            ), 500
+        with db_conn() as conn:
+            if not conn:
+                return jsonify(
+                    {"success": False, "error": "Database connection failed"}
+                ), 500
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
-        updates = []
-        params = []
+            ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
+            updates = []
+            params = []
 
-        if name is not None:
-            updates.append("name")
-            params.append(name)
-        if path is not None:
-            updates.append("path")
-            params.append(path if path else None)
-        if logo is not None:
-            updates.append("logo")
-            params.append(logo if logo else None)
-        if "brand_keywords" in data:
-            updates.append("brand_keywords")
-            params.append(data["brand_keywords"] if data["brand_keywords"] else None)
+            if name is not None:
+                updates.append("name")
+                params.append(name)
+            if path is not None:
+                updates.append("path")
+                params.append(path if path else None)
+            if logo is not None:
+                updates.append("logo")
+                params.append(logo if logo else None)
+            if "brand_keywords" in data:
+                updates.append("brand_keywords")
+                params.append(data["brand_keywords"] if data["brand_keywords"] else None)
 
-        if not updates:
-            conn.close()
-            return jsonify({"success": False, "error": "No fields to update"}), 400
+            if not updates:
+                return jsonify({"success": False, "error": "No fields to update"}), 400
 
-        if not all(col in ALLOWED_COLUMNS for col in updates):
-            conn.close()
-            return jsonify({"success": False, "error": "Invalid field"}), 400
+            if not all(col in ALLOWED_COLUMNS for col in updates):
+                return jsonify({"success": False, "error": "Invalid field"}), 400
 
-        set_clause = ", ".join(col + " = ?" for col in updates)
-        params.append(publisher_id)
-        c.execute("UPDATE publishers SET " + set_clause + " WHERE id = ?", params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
-        conn.commit()
+            set_clause = ", ".join(col + " = ?" for col in updates)
+            params.append(publisher_id)
+            c.execute("UPDATE publishers SET " + set_clause + " WHERE id = ?", params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
+            conn.commit()
 
-        if c.rowcount > 0:
-            conn.close()
-            app_logger.info(f"Updated publisher ID: {publisher_id}")
-            return jsonify({"success": True})
-        else:
-            conn.close()
-            return jsonify({"success": False, "error": "Publisher not found"}), 404
+            if c.rowcount > 0:
+                app_logger.info(f"Updated publisher ID: {publisher_id}")
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "Publisher not found"}), 404
 
     except Exception as e:
         app_logger.error(f"Error updating publisher: {e}")
