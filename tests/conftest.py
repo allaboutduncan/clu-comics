@@ -335,3 +335,19 @@ def _folder_art_in_tmp(tmp_path, monkeypatch):
     folder_art.reset_state()
     yield
     folder_art.reset_state()
+
+
+@pytest.fixture(autouse=True)
+def _wrapped_slides_in_tmp(tmp_path, monkeypatch):
+    """Keep core.wrapped_slides' PNG cache inside the test's tmp dir.
+
+    Like folder art, its root is the fixed /cache volume, and any test that
+    asks a Wrapped route for a slide writes one.
+    """
+    try:
+        from core import wrapped_slides
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(wrapped_slides, "get_cache_dir", lambda: str(tmp_path / "cache"))
+    yield
