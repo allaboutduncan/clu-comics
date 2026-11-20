@@ -177,6 +177,10 @@
     padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
 }
 
+.wrapped-story-style {
+    width: auto;
+}
+
 /* --- editor --- */
 .wrapped-story-editor {
     flex: 1;

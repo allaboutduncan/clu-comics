@@ -34,19 +34,21 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from core import wrapped_styles
 from core.app_logging import app_logger
 from core.config import get_cache_dir
 from core.database import current_user_id, db_conn
 from core.user_time import DISPLAY_FORMAT, local_period_bounds_utc, sql_offset_modifier
 
 # Bump when any slide's drawing changes, so cached PNGs are redrawn.
-RENDERER_VERSION = 1
+RENDERER_VERSION = 2
 
-YEARLY = "yearly"
-MONTHLY = "monthly"
+YEARLY = wrapped_styles.YEARLY
+MONTHLY = wrapped_styles.MONTHLY
 
-DEFAULT_STYLE = "theme"
-STYLES = (DEFAULT_STYLE,)
+# The user_settings / user_preferences key for the chosen style. Blank means
+# "each recap's own default" (core.wrapped_styles.DEFAULTS).
+STYLE_SETTING = "wrapped_style"
 
 CACHE_SUBDIR = "wrapped"
 MAX_CACHE_AGE_SECONDS = 30 * 24 * 3600
@@ -101,9 +103,34 @@ def get_slide(scope, slide_id):
     return None
 
 
-def clean_style(style):
-    """*style* if it is one we draw, else the default."""
-    return style if style in STYLES else DEFAULT_STYLE
+def user_wrapped_style(scope):
+    """The style this user's recaps of *scope* are drawn in.
+
+    Their own choice if they made one and it suits the scope, else the site's,
+    else the scope's default -- so Monthly Wrapped keeps its comic-panel look
+    until someone picks another.
+    """
+    from core.database import get_user_setting
+
+    try:
+        stored = get_user_setting(STYLE_SETTING, default="")
+    except Exception:
+        stored = ""
+    return wrapped_styles.resolve_style(stored, scope)
+
+
+def clean_style(style, scope):
+    """The style to draw *scope* in: *style* when it is given and valid for
+    the scope, else the user's saved one."""
+    if style and wrapped_styles.get_style(style) is not None \
+            and scope in wrapped_styles.get_style(style).scopes:
+        return style
+    return user_wrapped_style(scope)
+
+
+def style_choices(scope):
+    """``[{id, label}]`` for the viewer's picker."""
+    return [{"id": s.id, "label": s.label} for s in wrapped_styles.styles_for(scope)]
 
 
 def user_wrapped_theme():
@@ -180,7 +207,7 @@ def build_manifest(scope, year, month=None, theme=None, style=None, user_id=None
     browser may keep the image for as long as it stays the same.
     """
     theme = theme or user_wrapped_theme()
-    style = clean_style(style)
+    style = clean_style(style, scope)
     stats = period_stats(scope, year, month)
     fingerprint = period_fingerprint(year, month, user_id)
     return [
@@ -256,13 +283,14 @@ def _write_cached(user_id, version, data):
         app_logger.debug(f"Wrapped slide not cached: {e}")
 
 
-def _draw(spec, year, month, theme):
+def _draw(spec, year, month, theme, style):
     import wrapped
 
     generator = getattr(wrapped, spec.generator)
-    if spec.scope == MONTHLY:
-        return generator(year, month, theme)
-    return generator(year, theme)
+    with wrapped.use_style(style):
+        if spec.scope == MONTHLY:
+            return generator(year, month, theme)
+        return generator(year, theme)
 
 
 def render_slide(scope, slide_id, year, month=None, theme=None, style=None, user_id=None):
@@ -275,11 +303,11 @@ def render_slide(scope, slide_id, year, month=None, theme=None, style=None, user
         return None
     uid = current_user_id() if user_id is None else user_id
     theme = theme or user_wrapped_theme()
-    style = clean_style(style)
+    style = clean_style(style, scope)
     version = slide_version(spec, year, month, theme, style,
                             period_fingerprint(year, month, uid))
     if version is None:
-        return _draw(spec, year, month, theme)
+        return _draw(spec, year, month, theme, style)
 
     path = _cache_path(uid, version)
     cached = _read_cached(path)
@@ -294,7 +322,7 @@ def render_slide(scope, slide_id, year, month=None, theme=None, style=None, user
             cached = _read_cached(path)
             if cached:
                 return cached
-            data = _draw(spec, year, month, theme)
+            data = _draw(spec, year, month, theme, style)
             if data:
                 _write_cached(uid, version, data)
             return data
@@ -306,7 +334,7 @@ def render_slide(scope, slide_id, year, month=None, theme=None, style=None, user
 def render_all(scope, year, month=None, theme=None, style=None, user_id=None):
     """``[(filename, bytes)]`` for every slide in the manifest, for the ZIP."""
     theme = theme or user_wrapped_theme()
-    style = clean_style(style)
+    style = clean_style(style, scope)
     slides = []
     for item in build_manifest(scope, year, month, theme, style, user_id):
         data = render_slide(scope, item["id"], year, month, theme, style, user_id)

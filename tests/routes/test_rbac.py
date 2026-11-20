@@ -47,6 +47,7 @@ class TestRolePolicy:
         ("GET", "/api/reading-insights/constellation", "reader"),
         ("GET", "/api/reading-insights/day/2024-06-10", "reader"),
         ("POST", "/api/account/reading-goal", "reader"),
+        ("POST", "/api/account/wrapped-style", "reader"),
         # Bookmarking a reading list is personal data. These live under
         # /api/favorites precisely so _READER_WRITE_PREFIXES classifies them as
         # reader-writable; moving them under /api/reading-lists/* would fall
