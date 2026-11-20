@@ -471,6 +471,13 @@ class TestProgress:
 # =============================================================================
 
 
+def _session_rows():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM reading_sessions ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 class TestIssuesRead:
 
     def test_post_marks_issue_read(self, auth_headers, seeded_file, client):
@@ -513,6 +520,44 @@ class TestIssuesRead:
         clear.assert_called_once()
         prefix = clear.call_args.args[0]
         assert prefix.startswith("u") and prefix.endswith(":")
+
+    def test_importing_a_read_is_not_a_reading_session(self, auth_headers, seeded_file, client):
+        client.post(
+            "/api/v1/issues/read",
+            data=json.dumps({"path": seeded_file["path"], "page_count": 4}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        assert _session_rows() == []
+
+    def test_progress_then_read_is_one_finished_session(self, auth_headers, seeded_file, client):
+        for page in (2, 3):
+            resp = client.put(
+                "/api/v1/progress",
+                data=json.dumps({"path": seeded_file["path"], "page_number": page, "total_pages": 4}),
+                content_type="application/json",
+                headers=auth_headers,
+            )
+            assert resp.status_code == 200
+        client.post(
+            "/api/v1/issues/read",
+            data=json.dumps({"path": seeded_file["path"], "page_count": 4}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        (session,) = _session_rows()
+        assert session["source"] == "api"
+        assert session["finished"] == 1
+        assert (session["start_page"], session["max_page"]) == (2, 4)
+
+    def test_progress_on_page_one_is_not_a_session(self, auth_headers, seeded_file, client):
+        client.put(
+            "/api/v1/progress",
+            data=json.dumps({"path": seeded_file["path"], "page_number": 1}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        assert _session_rows() == []
 
     def test_post_missing_path(self, auth_headers, client):
         resp = client.post(

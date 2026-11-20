@@ -1956,6 +1956,36 @@ def _init_db_locked():
             " ON issues_read(user_id, read_at)"
         )
 
+        # Reading sessions: one row per sitting (see core/reading_sessions.py).
+        # No foreign key to users, like the other per-user tables here.
+        # comic_path is byte-exact and followed on rename by
+        # move_path_references. Timestamps are server UTC.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reading_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                comic_path TEXT NOT NULL,
+                client_session_id TEXT,
+                started_at TIMESTAMP NOT NULL,
+                ended_at TIMESTAMP NOT NULL,
+                active_seconds INTEGER NOT NULL DEFAULT 0,
+                start_page INTEGER,
+                end_page INTEGER,
+                max_page INTEGER,
+                total_pages INTEGER,
+                finished INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'web'
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_sessions_user_started"
+            " ON reading_sessions(user_id, started_at)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_sessions_user_path"
+            " ON reading_sessions(user_id, comic_path, ended_at)"
+        )
+
         # Bulk metadata processing tables (used by routes/bulk_metadata.py)
         # Job header — one row per "Fetch Metadata" run.
         c.execute("""
@@ -10679,6 +10709,8 @@ _PATH_REFERENCE_COLUMNS = (
     ("file_metadata_tags", "file_path", True),
     ("reading_positions", "comic_path", True),
     ("issues_read", "issue_path", True),
+    # No uniqueness on the path: a comic has one row per sitting.
+    ("reading_sessions", "comic_path", False),
     ("reading_list_entries", "matched_file_path", False),
     ("reading_list_entries", "manual_override_path", False),
     ("reading_lists", "thumbnail_path", False),
