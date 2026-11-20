@@ -448,6 +448,12 @@ def create_base_image(theme_colors: dict, bg_image_path: str = None) -> Image.Im
         img = create_gradient(IMAGE_WIDTH, IMAGE_HEIGHT, theme_colors['bg'], light_primary)
     return img
 
+# The CLU mark on the yearly slides that carry it. Slide content starts at
+# y=230 at the earliest, so the mark has to end above that.
+BRAND_LOGO_WIDTH = 110
+BRAND_LOGO_TOP = 60
+
+
 def add_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, year: int):
     primary_color = hex_to_rgb(theme_colors['primary'])
     
@@ -456,13 +462,15 @@ def add_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, year: in
     if os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert('RGBA')
-            # Maintain aspect ratio, max width 400
-            ratio = 400 / logo.width
+            # A small mark at the top, not a banner: at 400px it ran from 80
+            # to 480 and sat on top of whatever the slide put there (the big
+            # number on the summary, the heading on the most-read slide).
+            ratio = BRAND_LOGO_WIDTH / logo.width
             new_h = int(logo.height * ratio)
-            logo = logo.resize((400, new_h), Image.Resampling.LANCZOS)
-            
-            x_pos = (IMAGE_WIDTH - 400) // 2
-            img.paste(logo, (x_pos, 80), logo)
+            logo = logo.resize((BRAND_LOGO_WIDTH, new_h), Image.Resampling.LANCZOS)
+
+            x_pos = (IMAGE_WIDTH - BRAND_LOGO_WIDTH) // 2
+            img.paste(logo, (x_pos, BRAND_LOGO_TOP), logo)
         except Exception:
              # Fallback text
             text_color = hex_to_rgb(theme_colors['text'])
