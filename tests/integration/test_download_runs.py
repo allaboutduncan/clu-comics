@@ -106,19 +106,21 @@ class TestRecording:
 
 
 class TestNeverRaises:
-    def test_start_run_without_a_database_is_a_null_recorder(self):
-        with patch("core.database.get_db_connection", return_value=None):
+    def test_start_run_without_a_database_does_not_raise(self):
+        with patch("core.database.get_db_connection", return_value=None), \
+                patch.object(dr, "FINISH_RETRY_DELAYS", ()):
             run = dr.start_run(dr.KIND_GETCOMICS)
-        assert run is dr.NULL_RECORDER
-        run.count("x")
-        _item(run, 1)
-        run.flush()
-        run.finish()
+            assert run.run_id is None
+            run.count("x")
+            _item(run, 1)
+            run.flush()
+            run.finish()
 
     def test_a_failing_write_is_swallowed(self, store):
         run = dr.start_run(dr.KIND_GETCOMICS)
         _item(run, 1)
-        with patch("core.database.get_db_connection", side_effect=RuntimeError("locked")):
+        with patch("core.database.get_db_connection", side_effect=RuntimeError("locked")), \
+                patch.object(dr, "FINISH_RETRY_DELAYS", ()):
             run.finish()
             dr.set_download_outcome("d1", "failed")
 
@@ -126,6 +128,107 @@ class TestNeverRaises:
         """The sweep calls these unconditionally on a dry run."""
         public = {n for n in vars(dr.RunRecorder) if not n.startswith("_")}
         assert public <= set(dir(dr.NULL_RECORDER))
+
+
+def _locked():
+    import sqlite3
+
+    return patch(
+        "core.database.get_db_connection",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    )
+
+
+class TestLockedDatabase:
+    """#806: a sweep queued 150 downloads and left no Download History row,
+    because start_run lost its INSERT to another writer and handed back the
+    null recorder, logging only at DEBUG."""
+
+    def test_a_run_whose_start_was_locked_is_still_recorded(self, store):
+        with _locked():
+            run = dr.start_run(dr.KIND_GETCOMICS, dr.TRIGGER_MANUAL)
+            assert run is not dr.NULL_RECORDER
+            assert run.run_id is None
+            _item(run, 1, dr.OUTCOME_QUEUED, download_id="d1")
+            run.flush()
+        started = run._started_at
+        _item(run, 2, dr.OUTCOME_NO_RESULTS)
+        run.count(dr.COUNT_OWNED, 7)
+        run.finish(dr.STATUS_OK)
+
+        assert run.run_id is not None
+        got = dr.get_run(run.run_id)
+        assert got["status"] == dr.STATUS_OK
+        assert got["trigger"] == dr.TRIGGER_MANUAL
+        # The run began when the sweep did, not when the row finally landed.
+        assert got["started_at"] == started
+        assert [i["issue_number"] for i in got["items"]] == ["1", "2"]
+        assert got["counts"][dr.COUNT_OWNED] == 7
+
+    def test_a_deferred_run_opens_on_the_next_flush(self, store):
+        """...not only at finish: a restart mid-sweep must still find a row."""
+        with _locked():
+            run = dr.start_run(dr.KIND_GETCOMICS)
+        _item(run, 1, dr.OUTCOME_QUEUED, download_id="d1")
+        run.flush()
+        got = dr.get_run(run.run_id)
+        assert got["status"] == dr.STATUS_RUNNING
+        assert len(got["items"]) == 1
+
+    def test_a_failed_flush_keeps_its_items_and_writes_them_once(self, store):
+        run = dr.start_run(dr.KIND_GETCOMICS)
+        _item(run, 1)
+        with _locked():
+            run.flush()
+            run.flush()
+        _item(run, 2)
+        run.finish()
+        assert [i["issue_number"] for i in dr.get_run(run.run_id)["items"]] == ["1", "2"]
+
+    def test_a_locked_start_is_a_warning_naming_the_kind(self, store):
+        with _locked(), patch.object(dr, "app_logger") as log:
+            run = dr.start_run(dr.KIND_WEEKLY_PACKS)
+            run.flush()
+            run.flush()
+        # Once on the transition, not once per retry.
+        assert log.warning.call_count == 1
+        message = log.warning.call_args[0][0]
+        assert dr.KIND_WEEKLY_PACKS in message
+        assert "database is locked" in message
+
+    def test_finish_retries_before_giving_up(self, store):
+        import sqlite3
+
+        from core.database import get_db_connection as real
+
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            if len(calls) < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return real()
+
+        run = dr.start_run(dr.KIND_GETCOMICS)
+        _item(run, 1)
+        with patch("core.database.get_db_connection", side_effect=flaky), \
+                patch.object(dr, "FINISH_RETRY_DELAYS", (0, 0)):
+            run.finish(dr.STATUS_OK)
+        got = dr.get_run(run.run_id)
+        assert got["status"] == dr.STATUS_OK
+        assert len(got["items"]) == 1
+
+    def test_a_run_that_is_never_written_says_so_at_warning(self, store):
+        with _locked(), patch.object(dr, "app_logger") as log, \
+                patch.object(dr, "FINISH_RETRY_DELAYS", (0,)):
+            run = dr.start_run(dr.KIND_GETCOMICS)
+            _item(run, 1)
+            run.finish()
+        last = log.warning.call_args[0][0]
+        assert "incomplete" in last
+        assert "1 item(s) not written" in last
+        assert "not listed" in last
+        assert store.execute("SELECT COUNT(*) FROM download_runs").fetchone()[0] == 0
 
 
 class TestRetention:
