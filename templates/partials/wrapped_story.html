@@ -1,0 +1,105 @@
+{#
+  The Wrapped story viewer: a full-screen, tap-through view of a recap's
+  slides, shared by Year Wrapped (Insights) and Monthly Wrapped (Timeline).
+
+    {% include 'partials/wrapped_story.html' %}
+    <link rel="stylesheet" href="{{ asset('css/wrapped-story.css') }}">   (extra_css)
+    <script src="{{ asset('js/clu-wrapped-story.js') }}"></script>        (scripts)
+
+    CLU.wrappedStory.open({ manifestUrl, downloadUrl, zipName, title })
+
+  The slides are server-rendered PNGs listed by the manifest
+  (core/wrapped_slides.py). The page never numbers them: everything here is
+  keyed by slide id, so a recap can have any number of slides.
+
+  The stage is always dark, whatever the theme: it is a frame for an image
+  that brings its own colours.
+#}
+<div class="modal fade wrapped-story-modal" id="wrappedStoryModal" tabindex="-1"
+     aria-labelledby="wrappedStoryTitle" aria-hidden="true">
+    <div class="modal-dialog modal-fullscreen">
+        <div class="modal-content" data-bs-theme="dark">
+            <div class="wrapped-story">
+                <!-- Viewer -->
+                <div class="wrapped-story-viewer" id="wrappedStoryViewer">
+                    <div class="wrapped-story-top">
+                        <div class="wrapped-story-segments" id="wrappedStorySegments" aria-hidden="true"></div>
+                        <div class="wrapped-story-bar">
+                            <h5 class="wrapped-story-title" id="wrappedStoryTitle"></h5>
+                            <span class="wrapped-story-count" id="wrappedStoryCount" aria-live="polite"></span>
+                            <button type="button" class="btn btn-sm wrapped-story-icon" id="wrappedStoryPause"
+                                    aria-label="Pause" aria-pressed="false">
+                                <i class="bi bi-pause-fill" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm wrapped-story-icon" data-bs-dismiss="modal"
+                                    aria-label="Close">
+                                <i class="bi bi-x-lg" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="wrapped-story-stage" id="wrappedStoryStage">
+                        <div class="wrapped-story-loading" id="wrappedStoryLoading">
+                            <div class="spinner-border text-light" role="status">
+                                <span class="visually-hidden">Loading slide…</span>
+                            </div>
+                        </div>
+                        <img class="wrapped-story-image" id="wrappedStoryImage" alt="" draggable="false">
+                        <button type="button" class="wrapped-story-nav prev" id="wrappedStoryPrev"
+                                aria-label="Previous slide">
+                            <i class="bi bi-chevron-left" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="wrapped-story-nav next" id="wrappedStoryNext"
+                                aria-label="Next slide">
+                            <i class="bi bi-chevron-right" aria-hidden="true"></i>
+                        </button>
+                    </div>
+
+                    <div class="wrapped-story-actions">
+                        <button type="button" class="btn btn-sm btn-outline-light" id="wrappedStoryCustomize">
+                            <i class="bi bi-brush me-1" aria-hidden="true"></i>Customize
+                        </button>
+                        <a href="#" class="btn btn-sm btn-success" id="wrappedStoryDownload">
+                            <i class="bi bi-download me-1" aria-hidden="true"></i>Download All
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Editor: text and emoji over the current slide -->
+                <div class="wrapped-story-editor" id="wrappedStoryEditor" style="display: none;">
+                    <div class="editor-toolbar">
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="editorAddText">
+                            <i class="bi bi-fonts me-1" aria-hidden="true"></i>Add Text
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="editorAddEmoji">
+                            <i class="bi bi-emoji-smile me-1" aria-hidden="true"></i>Add Emoji
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-warning" id="editorUndo">
+                            <i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Undo
+                        </button>
+                        <button type="button" class="btn btn-sm btn-success" id="editorDone">
+                            <i class="bi bi-check-lg me-1" aria-hidden="true"></i>Done
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" id="editorCancel">Cancel</button>
+                    </div>
+                    <div id="textInputPanel" class="text-input-panel" style="display: none;">
+                        <input type="text" id="editorTextInput" class="form-control form-control-sm"
+                               placeholder="Enter text..." aria-label="Text to add">
+                        <input type="range" id="editorFontSize" class="form-range" min="24" max="120" value="48"
+                               aria-label="Text size">
+                        <span id="editorFontSizeLabel" class="small text-muted">48px</span>
+                        <input type="color" id="editorTextColor" class="form-control form-control-color form-control-sm"
+                               value="#ffffff" aria-label="Text colour">
+                        <button type="button" class="btn btn-sm btn-primary" id="editorPlaceText">Place</button>
+                    </div>
+                    <div id="emojiPickerPanel" style="display: none;">
+                        <div class="emoji-picker" id="emojiPicker"></div>
+                    </div>
+                    <div class="canvas-editor-container">
+                        <canvas id="editorCanvas" width="1080" height="1920"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

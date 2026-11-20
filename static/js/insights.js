@@ -1056,70 +1056,38 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     // =====================================================================
-    // Year Wrapped
+    // Year Wrapped: pick a year, then the story viewer takes over
     // =====================================================================
 
-    const wrappedModal = document.getElementById('wrappedModal');
+    const wrappedModalEl = document.getElementById('wrappedModal');
+    const wrappedModal = bootstrap.Modal.getOrCreateInstance(wrappedModalEl);
     const yearButtonsContainer = document.getElementById('yearButtonsContainer');
-    const wrappedYearSelect = document.getElementById('wrappedYearSelect');
-    const wrappedLoading = document.getElementById('wrappedLoading');
-    const wrappedCarousel = document.getElementById('wrappedCarousel');
-    const wrappedCarouselInner = document.getElementById('wrappedCarouselInner');
-    const wrappedFooter = document.getElementById('wrappedFooter');
-    const wrappedDownloadBtn = document.getElementById('wrappedDownloadBtn');
-    const wrappedLoadingHtml = wrappedLoading.innerHTML;
 
-    function resetWrappedModal() {
-        wrappedYearSelect.style.display = 'block';
-        wrappedLoading.style.display = 'none';
-        // A failed run replaces the spinner with an error; put it back.
-        wrappedLoading.innerHTML = wrappedLoadingHtml;
-        wrappedCarousel.style.display = 'none';
-        wrappedFooter.style.display = 'none';
-        wrappedCarouselInner.innerHTML = '';
-    }
-
-    function loadImage(url) {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => resolve(url);
-            img.onerror = () => reject(new Error(`Failed to load ${url}`));
-            img.src = url;
-        });
-    }
-
-    async function generateWrapped(year) {
-        wrappedYearSelect.style.display = 'none';
-        wrappedLoading.style.display = 'block';
-
+    async function openYearWrapped(year, button) {
+        const label = button.textContent;
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner-border spinner-border-sm" aria-hidden="true"></span>';
         try {
-            // Loading the images is what renders them on the server.
-            const images = await Promise.all(
-                [1, 2, 3].map(i => loadImage(`/api/wrapped/${year}/image/${i}`))
-            );
-
-            wrappedCarouselInner.innerHTML = images.map((imgSrc, idx) => `
-                <div class="carousel-item ${idx === 0 ? 'active' : ''}">
-                    <div class="d-flex justify-content-center">
-                        <img src="${imgSrc}" class="img-fluid rounded shadow" alt="Wrapped Slide ${idx + 1}"
-                             style="max-height: 70vh; object-fit: contain;">
-                    </div>
-                </div>
-            `).join('');
-
-            wrappedDownloadBtn.href = `/api/wrapped/${year}/download`;
-            wrappedLoading.style.display = 'none';
-            wrappedCarousel.style.display = 'block';
-            wrappedFooter.style.display = 'flex';
-            new bootstrap.Carousel(wrappedCarousel);
+            const opened = await CLU.wrappedStory.open({
+                manifestUrl: `/api/wrapped/${year}/manifest`,
+                downloadUrl: `/api/wrapped/${year}/download`,
+                zipName: `wrapped_${year}`,
+                title: `Your ${year} Wrapped`
+            });
+            if (opened) wrappedModal.hide();
+            else CLU.showToast('Year Wrapped', `Nothing was read in ${year}.`, 'info');
         } catch (error) {
-            console.error('Error generating wrapped:', error);
-            wrappedLoading.innerHTML = '<p class="text-danger">Error generating images. Please try again.</p>';
+            console.error('Error opening wrapped:', error);
+            CLU.showError('Could not load your Wrapped: ' + error.message);
+        } finally {
+            button.disabled = false;
+            button.textContent = label;
         }
     }
 
-    wrappedModal.addEventListener('show.bs.modal', async function () {
-        resetWrappedModal();
+    wrappedModalEl.addEventListener('show.bs.modal', async function () {
+        yearButtonsContainer.innerHTML =
+            '<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>';
         try {
             const response = await fetch('/api/wrapped/years');
             const data = await response.json();
@@ -1129,7 +1097,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     `<button class="btn btn-outline-primary btn-lg wrapped-year-btn" data-year="${Number(year)}">${Number(year)}</button>`
                 ).join('');
                 yearButtonsContainer.querySelectorAll('.wrapped-year-btn').forEach(btn => {
-                    btn.addEventListener('click', () => generateWrapped(parseInt(btn.dataset.year, 10)));
+                    btn.addEventListener('click', () => openYearWrapped(parseInt(btn.dataset.year, 10), btn));
                 });
             } else {
                 yearButtonsContainer.innerHTML = '<p class="text-muted">No reading data available yet. Start reading to generate your Wrapped!</p>';
@@ -1139,8 +1107,6 @@ document.addEventListener('DOMContentLoaded', function () {
             yearButtonsContainer.innerHTML = '<p class="text-danger">Error loading years. Please try again.</p>';
         }
     });
-
-    document.getElementById('wrappedBackBtn').addEventListener('click', resetWrappedModal);
 
     // =====================================================================
     // Start

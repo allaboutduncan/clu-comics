@@ -6,6 +6,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ asset('css/insights.css') }}">
+<link rel="stylesheet" href="{{ asset('css/wrapped-story.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -414,7 +415,7 @@
 
     <!-- Wrapped Modal -->
     <div class="modal fade" id="wrappedModal" tabindex="-1" aria-labelledby="wrappedModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="wrappedModalLabel">
@@ -433,48 +434,12 @@
                         </div>
                     </div>
 
-                    <!-- Loading State -->
-                    <div id="wrappedLoading" class="text-center py-5" style="display: none;">
-                        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
-                            <span class="visually-hidden">Generating...</span>
-                        </div>
-                        <p class="text-muted">Generating your Wrapped images...</p>
-                    </div>
-
-                    <!-- Carousel -->
-                    <div id="wrappedCarousel" class="carousel slide" style="display: none;" data-bs-ride="false">
-                        <div class="carousel-indicators">
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="0"
-                                class="active"></button>
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="1"></button>
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="2"></button>
-                        </div>
-                        <div class="carousel-inner" id="wrappedCarouselInner">
-                            <!-- Slides will be inserted here -->
-                        </div>
-                        <button class="carousel-control-prev" type="button" data-bs-target="#wrappedCarousel"
-                            data-bs-slide="prev">
-                            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-                            <span class="visually-hidden">Previous</span>
-                        </button>
-                        <button class="carousel-control-next" type="button" data-bs-target="#wrappedCarousel"
-                            data-bs-slide="next">
-                            <span class="carousel-control-next-icon" aria-hidden="true"></span>
-                            <span class="visually-hidden">Next</span>
-                        </button>
-                    </div>
-                </div>
-                <div class="modal-footer" id="wrappedFooter" style="display: none;">
-                    <button type="button" class="btn btn-outline-secondary" id="wrappedBackBtn">
-                        <i class="bi bi-arrow-left me-1"></i>Choose Another Year
-                    </button>
-                    <a href="#" class="btn btn-success" id="wrappedDownloadBtn">
-                        <i class="bi bi-download me-1"></i>Download All
-                    </a>
                 </div>
             </div>
         </div>
     </div>
+
+    {% include 'partials/wrapped_story.html' %}
 
     <!-- Reading Goal Modal -->
     <div class="modal fade" id="goalModal" tabindex="-1" aria-labelledby="goalModalLabel" aria-hidden="true">
@@ -592,6 +557,8 @@
     'reading_heatmap': reading_heatmap
 } | tojson }}</script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="{{ asset('js/clu-constellation.js') }}"></script>
+<script src="{{ asset('js/clu-wrapped-story.js') }}"></script>
 <script src="{{ asset('js/insights.js') }}"></script>
 {% endblock %}
