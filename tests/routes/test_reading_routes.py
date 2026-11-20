@@ -385,3 +385,66 @@ class TestMarkComicRead:
             r = client.post("/api/mark-comic-read", json={"path": COMIC})
         assert r.status_code == 200
         assert _read_row() is not None
+
+
+# ---------------------------------------------------------------------------
+# Reading sessions recorded from the reader's own saves
+# ---------------------------------------------------------------------------
+
+SESSION = "3f2b6c1e-8a44-4d0b-9a57-0c1f5f1f0a11"
+
+
+def _sessions():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM reading_sessions ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+class TestSessionsFromSaves:
+    def _save(self, client, page, session=SESSION):
+        return client.post("/api/reading-position", json={
+            "comic_path": COMIC, "page_number": page, "total_pages": 20,
+            "time_spent": 60, "session_id": session,
+        })
+
+    def test_saves_in_one_reader_open_are_one_session(self, client):
+        self._save(client, 3)
+        self._save(client, 7)
+        (session,) = _sessions()
+        assert session["comic_path"] == COMIC
+        assert session["client_session_id"] == SESSION
+        assert (session["start_page"], session["max_page"]) == (3, 7)
+
+    def test_page_one_is_not_a_sitting(self, client):
+        # Page 1 clears the bookmark; opening to the cover is not reading.
+        assert self._save(client, 1).get_json()["cleared"] is True
+        assert _sessions() == []
+
+    def test_a_save_without_an_id_still_records(self, client):
+        # An older cached reader.js sends no session id.
+        self._save(client, 4, session=None)
+        (session,) = _sessions()
+        assert session["client_session_id"] is None
+
+    def test_a_session_failure_does_not_fail_the_save(self, client):
+        with patch("core.reading_sessions.record_reading_activity",
+                   side_effect=RuntimeError("database is locked")):
+            r = self._save(client, 5)
+        assert r.get_json() == {"success": True}
+        assert get_reading_position(COMIC)["page_number"] == 5
+
+    def test_finishing_in_the_reader_closes_the_session(self, client):
+        self._save(client, 3)
+        client.post("/api/mark-comic-read", json={
+            "path": COMIC, "page_count": 20, "time_spent": 600, "session_id": SESSION,
+        })
+        (session,) = _sessions()
+        assert session["finished"] == 1
+        assert session["max_page"] == 20
+
+    def test_mark_as_read_from_the_grid_is_not_a_sitting(self, client):
+        client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert _read_row() is not None
+        assert _sessions() == []
+

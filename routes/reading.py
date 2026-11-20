@@ -30,6 +30,7 @@ from flask import Blueprint, current_app, request, jsonify
 
 from core.app_logging import app_logger
 from core.auth import enforce_path_access
+from core.reading_sessions import note_reading_activity
 from core.database import (
     clear_stats_cache_prefix,
     current_user_id,
@@ -144,6 +145,13 @@ def api_reading_position():
         success = save_reading_position(
             comic_path, page_number, total_pages, time_spent
         )
+        # A save past page 1 is evidence the comic is being read right now.
+        # Below the page-1 early return on purpose: opening a comic to look at
+        # the cover is not a sitting. Never fails the save.
+        note_reading_activity(
+            comic_path, page_number, total_pages,
+            session_id=data.get("session_id"),
+        )
         return jsonify({"success": success})
 
     elif request.method == "DELETE":
@@ -202,6 +210,13 @@ def api_mark_comic_read():
             publisher=publisher,
         )
         clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
+        # Close the reader's session. Only with a session id: this route is
+        # also the grid's "Mark as read", which is not a sitting.
+        if data.get("session_id"):
+            note_reading_activity(
+                comic_path, page_count or None, page_count or None,
+                session_id=data.get("session_id"), finished=True,
+            )
         app_logger.info(
             f"Marked comic as read: {comic_path}"
             + (f" at {read_at}" if read_at else "")
