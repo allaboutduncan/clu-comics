@@ -8448,19 +8448,11 @@ def timeline():
         flash("Error loading timeline data", "error")
         return redirect(url_for("index"))
 
-    # Get distinct years for the filter dropdown
-    available_years = []
-    try:
-        conn = get_db_connection()
-        if conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT DISTINCT strftime('%Y', read_at) FROM issues_read ORDER BY 1 DESC"
-            )
-            available_years = [row[0] for row in c.fetchall()]
-            conn.close()
-    except Exception:
-        pass
+    # Years for the filter dropdown: this user's visible history only (the
+    # unscoped query here listed years from every user's reads).
+    from wrapped import get_years_with_reading_data
+
+    available_years = get_years_with_reading_data()
 
     return render_template(
         "timeline.html",

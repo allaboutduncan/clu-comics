@@ -751,7 +751,10 @@ def generate_all_wrapped_images(year: int, theme: str) -> list:
         ('03_series_highlights.png', generate_series_highlights_slide(year, theme)),
         ('04_books_grid.png', generate_books_grid_slide(year, theme)),
     ]
-    return slides
+    # A generator returns None when it has nothing to draw (the books grid in a
+    # year with no reads). Writing None into the ZIP raised and the download
+    # answered 500, so a slide that was not rendered is left out.
+    return [(name, data) for name, data in slides if data]
 
 
 # ==========================================
