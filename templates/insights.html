@@ -215,6 +215,37 @@
         </div>
     </div>
 
+    <!-- Reading clock: when the reading happens -->
+    <div class="row g-4 mb-4">
+        <div class="col-lg-5">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-clock"></i>Reading Clock</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="chart-container" id="clockContainer">
+                        <canvas id="readingClockChart"></canvas>
+                    </div>
+                    {{ empty_state('No reading times yet', message='Read in the CLU reader and your hours will appear here.', icon='bi-clock', id='clockEmpty', hidden=True, compact=True) }}
+                    <div class="text-muted small text-center mt-2" id="clockPeak"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-calendar3-week"></i>Days of the Week</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="chart-container" id="weekdayContainer">
+                        <canvas id="weekdayChart"></canvas>
+                    </div>
+                    <div class="text-muted small mt-2" id="clockSourceNote"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Reading Heatmap & Publishers ChartGraph -->
     <div class="row g-4 mb-4">
         <div class="col-lg-5">
@@ -444,6 +475,37 @@
                     <button type="submit" class="btn btn-primary">Save</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Day Modal: one day's reading on a time ruler -->
+    <div class="modal fade" id="dayModal" tabindex="-1" aria-labelledby="dayModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="dayModalLabel">
+                        <i class="bi bi-calendar-day me-2"></i><span id="dayModalTitle"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="text-muted small mb-3" id="daySummary"></div>
+                    <div class="day-ruler" id="dayRuler" role="img" aria-label="Reading through the day">
+                        <div class="day-ruler-track" id="dayRulerTrack"></div>
+                        <div class="day-ruler-ticks" aria-hidden="true">
+                            <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>
+                        </div>
+                    </div>
+                    <div class="day-ruler-legend small text-muted mb-3" id="dayRulerLegend"></div>
+                    <div class="list-group" id="dayList"></div>
+                </div>
+                <div class="modal-footer">
+                    <a class="btn btn-outline-secondary me-auto" id="dayTimelineLink" href="#">
+                        <i class="bi bi-graph-up-arrow me-1" aria-hidden="true"></i>Open month in Timeline
+                    </a>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
         </div>
     </div>
 

@@ -15,7 +15,7 @@ two shapes the column holds (see ``localise_read_at_sql``).
 """
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from core.app_logging import app_logger
 from core.database import current_user_id, db_conn
@@ -423,4 +423,201 @@ def insights_summary(user_id=None, year=None, today=None, tz_hours=None):
             "finished": finished_shelf(events),
             "open": open_shelf(uid),
         },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Reading clock and the day view
+# ---------------------------------------------------------------------------
+
+# A finished issue with no session behind it only says when it was *finished*
+# and how long it took in total, possibly over several sittings. Its time is
+# laid back from the finish, but never further than this: a comic that took
+# six hours across a week was not being read for the six hours before it ended.
+FINISH_TIME_CAP_SECONDS = 2 * 60 * 60
+
+
+def _spread_over_hours(start, end, seconds, hours):
+    """Add *seconds* of reading between *start* and *end* (aware, local) to the
+    24 *hours* buckets, in proportion to how much of the span falls in each."""
+    span = (end - start).total_seconds()
+    if seconds <= 0:
+        return
+    if span <= 0:
+        hours[start.hour] += seconds
+        return
+    cursor = start
+    while cursor < end:
+        next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        piece_end = min(next_hour, end)
+        hours[cursor.hour] += seconds * (piece_end - cursor).total_seconds() / span
+        cursor = piece_end
+
+
+def reading_clock(events, sessions, tz):
+    """When reading happens: seconds per hour of day and per weekday.
+
+    A comic that has sessions is described by them. One that has none (all
+    history from before sessions were recorded, and reads from clients that
+    do not report progress) falls back to its finished-issue row, using the
+    finish time and the time spent -- the same rule ``day_detail`` draws by.
+    Issues with no reading time at all -- a manual "mark as read", an import
+    -- say nothing about the clock and are only counted in ``untimed``.
+
+    ``source`` tells the page how much to trust the picture: ``sessions``,
+    ``finish_times``, ``mixed`` or ``none``.
+    """
+    hours = [0.0] * 24
+    weekdays = [0.0] * 7
+    session_paths = set()
+    from_sessions = from_finishes = untimed = 0
+
+    for session in sessions:
+        seconds = session.get("active_seconds") or 0
+        start = session["started_at"].astimezone(tz)
+        end = session["ended_at"].astimezone(tz)
+        session_paths.add(session["comic_path"])
+        if seconds <= 0:
+            continue
+        _spread_over_hours(start, end, seconds, hours)
+        weekdays[start.weekday()] += seconds
+        from_sessions += 1
+
+    for event in events:
+        if event.path in session_paths:
+            continue
+        if not event.timed:
+            untimed += 1
+            continue
+        seconds = min(event.seconds, FINISH_TIME_CAP_SECONDS)
+        _spread_over_hours(event.at - timedelta(seconds=seconds), event.at, seconds, hours)
+        weekdays[event.day.weekday()] += seconds
+        from_finishes += 1
+
+    if from_sessions and from_finishes:
+        source = "mixed"
+    elif from_sessions:
+        source = "sessions"
+    elif from_finishes:
+        source = "finish_times"
+    else:
+        source = "none"
+
+    def peak(values):
+        return max(range(len(values)), key=values.__getitem__) if any(values) else None
+
+    return {
+        "hours": [round(v) for v in hours],
+        "weekdays": [round(v) for v in weekdays],
+        "peak_hour": peak(hours),
+        "peak_weekday": peak(weekdays),
+        "total_seconds": round(sum(weekdays)),
+        "source": source,
+        "sessions": from_sessions,
+        "finishes": from_finishes,
+        "untimed": untimed,
+    }
+
+
+def clock_for_period(user_id=None, year=None, tz_hours=None):
+    """``reading_clock`` for one local year, or for all time when *year* is None."""
+    from core.reading_sessions import load_sessions
+    from core.user_time import local_period_bounds_utc
+
+    uid = current_user_id() if user_id is None else user_id
+    hours = user_offset_hours() if tz_hours is None else tz_hours
+    start, end = local_period_bounds_utc(year, hours=hours) if year else (None, None)
+    return reading_clock(
+        load_read_events(uid, start, end, tz_hours=hours),
+        load_sessions(uid, start, end),
+        user_tzinfo(hours),
+    )
+
+
+def _basename(path):
+    return str(path).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def day_detail(local_day, user_id=None, tz_hours=None):
+    """Everything read on one local day, for the day view's time ruler.
+
+    ``sessions`` are sittings that started that day (with start and end);
+    ``reads`` are the issues finished that day. A hidden read is left out of
+    both -- this view names comics, and hiding a read is asking for it not to
+    be shown -- but ``hidden`` says how many were, so the total can still be
+    explained against the charts, which count them.
+
+    Times are ISO strings in the user's offset, and ``minutes`` gives each
+    block's position on a 0..1440 ruler so the page does no date arithmetic.
+    """
+    from core.reading_sessions import load_sessions, session_pages
+
+    uid = current_user_id() if user_id is None else user_id
+    hours = user_offset_hours() if tz_hours is None else tz_hours
+    tz = user_tzinfo(hours)
+    start_local = datetime(local_day.year, local_day.month, local_day.day, tzinfo=tz)
+    start_utc = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = start_utc + timedelta(days=1)
+
+    def minute_of_day(moment):
+        return max(0, min(1440, round((moment - start_local).total_seconds() / 60)))
+
+    events = load_read_events(uid, start_utc, end_utc, tz_hours=hours)
+    hidden_paths = {e.path for e in events if e.hidden}
+    series_by_path = {e.path: e.series for e in events}
+
+    sessions = []
+    for session in load_sessions(uid, start_utc, end_utc):
+        path = session["comic_path"]
+        if path in hidden_paths:
+            continue
+        started = session["started_at"].astimezone(tz)
+        ended = session["ended_at"].astimezone(tz)
+        sessions.append({
+            "path": path,
+            "name": _basename(path),
+            "series": series_by_path.get(path) or series_from_path(path),
+            "start": started.isoformat(),
+            "end": ended.isoformat(),
+            "minutes": [minute_of_day(started), minute_of_day(ended)],
+            "active_seconds": session.get("active_seconds") or 0,
+            "pages": session_pages(session),
+            "finished": bool(session.get("finished")),
+        })
+
+    with_session = {s["path"] for s in sessions}
+    reads = []
+    for event in events:
+        if event.hidden:
+            continue
+        item = {
+            "path": event.path,
+            "name": _basename(event.path),
+            "series": event.series,
+            "at": event.at.isoformat(),
+            "pages": event.pages,
+            "seconds": event.seconds,
+            "timed": event.timed,
+            "has_session": event.path in with_session,
+            "minutes": None,
+        }
+        # Drawn on the ruler only when nothing better describes it: a session
+        # is the real record, and an untimed mark has no place on a clock.
+        if event.timed and not item["has_session"]:
+            spent = min(event.seconds, FINISH_TIME_CAP_SECONDS)
+            item["minutes"] = [
+                minute_of_day(event.at - timedelta(seconds=spent)), minute_of_day(event.at)]
+        reads.append(item)
+
+    return {
+        "date": local_day.isoformat(),
+        "sessions": sessions,
+        "reads": reads,
+        "hidden": len(hidden_paths),
+        "issues": len(reads),
+        "pages": sum(r["pages"] for r in reads),
+        "active_seconds": (
+            sum(s["active_seconds"] for s in sessions)
+            + sum(r["seconds"] for r in reads if r["minutes"])
+        ),
     }
