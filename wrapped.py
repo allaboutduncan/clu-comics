@@ -753,8 +753,14 @@ def generate_books_grid_slide(year: int, theme: str) -> bytes:
         
         theme_colors = get_theme_colors(theme)
         
-        # Create Background (Custom gradient for variable height)
-        if theme_colors['is_dark']:
+        # Create Background (Custom gradient for variable height). A designed
+        # style paints its own, at this slide's height: this slide does not go
+        # through create_base_image, so without this it was the one slide that
+        # ignored the style's background.
+        style = _active_style.get()
+        if style is not None and style.paint is not None:
+            img = style.paint(IMAGE_WIDTH, final_h, theme_colors).convert('RGB')
+        elif theme_colors['is_dark']:
             img = create_gradient(IMAGE_WIDTH, final_h, theme_colors['bg'], theme_colors['bg_secondary'])
         else:
             primary_rgb = hex_to_rgb(theme_colors['primary'])
@@ -835,6 +841,11 @@ def generate_all_wrapped_images(year: int, theme: str) -> list:
 # ==========================================
 # Monthly Wrapped - Data Query Functions
 # ==========================================
+
+# Clear space between a monthly slide's cover grids and the left and right
+# edges. It was 10px (30 for the spotlight cards), which put covers against
+# the edge of the image and under the frame the designed styles draw.
+MONTHLY_EDGE_MARGIN = 44
 
 MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                'July', 'August', 'September', 'October', 'November', 'December']
@@ -1235,7 +1246,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
             s_row_gap = 18       # gap between rows
 
             # Each card = cover + gap + text area
-            s_card_w = (IMAGE_WIDTH - 60 - (s_cols - 1) * s_col_gap) // s_cols
+            s_card_w = (IMAGE_WIDTH - 2 * MONTHLY_EDGE_MARGIN - (s_cols - 1) * s_col_gap) // s_cols
             s_start_x = (IMAGE_WIDTH - (s_cols * s_card_w + (s_cols - 1) * s_col_gap)) // 2
 
             font_s_count_num = get_font(52, bold=True)
@@ -1306,7 +1317,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
 
             # Dynamic thumbnail sizing to fill remaining space (compact)
             footer_h = 200
-            margin_x = 10
+            margin_x = MONTHLY_EDGE_MARGIN
             spacing = 3
             available_w = IMAGE_WIDTH - 2 * margin_x
             available_h = IMAGE_HEIGHT - current_y - footer_h
@@ -1395,7 +1406,7 @@ def generate_monthly_all_issues_slide(year: int, month: int, theme: str) -> byte
         # ── Layout: same spacing as recap slide ──
         header_h = 200   # space for bg title
         footer_h = 200   # same footer reserve
-        margin_x = 10
+        margin_x = MONTHLY_EDGE_MARGIN
         spacing = 3
         available_w = IMAGE_WIDTH - 2 * margin_x
         available_h = IMAGE_HEIGHT - header_h - footer_h
