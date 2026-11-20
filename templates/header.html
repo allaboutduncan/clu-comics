@@ -50,7 +50,7 @@
           </ul>
         </li>
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle {% if current_page in [url_for('index'), url_for('collection.metadata_browser_page'), url_for('source_wall.source_wall_page')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('index'), url_for('collection.metadata_browser_page'), url_for('collection.new_releases_page'), url_for('source_wall.source_wall_page')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Home
           </a>
@@ -65,6 +65,12 @@
               <a href="{{ url_for('collection.metadata_browser_page') }}"
                 class="dropdown-item {% if current_page == url_for('collection.metadata_browser_page') %}active{% endif %}">
                 <i class="bi bi-collection me-2"></i>Library
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('collection.new_releases_page') }}"
+                class="dropdown-item {% if current_page == url_for('collection.new_releases_page') %}active{% endif %}">
+                <i class="bi bi-calendar-event me-2"></i>New Releases
               </a>
             </li>
             {% if _nav_is_clerk %}

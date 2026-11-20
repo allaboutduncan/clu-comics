@@ -11236,6 +11236,156 @@ def get_on_the_stack_items(limit=10, user_id=None):
         return []
 
 
+NEW_RELEASE_SORTS = ("newest", "oldest")
+
+# Owned issues of mapped series that carry a store date. collection_status is a
+# derived cache whose file_path does not follow moves, so the join to
+# file_index is what keeps a stale path out.
+_NEW_RELEASES_FROM = """
+    FROM issues i
+    JOIN collection_status cs
+      ON cs.issue_id = i.id AND cs.series_id = i.series_id
+    JOIN series s ON s.id = i.series_id
+    JOIN file_index fi ON fi.path = cs.file_path AND fi.type = 'file'
+    LEFT JOIN publishers p ON p.id = s.publisher_id
+    WHERE cs.found = 1
+      AND s.mapped_path IS NOT NULL
+      AND i.store_date IS NOT NULL AND i.store_date != ''
+"""
+
+
+def _new_releases_where(allowed_prefixes=None, search=None, publisher_id=None,
+                        year=None):
+    """(extra AND-clauses, params) for the New Releases queries.
+
+    ``_metadata_prefix_clause`` names a bare ``path``, which is ambiguous here
+    (``publishers`` has one too), so it is qualified as file_index's.
+    """
+    clauses, params = [], []
+    prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+    if prefix_clause:
+        clauses.append(prefix_clause.replace("path ", "fi.path "))
+        params.extend(prefix_params)
+    search = (search or "").strip()
+    if search:
+        escaped = (search.replace("\\", "\\\\").replace("%", "\\%")
+                   .replace("_", "\\_"))
+        like = f"%{escaped}%"
+        clauses.append(
+            "(s.name LIKE ? ESCAPE '\\' OR i.name LIKE ? ESCAPE '\\'"
+            " OR fi.name LIKE ? ESCAPE '\\')"
+        )
+        params.extend([like, like, like])
+    if publisher_id is not None:
+        clauses.append("s.publisher_id = ?")
+        params.append(publisher_id)
+    if year:
+        clauses.append("substr(i.store_date, 1, 4) = ?")
+        params.append(str(year))
+    sql = "".join(f" AND {c}" for c in clauses)
+    return sql, params
+
+
+def get_new_releases_page(offset=0, limit=60, allowed_prefixes=None, search=None,
+                          publisher_id=None, year=None, sort="newest"):
+    """
+    One page of owned issues of mapped series, ordered by store date.
+
+    A store date exists only on ``issues`` (series synced from a provider), so
+    a file outside a mapped series cannot appear here.
+
+    allowed_prefixes: per-user folder scope. None => unrestricted;
+        [] => match nothing; else restrict to those subtrees. Applied in SQL
+        so the page and the total count what the user may see.
+    search: matches the series name, the issue title or the file name.
+    sort: 'newest' (default) or 'oldest'.
+
+    Returns ``(items, total)``; ``([], 0)`` on error.
+    """
+    try:
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        direction = "ASC" if sort == "oldest" else "DESC"
+        where_sql, params = _new_releases_where(
+            allowed_prefixes, search, publisher_id, year)
+
+        with db_conn() as conn:
+            if not conn:
+                return [], 0
+            total = conn.execute(
+                f"SELECT COUNT(DISTINCT fi.path) {_NEW_RELEASES_FROM} {where_sql}",
+                params,
+            ).fetchone()[0]
+            # One file can be matched under two series: GROUP BY shows it once,
+            # and SQLite takes the other columns from the MAX(store_date) row.
+            rows = conn.execute(
+                f"""
+                SELECT s.id AS series_id, s.name AS series_name,
+                       p.name AS publisher_name,
+                       cs.issue_number, i.name AS issue_name,
+                       MAX(i.store_date) AS store_date,
+                       fi.path AS file_path, fi.name AS file_name,
+                       fi.size AS file_size
+                {_NEW_RELEASES_FROM} {where_sql}
+                GROUP BY fi.path
+                ORDER BY store_date {direction}, s.name,
+                         CAST(cs.issue_number AS REAL) {direction}, fi.path
+                LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    except Exception as e:
+        app_logger.error(f"Failed to get new releases: {e}")
+        return [], 0
+
+
+def get_new_release_items(limit=10, allowed_prefixes=None):
+    """The newest ``limit`` new releases (the Home carousel)."""
+    return get_new_releases_page(
+        offset=0, limit=limit, allowed_prefixes=allowed_prefixes)[0]
+
+
+def get_new_release_facets(allowed_prefixes=None):
+    """What the New Releases page can be narrowed by, within the user's folder
+    scope: ``{"publishers": [{"id", "name", "count"}], "years": ["2026", ...]}``
+    (publishers A-Z, years newest first). Empty lists on error."""
+    empty = {"publishers": [], "years": []}
+    try:
+        where_sql, params = _new_releases_where(allowed_prefixes)
+        with db_conn() as conn:
+            if not conn:
+                return empty
+            publishers = conn.execute(
+                f"""
+                SELECT p.id AS id, p.name AS name,
+                       COUNT(DISTINCT fi.path) AS count
+                {_NEW_RELEASES_FROM} {where_sql}
+                  AND p.id IS NOT NULL
+                GROUP BY p.id
+                ORDER BY p.name COLLATE NOCASE
+                """,
+                params,
+            ).fetchall()
+            years = conn.execute(
+                f"""
+                SELECT DISTINCT substr(i.store_date, 1, 4) AS year
+                {_NEW_RELEASES_FROM} {where_sql}
+                ORDER BY year DESC
+                """,
+                params,
+            ).fetchall()
+        return {
+            "publishers": [dict(row) for row in publishers],
+            "years": [row["year"] for row in years if row["year"]],
+        }
+
+    except Exception as e:
+        app_logger.error(f"Failed to get new release facets: {e}")
+        return empty
+
+
 def get_reading_list_stack_items(limit=10, user_id=None):
     """
     Get the next unread issue for each reading list the user has bookmarked into
