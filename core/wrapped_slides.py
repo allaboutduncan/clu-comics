@@ -41,7 +41,7 @@ from core.database import current_user_id, db_conn
 from core.user_time import DISPLAY_FORMAT, local_period_bounds_utc, sql_offset_modifier
 
 # Bump when any slide's drawing changes, so cached PNGs are redrawn.
-RENDERER_VERSION = 2
+RENDERER_VERSION = 3
 
 YEARLY = wrapped_styles.YEARLY
 MONTHLY = wrapped_styles.MONTHLY
@@ -60,28 +60,66 @@ class SlideSpec:
     title: str
     filename: str
     scope: str
-    # Name of the generator in wrapped.py, looked up at call time so tests can
-    # patch it and so importing this module does not import Pillow.
+    # Name of the generator, looked up at call time so tests can patch it and
+    # so importing this module does not import Pillow.
     generator: str
     has_data: Callable[[dict], bool]
+    # The module the generator lives in: wrapped.py for the original slides,
+    # wrapped_story.py for the ones drawn from the period's story.
+    module: str = "wrapped"
 
 
 def _any_reads(stats):
     return (stats.get("total_read") or 0) > 0
 
 
+def _story(check_name):
+    """A ``has_data`` that asks wrapped_story whether the period's story has
+    what a slide needs. The story (models.reading_insights.period_story) is
+    what those slides are drawn from, so the check and the drawing cannot
+    disagree."""
+    def check(stats):
+        import wrapped_story
+
+        story = stats.get("story")
+        return bool(story) and getattr(wrapped_story, check_name)(story)
+    return check
+
+
+# In the order a recap is told: the headline, how the year went, what and who
+# was read, when, what kind of reader that makes you, and everything at the end.
 SLIDES = (
     SlideSpec("summary", "Your Year", "01_summary.png", YEARLY,
               "generate_summary_slide", _any_reads),
-    SlideSpec("most-read-series", "Most Read Series", "02_most_read_series.png", YEARLY,
+    SlideSpec("goal", "Your Reading Goal", "02_goal.png", YEARLY,
+              "generate_goal_slide", _story("has_goal"), "wrapped_story"),
+    SlideSpec("streaks", "Your Streaks", "03_streaks.png", YEARLY,
+              "generate_streaks_slide", _story("has_personality"), "wrapped_story"),
+    SlideSpec("time-pages", "Time Well Spent", "04_time_and_pages.png", YEARLY,
+              "generate_time_pages_slide", _story("has_time"), "wrapped_story"),
+    SlideSpec("most-read-series", "Most Read Series", "05_most_read_series.png", YEARLY,
               "generate_most_read_series_slide", _any_reads),
-    SlideSpec("series-highlights", "Top Series", "03_series_highlights.png", YEARLY,
+    SlideSpec("series-highlights", "Top Series", "06_series_highlights.png", YEARLY,
               "generate_series_highlights_slide", _any_reads),
-    SlideSpec("books-grid", "Everything You Read", "04_books_grid.png", YEARLY,
+    SlideSpec("creators", "Your Creators", "07_creators.png", YEARLY,
+              "generate_creators_slide", _story("has_creators"), "wrapped_story"),
+    SlideSpec("characters", "Your Universe", "08_characters.png", YEARLY,
+              "generate_characters_slide", _story("has_characters"), "wrapped_story"),
+    SlideSpec("reading-clock", "Your Reading Clock", "09_reading_clock.png", YEARLY,
+              "generate_clock_slide", _story("has_clock"), "wrapped_story"),
+    SlideSpec("personality", "Your Reading Personality", "10_personality.png", YEARLY,
+              "generate_personality_slide", _story("has_personality"), "wrapped_story"),
+    SlideSpec("books-grid", "Everything You Read", "11_books_grid.png", YEARLY,
               "generate_books_grid_slide", _any_reads),
-    SlideSpec("recap", "Monthly Recap", "monthly_recap.png", MONTHLY,
+    SlideSpec("recap", "Monthly Recap", "01_monthly_recap.png", MONTHLY,
               "generate_monthly_recap_slide", _any_reads),
-    SlideSpec("all-issues", "Everything You Read", "monthly_all_issues.png", MONTHLY,
+    SlideSpec("numbers", "The Month in Numbers", "02_month_in_numbers.png", MONTHLY,
+              "generate_monthly_numbers_slide", _story("has_personality"), "wrapped_story"),
+    SlideSpec("creators", "Who You Read", "03_who_you_read.png", MONTHLY,
+              "generate_monthly_creators_slide", _story("has_creators"), "wrapped_story"),
+    SlideSpec("reading-clock", "Your Reading Clock", "04_reading_clock.png", MONTHLY,
+              "generate_monthly_clock_slide", _story("has_clock"), "wrapped_story"),
+    SlideSpec("all-issues", "Everything You Read", "05_all_issues.png", MONTHLY,
               "generate_monthly_all_issues_slide", _any_reads),
 )
 
@@ -153,9 +191,14 @@ def period_stats(scope, year, month=None):
     """The stats a scope's ``has_data`` checks read."""
     import wrapped
 
+    from models.reading_insights import period_story
+
     if scope == MONTHLY:
-        return wrapped.get_monthly_wrapped_stats(year, month)
-    return wrapped.get_all_wrapped_stats(year)
+        stats = dict(wrapped.get_monthly_wrapped_stats(year, month))
+    else:
+        stats = dict(wrapped.get_all_wrapped_stats(year))
+    stats["story"] = period_story(scope, year, month)
+    return stats
 
 
 def period_fingerprint(year, month=None, user_id=None):
@@ -176,7 +219,8 @@ def period_fingerprint(year, month=None, user_id=None):
             if not conn:
                 return None
             rows = conn.execute(
-                "SELECT issue_path, read_at, hide, page_count, publisher"
+                "SELECT issue_path, read_at, hide, page_count, time_spent, publisher,"
+                " writer, penciller, characters"
                 " FROM issues_read"
                 " WHERE user_id = ? AND datetime(read_at) >= ? AND datetime(read_at) < ?"
                 " ORDER BY issue_path",
@@ -284,9 +328,11 @@ def _write_cached(user_id, version, data):
 
 
 def _draw(spec, year, month, theme, style):
+    import importlib
+
     import wrapped
 
-    generator = getattr(wrapped, spec.generator)
+    generator = getattr(importlib.import_module(spec.module), spec.generator)
     with wrapped.use_style(style):
         if spec.scope == MONTHLY:
             return generator(year, month, theme)

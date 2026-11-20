@@ -18,10 +18,17 @@ PNG_MAGIC = bytes([0x89]) + b"PNG"
 
 @pytest.fixture
 def reads(db_connection):
+    """Reads with credits, characters, reading time and a goal: enough for
+    every slide in the registry to have something to draw."""
+    from models.reading_insights import set_reading_goal
+
     for n in range(1, 4):
         mark_issue_read(f"/data/DC/Batman (2016)/Batman 00{n}.cbz",
                         read_at=f"2024-06-0{n}T10:00:00", page_count=20,
-                        time_spent=600, publisher="DC Comics")
+                        time_spent=600, publisher="DC Comics",
+                        writer="Tom King", penciller="David Finch",
+                        characters="Batman, Robin")
+    set_reading_goal(2024, 10)
 
 
 def _pixel(data, xy):
@@ -99,6 +106,9 @@ class TestActiveStyle:
 class TestEveryStyleDrawsEverySlide:
     @pytest.mark.parametrize("style", [s.id for s in styles_for(YEARLY)])
     def test_yearly(self, reads, style):
+        manifest = wrapped_slides.build_manifest(YEARLY, 2024, style=style, user_id=1)
+        # The fixture gives every slide something to draw.
+        assert [m["id"] for m in manifest] == [s.id for s in wrapped_slides.slides_for(YEARLY)]
         for spec in wrapped_slides.slides_for(YEARLY):
             data = wrapped_slides.render_slide(YEARLY, spec.id, 2024, style=style, user_id=1)
             assert data and data.startswith(PNG_MAGIC), (style, spec.id)
@@ -106,6 +116,8 @@ class TestEveryStyleDrawsEverySlide:
 
     @pytest.mark.parametrize("style", [s.id for s in styles_for(MONTHLY)])
     def test_monthly(self, reads, style):
+        manifest = wrapped_slides.build_manifest(MONTHLY, 2024, 6, style=style, user_id=1)
+        assert [m["id"] for m in manifest] == [s.id for s in wrapped_slides.slides_for(MONTHLY)]
         for spec in wrapped_slides.slides_for(MONTHLY):
             data = wrapped_slides.render_slide(MONTHLY, spec.id, 2024, 6, style=style, user_id=1)
             assert data and data.startswith(PNG_MAGIC), (style, spec.id)

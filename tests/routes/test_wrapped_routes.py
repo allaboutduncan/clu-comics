@@ -64,11 +64,17 @@ class TestYearly:
         assert "wrapped_2024.zip" in r.headers["Content-Disposition"]
         with zipfile.ZipFile(io.BytesIO(r.data)) as zf:
             names = sorted(zf.namelist())
+            # These reads carry no credits, characters or goal, so those
+            # slides are left out and the rest keep their numbered names.
             assert names == [
                 "wrapped_2024/01_summary.png",
-                "wrapped_2024/02_most_read_series.png",
-                "wrapped_2024/03_series_highlights.png",
-                "wrapped_2024/04_books_grid.png",
+                "wrapped_2024/03_streaks.png",
+                "wrapped_2024/04_time_and_pages.png",
+                "wrapped_2024/05_most_read_series.png",
+                "wrapped_2024/06_series_highlights.png",
+                "wrapped_2024/09_reading_clock.png",
+                "wrapped_2024/10_personality.png",
+                "wrapped_2024/11_books_grid.png",
             ]
             assert all(zf.read(n).startswith(PNG_MAGIC) for n in names)
 
@@ -115,6 +121,8 @@ class TestMonthly:
         assert "monthly_wrapped_2024_06.zip" in r.headers["Content-Disposition"]
         with zipfile.ZipFile(io.BytesIO(r.data)) as zf:
             assert sorted(zf.namelist()) == [
-                "monthly_wrapped_2024_06/monthly_all_issues.png",
-                "monthly_wrapped_2024_06/monthly_recap.png",
+                "monthly_wrapped_2024_06/01_monthly_recap.png",
+                "monthly_wrapped_2024_06/02_month_in_numbers.png",
+                "monthly_wrapped_2024_06/04_reading_clock.png",
+                "monthly_wrapped_2024_06/05_all_issues.png",
             ]
