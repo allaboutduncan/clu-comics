@@ -4641,13 +4641,19 @@ def find_file_index_paths_by_name(filename, limit=5):
         return []
 
 
-def normalize_issue_number(number):
+def issue_identity_key(number):
     """An issue number in comparable form: lowercase, trimmed, leading zeros
     off the integer part. "001" -> "1", "050.LR" -> "50.lr", "0" -> "0".
 
     Equality on this is the rule for "same issue". SQLite's CAST is not: it
     reads the numeric prefix, so CAST('50.LR' AS REAL) = 50 and a variant
     issue matched the regular one.
+
+    Not interchangeable with ``helpers.collection.issue_match_key``: both were
+    called ``normalize_issue_number`` once and they disagree on purpose (this
+    one lowercases, drops a leading "#" and a trailing ".", and maps empty to
+    ""; that one folds unicode dashes, keeps case and maps empty to "0").
+    ``tests/unit/test_issue_number_keys.py`` tabulates the differences.
     """
     text = str(number or "").strip().lower().lstrip("#").strip()
     # The sign is part of the number: "#-1" is its own issue, never #1.
@@ -4682,7 +4688,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
     The SQL is a coarse filter -- series words in order, numeric-ish issue
     match -- and the issue number is then checked exactly in Python with
-    :func:`normalize_issue_number`. Series identity is left to the caller,
+    :func:`issue_identity_key`. Series identity is left to the caller,
     which already applies ``series_names_compatible``.
 
     ``limit`` is applied AFTER the exact check, never in SQL: the series
@@ -4692,7 +4698,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
     Returns list of dicts with name, path, type, parent, size, and ci_* fields.
     """
     pattern = _series_like_pattern(series)
-    wanted = normalize_issue_number(number)
+    wanted = issue_identity_key(number)
     if not pattern or not wanted:
         return []
     try:
@@ -4724,7 +4730,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
         results = []
         for row in rows:
-            if normalize_issue_number(row["ci_number"]) != wanted:
+            if issue_identity_key(row["ci_number"]) != wanted:
                 continue
             results.append({
                 "name": row["name"],

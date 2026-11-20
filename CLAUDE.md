@@ -20,7 +20,7 @@ Production runs `gunicorn -w 1 --threads 8 --timeout 120 app:app` (see Dockerfil
 ### Core Application Flow
 - **`api.py`**: Creates the Flask app instance and handles download queue/remote downloads
 - **`app.py`**: Main application - imports Flask app from `api.py`, registers blueprints, defines all routes and API endpoints
-- **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is only imported once. See `.claude/rules/watch-pipeline.md`.
+- **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is no longer read. See `.claude/rules/watch-pipeline.md`.
 
 ### API v1 docs
 
@@ -57,7 +57,7 @@ imported in tests.
      and refuses to run at all if TARGET resolves inside a library. WATCH nested
      inside TARGET is a supported layout.
 3. SQLite database in `CACHE_DIR` (default `/cache`)
-4. Settings persisted in the `user_preferences` table (`config.ini` is imported once, then retired)
+4. Settings persisted in the `user_preferences` table (`config.ini` is no longer read)
 
 ### Function-local imports
 
@@ -142,7 +142,7 @@ error, and status messages).
 
 ## Configuration
 
-**Every setting lives in the `user_preferences` table. `config.ini` is deprecated.**
+**Every setting lives in the `user_preferences` table. `config.ini` is gone.**
 `core/settings.py` is the one table (`SETTINGS_SCHEMA`: legacy key → pref name,
 type, default, category) and the one accessor. Key settings:
 - `WATCH`/`TARGET`: Folder monitoring paths (`get_watch_dir()` / `get_target_dir()`)
@@ -165,30 +165,27 @@ Things that look arbitrary and are not:
 - **Never read a setting into a module constant.** The cbz_ops modules,
   `core/comicinfo.py` and `missing.py` did (`skippedFiles`, `LARGE_FILE_THRESHOLD`,
   `xml_year`...), freezing whatever was stored at import. Ask per call.
-- **`core.config.config` is a deprecated read-only view** over the preferences,
-  kept for one release so nothing outside the repo breaks. No code in the repo
-  reads through it any more: `TestNoNewIniStyleReads` in
-  `tests/unit/test_settings.py` is a ratchet whose table is now empty, and it
-  fails if a `config.get("SETTINGS", ...)` appears. Writes through the view are
-  refused with a warning. Use `core.settings`; `/cache` and `/data` come from
+- **The `core.config.config` view, `CONFIG_FILE` and the `config.ini` import
+  are deleted.** `TestNoNewIniStyleReads` in `tests/unit/test_settings.py`
+  fails if a `config.get("SETTINGS", ...)` or an import of one of those names
+  comes back. Use `core.settings`; `/cache` and `/data` come from
   `core.config.get_cache_dir()` / `get_data_dir()` (functions, so tests patch one
-  name). The next release deletes the view, `CONFIG_FILE` and the import.
+  name).
+- **`core.config.load_config()` only warns.** `api.py` (not to be edited) and
+  `monitor.py` call it at import, so the name stays. Releases 7.0 to 7.3
+  imported a legacy `config.ini` and renamed it `config.ini.migrated`; a
+  `config.ini` still in `/config` means the install skipped them and is running
+  on defaults, and that is logged once per process as a WARNING. The file is
+  never read. The `MONITOR` env var is not read either.
 - **`app.py` re-runs `load_flask_config(app)` right after `init_db()`.**
-  `api.py` fills `app.config` at import, before the database exists, so on the
-  first start after the ini import it would otherwise hold defaults (trash,
-  rename pattern...) until the next settings save. Asserted structurally.
-- **The import runs once** (`migrate_ini_to_user_preferences`, flag
-  `config_ini_migrated_to_prefs`) and renames the file to `config.ini.migrated`.
-  It never overwrites a pref that already has a value — the DB is authoritative
-  for the keys migrated piecemeal earlier — and the flag is set only after every
-  write succeeded. It is removed in the release after it ships.
+  `api.py` fills `app.config` at import, before the database exists, so on a
+  fresh volume it would otherwise hold defaults (trash, rename pattern...)
+  until the next settings save. Asserted structurally.
 - **`/config` and `/cache` are fixed paths, not settings and not env vars.**
   The database and backups live on the `/config` volume and thumbnails/trash on
   `/cache`; users mount volumes onto them (`docker-compose.yaml`).
-  `core.config.CACHE_DIR` is a constant. An ini that named a different
-  `CACHE_DIR` gets a warning at import time and is otherwise ignored.
-  (`CONFIG_DIR` still honours an env override, which tests and non-Docker dev
-  runs rely on.)
+  `core.config.CACHE_DIR` is a constant. (`CONFIG_DIR` still honours an env
+  override, which tests and non-Docker dev runs rely on.)
 - Asserted in `tests/unit/test_settings.py` (schema covers every legacy key, no
   module writes the ini) and `tests/unit/test_config.py`.
 

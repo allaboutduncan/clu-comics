@@ -1,15 +1,9 @@
 """Application configuration.
 
-Settings live in the ``user_preferences`` table (see ``core.settings``).
-``config.ini`` is deprecated: ``migrate_ini_to_user_preferences`` imports it
-once and renames it ``config.ini.migrated``; nothing reads or writes it after
-that. The import is removed in the release after it ships.
-
-``config`` is kept as a **read-only compatibility view** over the preferences,
-because ``api.py`` (which must not be edited) and a long tail of callers read
-``config.get("SETTINGS", KEY)``. New code should call ``core.settings``.
+Settings live in the ``user_preferences`` table; read and write them through
+``core.settings``. ``config.ini`` is gone: nothing reads or writes it, and
+``load_config`` only warns about one that was left behind.
 """
-import configparser
 import os
 
 from core.app_logging import app_logger
@@ -18,7 +12,6 @@ from core.app_logging import app_logger
 CONFIG_DIR = os.environ.get('CONFIG_DIR', '/config' if os.path.exists('/config') else os.getcwd())
 # Ensure config directory exists
 os.makedirs(CONFIG_DIR, exist_ok=True)
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.ini")  # legacy; import source only
 
 # The cache volume (thumbnails, trash). Fixed, like /config: users mount a
 # volume onto it (see docker-compose.yaml), so a second way to point elsewhere
@@ -58,124 +51,6 @@ def get_downloads_dir() -> str:
     return DOWNLOADS_DIR
 
 
-_MISSING = object()
-
-
-def _stringify(value):
-    """Render a typed setting the way the ini did ('True'/'False', digits)."""
-    if isinstance(value, bool):
-        return "True" if value else "False"
-    return str(value)
-
-
-def _lookup(key):
-    """String value of a legacy ini key, or _MISSING if it is not a setting."""
-    from core.settings import SETTINGS_SCHEMA, get_setting
-    if key in SETTINGS_SCHEMA:
-        return _stringify(get_setting(key))
-    if key == "WATCH":
-        return get_watch_dir() or "/downloads/temp"
-    if key == "TARGET":
-        return get_target_dir() or "/downloads/processed"
-    if key == "CACHE_DIR":
-        return get_cache_dir()
-    if key == "DATA_DIR":
-        return get_data_dir()
-    if key == "COMICVINE_API_KEY":
-        try:
-            from core.database import get_provider_credentials
-            return (get_provider_credentials("comicvine") or {}).get("api_key") or ""
-        except Exception:
-            return ""
-    rec = {"REC_ENABLED": ("rec_enabled", True), "REC_PROVIDER": ("rec_provider", "gemini"),
-           "REC_API_KEY": ("rec_api_key", ""), "REC_MODEL": ("rec_model", "gemini-2.0-flash")}
-    if key in rec:
-        try:
-            from core.database import get_user_preference
-            return _stringify(get_user_preference(rec[key][0], default=rec[key][1]))
-        except Exception:
-            return _stringify(rec[key][1])
-    return _MISSING
-
-
-class _SettingsSection:
-    """``config["SETTINGS"]``: dict-like, read-only, string-valued."""
-
-    def get(self, key, fallback=None):
-        value = _lookup(key)
-        return fallback if value is _MISSING else value
-
-    def __getitem__(self, key):
-        value = _lookup(key)
-        if value is _MISSING:
-            raise KeyError(key)
-        return value
-
-    def __contains__(self, key):
-        return _lookup(key) is not _MISSING
-
-    def __setitem__(self, key, value):
-        app_logger.warning(f"Ignoring write to retired config.ini setting {key}; use core.settings.set_setting")
-
-
-class _PrefsConfig:
-    """Read-only stand-in for the old RawConfigParser, backed by preferences."""
-
-    def __init__(self):
-        self._section = _SettingsSection()
-
-    def _value(self, section, option):
-        return _lookup(option) if section == "SETTINGS" else _MISSING
-
-    def get(self, section, option, fallback=_MISSING, **_):
-        value = self._value(section, option)
-        if value is _MISSING:
-            if fallback is _MISSING:
-                raise configparser.NoOptionError(option, section)
-            return fallback
-        return value
-
-    def getboolean(self, section, option, fallback=_MISSING, **_):
-        value = self._value(section, option)
-        if value is _MISSING:
-            if fallback is _MISSING:
-                raise configparser.NoOptionError(option, section)
-            return fallback
-        return value.strip().lower() in ("true", "1", "yes", "on")
-
-    def getint(self, section, option, fallback=_MISSING, **_):
-        value = self._value(section, option)
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            if fallback is _MISSING:
-                raise configparser.NoOptionError(option, section)
-            return fallback
-
-    def has_section(self, section):
-        return section == "SETTINGS"
-
-    def has_option(self, section, option):
-        return self._value(section, option) is not _MISSING
-
-    def __getitem__(self, section):
-        if section != "SETTINGS":
-            raise KeyError(section)
-        return self._section
-
-    def __contains__(self, section):
-        return section == "SETTINGS"
-
-    def set(self, section, option, value=None):
-        app_logger.warning(f"Ignoring write to retired config.ini setting {option}; use core.settings.set_setting")
-
-    def remove_option(self, section, option):
-        return False
-
-
-config = _PrefsConfig()
-
-
 def is_oneshot_folder(folder_path) -> bool:
     """True when the folder's base name is in the ONESHOT_FOLDERS setting.
 
@@ -196,179 +71,37 @@ def is_oneshot_folder(folder_path) -> bool:
     return bool(base) and base in wanted
 
 
+_leftover_ini_reported = False
+
+
 def load_config():
-    """Run the one-time config.ini import if it is still owed.
+    """Warn, once per process, about a ``config.ini`` that was never imported.
 
-    Idempotent and cheap once done. Callers that import this module before the
-    database exists (``api.py``, ``missing.py``, ``cbz_ops/*``) call it again
-    later; the import simply waits until the preference table is reachable.
+    Settings live in ``user_preferences``. Releases 7.0 to 7.3 imported a
+    legacy ``config.ini`` on first start and renamed it ``config.ini.migrated``;
+    that import is gone. A file still sitting there means the install skipped
+    those releases, so its settings are not in the database and the app is
+    running on defaults: say so, loudly, instead of looking like a fresh
+    install. Nothing reads or writes the file.
+
+    The name is kept because ``api.py`` and ``monitor.py`` call it at import.
     """
-    migrate_ini_to_user_preferences()
-
-
-PREF_INI_MIGRATED = "config_ini_migrated_to_prefs"
-
-# ini keys that map to a differently-shaped preference than SETTINGS_SCHEMA.
-_INI_TO_PREF = (
-    ("WATCH", "watch", "file_processing"),
-    ("TARGET", "target", "file_processing"),
-    ("TIMEZONE", "timezone", "personalization"),
-)
-
-
-def _db_ready():
-    """True when the preference table can be read (init_db has run)."""
+    global _leftover_ini_reported
+    if _leftover_ini_reported:
+        return
+    path = os.path.join(CONFIG_DIR, "config.ini")
     try:
-        from core.database import db_conn
-        with db_conn() as conn:
-            if not conn:
-                return False
-            conn.execute("SELECT 1 FROM user_preferences LIMIT 1")
-            return True
-    except Exception:
-        return False
-
-
-def migrate_ini_to_user_preferences(ini_path=None):
-    """One-time import of every config.ini setting into user_preferences.
-
-    Returns the number of preferences written, or None when nothing was done
-    (already migrated, database not ready, or a failure). The flag is set --
-    and the file renamed to ``config.ini.migrated`` -- only after every write
-    succeeded, so a failed run is retried on the next start.
-
-    A preference that already holds a value is never overwritten: the database
-    is authoritative for the keys that were migrated piecemeal earlier
-    (custom rename, theme, headers, watch/target...), and an ini copy of those
-    is stale by construction. Nothing reads or writes the ini after this.
-    """
-    from core.settings import SETTINGS_SCHEMA, _coerce
-
-    path = ini_path or CONFIG_FILE
-    if not _db_ready():
-        app_logger.debug("Skipping config.ini import (database not ready)")
-        return None
-    from core.database import get_user_preference, set_user_preference
-
-    try:
-        if get_user_preference(PREF_INI_MIGRATED, default=False):
-            return None
-        if not os.path.isfile(path):
-            set_user_preference(PREF_INI_MIGRATED, True, category="migration")
-            return None
-
-        parser = configparser.RawConfigParser()
-        parser.optionxform = str
-        parser.read(path)
-        section = parser["SETTINGS"] if "SETTINGS" in parser else {}
-
-        written = 0
-        for key, spec in SETTINGS_SCHEMA.items():
-            if key not in section:
-                continue
-            if get_user_preference(spec.pref, default=None) is not None:
-                continue
-            value = _coerce(section[key], spec.type, spec.default)
-            if key == "CUSTOM_RENAME_PATTERN":
-                # Same literal rewrite as cbz_ops.rename.normalise_rename_pattern.
-                value = value.replace("{year}", "{volume_year}")
-            if not set_user_preference(spec.pref, value, category=spec.category):
-                raise RuntimeError(f"could not store {spec.pref}")
-            written += 1
-
-        for key, pref, category in _INI_TO_PREF:
-            raw = (section.get(key, "") or "").strip() if section else ""
-            if raw and get_user_preference(pref, default=None) in (None, ""):
-                if not set_user_preference(pref, raw, category=category):
-                    raise RuntimeError(f"could not store {pref}")
-                written += 1
-
-        # ComicVine's key lives with the other provider credentials.
-        cv_key = (section.get("COMICVINE_API_KEY", "") or "").strip() if section else ""
-        if cv_key:
-            from core.database import get_provider_credentials, save_provider_credentials
-            existing = get_provider_credentials("comicvine") or {}
-            if not existing.get("api_key"):
-                save_provider_credentials("comicvine", {**existing, "api_key": cv_key})
-                written += 1
-
-        # Recommendation settings (older installs only; rec_* are the live prefs).
-        if section and "REC_ENABLED" in section and get_user_preference("rec_enabled", default=None) is None:
-            for pref, ini_key, default in (
-                ("rec_enabled", "REC_ENABLED", "True"),
-                ("rec_provider", "REC_PROVIDER", "gemini"),
-                ("rec_api_key", "REC_API_KEY", ""),
-                ("rec_model", "REC_MODEL", "gemini-2.0-flash"),
-            ):
-                raw = section.get(ini_key, default)
-                val = (raw == "True") if pref == "rec_enabled" else raw
-                set_user_preference(pref, val, category="personalization")
-                written += 1
-
-        ini_cache = (section.get("CACHE_DIR", "") or "").strip().rstrip("/") if section else ""
-        if ini_cache and ini_cache != CACHE_DIR:
-            app_logger.warning(
-                f"config.ini set CACHE_DIR={ini_cache}, which is no longer configurable: the cache "
-                f"is always {CACHE_DIR}. Mount your cache folder there (see docker-compose.yaml); "
-                "thumbnails under the old path will be rebuilt."
-            )
-
-        set_user_preference(PREF_INI_MIGRATED, True, category="migration")
-        try:
-            os.replace(path, path + ".migrated")
-        except OSError as e:
-            app_logger.warning(f"Imported config.ini but could not rename it: {e}")
-        app_logger.info(f"Imported {written} setting(s) from config.ini into user_preferences")
-        return written
-    except Exception as e:
-        app_logger.error(f"config.ini import failed (will retry next start): {e}")
-        return None
-
-
-PREF_MONITOR_ENV_MIGRATED = "monitor_env_migrated"
-
-
-def seed_monitor_from_env(env=None):
-    """One-time import of the deprecated ``MONITOR`` env var into the setting.
-
-    Folder monitoring used to be switched on by ``MONITOR=yes`` in the compose
-    file. It is a setting now, so an install upgraded with that line still in
-    place must come up monitoring -- once. After the flag is set only the
-    setting counts; a stored value is never overwritten, the flag is set only
-    after the write succeeded, and the deprecation warning is logged on every
-    start the variable is still present so it gets removed.
-
-    Returns True when the setting was written, False otherwise.
-    """
-    env = os.environ if env is None else env
-    raw = env.get("MONITOR")
-    if raw is not None:
+        leftover = os.path.isfile(path)
+    except OSError:
+        leftover = False
+    if leftover:
+        _leftover_ini_reported = True
         app_logger.warning(
-            f"The MONITOR environment variable (MONITOR={raw}) is deprecated and ignored "
-            "after the first start: Folder Monitoring is switched on and off in "
-            "Settings -> Folder Monitoring. Remove it from your compose file."
+            f"{path} was never imported and is being ignored: this version no longer "
+            "reads config.ini. To carry its settings over, start CLU 7.3 once (it "
+            "imports the file and renames it config.ini.migrated), then upgrade again. "
+            "Otherwise re-enter them in Settings and delete the file."
         )
-    if not _db_ready():
-        return False
-    from core.database import get_user_preference, set_user_preference
-    from core.settings import SETTINGS_SCHEMA, set_setting
-
-    try:
-        if get_user_preference(PREF_MONITOR_ENV_MIGRATED, default=False):
-            return False
-        written = False
-        if ((raw or "").strip().lower() == "yes"
-                and get_user_preference(SETTINGS_SCHEMA["MONITOR_ENABLED"].pref,
-                                        default=None) is None):
-            if not set_setting("MONITOR_ENABLED", True):
-                raise RuntimeError("could not store monitor_enabled")
-            written = True
-            app_logger.info("Folder Monitoring enabled from MONITOR=yes (one-time import)")
-        set_user_preference(PREF_MONITOR_ENV_MIGRATED, True, category="migration")
-        return written
-    except Exception as e:
-        app_logger.error(f"MONITOR env import failed (will retry next start): {e}")
-        return False
 
 
 def get_watch_dir() -> str:

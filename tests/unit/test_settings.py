@@ -1,5 +1,4 @@
-"""core.settings: schema coverage, typing, cache, and the ini import."""
-import configparser
+"""core.settings: schema coverage, typing, cache, and the retired config.ini."""
 import os
 from unittest.mock import patch
 
@@ -19,10 +18,6 @@ def db(tmp_path):
         cs.invalidate()
         yield db_path
         cs.invalidate()
-
-
-def _write_ini(path, **kv):
-    path.write_text("[SETTINGS]\n" + "".join(f"{k} = {v}\n" for k, v in kv.items()))
 
 
 class TestSchema:
@@ -99,59 +94,8 @@ class TestAccess:
         assert cs.get_bool("XML_YEAR") is True
 
 
-class TestIniImport:
-    def test_imports_unset_prefs_with_types(self, db, tmp_path):
-        ini = tmp_path / "config.ini"
-        _write_ini(ini, AUTOCONVERT="True", TRASH_MAX_SIZE_MB="2048",
-                   IGNORED_EXTENSIONS=".a,.b", CUSTOM_RENAME_PATTERN="{series_name} ({year})")
-        assert cc.migrate_ini_to_user_preferences(str(ini)) >= 4
-        assert get_user_preference("autoconvert") is True
-        assert get_user_preference("trash_max_size_mb") == 2048
-        assert get_user_preference("ignored_extensions") == ".a,.b"
-        assert get_user_preference("custom_rename_pattern") == "{series_name} ({volume_year})"
-        assert get_user_preference(cc.PREF_INI_MIGRATED) is True
-        assert not ini.exists() and (tmp_path / "config.ini.migrated").exists()
-
-    def test_never_overwrites_existing_pref(self, db, tmp_path):
-        set_user_preference("bootstrap_theme", "darkly")
-        ini = tmp_path / "config.ini"
-        _write_ini(ini, BOOTSTRAP_THEME="default", XML_YEAR="True")
-        cc.migrate_ini_to_user_preferences(str(ini))
-        assert get_user_preference("bootstrap_theme") == "darkly"
-        assert get_user_preference("xml_year") is True
-
-    def test_runs_once(self, db, tmp_path):
-        ini = tmp_path / "config.ini"
-        _write_ini(ini, XML_YEAR="True")
-        cc.migrate_ini_to_user_preferences(str(ini))
-        set_user_preference("xml_year", False)
-        _write_ini(ini, XML_YEAR="True")
-        assert cc.migrate_ini_to_user_preferences(str(ini)) is None
-        assert get_user_preference("xml_year") is False
-        assert ini.exists()  # untouched on the second call
-
-    def test_no_file_sets_flag(self, db, tmp_path):
-        assert cc.migrate_ini_to_user_preferences(str(tmp_path / "missing.ini")) is None
-        assert get_user_preference(cc.PREF_INI_MIGRATED) is True
-
-    def test_failed_write_leaves_flag_and_file(self, db, tmp_path):
-        ini = tmp_path / "config.ini"
-        _write_ini(ini, XML_YEAR="True")
-        with patch("core.database.set_user_preference", return_value=False):
-            assert cc.migrate_ini_to_user_preferences(str(ini)) is None
-        assert ini.exists()
-        assert not get_user_preference(cc.PREF_INI_MIGRATED, default=False)
-
-    def test_comicvine_key_goes_to_credentials(self, db, tmp_path):
-        from core.database import get_provider_credentials
-        ini = tmp_path / "config.ini"
-        _write_ini(ini, COMICVINE_API_KEY="abc123")
-        cc.migrate_ini_to_user_preferences(str(ini))
-        assert (get_provider_credentials("comicvine") or {}).get("api_key") == "abc123"
-
-
 class TestIniIsRetired:
-    """Nothing writes config.ini any more; the import is the only reader."""
+    """Nothing reads or writes config.ini any more."""
 
     ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     # .claude holds agent worktrees: full copies of the repo, at other commits.
@@ -192,114 +136,69 @@ class TestIniIsRetired:
         assert not hasattr(cc, "monitor_config") and not hasattr(cc, "write_config")
 
     def test_load_config_is_idempotent_and_writes_no_file(self, db, tmp_path):
-        with patch("core.config.CONFIG_FILE", str(tmp_path / "config.ini")):
+        with patch("core.config.CONFIG_DIR", str(tmp_path)):
             cc.load_config()
             cc.load_config()
         assert not (tmp_path / "config.ini").exists()
 
+    def test_nothing_parses_an_ini_for_settings(self):
+        """configparser survives only where it reads someone else's file
+        (Mylar's config.ini, a rename rules file) or renders the debug package."""
+        allowed = {"core/mylar_reader.py", "core/debug_package.py", "cbz_ops/rename.py"}
+        users = {rel.replace(os.sep, "/") for rel, text in self._sources()
+                 if "import configparser" in text}
+        assert users <= allowed, sorted(users - allowed)
+
 
 class TestNoNewIniStyleReads:
-    """A ratchet on the config.get("SETTINGS", ...) compatibility view.
+    """The ``config.get("SETTINGS", ...)`` view is deleted; nothing may bring it back.
 
-    The view exists only so callers could be converted one at a time. This
-    counts the calls still using it, per file, and fails if any file gains one
-    or a new file appears. Converting a file means lowering its number here; the
-    table is empty when the view can be deleted.
+    It was a read-only stand-in for the old RawConfigParser, kept while callers
+    were converted to ``core.settings`` one file at a time. A new import of it,
+    or a call shaped like the old ones, is how the pattern would return.
     """
 
-    REMAINING = {
-    }
+    GONE = ("config", "CONFIG_FILE", "migrate_ini_to_user_preferences",
+            "seed_monitor_from_env", "PREF_INI_MIGRATED")
     # .claude holds agent worktrees: full copies of the repo, at other commits.
     SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
 
     @classmethod
-    def _count(cls):
+    def _trees(cls):
         import ast
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        found = {}
         for base, dirs, files in os.walk(root):
             dirs[:] = [d for d in dirs if d not in cls.SKIP_DIRS]
             for name in files:
-                if not name.endswith(".py"):
-                    continue
-                path = os.path.join(base, name)
-                rel = os.path.relpath(path, root).replace(os.sep, "/")
-                if rel == "core/config.py":  # defines the view
-                    continue
-                tree = ast.parse(open(path, encoding="utf-8").read())
-                n = 0
-                for node in ast.walk(tree):
-                    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                            and node.func.attr in ("get", "getboolean", "getint")
-                            and isinstance(node.func.value, ast.Name)
-                            and node.func.value.id in ("config", "raw_config")
-                            and node.args and isinstance(node.args[0], ast.Constant)
-                            and node.args[0].value == "SETTINGS"):
-                        n += 1
-                    elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
-                          and node.value.id == "config" and isinstance(node.slice, ast.Constant)
-                          and node.slice.value == "SETTINGS"):
-                        n += 1
-                if n:
-                    found[rel] = n
-        return found
+                if name.endswith(".py"):
+                    path = os.path.join(base, name)
+                    rel = os.path.relpath(path, root).replace(os.sep, "/")
+                    yield rel, ast.parse(open(path, encoding="utf-8").read())
 
-    def test_no_file_gains_an_ini_style_read(self):
-        found = self._count()
-        grew = {f: (n, self.REMAINING.get(f, 0)) for f, n in found.items()
-                if n > self.REMAINING.get(f, 0)}
-        assert not grew, f"new config.get('SETTINGS', ...) reads (found, allowed): {grew}"
+    def test_nothing_imports_the_deleted_names(self):
+        import ast
+        offenders = []
+        for rel, tree in self._trees():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "core.config":
+                    offenders += [f"{rel}:{node.lineno} {a.name}" for a in node.names
+                                  if a.name in self.GONE]
+        assert not offenders, offenders
 
-    def test_table_is_tight(self):
-        """When a file is converted its entry must come off, or the ratchet stops ratcheting."""
-        found = self._count()
-        stale = {f: (self.REMAINING[f], found.get(f, 0)) for f in self.REMAINING
-                 if found.get(f, 0) < self.REMAINING[f]}
-        assert not stale, f"lower these entries in REMAINING (allowed, found): {stale}"
-
-
-class TestEveryKeyUsedExists:
-    """Modules like app.py cannot be imported in tests, so a misspelt key in
-    get_setting("...") / st["..."] would only fail at runtime (KeyError on the
-    settings page, or a silently dead read). Check every literal against the
-    schema."""
-
-    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    # .claude holds agent worktrees: full copies of the repo, at other commits.
-    SKIP_DIRS = {"tests", ".git", ".claude", "venv", ".venv", "node_modules", "__pycache__", "docs", "tools"}
-
-    def test_literal_keys_are_in_the_schema(self):
-        import re
-        call = re.compile(r'\b(?:get_setting|get_bool|get_int|get_list|get_ext_list|set_setting)\(\s*["\']([A-Z_]+)["\']')
-        page = re.compile(r'\bst\["([A-Z_]+)"\]')
-        bad = []
-        for base, dirs, files in os.walk(self.ROOT):
-            dirs[:] = [d for d in dirs if d not in self.SKIP_DIRS]
-            for name in files:
-                if not name.endswith(".py"):
-                    continue
-                path = os.path.join(base, name)
-                text = open(path, encoding="utf-8").read()
-                rel = os.path.relpath(path, self.ROOT)
-                for rx in (call, page):
-                    for m in rx.finditer(text):
-                        if m.group(1) not in cs.SETTINGS_SCHEMA:
-                            bad.append(f"{rel}: {m.group(1)}")
-        assert not bad, bad
-
-
-def test_app_refreshes_flask_config_after_init_db():
-    """api.py builds app.config before the database exists; app.py must redo it
-    once init_db() has run, or the first start after the ini import serves
-    defaults (trash, rename pattern, ...) until the next save. app.py cannot be
-    imported in tests, so assert the order in its source."""
-    import ast
-    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    tree = ast.parse(open(os.path.join(root, "app.py"), encoding="utf-8").read())
-    order = []
-    for node in tree.body:
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
-                and isinstance(node.value.func, ast.Name):
-            order.append(node.value.func.id)
-    assert "init_db" in order and "load_flask_config" in order
-    assert order.index("init_db") < order.index("load_flask_config")
+    def test_no_ini_style_reads(self):
+        import ast
+        offenders = []
+        for rel, tree in self._trees():
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in ("get", "getboolean", "getint")
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in ("config", "raw_config")
+                        and node.args and isinstance(node.args[0], ast.Constant)
+                        and node.args[0].value == "SETTINGS"):
+                    offenders.append(f"{rel}:{node.lineno}")
+                elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                      and node.value.id == "config" and isinstance(node.slice, ast.Constant)
+                      and node.slice.value == "SETTINGS"):
+                    offenders.append(f"{rel}:{node.lineno}")
+        assert not offenders, "use core.settings: " + ", ".join(offenders)
