@@ -2,14 +2,14 @@
   "name": "Comic Library Utilities",
   "short_name": "Comic Library",
   "description": "Browse and read your comic collection",
-  "start_url": "/collection",
+  "start_url": "collection",
   "display": "standalone",
   "background_color": "#212529",
   "theme_color": "#212529",
   "orientation": "any",
   "icons": [
     {
-      "src": "/static/images/clu.png",
+      "src": "static/images/clu.png",
       "sizes": "128x128",
       "type": "image/png",
       "purpose": "any"

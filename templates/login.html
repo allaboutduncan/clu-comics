@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Login - CLU</title>
   {% include 'partials/theme_css.html' %}
-  <link rel="icon" type="image/png" href="/static/images/clu.png">
+  <meta name="clu-root" content="{{ request.script_root }}">
+  <script src="{{ asset('js/clu-url.js') }}"></script>
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/clu.png') }}">
 </head>
 <body class="bg-body-tertiary d-flex align-items-center" style="min-height: 100vh;">
   <div class="container">
@@ -14,7 +16,7 @@
         <div class="card shadow-sm">
           <div class="card-body p-4">
             <div class="text-center mb-4">
-              <img src="/static/images/clu.png" alt="CLU Logo" width="64" class="mb-2">
+              <img src="{{ url_for('static', filename='images/clu.png') }}" alt="CLU Logo" width="64" class="mb-2">
               <h4 class="mb-0">CLU</h4>
               <small class="text-muted">Comic Library Utilities</small>
             </div>

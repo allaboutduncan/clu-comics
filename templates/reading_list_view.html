@@ -263,7 +263,7 @@
             {% set file_path = entry.manual_override_path or entry.matched_file_path %}
             {% if file_path %}
             <!-- Matched: clicking cover opens reader -->
-            <div class="book-cover" style="background-image: url('/api/thumbnail?path={{ file_path|urlencode }}')"
+            <div class="book-cover" style="background-image: url('{{ request.script_root }}/api/thumbnail?path={{ file_path|urlencode }}')"
                 data-file-path="{{ file_path }}"
                 onclick="openReadingListComic('{{ file_path|replace('\\', '\\\\')|replace("'", "\\'") }}')">
                 <span class="issue-badge issue-badge-matched">

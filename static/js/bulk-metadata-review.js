@@ -262,14 +262,14 @@ window.BulkMetadataReview = (function () {
         const coverPath = item.cover_path || item.file_path || '';
         const coverSrc = coverPath
             ? `/api/thumbnail?path=${encodeURIComponent(coverPath)}`
-            : '/static/images/loading.svg';
+            : CLU.staticUrl('images/loading.svg');
 
         card.innerHTML = `
             <div class="card-body">
                 <div class="d-flex gap-3 align-items-start">
                     <img class="review-cover flex-shrink-0" loading="lazy"
                          src="${coverSrc}" alt=""
-                         onerror="this.onerror=null; this.src='/static/images/loading.svg';"
+                         onerror="this.onerror=null; this.src=CLU.staticUrl('images/loading.svg');"
                          style="width: 80px; height: 120px; object-fit: cover; border-radius: 4px; background: #eee;">
                     <div class="flex-grow-1 min-w-0">
                         <div class="d-flex justify-content-between align-items-start mb-2">

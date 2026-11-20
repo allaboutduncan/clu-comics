@@ -1565,7 +1565,7 @@
                                 <label class="form-check-label" for="enableDebugLogging">{% if enableDebugLogging
                                     %}Disable{% else %}Enable{% endif %} Debug Logging</label>
                                 <small class="form-text text-muted">
-                                    <br />When enabled, detailed debug messages will appear in the <a href="/app-logs"
+                                    <br />When enabled, detailed debug messages will appear in the <a href="{{ request.script_root }}/app-logs"
                                         target="_blank">App Logs</a>. This can help with troubleshooting but may
                                     increase log file size. Changes take effect after saving.
                                 </small>

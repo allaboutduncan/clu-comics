@@ -481,7 +481,7 @@
       var holder = document.getElementById('cbzDupeCover' + ci);
       if (holder) holder.innerHTML = '<p class="text-muted mb-0">Page not available</p>';
     };
-    img.src = '/api/read/' + _encodePathForReader(col.path) + '/page/' + page;
+    img.src = CLU.url('/api/read/' + _encodePathForReader(col.path) + '/page/' + page);
   }
 
   function _step(ci, delta) {

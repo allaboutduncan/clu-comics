@@ -615,7 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (modalInstance) {
                         modalInstance.hide();
                     }
-                    window.location.href = '/';
+                    window.location.href = CLU.url('/');
                 } else {
                     CLU.toast("Error: " + data.error, "error");
                 }

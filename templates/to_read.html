@@ -231,13 +231,13 @@
   function navigateToItem(path, type) {
     if (type === 'folder') {
       // Navigate to the folder in collection view
-      window.location.href = `/collection?path=${encodeURIComponent(path)}`;
+      window.location.href = CLU.url(`/collection?path=${encodeURIComponent(path)}`);
     } else {
       // Navigate to the parent folder with the file highlighted
       const parts = path.replace(/\\/g, '/').split('/');
       parts.pop(); // Remove filename
       const parentPath = parts.join('/');
-      window.location.href = `/collection?path=${encodeURIComponent(parentPath)}`;
+      window.location.href = CLU.url(`/collection?path=${encodeURIComponent(parentPath)}`);
     }
   }
 

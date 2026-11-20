@@ -111,6 +111,32 @@ default for every `send_file` in the app (covers, downloads, page images).
 `tests/unit/test_static_asset_urls.py` is the ratchet. Images under
 `static/images/` stay unversioned.
 
+#### URLs in page scripts — `CLU.url()`, and never a literal `/static/`
+
+CLU runs behind `ProxyFix(x_prefix=1)`, so it can be served at `/clu`. `url_for`
+and `asset()` carry that prefix; a script that writes `fetch('/api/x')` does
+not. `static/js/clu-url.js` is the **first script** in `base.html` and
+`login.html` and reads the prefix from `<meta name="clu-root">`. With a prefix
+it wraps `fetch`, `XMLHttpRequest`, `EventSource`, `sendBeacon` and
+`window.open`, and an observer rewrites `src`/`href`/`action`/`poster` on
+anything added to the document, so existing call sites need no edit. With no
+prefix it installs nothing.
+
+- **A navigation is explicit**: `location.href = CLU.url('/reader?...')`. The
+  browser lets nothing intercept a location change.
+- **An unversioned image is `CLU.staticUrl('images/loading.svg')`** in a
+  script and `url_for('static', filename=...)` in a template.
+- **A hot image path calls `CLU.url` itself** (`loadThumbnail`, the reader's
+  page images): the observer runs one step late, after the browser has started
+  the unprefixed request.
+- **A link built from a server-side constant is prefixed in the template**
+  (`{{ request.script_root }}{{ section.view_all_href }}`).
+- `static/manifest.json` uses relative URLs; a static file cannot know the prefix.
+
+`tests/unit/test_subpath_urls.py` (the ratchets, and the shim run under node)
+and `tests/routes/test_subpath_pages.py` (every parameterless page rendered
+under `/clu`) pin it.
+
 #### Control characters in static assets — always escapes, never raw bytes
 
 Write a control character in JS/CSS/HTML as an escape (`'\0'`), never as a

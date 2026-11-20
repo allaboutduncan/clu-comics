@@ -365,7 +365,7 @@
 
         if (item.thumbnail_url) {
             img.src = item.thumbnail_url;
-            img.onerror = function () { this.src = '/static/images/error.svg'; };
+            img.onerror = function () { this.src = CLU.staticUrl('images/error.svg'); };
         }
 
         if (item.has_comicinfo === 0) {
@@ -461,7 +461,7 @@
             if (typeof window.openComicReader === 'function') {
                 window.openComicReader(item.path);
             } else {
-                window.location.href = '/reader?path=' + encodeURIComponent(item.path);
+                window.location.href = CLU.url('/reader?path=' + encodeURIComponent(item.path));
             }
         };
 

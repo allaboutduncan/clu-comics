@@ -67,7 +67,7 @@
                         <tr data-id="{{ pub.id }}" data-name="{{ pub.name|lower }}">
                             <td class="ps-4">
                                 {% if pub.logo %}
-                                <img src="/cache/{{ pub.logo }}" alt="{{ pub.name }}" class="rounded"
+                                <img src="{{ request.script_root }}/cache/{{ pub.logo }}" alt="{{ pub.name }}" class="rounded"
                                     style="width: 40px; height: 40px; object-fit: contain;">
                                 {% else %}
                                 <div class="bg-light rounded d-flex align-items-center justify-content-center"
