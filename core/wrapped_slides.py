@@ -41,7 +41,7 @@ from core.database import current_user_id, db_conn
 from core.user_time import DISPLAY_FORMAT, local_period_bounds_utc, sql_offset_modifier
 
 # Bump when any slide's drawing changes, so cached PNGs are redrawn.
-RENDERER_VERSION = 4
+RENDERER_VERSION = 5
 
 YEARLY = wrapped_styles.YEARLY
 MONTHLY = wrapped_styles.MONTHLY

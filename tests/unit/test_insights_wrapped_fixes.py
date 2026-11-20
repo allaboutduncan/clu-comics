@@ -57,3 +57,45 @@ def test_cdn_scripts_are_version_pinned():
     assert urls, "no CDN scripts found: the pattern no longer matches the templates"
     unpinned = [(p, u) for p, u in urls if not re.search(r"@\d", u)]
     assert unpinned == []
+
+
+class TestBrandLogoStaysOutOfTheWay:
+    """The CLU logo was pasted 400px wide from y=80 to y=480, over the big
+    number on the summary slide and the heading on the most-read slide."""
+
+    BACKGROUND = (10, 20, 30)
+
+    def _branded(self):
+        import os
+
+        from PIL import Image, ImageDraw
+
+        assert os.path.exists(wrapped.ImageUtils.get_logo_path()), "no logo: this test proves nothing"
+        img = Image.new("RGB", (wrapped.IMAGE_WIDTH, wrapped.IMAGE_HEIGHT), self.BACKGROUND)
+        wrapped.add_branding(img, ImageDraw.Draw(img), wrapped.get_theme_colors("default"), 2024)
+        return img
+
+    def _untouched(self, img, box):
+        region = img.crop(box)
+        return region.getcolors() == [(region.width * region.height, self.BACKGROUND)]
+
+    def test_the_logo_is_drawn(self):
+        img = self._branded()
+        left = (wrapped.IMAGE_WIDTH - wrapped.BRAND_LOGO_WIDTH) // 2
+        box = (left, wrapped.BRAND_LOGO_TOP, left + wrapped.BRAND_LOGO_WIDTH,
+               wrapped.BRAND_LOGO_TOP + wrapped.BRAND_LOGO_WIDTH)
+        assert not self._untouched(img, box)
+
+    def test_it_is_small_and_ends_above_the_first_line_of_content(self):
+        # The earliest content on a slide that carries the logo is the
+        # most-read heading at y=230.
+        assert wrapped.BRAND_LOGO_WIDTH <= 140
+        img = self._branded()
+        assert self._untouched(img, (0, 200, wrapped.IMAGE_WIDTH, 1700))
+
+    def test_nothing_beside_it(self):
+        img = self._branded()
+        left = (wrapped.IMAGE_WIDTH - wrapped.BRAND_LOGO_WIDTH) // 2
+        assert self._untouched(img, (0, 0, left - 4, 200))
+        assert self._untouched(img, (left + wrapped.BRAND_LOGO_WIDTH + 4, 0, wrapped.IMAGE_WIDTH, 200))
+
