@@ -41,14 +41,18 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None, user_id=Non
 
         # Build WHERE clauses. user_id first so it applies to every derived query
         # (detailed list, totals, top-publisher, series, streak).
+        # The year/month filters use the user's local calendar, the same one
+        # the entries below are grouped and labelled by.
+        from core.user_time import localise_read_at_sql
+
         uid = current_user_id() if user_id is None else user_id
         where_clauses = ["r.user_id = ?", "r.hide = 0"]
         params = [uid]
         if year is not None:
-            where_clauses.append("strftime('%Y', r.read_at) = ?")
+            where_clauses.append(localise_read_at_sql("strftime('%Y', r.read_at) = ?"))
             params.append(str(year))
         if month is not None:
-            where_clauses.append("strftime('%m', r.read_at) = ?")
+            where_clauses.append(localise_read_at_sql("strftime('%m', r.read_at) = ?"))
             params.append(str(month).zfill(2))
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -115,43 +119,21 @@ def get_reading_timeline(limit=100, offset=0, year=None, month=None, user_id=Non
         )
         stats['total_series'] = c.fetchone()[0]
 
-        # Calculate Streak (consecutive days with at least one read)
-        c.execute(  # nosec B608 - bare_where built from hardcoded strftime clauses with ? placeholders
-            'SELECT date(read_at) as read_date'
-            ' FROM issues_read '
-            + bare_where +
-            ' GROUP BY read_date'
-            ' ORDER BY read_date DESC',
+        # Streak: consecutive local days with at least one read. The days and
+        # "today" are both the user's -- it used to compare UTC dates against
+        # the server's date.today(), so near midnight a streak could read as
+        # broken (or a day long) depending on where the server was.
+        from core.user_time import local_date, user_today
+        from models.reading_insights import compute_streaks
+
+        c.execute(  # nosec B608 - bare_where built from hardcoded clauses with ? placeholders
+            'SELECT read_at FROM issues_read ' + bare_where,
             params
         )
-        dates = [row[0] for row in c.fetchall()]
-        
-        streak = 0
-        if dates:
-            from datetime import date, timedelta
-            today = date.today()
-            current_check = today
-            
-            # Check if we read something today
-            if dates[0] == today.isoformat():
-                streak = 1
-                dates.pop(0)
-                current_check -= timedelta(days=1)
-            elif dates[0] == (today - timedelta(days=1)).isoformat():
-                # Or if we read something yesterday (streak is still alive)
-                current_check -= timedelta(days=1)
-            else:
-                # Streak broken or not started recently
-                streak = 0
-                
-            # Count backwards
-            for d in dates:
-                if d == current_check.isoformat():
-                    streak += 1
-                    current_check -= timedelta(days=1)
-                else:
-                    break
-                    
+        read_days = {local_date(row[0]) for row in c.fetchall()}
+        read_days.discard(None)
+        streak = compute_streaks(read_days, user_today())['current']
+
         stats['streak'] = streak
         
         conn.close()

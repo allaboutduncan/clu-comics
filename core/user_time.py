@@ -19,6 +19,7 @@ from bare APScheduler threads with no application context, so it must not
 touch ``current_app``.
 """
 
+import re
 from datetime import datetime, timedelta, timezone
 
 UTC = timezone.utc
@@ -72,6 +73,80 @@ def user_tzinfo(hours=None):
     """A fixed-offset tzinfo for the user's preference."""
     hours = user_offset_hours() if hours is None else hours
     return UTC if hours == 0 else timezone(timedelta(hours=hours))
+
+
+def sql_offset_modifier(hours=None):
+    """The user's offset as a SQLite date modifier: "+0.0 hours", "-5.0 hours".
+
+    The one place that turns the preference into SQL text. The value has been
+    through ``parse_offset_hours`` (a float clamped to -12..+14), so what is
+    formatted here is a number and nothing else -- safe to concatenate.
+    """
+    hours = user_offset_hours() if hours is None else parse_offset_hours(hours)
+    return f"{hours:+.2f} hours"
+
+
+_READ_AT_BUCKET = re.compile(
+    r"\b(strftime\('%[A-Za-z]',\s*|date\()((?:\w+\.)?read_at)\)"
+)
+
+
+def localise_read_at_sql(sql, hours=None):
+    """Make every ``strftime('%X', read_at)`` / ``date(read_at)`` in *sql*
+    bucket by the user's local day instead of the UTC one.
+
+    ``read_at`` is stored in UTC. Bucketing it raw put a comic read at 9pm in
+    UTC-5 into the next day -- and, on 31 December, into the next year's
+    Wrapped. The reading-history chart already shifted by the offset; Wrapped,
+    the heatmap and the Timeline filters did not, so the same read could sit in
+    two different months on one page.
+
+    ``datetime()`` also normalises the two shapes the column holds
+    ("2024-06-01T10:00:00" from a caller-supplied stamp, "2024-06-01 10:00:00"
+    from CURRENT_TIMESTAMP). Only bucketing expressions are rewritten: an
+    ``ORDER BY read_at`` is left alone, because a fixed shift cannot change an
+    order.
+    """
+    modifier = sql_offset_modifier(hours)
+    return _READ_AT_BUCKET.sub(
+        lambda m: f"{m.group(1)}datetime({m.group(2)}, '{modifier}'))", sql
+    )
+
+
+def user_today(now=None, hours=None):
+    """Today's date where the user is -- not the server's, and not UTC's."""
+    reference = utc_now() if now is None else parse_utc(now)
+    if reference is None:
+        reference = utc_now()
+    return reference.astimezone(user_tzinfo(hours)).date()
+
+
+def local_date(value, hours=None):
+    """The user's calendar date for a stored UTC timestamp, or None."""
+    as_utc = parse_utc(value)
+    if as_utc is None:
+        return None
+    return as_utc.astimezone(user_tzinfo(hours)).date()
+
+
+def local_period_bounds_utc(year, month=None, hours=None):
+    """``(start, end)`` of a local year or month as naive UTC datetimes.
+
+    Half-open: ``start <= t < end``. Compare against ``datetime(read_at)`` in
+    SQL (not the raw column -- see ``localise_read_at_sql`` for its two shapes)
+    using ``strftime(DISPLAY_FORMAT)`` of these values.
+    """
+    tz = user_tzinfo(hours)
+    if month is None:
+        start = datetime(year, 1, 1, tzinfo=tz)
+        end = datetime(year + 1, 1, 1, tzinfo=tz)
+    else:
+        start = datetime(year, month, 1, tzinfo=tz)
+        end = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=tz)
+    return (
+        start.astimezone(UTC).replace(tzinfo=None),
+        end.astimezone(UTC).replace(tzinfo=None),
+    )
 
 
 def user_offset_label(hours=None):

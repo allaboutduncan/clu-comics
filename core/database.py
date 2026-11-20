@@ -1887,6 +1887,8 @@ def _init_db_locked():
             [
                 "CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)",
                 "CREATE INDEX IF NOT EXISTS idx_issues_read_user ON issues_read(user_id)",
+                # Every reading stat is "this user's reads in a period".
+                "CREATE INDEX IF NOT EXISTS idx_issues_read_user_read_at ON issues_read(user_id, read_at)",
             ],
         )
         _rebuild_add_user_scope(
@@ -1944,6 +1946,14 @@ def _init_db_locked():
                 "CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)",
                 "CREATE INDEX IF NOT EXISTS idx_to_read_user ON to_read(user_id)",
             ],
+        )
+
+        # Every reading stat is "this user's reads in a period". Created here,
+        # unconditionally: the rebuild above is a no-op once user_id exists, so
+        # an index listed only there never reaches an already-migrated install.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issues_read_user_read_at"
+            " ON issues_read(user_id, read_at)"
         )
 
         # Bulk metadata processing tables (used by routes/bulk_metadata.py)
@@ -7068,13 +7078,15 @@ def get_reading_stats_by_year(year=None, user_id=None):
         c = conn.cursor()
 
         if year:
-            # Filter by year
+            # Filter by the user's local year, like every other reading stat.
+            from core.user_time import localise_read_at_sql
+
             c.execute(
-                """
+                localise_read_at_sql("""
                 SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0)
                 FROM issues_read
                 WHERE user_id = ? AND strftime('%Y', read_at) = ?
-            """,
+            """),
                 (uid, str(year)),
             )
         else:
@@ -7134,7 +7146,12 @@ def get_reading_trends(field_name, year=None, limit=10, user_id=None):
             " AND " + field_name + " != '' AND " + field_name + " IS NOT NULL"
         )
         if year:
-            c.execute(base + " AND strftime('%Y', read_at) = ?", (uid, str(year)))
+            from core.user_time import localise_read_at_sql
+
+            c.execute(
+                localise_read_at_sql(base + " AND strftime('%Y', read_at) = ?"),
+                (uid, str(year)),
+            )
         else:
             c.execute(base, (uid,))
 
