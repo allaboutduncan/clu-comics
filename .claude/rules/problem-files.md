@@ -35,7 +35,11 @@ advice is Rebuild first, because the same archive can extract fully on the
 next attempt, see **A RAR extraction is all or nothing** in `watch-pipeline.md`),
 `routes/metadata.py` (`metadata-write`), and `monitor.py` for an archive in
 WATCH that will not unpack (`unpack` — see **A damaged archive must be opened
-once, not once per sweep**). The metadata scanner and `core/bulk_metadata.py`
+once, not once per sweep**) and for a PDF in WATCH that will not convert
+(`convert` with `CLASS_PDF_FAILED`; advice is replace, and `retry_problem`
+answers "the folder monitor retries this" for a `.pdf` path instead of pointing
+at Rebuild, which does not read PDFs). The `convert` source is labelled
+"Conversion" for that reason. The metadata scanner and `core/bulk_metadata.py`
 are deliberate follow-ups.
 
 `series-json` is the one **scan-driven** source (`core/series_json_check.py`):
