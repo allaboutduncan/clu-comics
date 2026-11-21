@@ -1028,6 +1028,21 @@ class TestGetRenamedFilename:
         assert get_renamed_filename("Avengers 001.1 (2017).cbz") == "Avengers 001.1 (2017).cbz"
         assert get_renamed_filename("Avengers 1.MU (2017).cbz") == "Avengers 001.MU (2017).cbz"
 
+    @pytest.mark.parametrize("filename,expected", [
+        # A leading "#NN" is a weekly-pack index, not the issue number.
+        ("#06-Glory - Angela - Angels In Hell #1 [OTK].cbz", "Glory - Angela - Angels In Hell 001.cbz"),
+        ("#06-Glory - Angela - Angels In Hell #1 (2014) [OTK].cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+    ])
+    def test_leading_pack_index_is_not_the_issue(self, filename, expected):
+        """Regression: the lazy hash match took the index, leaving no title ("006.cbz")."""
+        from cbz_ops.rename import get_renamed_filename
+        assert get_renamed_filename(filename) == expected
+
+    def test_hash_match_never_yields_a_bare_number(self):
+        """With nothing after the index to match, leave the name alone (None) rather than "012.cbz"."""
+        from cbz_ops.rename import get_renamed_filename
+        assert get_renamed_filename("#12 Spawn.cbz") is None
+
     def test_fallback_pattern(self):
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename("Comic Name (2018) some extra.cbz")

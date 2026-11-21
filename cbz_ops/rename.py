@@ -61,6 +61,7 @@ TITLE_YEAR_PATTERN = re.compile(
 ISSUE_HASH_PATTERN = re.compile(
     r"^(.*?)\s*#\s*(\d{1,4}(?:\.\w+)?)\b(.*)(\.\w+)$", re.IGNORECASE
 )
+LEADING_HASH_INDEX = re.compile(r"^\s*#\s*\d{1,4}\s*[-_.]?\s*")
 
 # -------------------------------------------------------------------
 # Original ISSUE_PATTERN:
@@ -2375,6 +2376,12 @@ def get_renamed_filename(filename, file_path=None):
     #    e.g. "Injustice 2 #1 (2018).cbz"
     # ==========================================================
     hash_match = ISSUE_HASH_PATTERN.match(cleaned_filename)
+    if hash_match and not hash_match.group(1).strip():
+        # A leading "#NN" is a pack index ("#06-Glory - ... #1"), not the issue:
+        # match after it, and never build a name with no title ("006.cbz").
+        hash_match = ISSUE_HASH_PATTERN.match(LEADING_HASH_INDEX.sub("", cleaned_filename, count=1))
+        if hash_match and not hash_match.group(1).strip():
+            hash_match = None
     if hash_match:
         app_logger.info(f"Matched ISSUE_HASH_PATTERN for: {cleaned_filename}")
         raw_title, issue_num, middle, extension = hash_match.groups()
