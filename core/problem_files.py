@@ -79,7 +79,7 @@ SOURCE_LABELS = {
     SOURCE_THUMBNAIL: "Thumbnail",
     SOURCE_REBUILD: "Rebuild",
     SOURCE_METADATA_WRITE: "Metadata write",
-    SOURCE_CONVERT: "CBR conversion",
+    SOURCE_CONVERT: "Conversion",
     SOURCE_UNPACK: "Unpack",
     SOURCE_SERIES_JSON: "series.json",
     SOURCE_INTEGRITY: "Integrity scan",
@@ -97,6 +97,9 @@ CLASS_RAR_FAILED = "RarConversionFailed"
 # CLASS_RAR_FAILED because the advice differs: the same .cbr has extracted 39
 # pages on one run and 80 on the next, so a retry is worth offering first.
 CLASS_RAR_PARTIAL = "RarExtractIncomplete"
+# A PDF the folder monitor could not turn into a CBZ. The row's path is the
+# PDF in WATCH: it is held there, never moved to TARGET unconverted.
+CLASS_PDF_FAILED = "PdfConversionFailed"
 CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
@@ -603,6 +606,16 @@ _RULES = (
     ),
     (
         (),
+        (CLASS_PDF_FAILED.lower(),),
+        "This PDF could not be converted to a CBZ, so it was left in the "
+        "download folder instead of being filed. The PDF is damaged, "
+        "password-protected, or a page in it would not render.",
+        "Replace the file. Rebuild cannot repair a PDF; the folder monitor "
+        "tries the conversion again on its own.",
+        ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
         (CLASS_RAR_PARTIAL.lower(),),
         "Only part of this RAR archive could be extracted, so it was not "
         "converted. Nothing was written and the original is untouched.",
@@ -744,6 +757,12 @@ def retry_problem(path, source):
         # Retrying a rebuild *is* a rebuild. The page offers that action
         # instead; two ways to do one thing is how they drift apart.
         return False, "Use Rebuild for this entry"
+
+    if source == SOURCE_CONVERT and path.lower().endswith(".pdf"):
+        # Written by monitor.py for a PDF held in WATCH. Same reasoning as
+        # SOURCE_UNPACK below: the monitor owns that folder and retries on its
+        # own backoff, and Rebuild (convert_to_cbz) does not read PDFs.
+        return False, "The folder monitor retries this on its own"
 
     if source == SOURCE_CONVERT:
         # Rebuild already re-runs the conversion: the page's Rebuild button is

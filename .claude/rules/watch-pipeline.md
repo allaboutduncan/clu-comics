@@ -331,6 +331,40 @@ Retry for that source points at **Rebuild**, which is
 already streamed; re-running it inside the request would outlive gunicorn's
 timeout on a 500MB pack.
 
+#### A PDF is converted in WATCH, by every route, or it stays there
+
+PDF→CBZ used to live only in `_handoff_unwrapped`, so only a PDF that came out
+of a multipart release *folder* was converted. One extracted from a pack by
+`_unrar_file`, or dropped loose, was renamed and moved to TARGET as a `.pdf`.
+And when that one conversion failed it logged "produced no CBZ" and returned:
+the parts were already cleaned up, the folder classified as `NORMAL`, and the
+next sweep moved the raw PDF (#834).
+
+- **The step is in `_process_file`** (`_pdf_to_comic`, gated on AUTOCONVERT),
+  ahead of the rename, so the route does not matter. `_handoff_unwrapped` only
+  claims the staged file and calls `_process_file`, and backs a False off
+  itself, because it does not come through `_handle_file_if_complete`.
+- **It converts before the move, where a `.cbr` converts after it.** A PDF that
+  will not convert must not reach TARGET, where the wanted sweep would file it
+  into the library. Failure is `SOURCE_CONVERT` + `CLASS_PDF_FAILED` on the
+  WATCH path, a False from `_process_file` and therefore a `_failed_files`
+  backoff; success clears the row.
+- **`process_pdf_file` returns a bool and is all or nothing**, the same
+  contract as `convert_to_cbz`: True only when every page rendered and saved,
+  the CBZ was written and the PDF was removed. It returned `None` and swallowed
+  everything, so a failed CBZ write was followed by deleting the PDF, and a page
+  that failed to save was just absent from the CBZ. Do not test
+  `os.path.exists(<base>.cbz)` instead.
+- **Its scratch folder is `.temp_<name>`** (`cbz_ops.pdf.scratch_dir_for`), which
+  `is_scratch_dir` matches. It was a bare `<name>/` beside the PDF, which in
+  WATCH is an ordinary sub-folder of loose page images.
+- **A `.cbz` of the same name is never overwritten.** `process_pdf_file` refuses,
+  and `_pdf_to_comic` returns before opening the PDF and records no problem: the
+  backoff retries once that comic has moved on.
+
+Tests: the `pdf_handler` tests in `tests/unit/test_monitor.py`,
+`TestProcessPdfFileOutcome` in `tests/mocked/test_pdf.py`.
+
 #### A RAR or 7z named `.cbz` is recognised by its bytes
 
 Every conversion decision used to be made on the extension, so a RAR or 7-Zip
