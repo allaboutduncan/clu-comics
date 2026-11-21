@@ -926,6 +926,16 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             if extension in ARCHIVE_EXTS:
                 return self._process_archive(filepath)
 
+            # Old-style volumes (".r00") and release cruft (".nfo") are not in
+            # ARCHIVE_EXTS, but their own file event must still hand the folder
+            # to the unwrapper, or each part is moved to TARGET on its own. A
+            # folder already being unwrapped is skipped: its output comes here.
+            parent = os.path.dirname(os.path.abspath(filepath))
+            if (parent != os.path.abspath(self.directory)
+                    and parent not in self._in_flight_dirs
+                    and self._maybe_unwrap_release_folder(parent)):
+                return True
+
             # A PDF is converted whichever way it got here: dropped loose,
             # extracted from a pack, or staged by the unwrapper. Only that
             # last route converted one before, so every other PDF was renamed

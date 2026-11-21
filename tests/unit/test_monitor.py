@@ -492,6 +492,42 @@ def test_rar_in_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch):
     assert os.path.exists(rpath), "the part is left for the unwrapper"
 
 
+@pytest.mark.parametrize("name", ["f23734c.r00", "f23734c.r01", "f23734c.nfo", "file_id.diz"])
+def test_any_file_of_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch, name):
+    """A scene release with old-style volumes (.r00-.r02, no .rar) plus cruft:
+    the event for any one of its files hands the folder to the unwrapper.
+    Before, these were not archives to _process_file and each was moved raw."""
+    import monitor
+    h, watch, target = handler
+    rel = os.path.join(watch, "Marvel.-.FF.2011.No.12.2012.HYBRID.COMIC.eBook-21A1")
+    os.makedirs(rel)
+    for part in ("f23734c.r00", "f23734c.r01", "f23734c.r02", "f23734c.nfo", "file_id.diz"):
+        _write(os.path.join(rel, part))
+    assert monitor.classify_release_folder(rel) == monitor.MULTIPART_ARCHIVE
+
+    offered = []
+    monkeypatch.setattr(h, "_maybe_unwrap_release_folder", lambda p: offered.append(p) or True)
+    monkeypatch.setattr(h, "_move_file", lambda p: pytest.fail(f"moved a release part alone: {p}"))
+
+    assert h._process_file(os.path.join(rel, name)) is True
+    assert offered == [os.path.abspath(rel)]
+    assert os.listdir(target) == []
+
+
+def test_a_file_in_an_ordinary_subfolder_is_still_moved(handler, monkeypatch):
+    import monitor
+    h, watch, target = handler
+    sub = os.path.join(watch, "Batman")
+    os.makedirs(sub)
+    path = os.path.join(sub, "notes.txt")
+    _write(path)
+    moved = []
+    monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p) or True)
+    monkeypatch.setattr(h, "_rename_file", lambda p: None)
+    h._process_file(path)
+    assert moved == [path]
+
+
 def test_strip_comic_extension():
     """Only real comic extensions come off; ordinary folder names are untouched."""
     import monitor
