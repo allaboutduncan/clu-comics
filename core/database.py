@@ -4024,6 +4024,19 @@ def add_file_index_entry(
     """
     import time
 
+    # The index is the library. A path under WATCH or TARGET is a download in
+    # transit: indexing it puts it in front of the health scan, the duplicate
+    # search and Missing XML, and rows outside every library root are never
+    # pruned by a sync. This is the one choke point for single-row adds (the
+    # CBR->CBZ conversion, combine/split, the file watcher, a moved-in folder).
+    try:
+        from helpers.library import is_staging_path
+
+        if is_staging_path(path, is_dir=(entry_type == "directory")):
+            return False
+    except Exception as e:
+        app_logger.debug(f"Staging check failed for {path}: {e}")
+
     try:
         with db_conn() as conn:
             if not conn:

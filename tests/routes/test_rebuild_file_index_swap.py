@@ -111,3 +111,42 @@ def test_cold_build_walks_aside_and_swaps_after_the_walk(app_tree):
     walk_try = next(n for n in node.body if isinstance(n, ast.Try))
     swap = next(n for n in node.body if ast.unparse(n) == "file_index[:] = new_index")
     assert node.body.index(swap) > node.body.index(walk_try)
+
+
+def test_manual_rebuild_runs_off_the_request(app_tree):
+    """The walk reads every library folder. In the request it outlasted
+    gunicorn's 120s timeout on a large or networked library: the worker was
+    killed mid-sync and the page reported a network error."""
+    node = _function(app_tree, "api_rebuild_file_index")
+    inner = next(n for n in node.body if isinstance(n, ast.FunctionDef))
+    assert inner.name == "_run"
+    # Nothing slow at the route's own level: it is all inside the thread body.
+    outer_calls = [
+        ast.unparse(n.func)
+        for stmt in node.body if stmt is not inner
+        for n in ast.walk(stmt) if isinstance(n, ast.Call)
+    ]
+    for slow in ("scan_filesystem_for_sync", "sync_file_index_incremental",
+                 "prune_vanished_index_dirs", "get_library_stats"):
+        assert slow not in outer_calls
+        assert slow in _calls(inner)
+    assert "threading.Thread" in outer_calls
+    assert "register_operation" in outer_calls
+    # One at a time, and the claim is given back however the thread ends.
+    assert "_rebuild_index_lock.acquire" in outer_calls
+    final = next(n for n in ast.walk(inner) if isinstance(n, ast.Try) and n.finalbody)
+    released = [ast.unparse(n.func) for stmt in final.finalbody
+                for n in ast.walk(stmt) if isinstance(n, ast.Call)]
+    assert "_rebuild_index_lock.release" in released
+    assert "complete_operation" in released
+    # The thread reads current_app-backed helpers.
+    assert "app.app_context" in _calls(inner)
+
+
+@pytest.mark.parametrize("page", ["static/js/problem_files.js", "templates/schedules.html"])
+def test_both_pages_follow_the_operation(page):
+    src = (ROOT / page).read_text(encoding="utf-8")
+    start = src.index("function rebuildFileIndex")
+    body = src[start:src.index("\n    }\n", src.index("CLU.startPoll", start))]
+    assert "/api/operation/" in body and "op_id" in body
+    assert "interrupted" in body

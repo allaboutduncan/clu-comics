@@ -28,7 +28,9 @@ _MAX_BATCH = 5000
 def api_summary():
     from core.library_health import get_summary
 
-    return jsonify({"success": True, **get_summary()})
+    # live: the page's coverage bar moves while a scan runs. The header badge
+    # (below) uses the figure stored by the last scan and counts nothing.
+    return jsonify({"success": True, **get_summary(live=True)})
 
 
 @library_health_bp.route("/api/problem-files/health/badge", methods=["GET"])
@@ -44,6 +46,7 @@ def api_badge():
         "score": s["score"],
         "coverage_pct": s["coverage"]["pct"],
         "running": s["running"],
+        "duplicate_groups": s["duplicates"]["exact"] + s["duplicates"]["likely"],
     })
 
 
@@ -79,6 +82,20 @@ def api_scan():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"success": True, "op_id": op_id})
+
+
+@library_health_bp.route("/api/problem-files/health/scan/stop", methods=["POST"])
+def api_scan_stop():
+    """Ask the running scan to stop after the file it is on.
+
+    What it has checked is kept (every result is stamped as it is made), so
+    the next run continues from there. 409 when no scan is running.
+    """
+    from core.library_health import request_stop
+
+    if not request_stop():
+        return jsonify({"success": False, "error": "No scan is running"}), 409
+    return jsonify({"success": True})
 
 
 @library_health_bp.route("/api/problem-files/health/settings", methods=["GET", "POST"])
@@ -144,21 +161,44 @@ def duplicates_page():
 
 @library_health_bp.route("/api/problem-files/duplicates", methods=["GET"])
 def api_duplicates():
-    from core.library_health import MAX_DUPLICATE_GROUPS, find_duplicates
+    """One page of duplicate groups: exact first, then likely.
 
-    include_dismissed = request.args.get("include_dismissed") in ("1", "true", "yes")
-    found = find_duplicates(include_dismissed=include_dismissed)
-    total = len(found["exact"]) + len(found["likely"])
-    # Exact groups first and in full priority; the cap bounds the payload, and
-    # the totals say when it clipped.
-    exact = found["exact"][:MAX_DUPLICATE_GROUPS]
-    likely = found["likely"][: max(0, MAX_DUPLICATE_GROUPS - len(exact))]
+    ``offset``/``limit`` page through the whole list, so no group is out of
+    reach however many there are. A failed read is a 500, never an empty
+    list: an empty list has to mean "there are no duplicates".
+    """
+    from core.library_health import (
+        DEFAULT_DUPLICATE_PAGE,
+        MAX_DUPLICATE_PAGE,
+        find_duplicates,
+    )
+
+    truthy = ("1", "true", "yes")
+    include_dismissed = request.args.get("include_dismissed") in truthy
+    try:
+        offset = max(0, int(request.args.get("offset", 0)))
+        limit = int(request.args.get("limit", DEFAULT_DUPLICATE_PAGE))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "offset and limit must be numbers"}), 400
+    limit = max(1, min(limit, MAX_DUPLICATE_PAGE))
+    try:
+        found = find_duplicates(include_dismissed=include_dismissed, strict=True)
+    except Exception as e:
+        return error_response("Could not read the duplicate groups", e)
+    ordered = found["exact"] + found["likely"]
+    total = len(ordered)
+    page = ordered[offset:offset + limit]
+    next_offset = offset + len(page)
     return jsonify({
         "success": True,
-        "exact": exact,
-        "likely": likely,
+        "exact": [g for g in page if g["kind"] == "exact"],
+        "likely": [g for g in page if g["kind"] == "likely"],
         "total_groups": total,
-        "truncated": total > len(exact) + len(likely),
+        "total_exact": len(found["exact"]),
+        "total_likely": len(found["likely"]),
+        "offset": offset,
+        "next_offset": next_offset if next_offset < total else None,
+        "truncated": next_offset < total,
         "wasted_bytes": sum(g["wasted_bytes"] for g in found["exact"]),
     })
 

@@ -46,6 +46,7 @@ class TestOwnerOnly:
         "/api/problem-files/health/summary",
         "/api/problem-files/health/badge",
         "/api/problem-files/health/scan",
+        "/api/problem-files/health/scan/stop",
         "/api/problem-files/health/settings",
         "/api/problem-files/duplicates",
         "/api/problem-files/duplicates/resolve",
@@ -75,6 +76,20 @@ class TestSummaryAndBadge:
         assert data["visible"] is True
         assert data["level"] == "green" and data["score"] == 100
 
+    def test_badge_carries_the_duplicate_count_for_the_menu(self, client):
+        lh.save_state({"last_run_at": time.time(), "dup_exact_groups": 2,
+                       "dup_likely_groups": 3})
+        data = client.get("/api/problem-files/health/badge").get_json()
+        assert data["duplicate_groups"] == 5
+
+    def test_badge_counts_nothing_once_a_scan_has_stored_coverage(self, client):
+        """It is polled from every open tab; coverage is two whole-table counts."""
+        lh.save_state({"last_run_at": time.time(),
+                       "coverage": {"total": 10, "checked": 4, "pct": 40}})
+        with patch("core.library_health.coverage", side_effect=AssertionError("counted")):
+            data = client.get("/api/problem-files/health/badge").get_json()
+        assert data["coverage_pct"] == 40
+
 
 class TestScan:
     def test_starts_in_the_background_and_releases_the_claim(self, client):
@@ -97,6 +112,40 @@ class TestScan:
             assert resp.get_json()["success"] is False
         finally:
             lh.release_scan()
+
+    def test_stop_is_a_409_when_nothing_is_running(self, client):
+        resp = client.post("/api/problem-files/health/scan/stop")
+        assert resp.status_code == 409
+        assert resp.get_json()["success"] is False
+
+    def test_stop_flags_the_running_scan(self, client):
+        assert lh.claim_scan()
+        try:
+            resp = client.post("/api/problem-files/health/scan/stop")
+            assert resp.status_code == 200 and resp.get_json()["success"] is True
+            assert lh.stop_requested() is True
+            summary = client.get("/api/problem-files/health/summary").get_json()
+            assert summary["running"] is True and summary["stopping"] is True
+        finally:
+            lh.release_scan()
+        # The next scan is not born stopped.
+        assert lh.claim_scan()
+        try:
+            assert lh.stop_requested() is False
+        finally:
+            lh.release_scan()
+
+    def test_the_page_tells_a_finished_scan_from_one_a_restart_killed(self):
+        """The operations registry is in memory. A missing operation used to
+        fall into the success branch, so a scan the restart killed was
+        announced as complete."""
+        src = TestInfoModalIsAvailable._js("problem_files.js")
+        follow = src[src.index("function followHealthScan"):src.index("function stopHealthScan")]
+        assert "last_run_at !== before" in follow
+        assert "was interrupted" in follow
+        assert "/api/problem-files/health/scan/stop" in src
+        assert 'id="pf-health-stop"' in open(
+            "templates/problem_files.html", encoding="utf-8").read()
 
     def test_a_crashing_scan_still_releases_the_claim(self, client):
         with patch("core.library_health.run_scan", side_effect=RuntimeError("boom")):
@@ -180,17 +229,49 @@ class TestDuplicates:
             client.get("/api/problem-files/duplicates?include_dismissed=1")
         assert find.call_args.kwargs["include_dismissed"] is True
 
-    def test_list_is_capped_exact_first(self, client):
-        with patch("core.library_health.MAX_DUPLICATE_GROUPS", 3):
-            found = {
-                "exact": [_group(f"e{i}") for i in range(2)],
-                "likely": [_group(f"l{i}", "likely") for i in range(4)],
-            }
-            with patch("core.library_health.find_duplicates", return_value=found):
-                data = client.get("/api/problem-files/duplicates").get_json()
-        assert [g["id"] for g in data["exact"]] == ["e0", "e1"]
-        assert len(data["likely"]) == 1
-        assert data["total_groups"] == 6 and data["truncated"] is True
+    def test_list_is_paged_exact_first_and_every_group_is_reachable(self, client):
+        found = {
+            "exact": [_group(f"e{i}") for i in range(2)],
+            "likely": [_group(f"l{i}", "likely") for i in range(4)],
+        }
+        seen = []
+        with patch("core.library_health.find_duplicates", return_value=found):
+            data = client.get("/api/problem-files/duplicates?limit=3").get_json()
+            assert [g["id"] for g in data["exact"]] == ["e0", "e1"]
+            assert [g["id"] for g in data["likely"]] == ["l0"]
+            assert data["total_groups"] == 6 and data["truncated"] is True
+            assert data["total_exact"] == 2 and data["total_likely"] == 4
+            assert data["next_offset"] == 3
+            # Totals describe the whole list, not the page.
+            assert data["wasted_bytes"] == 20
+            offset = 0
+            while offset is not None:
+                page = client.get(
+                    f"/api/problem-files/duplicates?limit=3&offset={offset}").get_json()
+                seen += [g["id"] for g in page["exact"] + page["likely"]]
+                offset = page["next_offset"]
+        assert seen == ["e0", "e1", "l0", "l1", "l2", "l3"]
+
+    def test_bad_paging_is_a_400(self, client):
+        assert client.get("/api/problem-files/duplicates?offset=x").status_code == 400
+
+    def test_a_failed_read_is_an_error_not_an_empty_list(self, client):
+        """An empty list has to mean "no duplicates". The page said "Nothing to
+        review" over a database it had just failed to read."""
+        with patch("core.library_health.find_duplicates",
+                   side_effect=RuntimeError("database disk image is malformed")) as find:
+            resp = client.get("/api/problem-files/duplicates")
+        assert find.call_args.kwargs["strict"] is True
+        assert resp.status_code == 500
+        body = resp.get_json()
+        assert body["success"] is False and "malformed" not in body["error"]
+
+    def test_page_shows_a_load_failure_and_pages_the_list(self):
+        src = TestInfoModalIsAvailable._js("library_duplicates.js")
+        assert "could not be loaded" in src
+        assert "function loadMore" in src and "'?offset='" in src
+        assert 'id="dup-more"' in open(
+            "templates/library_duplicates.html", encoding="utf-8").read()
 
     @pytest.mark.parametrize("body", [
         {}, {"id": "x"}, {"id": "x", "keep": "/a"}, {"id": "x", "keep": "/a", "trash": "nope"},
@@ -503,3 +584,55 @@ class TestCompareViewer:
         for el_id in ("cbzDupeModal", "cbzDupeModalLabel", "cbzDupeContent"):
             assert f'id="{el_id}"' in html
             assert f"'{el_id}'" in src
+
+
+class TestNavigation:
+    """Library Health and Duplicate Files live in the File Manager menu."""
+
+    @pytest.fixture(scope="class")
+    def header(self):
+        with open("templates/header.html", encoding="utf-8") as f:
+            return f.read()
+
+    def _menu(self, header, marker):
+        start = header.index(marker)
+        return header[start:header.index("</ul>", start)]
+
+    def test_file_manager_menu_holds_both_pages_for_the_owner_only(self, header):
+        menu = self._menu(header, 'id="file-manager-dropdown"')
+        files = menu.index("url_for('collection.files_page')")
+        owner = menu.index("{% if _nav_is_owner %}", menu.index("dropdown-menu"))
+        health = menu.index("href=\"{{ url_for('problem_files.page') }}\"")
+        dups = menu.index("href=\"{{ url_for('library_health.duplicates_page') }}\"")
+        end = menu.index("{% endif %}", dups)
+        # File Manager itself is for clerks too; the two pages sit in the owner block.
+        assert files < owner < health < dups < end
+        assert 'id="health-badge"' in menu and 'id="duplicates-badge"' in menu
+
+    def test_the_menu_is_inside_the_clerk_gate(self, header):
+        at = header.index('id="file-manager-dropdown"')
+        assert header.rindex("{% if _nav_is_clerk %}", 0, at) > header.rindex("{% endif %}", 0, at)
+
+    def test_the_gear_menu_no_longer_links_either(self, header):
+        gear = self._menu(header, 'bi bi-gear-fill')
+        assert "problem_files.page" not in gear
+        assert "library_health.duplicates_page" not in gear
+        # ...and neither does the gear's own "active" list.
+        toggle = header[header.rindex("<a ", 0, header.index("bi bi-gear-fill")):
+                        header.index("bi bi-gear-fill")]
+        assert "problem_files.page" not in toggle
+
+    def test_each_page_is_linked_once(self, header):
+        assert header.count("href=\"{{ url_for('problem_files.page') }}\"") == 1
+        assert header.count("href=\"{{ url_for('library_health.duplicates_page') }}\"") == 1
+        assert header.count('id="health-dot"') == 1
+
+    @pytest.mark.parametrize("url", ["/files", "/library-health", "/library-health/duplicates"])
+    def test_the_menu_is_marked_active_on_all_three_pages(self, client, url):
+        html = client.get(url).get_data(as_text=True)
+        start = html.index('id="file-manager-dropdown"')
+        toggle = html[start:html.index("</a>", start)]
+        assert "dropdown-toggle" in toggle and " active" in toggle
+        gear = html[html.rindex("<a ", 0, html.index("bi bi-gear-fill")):
+                    html.index("bi bi-gear-fill")]
+        assert " active" not in gear

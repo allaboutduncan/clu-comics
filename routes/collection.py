@@ -634,8 +634,17 @@ def api_scan_directory():
         )
         dir_count += 1
 
+        # WATCH/TARGET nested under the scanned folder are not library.
+        from helpers.library import staging_matcher
+        _staging = staging_matcher()
+
         for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(('.', '_'))
+                and not _staging(os.path.join(root, d), is_dir=True)
+            ]
+            files = [f for f in files if not _staging(os.path.join(root, f))]
 
             for d in dirs:
                 full_path = os.path.join(root, d)

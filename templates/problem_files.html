@@ -112,6 +112,7 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
             <span class="badge ms-2 d-none" id="pf-health-score"></span>
           </h5>
           <div class="small text-muted" id="pf-health-line">Loading&hellip;</div>
+          <div class="small d-none" id="pf-health-progress" role="status" aria-live="polite"></div>
         </div>
         <div class="d-flex gap-2 flex-wrap">
           <a class="btn btn-outline-primary btn-sm" href="{{ url_for('library_health.duplicates_page') }}">
@@ -119,8 +120,13 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
             <span class="badge bg-secondary ms-1 d-none" id="pf-health-dups"></span>
           </a>
           <button class="btn btn-primary btn-sm" id="pf-health-scan"
-            title="Check the next batch of files now, plus series.json, stray files, empty folders and ComicInfo counts">
+            title="Check the next batch of files now, plus series.json, a .cbr beside its .cbz, empty folders and ComicInfo counts">
             <i class="bi bi-play-fill me-1"></i>Run scan now
+          </button>
+          {# Shown only while a scan runs. What it has checked is kept. #}
+          <button class="btn btn-outline-danger btn-sm d-none" id="pf-health-stop"
+            title="Stop after the file being checked. Results so far are kept and the next scan continues from there.">
+            <i class="bi bi-stop-fill me-1"></i>Stop
           </button>
           {# The full walk + sync: what drops comics deleted or moved outside
              CLU from a folder that still exists. A scan already prunes whole
@@ -219,6 +225,9 @@ with an inset box-shadow, so the highlight overrides that, not background. #}
         </tr>
       </tbody>
     </table>
+  </div>
+  <div class="text-center my-3">
+    <button type="button" class="btn btn-outline-secondary d-none" id="pf-more">Show more</button>
   </div>
 
 </div>

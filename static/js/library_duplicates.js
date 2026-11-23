@@ -131,41 +131,75 @@
     }
 
     var EMPTY_HTML = '<div class="text-center text-muted py-4"><i class="bi bi-check-circle me-2"></i>Nothing to review.</div>';
-    var totals = { total: 0, truncated: false };
+    // total: every group the server has; wasted: its figure for all exact
+    // groups, loaded or not. Both are adjusted as cards are removed, so the
+    // summary stays right without asking the server to regroup.
+    var totals = { total: 0, wasted: 0 };
+    var PAGE_SIZE = 100;
 
     // Computed from what is still on screen, so a card removed optimistically
     // is reflected without asking the server to re-derive every group.
     function updateSummary() {
         var summary = document.getElementById('dup-summary');
         if (!summary) return;
-        var live = state.groups.filter(function (g) { return !g.removed; });
-        var wasted = live.reduce(function (n, g) {
-            return n + (g.kind === 'exact' ? Number(g.wasted_bytes || 0) : 0);
-        }, 0);
-        summary.textContent = live.length
-            ? (live.length + ' groups' + (totals.truncated ? ' (showing the first ' + state.groups.length + ' of ' + totals.total + ')' : '') +
-               ' · ' + formatSize(wasted) + ' in exact duplicates')
+        var shown = liveCount();
+        var more = Math.max(0, totals.total - shown);
+        summary.className = 'alert alert-secondary py-2 small';
+        summary.textContent = totals.total
+            ? (totals.total + ' groups' + (more ? ' (showing ' + shown + ')' : '') +
+               ' · ' + formatSize(totals.wasted) + ' in exact duplicates')
             : 'No duplicates found among the files the health scan has checked so far.';
+        var moreBtn = document.getElementById('dup-more');
+        if (moreBtn) {
+            moreBtn.classList.toggle('d-none', more === 0);
+            moreBtn.textContent = 'Show more (' + more + ' left)';
+        }
     }
 
-    function render(data) {
+    // The groups on screen that the server still lists. It is also the offset
+    // of the next page: a resolved or dismissed group has left the server's
+    // list, so counting it would skip one.
+    function liveCount() {
+        return state.groups.filter(function (g) { return !g.removed; }).length;
+    }
+
+    function render(data, append) {
         var host = document.getElementById('dup-groups');
         if (!host) return;
-        state.groups = (data.exact || []).concat(data.likely || []);
-        totals = { total: data.total_groups, truncated: !!data.truncated };
+        var page = (data.exact || []).concat(data.likely || []);
+        totals = { total: Number(data.total_groups || 0), wasted: Number(data.wasted_bytes || 0) };
+        if (!append) {
+            state.groups = page;
+            host.innerHTML = page.length ? page.map(renderGroup).join('') : EMPTY_HTML;
+        } else {
+            var known = {};
+            state.groups.forEach(function (g) { if (!g.removed) known[g.id] = true; });
+            page = page.filter(function (g) { return !known[g.id]; });
+            var base = state.groups.length;
+            state.groups = state.groups.concat(page);
+            host.insertAdjacentHTML('beforeend', page.map(function (g, i) {
+                return renderGroup(g, base + i);
+            }).join(''));
+        }
         updateSummary();
-        host.innerHTML = state.groups.length ? state.groups.map(renderGroup).join('') : EMPTY_HTML;
     }
 
     function cardEl(gi) { return document.getElementById('dup-card-' + gi); }
 
     function removeCard(gi) {
-        state.groups[gi].removed = true;
+        var g = state.groups[gi];
+        if (!g.removed) {
+            g.removed = true;
+            totals.total = Math.max(0, totals.total - 1);
+            if (g.kind === 'exact') totals.wasted = Math.max(0, totals.wasted - Number(g.wasted_bytes || 0));
+        }
         var el = cardEl(gi);
         if (el) el.remove();
         updateSummary();
-        if (!state.groups.some(function (g) { return !g.removed; })) {
-            document.getElementById('dup-groups').innerHTML = EMPTY_HTML;
+        if (!liveCount()) {
+            // Nothing left on screen: the next page, or the empty state.
+            if (totals.total > 0) loadMore();
+            else document.getElementById('dup-groups').innerHTML = EMPTY_HTML;
         }
     }
 
@@ -178,17 +212,41 @@
         el.style.pointerEvents = busy ? 'none' : '';
     }
 
-    function load() {
-        var qs = state.includeDismissed ? '?include_dismissed=1' : '';
+    function fetchPage(offset) {
+        var qs = '?offset=' + offset + '&limit=' + PAGE_SIZE +
+            (state.includeDismissed ? '&include_dismissed=1' : '');
         return fetch('/api/problem-files/duplicates' + qs)
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (!data.success) throw new Error(data.error || 'Request failed');
-                render(data);
-            })
-            .catch(function (e) {
-                CLU.showError('Could not load duplicates: ' + e.message);
+                return data;
             });
+    }
+
+    // A failed read must not look like "nothing to review": the list is left
+    // as it was and the summary says the groups could not be loaded.
+    function loadFailed(e) {
+        var summary = document.getElementById('dup-summary');
+        if (summary) {
+            summary.className = 'alert alert-danger py-2 small';
+            summary.textContent = 'The duplicate groups could not be loaded. Reload the page to try again.';
+        }
+        CLU.showError('Could not load duplicates: ' + e.message);
+    }
+
+    function load() {
+        return fetchPage(0)
+            .then(function (data) { render(data, false); })
+            .catch(loadFailed);
+    }
+
+    function loadMore() {
+        var btn = document.getElementById('dup-more');
+        if (btn) btn.disabled = true;
+        return fetchPage(liveCount())
+            .then(function (data) { render(data, true); })
+            .catch(loadFailed)
+            .then(function () { if (btn) btn.disabled = false; });
     }
 
     function selectedKeep(gi) {
@@ -415,6 +473,8 @@
         }
         var go = document.getElementById('dup-confirm-go');
         if (go) go.addEventListener('click', doResolve);
+        var more = document.getElementById('dup-more');
+        if (more) more.addEventListener('click', loadMore);
         load();
     }
 

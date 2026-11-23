@@ -348,8 +348,10 @@ def api_delete():
 # ---------------------------------------------------------------------------
 
 # One scan at a time: it walks every library folder, and a second walk would
-# only race the first over the same rows.
-_scan_lock = threading.Lock()
+# only race the first over the same rows. The lock lives in
+# core.series_json_check so the library health scan's own series.json walk
+# takes the same claim.
+from core.series_json_check import _scan_lock  # noqa: E402
 
 
 @problem_files_bp.route("/api/problem-files/scan-series-json", methods=["POST"])

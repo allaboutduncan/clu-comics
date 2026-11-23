@@ -476,21 +476,41 @@
         })
             .then(response => response.json())
             .then(data => {
-                if (data.success) {
-                    CLU.toast(data.message, 'success');
-                    updateIndexStatus();
-                } else {
+                if (!data.success) {
                     CLU.toast(data.error || 'Unknown error', 'error');
+                    restore();
+                    return;
                 }
+                // The rebuild runs off-request (it outlasts the request timeout
+                // on a big library); follow the operation it started.
+                const poll = CLU.startPoll(signal =>
+                    fetch('/api/operation/' + encodeURIComponent(data.op_id), { signal })
+                        .then(response => response.json())
+                        .then(result => {
+                            const op = result.operation || null;
+                            if (op && (op.status === 'running' || op.status === 'queued')) return;
+                            clearInterval(poll);
+                            restore();
+                            if (!op) {
+                                CLU.toast('The rebuild was interrupted before it finished', 'error');
+                            } else if (op.status === 'error') {
+                                CLU.toast('File index rebuild failed', 'error');
+                            } else {
+                                CLU.toast('File index rebuilt' + (op.detail ? ': ' + op.detail : ''), 'success');
+                                updateIndexStatus();
+                            }
+                        }), 2000);
             })
             .catch(error => {
                 console.error('Error rebuilding file index:', error);
                 CLU.toast('Network error occurred', 'error');
-            })
-            .finally(() => {
-                button.innerHTML = originalText;
-                button.disabled = false;
+                restore();
             });
+
+        function restore() {
+            button.innerHTML = originalText;
+            button.disabled = false;
+        }
     }
 
     function updateIndexStatus() {
