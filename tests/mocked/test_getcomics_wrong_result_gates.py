@@ -247,3 +247,138 @@ class TestBestFallbackWins:
         assert res["all_results"][0]["score"] < res["all_results"][1]["score"]
         assert res["tier"] == "range fallback"
         assert res["chosen"][0].nzb_url == "https://x/dated.nzb"
+
+
+def _collected(title, series, issue, year=None, volume_year=None, collected=True):
+    result = score_getcomics_result(
+        title, series, issue, year, volume_year=volume_year,
+        collected_series=collected, return_issue_matched=True)
+    return accept_result(*result[:3]), result[3]
+
+
+class TestCollectedSeries:
+    """A trade/hardcover series is satisfied only by a collected edition."""
+
+    @pytest.mark.parametrize("title,series,issue,year", [
+        # The two reported downloads: the single issue, taken as the volume.
+        ("Avengers Beyond #1 (2023)", "Avengers: Beyond", "1", 2024),
+        ("Laura Kinney – Wolverine #2 (2025)", "Laura Kinney: Wolverine", "2", 2025),
+        # A pack of singles is no better.
+        ("Laura Kinney – Wolverine #1 – 5 (2025)", "Laura Kinney: Wolverine", "2", 2025),
+        # A bare number, as Usenet and DC++ name files.
+        ("Saga 002 (2013)", "Saga", "2", 2013),
+    ])
+    def test_a_single_issue_is_rejected(self, title, series, issue, year):
+        decision, _ = _collected(title, series, issue, year, year)
+        assert decision == "REJECT"
+        score, _, _ = score_getcomics_result(
+            title, series, issue, year, volume_year=year, collected_series=True)
+        assert score < 0
+
+    @pytest.mark.parametrize("title,series,issue,year", [
+        ("Laura Kinney – Wolverine Vol. 2 – My So-Called Perfect Life (TPB) (2025)",
+         "Laura Kinney: Wolverine", "2", 2025),
+        ("Laura Kinney – Wolverine Vol. 2 (2025)", "Laura Kinney: Wolverine", "2", 2025),
+        ("Saga Vol. 2 (TPB) (2013)", "Saga", "2", 2013),
+        ("Saga v02 (2013)", "Saga", "2", 2013),
+        ("Saga Book 2 (2013)", "Saga", "2", 2013),
+        ("Batman Omnibus Vol. 2 (2020)", "Batman Omnibus", "2", 2020),
+        # A one-volume trade posted with a format word and no number.
+        ("Avengers – Beyond (TPB) (2024)", "Avengers: Beyond", "1", 2024),
+        # ...or under its name alone (the unnumbered one-shot rule).
+        ("Avengers – Beyond (2024)", "Avengers: Beyond", "1", 2024),
+    ])
+    def test_the_collected_edition_is_accepted(self, title, series, issue, year):
+        decision, issue_matched = _collected(title, series, issue, year, year)
+        assert decision == "ACCEPT"
+        if "Vol" in title or "v02" in title or "Book" in title or "TPB" in title:
+            assert issue_matched
+
+    @pytest.mark.parametrize("title,series,issue,year", [
+        # Another volume.
+        ("Laura Kinney – Wolverine Vol. 1 – One-Mutant Army (TPB) (2025)",
+         "Laura Kinney: Wolverine", "2", 2025),
+        ("Saga Vol. 3 (TPB) (2014)", "Saga", "2", 2013),
+        # A run of volumes cannot be split.
+        ("Saga Vol. 1 – 9 (TPB) (2012-2018)", "Saga", "2", 2013),
+        # A format word with no number is only ever volume 1.
+        ("Saga (TPB) (2013)", "Saga", "2", 2013),
+        # ...and only with the wanted year.
+        ("Avengers – Beyond (TPB) (2019)", "Avengers: Beyond", "1", 2024),
+        # Another book whose name starts with the wanted one.
+        ("Batman Beyond Vol. 2 (TPB) (2020)", "Batman", "2", 2020),
+        ("Batman – The Long Halloween (TPB) (2020)", "Batman", "1", 2020),
+        # Fan-made stays out.
+        ("Saga Vol. 2 (TPB) (2013) (Fan-Made)", "Saga", "2", 2013),
+    ])
+    def test_the_wrong_collected_edition_is_rejected(self, title, series, issue, year):
+        decision, _ = _collected(title, series, issue, year, year)
+        assert decision == "REJECT"
+
+    def test_wrong_year_volume_is_not_accepted(self):
+        decision, _ = _collected("Saga Vol. 2 (TPB) (2021)", "Saga", "2", 2013, 2012)
+        assert decision == "REJECT"
+
+    @pytest.mark.parametrize("collected", [None, False])
+    def test_a_singles_series_is_scored_as_before(self, collected):
+        decision, _ = _collected(
+            "Laura Kinney – Wolverine #2 (2025)", "Laura Kinney: Wolverine", "2",
+            2025, 2025, collected=collected)
+        assert decision == "ACCEPT"
+        decision, _ = _collected("Saga Vol. 2 (TPB) (2013)", "Saga", "2", 2013, 2012,
+                                 collected=collected)
+        assert decision == "REJECT"
+
+    @pytest.mark.parametrize("path", ["app.py", "routes/downloads.py"])
+    def test_the_sweep_and_the_simulation_pass_the_flag(self, path):
+        """Both score with the series' collected flag (app.py is AST-only)."""
+        tree = ast.parse((REPO / path).read_text(encoding="utf-8"))
+        computed = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "collected_series" for t in n.targets)
+            and isinstance(n.value, ast.Call)
+            and getattr(n.value.func, "id", "") == "is_collected_series"
+        ]
+        assert computed, f"{path} no longer asks is_collected_series()"
+
+        def passes_flag(call):
+            return any(kw.arg == "collected_series" for kw in call.keywords)
+
+        for name in ("score_getcomics_result", "search_getcomics_for_issue", "src_try"):
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", "") == name]
+            if path == "routes/downloads.py" and name == "score_getcomics_result":
+                # The manual search route ranks what the user will pick from
+                # by hand, and has no issue list to ask about the series.
+                calls = [c for c in calls if any(
+                    kw.arg == "volume_year" for kw in c.keywords)]
+            assert calls, f"{path}: no {name}() call found"
+            missing = [c.lineno for c in calls if not passes_flag(c)]
+            assert not missing, f"{path}: {name}() without collected_series at {missing}"
+
+    @patch("models.indexers.get_indexer_impl")
+    @patch("core.database.get_enabled_indexers", return_value=[
+        {"id": 5, "name": "NZBgeek", "url": "https://x", "api_key": "k",
+         "categories": None, "enabled": True, "indexer_type": "newznab"},
+    ])
+    def test_usenet_rejects_the_single_for_a_collected_series(self, _idx, mock_impl):
+        from models import usenet
+        from models.indexers import NZBSearchResult
+
+        impl = MagicMock()
+        impl.last_error = None
+        impl.search.return_value = [
+            NZBSearchResult(indexer_id=5, indexer_name="NZBgeek",
+                            title="Saga 002 (2013)", nzb_url="https://x/single.nzb", size=1),
+            NZBSearchResult(indexer_id=5, indexer_name="NZBgeek",
+                            title="Saga v02 (2013)", nzb_url="https://x/trade.nzb", size=1),
+        ]
+        mock_impl.return_value = impl
+
+        res = usenet.search_usenet_for_issue(
+            "Saga", "2", issue_year=2013, collected_series=True)
+        assert res["chosen"][0].nzb_url == "https://x/trade.nzb"
+
+        res = usenet.search_usenet_for_issue("Saga", "2", issue_year=2013)
+        assert res["chosen"][0].nzb_url == "https://x/single.nzb"

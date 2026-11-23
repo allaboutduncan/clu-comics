@@ -35,7 +35,7 @@ from models.getcomics import (
     select_download_url,
     PROVIDER_LABELS,
 )
-from helpers.collection import match_issues_to_collection
+from helpers.collection import is_collected_series, match_issues_to_collection
 from models.issue import IssueObj, SeriesObj
 from core.settings import get_setting, get_list
 
@@ -376,6 +376,9 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
 
         issue_objs = [IssueObj(i) for i in issues]
         series_obj = SeriesObj(series)
+        # Mirrors scheduled_getcomics_download: a trade/hardcover series is
+        # only satisfied by a collected edition (#730).
+        collected_series = is_collected_series(series_name, issues)
         issue_status = match_issues_to_collection(mapped_path, issue_objs, series_obj)
         manual_status = get_manual_status_for_series(sid)
 
@@ -422,7 +425,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                     issue_year=issue_year, series_volume=series_volume,
                     series_year=series_year, publisher_name=publisher_name,
                     search_variants=search_variants, series_aliases=series_aliases,
-                    dry_run=True,
+                    dry_run=True, collected_series=collected_series,
                 )
                 if u.get("status") == "match_found":
                     simulation_results.append({
@@ -445,6 +448,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                 series_year=series_year,
                 search_variants=search_variants,
                 series_aliases=series_aliases,
+                collected_series=collected_series,
             )
 
             if not results:
@@ -474,6 +478,7 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                     volume_year=series_year,
                     publisher_name=publisher_name,
                     series_aliases=series_aliases,
+                    collected_series=collected_series,
                 )
                 decision = accept_result(score, is_range, series_match, single_issue_found=single_found)
                 scored_results.append({
