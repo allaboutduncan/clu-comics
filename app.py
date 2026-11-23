@@ -1477,6 +1477,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             # Get manual status for this series (owned/skipped)
             manual_status = get_manual_status_for_series(series_id)
 
+            # A trade/hardcover series is only satisfied by a collected
+            # edition: its "#2" is volume 2, not the single issue #2 (#730).
+            collected_series = is_collected_series(series_name, issues)
+
             # Issues this sweep queued a download for recently. Read once per
             # series, not once per issue. Ignored on a scoped run: clicking
             # "Check for Missing Issues" is an explicit request, the same reason
@@ -1534,6 +1538,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                     "series_volume": series_volume,
                     "publisher_name": publisher_name,
                     "series_aliases": series_aliases,
+                    "collected_series": collected_series,
                     "cover_date": issue.get("cover_date"),
                 })
 
@@ -1588,6 +1593,9 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             series_volume = item["series_volume"]
             publisher_name = item["publisher_name"]
             series_aliases = item["series_aliases"]
+            # Absent on a reading-list item: nothing says what kind of series
+            # an entry belongs to, so it is scored as single issues.
+            collected_series = item.get("collected_series")
             issue = {"number": issue_num, "cover_date": item["cover_date"]}
             try:
                 # Skip if this issue is covered by a downloaded range pack.
@@ -1671,6 +1679,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         search_variants=search_variants,
                         series_aliases=series_aliases,
                         dry_run=bool(dry_run),
+                        collected_series=collected_series,
                     )
                     if dry_run and u.get("status") == "match_found":
                         simulation_results.append({
@@ -1716,6 +1725,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                     series_year=series_year,  # Pass volume_year to help find correct series edition
                     search_variants=search_variants,
                     series_aliases=series_aliases,
+                    collected_series=collected_series,
                 ) or []
 
                 if not results:
@@ -1761,6 +1771,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         volume_year=series_year,
                         publisher_name=publisher_name,
                         series_aliases=series_aliases,
+                        collected_series=collected_series,
                     )
                     decision = accept_result(
                         score, is_range, series_match,
@@ -1809,6 +1820,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                             volume_year=series_year,
                             publisher_name=publisher_name,
                             series_aliases=series_aliases,
+                            collected_series=collected_series,
                         )
                         r_decision = accept_result(
                             r_score, r_is_range, r_series_match,
@@ -2129,6 +2141,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                             publisher_name=publisher_name,
                             search_variants=search_variants,
                             series_aliases=series_aliases,
+                            collected_series=collected_series,
                         )
                         if u.get("submitted"):
                             download_count += 1
@@ -3162,6 +3175,7 @@ from helpers.collection import (
     get_series_name_from_files,
     extract_comicinfo,
     match_issues_to_collection,
+    is_collected_series,
     match_wanted_issues_to_files,
     collect_target_candidates,
 )

@@ -427,6 +427,12 @@ _COLLECTED_SERIES_WORDS = (
     'masterworks', 'compendium',
 )
 _VOLUME_ISSUE_NAME = re.compile(r'^\s*(?:vol(?:ume)?\.?|book)\s*\d+', re.IGNORECASE)
+# An issue whose whole name is a format: ComicVine names a one-volume trade's
+# only issue "TPB", "HC" or "TPB/HC" (#730).
+_FORMAT_ISSUE_NAME = re.compile(
+    r'^\s*(?:tpb|tp|hc|sc|gn|ogn|hardcover|softcover|trade paperback|omnibus)'
+    r'(?:\s*[/&,]\s*(?:tpb|tp|hc|sc|gn|ogn|hardcover|softcover|trade paperback|omnibus))*\s*$',
+    re.IGNORECASE)
 
 
 # What may follow the wanted series name inside a ComicInfo <Series> value and
@@ -582,7 +588,8 @@ def is_collected_series(series_name, issues):
     """True when the series' "issues" are collected volumes (TPB, Omnibus...).
 
     No provider series type is stored, so the evidence is the name (a format
-    word) or the issue list (at least half the issues are named "Vol. N").
+    word) or the issue list (at least half the issues are named "Vol. N", or
+    are named nothing but a format: "TPB", "TPB/HC").
     Such a series' files are commonly named "Series V02 - Title 2026" or
     "Series v07 (2015)", and the "v07" is the number. On a singles series the
     same marker is the series volume ("Batman v2 012"), which is why this is
@@ -602,7 +609,8 @@ def is_collected_series(series_name, issues):
         names.append(str(name or ''))
     if not names:
         return False
-    volumes = sum(1 for name in names if _VOLUME_ISSUE_NAME.match(name))
+    volumes = sum(1 for name in names
+                  if _VOLUME_ISSUE_NAME.match(name) or _FORMAT_ISSUE_NAME.match(name))
     return volumes > 0 and volumes * 2 >= len(names)
 
 

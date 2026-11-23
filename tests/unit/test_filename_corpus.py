@@ -288,6 +288,13 @@ class TestFallbackIssueNumbers:
         ("Batman", [], False),
         # An issue title adjective is not a format.
         ("Absolute Batman", ["The Zoo", "Abomination"], False),
+        # A one-volume trade: its only issue is named for its format (#730).
+        ("Avengers: Beyond", ["TPB"], True),
+        ("Giant Monster", ["TPB/HC"], True),
+        ("Some Graphic Novel", ["HC"], True),
+        # A format word that is only part of an issue title is not one.
+        ("Batman", ["HC Andersen's Tale", "Knightfall"], False),
+        ("Batman", ["TPB", "Knightfall", "Knightquest"], False),
     ])
     def test_is_collected_series(self, series, names, expected):
         from helpers.collection import is_collected_series
