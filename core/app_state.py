@@ -1,6 +1,7 @@
 import time
 import uuid
 import threading
+from contextlib import contextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # ── Unified Scheduler ──
@@ -325,6 +326,42 @@ def update_operation(op_id, current=None, total=None, detail=None):
         if detail is not None:
             op["detail"] = detail
         op["updated_at"] = time.time()
+
+
+KEEPALIVE_INTERVAL = 60  # seconds between keepalive touches; well inside STALE_TIMEOUT
+
+
+@contextmanager
+def operation_keepalive(op_id, interval=None):
+    """Keep a running op clear of ``STALE_TIMEOUT`` for the length of the block.
+
+    Progress reported by the work itself is only as frequent as its slowest
+    step: one ``os.walk`` of a library on a busy NAS, or one large archive
+    being hashed, can be silent for longer than ``STALE_TIMEOUT``. The sweep
+    then marked a scan that was still running "Operation stalled" and pruned
+    it, while the scan's own lock made a restart answer 409 (#841).
+
+    The touch only moves ``updated_at``; the detail the work reports stays.
+    It ends with the block, so work that raises or returns stops being kept
+    alive, and its caller's ``complete_operation`` settles the op as before.
+    A no-op without an ``op_id``.
+    """
+    if not op_id:
+        yield
+        return
+    done = threading.Event()
+    every = KEEPALIVE_INTERVAL if interval is None else interval
+
+    def _beat():
+        while not done.wait(every):
+            update_operation(op_id)
+
+    thread = threading.Thread(target=_beat, daemon=True, name="op-keepalive")
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
 
 
 def start_operation(op_id, detail="Starting..."):

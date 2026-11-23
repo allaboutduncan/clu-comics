@@ -1507,6 +1507,129 @@ class TestScanStages:
         assert lh.get_summary(live=True)["coverage"]["total"] == 1
 
 
+class TestScanIsNotReportedStalled:
+    """A scan that is still running must not be shown as "Operation stalled".
+
+    The stale sweep errors an op with no update for STALE_TIMEOUT and prunes
+    it, while the scan still holds its claim: the page said the scan had died
+    and a restart answered 409 (#841).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry(self):
+        from core import app_state
+
+        with app_state._operations_lock:
+            app_state._operations.clear()
+        # Hold the claim as every real caller does: taking it clears a stop
+        # request left behind by an earlier test.
+        assert lh.claim_scan()
+        try:
+            with patch.object(app_state, "KEEPALIVE_INTERVAL", 0.01):
+                yield app_state
+        finally:
+            lh.release_scan()
+        with app_state._operations_lock:
+            app_state._operations.clear()
+
+    @staticmethod
+    def _go_silent(app_state, op_id):
+        """Age the op past STALE_TIMEOUT, as a long silent step would.
+
+        Returns the status the operations poll then reports.
+        """
+        stamp = time.time() - app_state.STALE_TIMEOUT - 60
+        with app_state._operations_lock:
+            app_state._operations[op_id]["updated_at"] = stamp
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if app_state._operations[op_id]["updated_at"] > stamp:
+                break
+            time.sleep(0.01)
+        ops = [op for op in app_state.get_active_operations() if op["id"] == op_id]
+        return ops[0]["status"] if ops else "pruned"
+
+    def test_both_walks_are_given_the_operation(self, store, library, _registry):
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        op_id = _registry.register_operation("library_health", "scan")
+        with patch("core.series_json_check.scan_library", return_value={}) as series, \
+                patch.object(lh, "scan_empty_folders", return_value={}) as empty:
+            lh.run_scan(op_id=op_id, run_cheap=True, batch=10)
+        series.assert_called_once_with(op_id=op_id)
+        empty.assert_called_once_with(op_id=op_id)
+
+    def test_a_silent_stage_does_not_stall_the_scan(self, store, library, _registry):
+        """Any stage, not only the two walks: the keepalive spans the scan."""
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        op_id = _registry.register_operation("library_health", "scan")
+        seen = {}
+
+        def slow_orphans():
+            seen["status"] = self._go_silent(_registry, op_id)
+            return {"pairs": 0, "cleared": 0}
+
+        with patch("core.series_json_check.scan_library", return_value={}), \
+                patch.object(lh, "scan_orphans", side_effect=slow_orphans):
+            result = lh.run_scan(op_id=op_id, run_cheap=True, batch=10)
+        assert seen["status"] == "running"
+        assert "error" not in result
+
+    def test_the_series_json_walk_keeps_its_own_operation_alive(self, store, library, _registry):
+        """The page's Scan series.json button calls it with no run_scan around it."""
+        from core import series_json_check
+
+        (library / "Series").mkdir()
+        (library / "Series" / "series.json").write_text("{}", encoding="utf-8")
+        op_id = _registry.register_operation("series_json_scan", "scan")
+        seen = {}
+
+        def slow_check(path):
+            seen["status"] = self._go_silent(_registry, op_id)
+            return None
+
+        with patch.object(series_json_check, "check_file", side_effect=slow_check):
+            series_json_check.scan_library(op_id)
+        assert seen["status"] == "running"
+
+    def test_the_empty_folder_walk_keeps_its_own_operation_alive(self, store, library, _registry):
+        (library / "Empty").mkdir()
+        op_id = _registry.register_operation("empty_folder_scan", "scan")
+        seen = {}
+        real = lh._empty_tree
+
+        def slow_tree(top, protected):
+            seen["status"] = self._go_silent(_registry, op_id)
+            return real(top, protected)
+
+        with patch.object(lh, "_empty_tree", side_effect=slow_tree):
+            stats = lh.scan_empty_folders(op_id)
+        assert seen["status"] == "running"
+        assert stats["flagged"] == 1
+        # The lock is given back, and a refused scan still returns None.
+        assert lh._empty_scan_lock.acquire(blocking=False)
+        try:
+            assert lh.scan_empty_folders(op_id) is None
+        finally:
+            lh._empty_scan_lock.release()
+
+    def test_the_batch_reports_before_every_file(self, store, library, _registry):
+        """Not every tenth: ten large archives on a slow disk outlast the timeout."""
+        for i in range(3):
+            _index(store, _good_cbz(library / f"Each {i:03d}.cbz", payload=bytes([80 + i])))
+        op_id = _registry.register_operation("library_health", "scan")
+        details = []
+        real = _registry.update_operation
+
+        def record(oid, **kwargs):
+            if kwargs.get("detail"):
+                details.append(kwargs["detail"])
+            return real(oid, **kwargs)
+
+        with patch.object(_registry, "update_operation", side_effect=record):
+            lh.run_batch(10, 30, op_id=op_id)
+        assert details == [f"Checked {i} of 3 files" for i in range(3)]
+
+
 class TestUnreadableFoldersAreNotEmpty:
     """"Could not look" must never become "nothing there"."""
 

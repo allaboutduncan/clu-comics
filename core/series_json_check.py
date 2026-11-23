@@ -156,6 +156,15 @@ def scan_library(op_id=None):
     Records a row per incomplete file and clears rows for files that now pass.
     Never raises. Returns ``{folders, checked, flagged, cleared}``.
     """
+    from core.app_state import operation_keepalive
+
+    # Progress is per 25 folders, and one slow directory listing can outlast
+    # STALE_TIMEOUT on its own.
+    with operation_keepalive(op_id):
+        return _scan_library(op_id)
+
+
+def _scan_library(op_id):
     from core.app_state import update_operation
     from core.config import is_oneshot_folder
     from helpers import is_hidden
