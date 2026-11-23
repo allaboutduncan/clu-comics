@@ -1043,6 +1043,60 @@ class TestGetRenamedFilename:
         from cbz_ops.rename import get_renamed_filename
         assert get_renamed_filename("#12 Spawn.cbz") is None
 
+    @pytest.mark.parametrize("filename,expected", [
+        # Year last, no bracket tag: rule70 in the rule engine has the same
+        # lazy "<series>#<issue>" shape and runs before ISSUE_HASH_PATTERN.
+        ("#06-Glory - Angela - Angels In Hell #1 (2014).cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+        ("#06-Glory - Angela - Angels In Hell #1 (2014) (digital) (OTK).cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+        ("#3 Injustice 2 #1 (2018).cbz", "Injustice 2 001 (2018).cbz"),
+        # The real issue number carries no "#": ISSUE_PATTERN and the rule
+        # engine must not see the index either.
+        ("#12 Spawn 005 (1992).cbz", "Spawn 005 (1992).cbz"),
+        ("#12 Spawn 005.cbz", "Spawn 005.cbz"),
+        ("#06-Glory - Angela - Angels In Hell 001 [OTK].cbz", "Glory - Angela - Angels In Hell 001.cbz"),
+        # The whole index goes, decimal part and separator included.
+        ("#1.5 Deadpool #2.cbz", "Deadpool 002.cbz"),
+        ("#07: Saga #3.cbz", "Saga 003.cbz"),
+        ("#06 - Glory #1 (2014).cbz", "Glory 001 (2014).cbz"),
+        # A title that starts with a number keeps it.
+        ("#06-100 Bullets #5.cbz", "100 Bullets 005.cbz"),
+    ])
+    def test_leading_pack_index_is_stripped_on_every_path(self, filename, expected):
+        """The index is removed before the rule engine, the pre-clean and every pattern."""
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")):
+            assert get_renamed_filename(filename) == expected
+
+    def test_leading_pack_index_with_year_before_issue(self):
+        """"Title (YYYY) #N" is taken by rule40, ahead of the hash pattern."""
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")):
+            result = get_renamed_filename("#06-Glory - Angela (2014) #1.cbz")
+        # Prefix only: whether rule40 keeps the extension is #843's business.
+        assert result.startswith("Glory - Angela 001 (2014)")
+
+    def test_leading_pack_index_not_in_custom_pattern_series(self):
+        """The custom-pattern path builds its name from extract_comic_values."""
+        from cbz_ops.rename import extract_comic_values, get_renamed_filename
+        name = "#06-Glory - Angela - Angels In Hell #1 (2014) [OTK].cbz"
+        values = extract_comic_values(name)
+        assert values["series_name"] == "Glory - Angela - Angels In Hell"
+        assert values["issue_number"] == "001"
+        assert values["year"] == "2014"
+        with patch("cbz_ops.rename.load_custom_rename_config",
+                   return_value=(True, "{series_name} {issue_number}")):
+            assert get_renamed_filename(name) == "Glory - Angela - Angels In Hell 001.cbz"
+
+    @pytest.mark.parametrize("filename", [
+        "#1 (2018).cbz",                # the number is the only issue the name has
+        "#1.cbz",
+        "Injustice 2 #1 (2018).cbz",    # no leading index at all
+        "noextension",
+    ])
+    def test_strip_leading_pack_index_leaves_other_names_alone(self, filename):
+        from cbz_ops.rename import strip_leading_pack_index
+        assert strip_leading_pack_index(filename) == filename
+
     def test_fallback_pattern(self):
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename("Comic Name (2018) some extra.cbz")
