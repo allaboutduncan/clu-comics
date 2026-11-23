@@ -128,6 +128,23 @@
             return out;
         }
 
+        if (row.is_release_folder) {
+            // A multi-part release folder in WATCH that would not unpack. It
+            // is a folder of archive parts, so Rebuild, Edit and Search (which
+            // files a replacement onto the row's path) do not apply. The
+            // folder monitor retries by itself.
+            out.push({ act: 'delete', label: 'Delete', icon: 'trash', cls: 'btn-outline-danger',
+                       title: 'Move the release folder and its parts to the trash' });
+            out.push(row.dismissed
+                ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
+                    title: 'Show this entry again' }
+                : { act: 'dismiss', label: 'Dismiss', icon: 'eye-slash', cls: 'btn-outline-secondary',
+                    title: 'Hide this entry until the folder changes' });
+            out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
+                       title: 'Remove from this list (leaves the folder alone)' });
+            return out;
+        }
+
         if (row.source === 'orphan') {
             // Not damage and not a failed operation: Rebuild and Search do not
             // apply. Delete is offered only where the classification says the

@@ -144,6 +144,20 @@ class TestRarConversion:
         assert "folder monitor" in message.lower()
         assert "rebuild" not in message.lower()
 
+    def test_a_release_folder_that_would_not_unwrap(self):
+        """#844. Rebuild cannot help a folder of archive parts."""
+        from core.problem_files import (
+            CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL,
+        )
+
+        failed = classify(CLASS_RELEASE_UNWRAP_FAILED, "No comic could be extracted")
+        assert failed["action"] == ACTION_REPLACE
+        assert failed["repairable"] is False and failed["healthy_file"] is False
+        assert "rebuild" not in failed["advice"].lower()
+        partial = classify(CLASS_RELEASE_UNWRAP_PARTIAL, "Some archive parts")
+        assert partial["cause"] != failed["cause"]
+        assert partial["repairable"] is False
+
     def test_nothing_extracted_still_says_replace(self):
         result = classify(CLASS_RAR_FAILED, "Nothing could be extracted from x.cbr")
         assert result["action"] == ACTION_REPLACE

@@ -110,6 +110,9 @@ def _attach_search_context(problems):
         # and parsing "series.json" as a comic name only logs a fallback per row.
         if row.get("source") in ("series-json", "empty-folder"):
             continue
+        # A release folder in WATCH: a replacement cannot be filed onto it.
+        if row.get("is_release_folder"):
+            continue
         filename = row.get("filename") or ""
         series, issue, year = "", "", None
         try:
@@ -281,8 +284,8 @@ def api_delete():
     from helpers.library import is_critical_path
     from helpers.trash import move_to_trash
     from core.problem_files import (
-        SOURCE_EMPTY_FOLDER, clear_problem, clear_problems_under, get_problem,
-        has_problem,
+        RELEASE_FOLDER_CLASSES, SOURCE_EMPTY_FOLDER, SOURCE_UNPACK,
+        clear_problem, clear_problems_under, get_problem, has_problem,
     )
 
     path, _source, error = _path_and_source(require_source=False)
@@ -310,11 +313,17 @@ def api_delete():
         app_logger.error(f"Refused to delete critical path from Library Health: {path}")
         return jsonify({"success": False, "error": "That path is protected"}), 403
 
-    # The only directory this page lists is an empty folder, and the scan that
-    # listed it may be a day old. Look again: a folder that holds a comic now is
-    # not the folder the user agreed to delete.
+    # This page lists two kinds of directory. A release folder in WATCH that
+    # the monitor could not unwrap is deleted as it is: its archive parts are
+    # the point of the row. An empty folder was listed by a scan that may be a
+    # day old, so look again: a folder that holds a comic now is not the folder
+    # the user agreed to delete.
     is_folder = os.path.isdir(path)
-    if is_folder:
+    unwrap_row = get_problem(path, SOURCE_UNPACK) if is_folder else None
+    is_release = bool(
+        unwrap_row and unwrap_row.get("error_class") in RELEASE_FOLDER_CLASSES
+    )
+    if is_folder and not is_release:
         from core.library_health import inspect_folder
 
         if get_problem(path, SOURCE_EMPTY_FOLDER) is None:
