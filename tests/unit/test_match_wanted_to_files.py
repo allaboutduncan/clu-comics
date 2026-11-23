@@ -796,3 +796,61 @@ class TestDownloadNamedAfterTheHost:
             wanted, [(src.name, str(src))], PATTERN, alias_lookup=_no_aliases
         )
         assert [m["issue"]["series_id"] for m in matches] == [2]
+
+
+def _zip_of(path, names):
+    with zipfile.ZipFile(path, "w") as zf:
+        for n in names:
+            zf.writestr(n, b"\xff\xd8\xff")
+
+
+class TestCoverOnlyArchives:
+    """#794: a variant-cover pack named like the issue is not the issue."""
+
+    @pytest.fixture
+    def nova(self, tmp_path):
+        series = tmp_path / "Nova (2013)"
+        incoming = tmp_path / "incoming"
+        series.mkdir()
+        incoming.mkdir()
+        return series, incoming
+
+    def _match(self, series, files):
+        return match_wanted_issues_to_files(
+            [_wanted("Nova", "1", str(series))],
+            [(f.name, str(f)) for f in files],
+            PATTERN,
+            alias_lookup=_no_aliases,
+        )
+
+    def test_pack_alone_leaves_the_issue_wanted(self, nova):
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["Nova 001 cover A.jpg", "Nova 001 variant B.jpg"])
+
+        assert self._match(series, [pack]) == []
+
+    def test_real_issue_beside_the_pack_is_the_one_filed(self, nova):
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["cover A.jpg", "cover B.jpg"])
+        real = incoming / "Nova 001 (2013) (Digital).cbz"
+        _zip_of(real, [f"{n:03d}.jpg" for n in range(22)])
+
+        # The pack is first in the pool, so it would have won the issue.
+        matches = self._match(series, [pack, real])
+        assert [m["src"] for m in matches] == [str(real)]
+
+    def test_refusal_is_a_warning_once_then_debug(self, nova, caplog, monkeypatch):
+        from core import app_state
+
+        monkeypatch.setattr(app_state, "_filing_refusals", set())
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["cover.jpg"])
+
+        with caplog.at_level("DEBUG", logger="app_logger"):
+            self._match(series, [pack])
+            self._match(series, [pack])
+        lines = [r for r in caplog.records if "Not filing" in r.getMessage()]
+        assert [r.levelname for r in lines] == ["WARNING", "DEBUG"]

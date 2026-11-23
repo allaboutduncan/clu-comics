@@ -152,6 +152,42 @@ structurally; the behaviour itself is in
 `tests/unit/test_target_sweep_claim.py` and
 `tests/unit/test_watch_target_verdict.py`.
 
+### A cover pack is not the issue (#794)
+
+A variant-cover pack, or a 1-3 page "covers" release, is named like the issue
+it belongs to. One sweep filed eight of them as Nova (2013) issues; each issue
+then read as owned and the real comic was never downloaded.
+`helpers.archive_content.cover_only_reason` is asked before a file may claim a
+wanted issue. It holds a file back when the archive has no page images, when
+every page is cover-named, or when it has 3 pages or fewer and cover wording in
+the archive, wrapper-folder or page names.
+
+- **It is asked in `match_wanted_issues_to_files`' assignment loop, not after
+  matching.** There a refusal leaves the issue open for the next candidate.
+  Checked in `app.py` instead, the pack would win the issue on every pass and
+  the real comic beside it in TARGET would never be filed. It also means one
+  listing per file about to be filed, not one per candidate, and it covers
+  `core/problem_replacements.py` for free.
+- **Names only, and memoised on `(path, mtime, size)`.** A zip costs one read
+  of its central directory. A held file is matched again on every pass (a pass
+  runs per completed download), so the memo makes the repeat one `stat`.
+- **"Cannot tell" files the download.** A missing file, a non-archive and a
+  failed listing all return `None`, and a failed listing is not memoised. A RAR
+  is recognised by its magic bytes before any tool is spawned.
+- **There is no page-count rule by itself.** A short one-shot is a real comic;
+  the small-archive rule needs cover wording as well.
+- **The cover word must stand alone** (`_COVER_WORD`: no letter on either
+  side), so "Discovery" and "Undiscovered Country" are not covers while
+  `Nova_001_cover_B` and `001cvr` are.
+- The refusal is announced through `app_state.first_filing_refusal`: WARNING
+  once per file, DEBUG after. No Library Health row, because `record_problem`
+  refuses TARGET paths.
+- Not covered: packs already filed in a library, and the sweep fetching the
+  same pack again after `QUEUE_COOLDOWN_DAYS` (that is a scorer change).
+
+Tests: `tests/unit/test_cover_only_archive.py`, `TestCoverOnlyArchives` in
+`tests/unit/test_match_wanted_to_files.py`.
+
 ### Never reuse `VARIANT_TYPES` for filename matching
 
 > **Never reuse `VARIANT_TYPES` for filename matching.** It carries adjectives
