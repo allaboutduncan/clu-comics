@@ -913,6 +913,26 @@ def wanted_year_fit(file_year, issue):
     return rank, (abs(file_year - issue_year) if issue_year else 99)
 
 
+def _announce_cover_only(filename, src, reason):
+    """WARNING the first time a file is held back, DEBUG after that.
+
+    The file stays where it is and is matched again on every pass while the
+    issue stays wanted, and a pass runs per completed download.
+    """
+    from core import app_state
+
+    try:
+        st = os.stat(src)
+        fingerprint = ("cover-only", st.st_mtime, st.st_size)
+    except OSError:
+        fingerprint = ("cover-only",)
+    message = f"Not filing {filename}: {reason}, so it is not the issue"
+    if app_state.first_filing_refusal(src, fingerprint):
+        app_logger.warning(f"{message}. Left in place: {src}")
+    else:
+        app_logger.debug(message)
+
+
 def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None):
     """Match wanted issues against a pool of files without touching the filesystem.
 
@@ -1089,13 +1109,29 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
     # (rank, dist), so this reduces to the old order: wanted issues in turn,
     # each taking its first matching file.
     candidates.sort(key=lambda c: c[:4])
+    from helpers.archive_content import cover_only_reason
+
     used_files = set()
     used_issues = set()
+    cover_only = set()  # (filename, src) refused in this pass
     claims = {}  # (filename, src) -> distinct series that matched it
     for c in candidates:
         claims.setdefault((c[5], c[6]), set()).add(c[4].get("series_id"))
     for _r, _d, issue_idx, _o, issue, filename, src in candidates:
         if issue_idx in used_issues or (filename, src) in used_files:
+            continue
+        # A cover pack named like the issue (#794). Asked here, at the claim,
+        # for two reasons: it is one archive listing per file that is about to
+        # be filed rather than one per candidate, and a refusal leaves the
+        # issue open for the next candidate -- the real comic sitting beside
+        # the pack. The file stays unused too, and is refused again for any
+        # other issue it matched.
+        if (filename, src) in cover_only:
+            continue
+        reason = cover_only_reason(src, filename)
+        if reason:
+            cover_only.add((filename, src))
+            _announce_cover_only(filename, src, reason)
             continue
         used_issues.add(issue_idx)
         used_files.add((filename, src))
