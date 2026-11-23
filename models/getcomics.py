@@ -148,6 +148,10 @@ class SearchCriteria:
     volume_year: int | None = None
     publisher_name: str | None = None
     accept_variants: list[str] = field(default_factory=list)
+    # True when the series' "issues" are collected volumes (TPB, HC, Omnibus):
+    # the title must then name a collected edition. None means not known, and
+    # is scored as a series of single issues.
+    collected_series: bool | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +166,7 @@ def search_criteria(
     volume_year: int | None = None,
     publisher_name: str | None = None,
     accept_variants: list | None = None,
+    collected_series: bool | None = None,
 ) -> SearchCriteria:
     """Build a SearchCriteria from individual parameters."""
     return SearchCriteria(
@@ -172,6 +177,7 @@ def search_criteria(
         volume_year=volume_year,
         publisher_name=publisher_name,
         accept_variants=list(accept_variants) if accept_variants else [],
+        collected_series=collected_series,
     )
 
 
@@ -2066,6 +2072,7 @@ def score_getcomics_result(
     publisher_name: str = None,
     series_aliases: list = None,
     return_issue_matched: bool = False,
+    collected_series: bool | None = None,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
@@ -2085,6 +2092,11 @@ def score_getcomics_result(
                         (e.g., ["2000AD"] for series "2000 AD"). The result is
                         scored against the series name and each alias; the best
                         score wins.
+        collected_series: True when the series' issues are collected volumes
+                        (helpers.collection.is_collected_series). The title must
+                        then name a collected edition: a single issue or a pack
+                        of singles is rejected whatever it scores. None (not
+                        known) scores the series as single issues.
     Returns:
         (score, range_contains_target, series_match), or, when
         ``return_issue_matched`` is True,
@@ -2159,6 +2171,7 @@ def score_getcomics_result(
             volume_year=volume_year,
             publisher_name=publisher_name,
             accept_variants=accept_variants,
+            collected_series=collected_series,
         )
         comic_score = score_comic(result_title, search)
         candidate = (comic_score.score, comic_score.range_contains_target,
@@ -2170,9 +2183,110 @@ def score_getcomics_result(
     return best[:3]
 
 
+_COLLECTED_NUMBER = re.compile(
+    r'\b(?:vol(?:ume)?\.?|v|book)\s*\.?\s*0*(\d+)\b', re.IGNORECASE)
+_COLLECTED_WORD = re.compile(
+    r'\b(?:tp|hc|gn|ogn|compendium|collection|collected|complete)\b', re.IGNORECASE)
+
+
 def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
+    """Score a comic title against search criteria — pure functional core.
+
+    A series of single issues is scored by :func:`_score_issue_title`. A series
+    whose issues are collected volumes (``search.collected_series``) is read by
+    :func:`_score_collected_title` instead, and may never be satisfied by a
+    title that names an issue: "Laura Kinney – Wolverine #2 (2025)" is the
+    single, not volume 2 of the trade series, and it scored 95 (#730).
     """
-    Score a comic title against search criteria — pure functional core.
+    if search.collected_series:
+        collected = _score_collected_title(result_title, search)
+        if collected is not None:
+            return collected
+    scored = _score_issue_title(result_title, search)
+    if search.collected_series and (scored.issue_matched or scored.range_contains_target):
+        return ComicScore(score=-100, range_contains_target=scored.range_contains_target)
+    return scored
+
+
+def _score_collected_title(result_title: str, search: SearchCriteria) -> ComicScore | None:
+    """Score a title that names a collected edition, for a collected series.
+
+    Returns None when the title carries no collected marker ("Vol. 2", "v02",
+    "Book 2", TPB, HC, Omnibus...), leaving it to the single-issue scorer --
+    whose only way through for such a series is the unnumbered one-shot rule.
+
+    - The volume number is the issue number: "Vol. 2" is #2, and any other
+      number is a different book. A title with a format word and no number
+      can only be #1, and only when it carries the wanted year.
+    - Text between the series name and the marker is another book ("Batman
+      Beyond Vol. 2" is not Batman); the subtitle after it is ignored.
+    - A run of volumes ("Vol. 1 – 9") is not taken: nothing downstream can
+      split it.
+    """
+    title_lower = result_title.lower()
+    title_normalized = (title_lower
+        .replace('&', '+').replace('/', '+').replace(' and ', ' + ')
+        .replace('\u2013', '+').replace('\u2014', '+'))
+    delta, series_match, _, remaining, _, _ = _score_series_match(
+        title_lower, title_normalized, search)
+    if not series_match:
+        return None
+    if _UNOFFICIAL_MARKER.search(remaining):
+        return ComicScore(score=-100)
+
+    number = _COLLECTED_NUMBER.search(remaining)
+    format_words = [m for m in (
+        re.search(rf'(?<![a-z]){_keyword_pattern(kw)}(?![a-z])', remaining)
+        for kw in get_format_variants()) if m]
+    word = _COLLECTED_WORD.search(remaining)
+    if word:
+        format_words.append(word)
+    series_is_format = _detect_searching_for_format(
+        search.series_name.lower(), get_format_variants())
+    if not number and not format_words and not series_is_format:
+        return None
+    if not number and not format_words:
+        # "Batman Omnibus #2": the series name is the only marker, so the
+        # single-issue scorer reads the number and score_comic lets it stand.
+        return None
+
+    reject = ComicScore(score=0, series_match=True)
+
+    # Only the text before the marker names the book.
+    cut = number.start() if number else min(m.start() for m in format_words)
+    paren = remaining.find('(')
+    if paren != -1:
+        cut = min(cut, paren)
+    head = remaining[:cut]
+    for kw in get_format_variants():
+        head = re.sub(rf'(?<![a-z]){_keyword_pattern(kw)}(?![a-z])', ' ', head)
+    head = _COLLECTED_WORD.sub(' ', head)
+    if re.search(r'[a-z0-9]', head):
+        return reject
+
+    issue_num = str(search.issue_number).lstrip('0') or '0'
+    if number:
+        if re.match(r'\s*[-+\u2013\u2014]\s*\d', remaining[number.end():]):
+            return reject
+        if (number.group(1).lstrip('0') or '0') != issue_num:
+            return reject
+    elif issue_num != '1':
+        return reject
+
+    score, _, year_mismatch = _score_year(
+        delta + 30, result_title, remaining, search, search.series_name.lower(), issue_num)
+    year_matched = score > delta + 30
+    issue_matched = bool(number) or year_matched
+    if year_mismatch or not issue_matched:
+        score = min(score, ACCEPT_THRESHOLD - 1)
+    if _is_undated_back_issue(remaining, search):
+        score = min(score, ACCEPT_THRESHOLD - 1)
+    return ComicScore(score=score, series_match=True, issue_matched=issue_matched)
+
+
+def _score_issue_title(result_title: str, search: SearchCriteria) -> ComicScore:
+    """
+    Score a title against a series of single issues.
 
     This is the main scoring composition. It delegates to small, focused helpers
     for each scoring phase while maintaining sequential state.
@@ -3625,6 +3739,7 @@ def scrape_and_score_candidate(
     volume_year: int | None = None,
     publisher_name: str | None = None,
     accept_variants: list | None = None,
+    collected_series: bool | None = None,
 ) -> tuple[dict, int] | None:
     """
     Scrape a GetComics candidate URL and score it against search criteria.
@@ -3688,6 +3803,7 @@ def scrape_and_score_candidate(
                     series_volume=series_volume,
                     volume_year=volume_year,
                     publisher_name=publisher_name,
+                    collected_series=collected_series,
                 )
 
                 if score > best_score:
@@ -3712,6 +3828,7 @@ def scrape_and_score_candidate(
                         series_volume=series_volume,
                         volume_year=volume_year,
                         publisher_name=publisher_name,
+                        collected_series=collected_series,
                     )
                     if score > best_score:
                         best_score = score
@@ -5559,6 +5676,7 @@ def _best_accepted_row(
     series_year=None,
     search_variants=None,
     series_aliases=None,
+    collected_series=None,
 ) -> tuple[dict | None, int]:
     """Score scrape-index rows with the shared scorer; return the best ACCEPT.
 
@@ -5580,6 +5698,7 @@ def _best_accepted_row(
             series_volume=series_volume,
             volume_year=series_year,
             series_aliases=series_aliases,
+            collected_series=collected_series,
         )
         if accept_result(score, range_contains, series_match) != "ACCEPT":
             continue
@@ -5603,6 +5722,7 @@ def try_scrape_index(
     series_year=None,
     search_variants=None,
     series_aliases=None,
+    collected_series=None,
 ) -> tuple[dict | None, int]:
     """
     Search the scrape index for a matching comic and return the best ACCEPT result.
@@ -5650,6 +5770,7 @@ def try_scrape_index(
     return _best_accepted_row(
         rows, search_name, issue_num, issue_year, series_volume, series_year,
         search_variants, series_aliases,
+        collected_series=collected_series,
     )
 
 
@@ -5662,6 +5783,7 @@ def search_getcomics_for_issue(
     search_variants=None,
     rate_limit=2,
     series_aliases=None,
+    collected_series=None,
 ):
     """
     Search GetComics for a specific issue, combining base and variant searches.
@@ -5721,7 +5843,7 @@ def search_getcomics_for_issue(
                        f"{search_context}")
         scrape_result, scrape_score = try_scrape_index(
             series_name, issue_num, issue_year, series_volume, series_year, search_variants,
-            series_aliases=series_aliases,
+            series_aliases=series_aliases, collected_series=collected_series,
         )
         if scrape_result:
             app_logger.info(f"✅ Scrape index ACCEPT (score={scrape_score}): "
@@ -5747,6 +5869,7 @@ def search_getcomics_for_issue(
                 entry['full_url'], series_name, issue_num, issue_year,
                 series_volume=series_volume, volume_year=series_year,
                 publisher_name=None, accept_variants=search_variants,
+                collected_series=collected_series,
             )
             if result_tuple:
                 result, score = result_tuple
@@ -5766,7 +5889,7 @@ def search_getcomics_for_issue(
         # Try scrape index for comparison
         scrape_result, scrape_score = try_scrape_index(
             series_name, issue_num, issue_year, series_volume, series_year, search_variants,
-            series_aliases=series_aliases,
+            series_aliases=series_aliases, collected_series=collected_series,
         )
 
         # Pick the best result between sitemap and scrape index
@@ -5819,7 +5942,7 @@ def search_getcomics_for_issue(
                            f"trying base name '{base_name}' {search_context}")
             result, score = try_scrape_index(
                 base_name, issue_num, issue_year, series_volume, series_year, search_variants,
-                series_aliases=series_aliases,
+                series_aliases=series_aliases, collected_series=collected_series,
             )
             if result:
                 app_logger.info(f"✅ Scrape index ACCEPT via base name (score={score}): "
