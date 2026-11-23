@@ -92,11 +92,21 @@ def needs_thumbnail(existing, current_mtime, in_flight):
 def iter_candidate_dirs(library_root, walk=os.walk):
     """Yield ``(dir, [file paths])`` for every library directory, holding
     exactly the comics ``build_file_index`` would index there."""
+    from helpers.library import staging_matcher
+
+    staging = staging_matcher()
     for root, dirs, files in walk(library_root):
-        # The is_hidden prune build_file_index applies to directories.
-        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+        # The prunes build_file_index applies to directories: hidden folders,
+        # and WATCH/TARGET nested in the library (downloads in transit).
+        dirs[:] = [
+            d for d in dirs
+            if not is_hidden(os.path.join(root, d))
+            and not staging(os.path.join(root, d), is_dir=True)
+        ]
         paths = []
         for file in files:
+            if staging(os.path.join(root, file)):
+                continue
             # The '.'/'_' guard first: an AppleDouble sidecar carries a comic
             # extension, so an extension-first test lets it through.
             if file.startswith(".") or file.startswith("_"):

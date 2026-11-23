@@ -24,7 +24,9 @@ paths:
 
 `core/problem_files.py` owns the `problem_files` table and the owner-only
 `/library-health` page (`routes/problem_files.py`; the old `/problem-files`
-URL redirects). A damaged comic used to
+URL redirects). It and Duplicate Files are linked from the **File Manager**
+menu's owner block in `header.html` (not the gear menu), with the health dot on
+that menu's toggle. A damaged comic used to
 produce an ERROR log line and nothing else — `thumbnail_jobs` records a bare
 `status='error'` with no message — so the only user-facing surface was a generic
 `error.svg` tile. Writers today: `core/thumbnail_cache.py` (`thumbnail`), both
@@ -74,6 +76,19 @@ in `tests/routes/test_problem_files_routes.py`.
 comic: the file never reached `/data`, which is why nothing else reports it.
 `is_critical_path` protects the WATCH *folder*, not files inside it, so Delete
 still works from the page.
+
+**WATCH and TARGET are not the library, and `record_problem` enforces it**
+(`staging_refusal`). A path under TARGET is refused whatever the source; a
+path under WATCH is accepted only from the monitor's own sources
+(`WATCH_REPORT_SOURCES`: `unpack`, `convert`). Without that guard a thumbnail
+requested from the File Manager, `_flag_mislabelled_rar` on a move into
+TARGET, a metadata write on a staged file and the monitor's post-move
+conversion each listed a download as a library problem. A failed conversion in
+TARGET is therefore in `monitor.log` only. "Is this path staging?" has one
+answer, `helpers.library.staging_matcher()`: build one per pass (it reads the
+roots once and costs no syscall per path), the most specific root wins
+counting library roots, and a staging folder that *is* a library root owns
+only the loose files directly in it. `tests/unit/test_is_in_target_dir_boundary.py`.
 
 **Detection is report-only.** Nothing scans the library; a file appears because
 an operation tried to read it and could not. The page says so in as many words,
@@ -313,12 +328,26 @@ Library Health is report-only, so an empty page meant "nothing has failed", not
 "the library is clean". `core/library_health.py` is the opt-in answer
 (`library_health_scan_enabled`, default **off** — it reads every comic). Findings
 land in the existing `problem_files` ledger under three new sources, `integrity`
-(a CBZ whose CRCs or pages fail), `orphan` (a `.cbr` beside its `.cbz`, or a
-comic left in WATCH for over a day — never TARGET, where files are expected to
-wait; rows under TARGET from before that are cleared by the next scan or a
-recheck) and `empty-folder` (a library folder
+(a CBZ whose CRCs or pages fail), `orphan` (a `.cbr` beside its `.cbz`, from the
+index) and `empty-folder` (a library folder
 with no comics: nothing, or only cvinfo/series.json/folder art). Duplicates are *derived* and shown on
 `/library-health/duplicates`; they are not ledger rows.
+
+**Nothing under WATCH or TARGET is scanned, hashed, counted or paired.** Neither
+the batch nor the duplicate search walks the disk: both read `file_index`, so
+the exclusion has three layers. `add_file_index_entry` refuses a staging path
+(the choke point for `convert_to_cbz`, which indexed every CBZ it produced —
+and the monitor converts inside TARGET, so those rows were written on every
+download and, being outside every library root, never pruned by a sync); every
+walk that feeds the index prunes staging folders (`_build_file_index_locked`,
+`scan_filesystem_for_sync`, `update_index_on_create`, `/api/scan-directory`,
+the thumbnail scan, the series.json scan); and the readers
+(`files_needing_check`, `_derive_duplicates`, `scan_orphans`, `recheck_file`)
+filter anyway. `purge_staging_rows` removes what older versions recorded, first
+thing in `run_scan` and once a day from the heartbeat even with the scan off.
+The old "comic left in WATCH for over a day" stray check is gone;
+`CLASS_STRAY_STAGING` survives only so the purge and `recheck_orphan` can clear
+its rows.
 
 Things that look arbitrary and are not:
 
@@ -334,9 +363,16 @@ Things that look arbitrary and are not:
   `move_path_references`: a moved file is simply re-hashed, and
   `prune_health_rows` drops the old row (never while the index is empty — a
   rebuild in progress looks like "everything was deleted").
-- **A mount going away must not flood the ledger.** Unreachable library roots are
-  excluded from the query up front; ten consecutive `OSError`s abort the batch
-  and the held-back results are dropped, not recorded. A file missing from a
+- **A mount going away must not flood the ledger, and must not stall the scan.**
+  Unreachable library roots are excluded from the query up front, by
+  `is_root_mounted` (an unmounted bind mount passes `isdir`). Ten consecutive
+  `OSError`s are a *place* that will not read: nothing is recorded for them,
+  they are stamped `deferred` (no hash, no ledger row, retried after
+  `DEFERRED_RETRY_SECONDS`), the folder they share (`_streak_scope`: one
+  folder, else their library root) is left out, and the query is run again for
+  the rest. Aborting instead, with those ten unstamped, put them at the head of
+  every later batch, so one unreadable folder stopped the whole library being
+  checked for good. Only a run with nothing in common still aborts. A file missing from a
   folder that exists is stamped `missing` with **no** ledger row, because
   `list_problems` would prune it on sight (`_is_definitely_gone`). A file whose
   whole folder is gone from a mounted library is *provably gone*. It is
@@ -351,8 +387,27 @@ Things that look arbitrary and are not:
   copies they were moved to (#693). It costs one `stat` per indexed folder.
   The page's **Rebuild file index** button is the full walk, which also catches
   single files deleted from a folder that is still there.
-- **Stamp after recording.** A file is stamped in `file_health` only after its
-  outcome is written, the same rule as `core.reading_list_sync.apply`.
+- **Stamp after recording, and only if the record was written.** `settle`
+  checks `record_problem`'s result; with the ledger capped or the write
+  failing the file is `deferred`, never stamped `damaged` (which hid it from
+  every scan for `recheck_days` with its damage written down nowhere).
+- **Stamps are committed in groups** (`COMMIT_EVERY_FILES`/`_SECONDS`), and the
+  batch connection commits *before* any ledger write: the ledger uses its own
+  connection, and an open write transaction here would make it wait out
+  `busy_timeout`. A healthy file with no `integrity` row makes no ledger call at
+  all (`_open_integrity_paths`, read once). The loop's `finally` commits, so a
+  crash keeps the results made so far.
+- **A small ZIP is read once** (`SINGLE_READ_MAX_BYTES`): hashed and CRC-checked
+  from one buffer. On a network or FUSE mount the second read is not served
+  from a page cache. `TestSingleRead` pins that both paths give one verdict.
+- **Stop is a flag, not a kill** (`request_stop`, `POST …/health/scan/stop`):
+  checked between files and between stages, cleared by `claim_scan`. State is
+  saved after the batch and again after the walks, and `cheap_checks_at` moves
+  only when the walks all ran.
+- **The series.json walk takes the series.json claim**
+  (`core.series_json_check.claim_scan`; the routes import that lock). The page's
+  scan and "Refresh all" rewrite the same rows, so the health scan skips that
+  stage while either holds it.
 - **Heavy walks are daily, the batch is not.** `run_scheduled_scan` is a 30-minute
   heartbeat gated on the persisted `last_run_at` (same reasoning as
   `core.comicvine_db_update`: an interval trigger restarts with the process and
@@ -396,7 +451,13 @@ Things that look arbitrary and are not:
 - **`resolve_group` re-derives the group and validates every path** against it,
   refuses the keeper in the trash list and protected paths, and goes through
   `move_to_trash` + `forget_deleted_paths` (never a raw index delete).
-- **Staging inside a library is skipped**, as in `collect_target_candidates`.
+- **The grouping is cached on a fingerprint of its input rows**
+  (`_derive_duplicates`), not on time and not on invalidation hooks: the rows
+  are read on every call and only the regex grouping is reused, so it cannot
+  be stale and no index writer has to remember it. A TTL cache was tried and
+  served groups the File Manager had already resolved. Dismissal is applied on
+  read, so it costs no regrouping. The list is paged (`offset`/`limit`), and a
+  failed read is a 500, never an empty list.
 - **`empty-folder` is the one source whose path is a directory.** Found by
   `scan_empty_folders` (a cheap check, and the page's *Scan empty folders*
   button on its own `_empty_scan_lock`). One top-down walk prunes hidden and
@@ -411,8 +472,16 @@ Things that look arbitrary and are not:
   still says empty (409 and the row is dropped otherwise), then
   `clear_problems_under` drops rows inside it — a series.json row there would
   otherwise be listed as unreachable forever (missing parent ≠ proof of deletion).
-- **The badge poll is cheap**: duplicate counts are stored when a scan finishes
-  (`library_health_state`, a `user_preferences` JSON), never recomputed per poll.
+- **The badge poll is cheap**: duplicate counts *and coverage* are stored when a
+  scan finishes (`library_health_state`, a `user_preferences` JSON), never
+  recomputed per poll; coverage is two whole-table counts. The page's own
+  summary asks `get_summary(live=True)`, memoised for a minute.
+- **The page settles a missing operation by the summary.** The operations
+  registry is in memory, so after a restart the scan's operation is gone;
+  `followHealthScan` reports "complete" only when `last_run_at` moved, and
+  "interrupted" otherwise. "Rebuild file index" is off-request too
+  (`api_rebuild_file_index`, one at a time) and both callers follow its
+  operation.
   The score is `100 − capped penalties` (`compute_score`); red means open
   integrity rows.
 

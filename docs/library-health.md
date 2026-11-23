@@ -5,8 +5,16 @@ out to be a RAR wearing a `.cbz` name. Until now the only sign was a grey
 placeholder where the cover should be, and an error line in a log that scrolls
 away.
 
-**Library Health** is the page that collects those failures. It is under the gear
-menu, next to Settings, and is visible to the Store Owner only.
+**Library Health** is the page that collects those failures. It is in the **File
+Manager** menu, beside **Duplicate Files**, and both are visible to the Store
+Owner only.
+
+Both pages are about your library. Files in the watch folder and the target
+(processed) folder are downloads in transit: they are never scanned, hashed,
+indexed or compared as duplicates, wherever those folders sit (including inside
+a library). The one exception is what the folder monitor itself reports about
+the watch folder, an archive that would not unpack or a PDF or CBR that would not
+convert, because that is the only place you would see it.
 
 ## What appears here
 
@@ -132,10 +140,9 @@ It adds three kinds of entry to this list:
 
 - **Integrity scan** — a `.cbz` whose checksums or pages fail. Treated like any
   other damaged file: **Search** for a replacement, or **Delete**.
-- **Stray files** — a `.cbr` sitting beside a `.cbz` of the same name, or a
-  comic that has been in your watch folder for over a day without being
-  filed. The target (processed) folder is not checked: files are expected to
-  wait there until they are filed. Nothing is wrong with the file; **Dismiss** an entry you meant to keep.
+- **Stray files** — a `.cbr` sitting beside a `.cbz` of the same name in a
+  library folder. Nothing is wrong with the file; **Dismiss** an entry you
+  meant to keep. (Comics waiting in the watch or target folder are not listed.)
 - **Empty folders** — a library folder with no comics in it: nothing at all, or
   only what CLU leaves behind (`cvinfo`, `series.json`, folder art). Typically what
   is left after a series was moved or deleted elsewhere. **Delete** sends the
@@ -152,10 +159,19 @@ tagged as the same series, issue and year *and* named alike (a tag that contradi
 by a copy marker like `(1)` (*likely* — they may be variants, so check). Pick the
 copy to keep; the others go to the Trash. Nothing is removed automatically.
 
-The score beside **Library Health** in the gear menu is 100 minus a capped penalty
+The score beside **Library Health** in the File Manager menu is 100 minus a capped penalty
 for open damage, duplicate groups and strays. It turns red when a file has failed
 its integrity check. If a library is not mounted, CLU skips it rather than
-reporting its files as damaged.
+reporting its files as damaged, and a folder it cannot read (wrong permissions,
+say) is left out of that run and tried again later while the rest of the
+library is still checked.
+
+While a scan runs the card shows what it is doing, and **Stop** ends it after
+the file being checked. Nothing is lost: every result is saved as it is made,
+so the next scan continues from there. **Rebuild file index** also runs in the
+background and reports when it is done.
+
+**Duplicate Files** shows 100 groups at a time, with **Show more** for the rest.
 
 ## Refreshing every series.json at once
 

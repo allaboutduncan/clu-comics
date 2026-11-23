@@ -99,6 +99,103 @@ def is_within_roots(path, roots):
     return False
 
 
+STAGING_WATCH = "watch"
+STAGING_TARGET = "target"
+
+
+def _root_spellings(root):
+    """Every comparable spelling of *root*: as configured, and resolved.
+
+    Both, because index rows and ledger rows keep the spelling they were
+    written with, and a staging folder reached through a symlink is stored
+    either way round depending on who wrote the row.
+    """
+    out = set()
+    if not root or not isinstance(root, str) or "\0" in root:
+        return out
+    try:
+        out.add(os.path.normcase(os.path.normpath(root)))
+        out.add(os.path.normcase(os.path.realpath(root)))
+    except Exception:
+        pass
+    return out
+
+
+def staging_matcher():
+    """A ``match(path, is_dir=False)`` answering ``"watch"``, ``"target"`` or None.
+
+    The one answer to "is this path a download in transit rather than part of
+    the library?". Nothing under WATCH or TARGET belongs in ``file_index``, the
+    health scan, the duplicate search or (TARGET) the Library Health ledger.
+
+    Roots are read and resolved **once**, when the matcher is built, and a
+    match is pure string work on the path -- no ``realpath`` per path, so a
+    caller can run it over every row of the index or every directory of a walk
+    on a network mount. Build one per pass, not one per path.
+
+    The most specific root wins, counting library roots too:
+
+    * WATCH or TARGET nested inside a library is staging;
+    * a library nested inside TARGET is still a library;
+    * WATCH nested inside TARGET is WATCH (a supported layout);
+    * a staging folder that **is** a library root (downloads land flat in the
+      root and are filed into series folders from there) claims only the files
+      sitting directly in it. Its sub-folders are the library.
+    """
+    from core.config import get_target_dir, get_watch_dir
+
+    entries = []  # (spelling, kind) ; kind None = library
+    try:
+        for root in get_library_roots():
+            entries.extend((sp, None) for sp in _root_spellings(root))
+    except Exception as e:
+        app_logger.debug(f"staging_matcher: could not list library roots: {e}")
+    library_spellings = {sp for sp, _ in entries}
+    for kind, getter in ((STAGING_TARGET, get_target_dir), (STAGING_WATCH, get_watch_dir)):
+        try:
+            root = getter()
+        except Exception:
+            root = ""
+        # WATCH is appended last, so on an exact WATCH == TARGET tie it wins.
+        entries.extend((sp, kind) for sp in _root_spellings(root))
+    staging = [(sp, kind) for sp, kind in entries if kind is not None]
+
+    def match(path, is_dir=False):
+        if not staging or not path or not isinstance(path, str):
+            return None
+        try:
+            p = os.path.normcase(os.path.normpath(path))
+        except Exception:
+            return None
+        best_kind, best_root, best_len = None, None, -1
+        for spelling, kind in entries:
+            if not path_within(p, spelling):
+                continue
+            # ">=" so a staging root (listed after the libraries) wins a tie
+            # with the library root it coincides with.
+            if len(spelling) >= best_len:
+                best_kind, best_root, best_len = kind, spelling, len(spelling)
+        if best_kind is None:
+            return None
+        if best_root in library_spellings:
+            # Staging folder == library root: only loose files in the root.
+            if is_dir or os.path.dirname(p) != best_root:
+                return None
+        return best_kind
+
+    return match
+
+
+def staging_kind(path, is_dir=False):
+    """``"watch"``, ``"target"`` or None for one path (see :func:`staging_matcher`)."""
+    return staging_matcher()(path, is_dir=is_dir)
+
+
+def is_staging_path(path, is_dir=False):
+    """True if *path* is under WATCH or TARGET (see :func:`staging_matcher`)."""
+    return staging_kind(path, is_dir=is_dir) is not None
+
+
 def is_allowed_path(path):
     """Check if path is within any allowed directory (libraries, downloads, temp).
 

@@ -3218,6 +3218,7 @@ from helpers.library import (
     get_library_for_path,
     watch_target_verdict,
     is_root_mounted,
+    staging_matcher,
 )
 
 #########################
@@ -3767,97 +3768,123 @@ def clear_cache():
 #########################
 
 
+# One rebuild at a time: two walks would only race over the same rows.
+_rebuild_index_lock = threading.Lock()
+
+
 @app.route("/api/rebuild-file-index", methods=["POST"])
 def api_rebuild_file_index():
-    """Manually rebuild the file index using incremental sync."""
-    global index_built
+    """Start a file index rebuild (incremental sync), off-request.
 
+    The walk reads every library folder, which on a large or networked library
+    outlasts gunicorn's 120s timeout: the worker was killed mid-sync and the
+    page reported a network error. So it runs on a thread, one at a time, and
+    the caller follows ``/api/operation/<op_id>``; the outcome ("N added, M
+    removed") is the operation's ``detail`` when it completes.
+    """
+    from core.app_state import complete_operation, register_operation, update_operation
+
+    if not _rebuild_index_lock.acquire(blocking=False):
+        return jsonify(
+            {"success": False, "error": "A file index rebuild is already running"}
+        ), 409
     try:
-        app_logger.info("🔄 Manual file index sync requested...")
-        start_time = time.time()
+        op_id = register_operation("file_index_rebuild", "Rebuilding file index")
+    except Exception:
+        _rebuild_index_lock.release()
+        raise
 
-        # Scan filesystem to get current state
-        app_logger.info("Scanning filesystem...")
-        # Vanished folders first: this also clears their reading-list
-        # matches, which the sync's own removal does not (#693).
-        prune_vanished_index_dirs()
-        walked_roots = []
-        filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
-        scan_time = time.time() - start_time
-        app_logger.info(
-            f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
-        )
+    def _run():
+        global index_built
 
-        # Incremental sync (preserves metadata for existing files)
-        app_logger.info("Performing incremental sync...")
-        sync_result = sync_file_index_incremental(
-            filesystem_entries, walked_roots=walked_roots
-        )
-        app_logger.info(
-            f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
-        )
+        failed = False
+        try:
+            with app.app_context():
+                app_logger.info("🔄 Manual file index sync requested...")
+                start_time = time.time()
 
-        # Queue only NEW files for metadata scanning
-        if sync_result["added"] > 0:
-            from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
-
-            new_cbz_paths = [
-                p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
-            ]
-            if new_cbz_paths:
-                queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
+                # Scan filesystem to get current state
+                app_logger.info("Scanning filesystem...")
+                # Vanished folders first: this also clears their reading-list
+                # matches, which the sync's own removal does not (#693).
+                prune_vanished_index_dirs()
+                walked_roots = []
+                filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
+                scan_time = time.time() - start_time
                 app_logger.info(
-                    f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning"
+                    f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
                 )
 
-        # Also queue any other files that still need metadata scanning
-        # (e.g., previously added files that were never scanned)
-        from core.metadata_scanner import queue_pending_files
+                # Incremental sync (preserves metadata for existing files)
+                app_logger.info("Performing incremental sync...")
+                sync_result = sync_file_index_incremental(
+                    filesystem_entries, walked_roots=walked_roots
+                )
+                app_logger.info(
+                    f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
+                )
 
-        queued = queue_pending_files()
-        if queued:
-            app_logger.info(f"Queued {queued} additional files for metadata scanning")
+                # Queue only NEW files for metadata scanning
+                if sync_result["added"] > 0:
+                    from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
 
-        # Refresh in-memory index from DB: read it aside and swap it in, so a
-        # reader never sees it empty and a failed read keeps the old one.
-        from core.file_index_memory import replace_index_contents
+                    new_cbz_paths = [
+                        p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
+                    ]
+                    if new_cbz_paths:
+                        queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
+                        app_logger.info(
+                            f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning"
+                        )
 
-        replace_index_contents(
-            file_index,
-            get_file_index_from_db(),
-            sync_result["added"] + sync_result["unchanged"],
-        )
-        index_built = True
+                # Also queue any other files that still need metadata scanning
+                # (e.g., previously added files that were never scanned)
+                from core.metadata_scanner import queue_pending_files
 
-        # Update last rebuild timestamp
-        update_last_rebuild()
+                queued = queue_pending_files()
+                if queued:
+                    app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Clear and pre-populate stats cache
-        clear_stats_cache()
-        get_library_stats()
-        get_file_type_distribution()
-        get_top_publishers()
-        get_reading_history_stats()
+                # Refresh in-memory index from DB: read it aside and swap it in, so a
+                # reader never sees it empty and a failed read keeps the old one.
+                from core.file_index_memory import replace_index_contents
 
-        elapsed = time.time() - start_time
-        app_logger.info(f"✅ Manual file index sync completed in {elapsed:.2f}s")
+                replace_index_contents(
+                    file_index,
+                    get_file_index_from_db(),
+                    sync_result["added"] + sync_result["unchanged"],
+                )
+                index_built = True
 
-        return jsonify(
-            {
-                "success": True,
-                "message": f"File index synced successfully in {elapsed:.2f} seconds",
-                "added": sync_result["added"],
-                "removed": sync_result["removed"],
-                "unchanged": sync_result["unchanged"],
-                "total_files": len([e for e in file_index if e["type"] == "file"]),
-                "total_directories": len(
-                    [e for e in file_index if e["type"] == "directory"]
-                ),
-            }
-        )
-    except Exception as e:
-        app_logger.error(f"❌ File index sync failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+                # Update last rebuild timestamp
+                update_last_rebuild()
+
+                # Clear and pre-populate stats cache
+                clear_stats_cache()
+                get_library_stats()
+                get_file_type_distribution()
+                get_top_publishers()
+                get_reading_history_stats()
+
+                elapsed = time.time() - start_time
+                app_logger.info(f"✅ Manual file index sync completed in {elapsed:.2f}s")
+
+                update_operation(
+                    op_id,
+                    detail=(
+                        f"{sync_result['added']} added, {sync_result['removed']} removed, "
+                        f"{sync_result['unchanged']} unchanged"
+                    ),
+                )
+        except Exception as e:
+            failed = True
+            app_logger.error(f"❌ File index sync failed: {e}")
+        finally:
+            complete_operation(op_id, error=failed)
+            _rebuild_index_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="file-index-rebuild").start()
+    return jsonify({"success": True, "op_id": op_id})
 
 
 @app.route("/api/file-index-status", methods=["GET"])
@@ -4229,6 +4256,7 @@ def _build_file_index_locked():
         if not library_roots:
             app_logger.warning("No libraries configured, cannot build file index")
             return
+        _staging = staging_matcher()
 
         for library_root in library_roots:
             if not os.path.exists(library_root):
@@ -4238,10 +4266,16 @@ def _build_file_index_locked():
             app_logger.info(f"Indexing library: {library_root}")
 
             for root, dirs, files in os.walk(library_root):
-                # Skip hidden directories
+                # Skip hidden directories, and WATCH/TARGET nested in the
+                # library: a download in transit is not part of the library.
                 dirs[:] = [
-                    d for d in dirs if not is_hidden(os.path.join(root, d))
+                    d for d in dirs
+                    if not is_hidden(os.path.join(root, d))
+                    and not _staging(os.path.join(root, d), is_dir=True)
                 ]
+                # A staging folder that *is* this library root owns the loose
+                # files directly in it (see helpers.library.staging_matcher).
+                files = [f for f in files if not _staging(os.path.join(root, f))]
 
                 # Index directories
                 for name in dirs:
@@ -4386,22 +4420,9 @@ def scan_filesystem_for_sync(walked_roots=None):
     excluded_files = {"cvinfo"}
     allowed_files = {"missing.txt"}
 
-    # Get TARGET from app.config (the authoritative source)
-    target_dir = app.config.get("TARGET", "/downloads/processed")
-    normalized_target_dir = os.path.normpath(target_dir)
-
-    def is_in_target_dir(path):
-        """Check if path is within TARGET folder (should be excluded from index)."""
-        normalized_path = os.path.normpath(path)
-        try:
-            common_path = os.path.commonpath([normalized_path, normalized_target_dir])
-            return os.path.samefile(common_path, normalized_target_dir)
-        except (ValueError, OSError):
-            # On a separator boundary: a bare prefix test put a sibling such
-            # as /downloads/processed2 inside TARGET /downloads/processed.
-            return normalized_path == normalized_target_dir or normalized_path.startswith(
-                normalized_target_dir.rstrip(os.sep) + os.sep
-            )
+    # WATCH and TARGET are never indexed, wherever they sit. One matcher for
+    # the whole walk: it resolves the roots once and costs no syscall per path.
+    _staging = staging_matcher()
 
     # Folder art lives in the cache (core/folder_art.py); a legacy folder.* on
     # disk still counts. The cached set is read once for the whole walk rather
@@ -4432,13 +4453,16 @@ def scan_filesystem_for_sync(walked_roots=None):
 
         try:
             for root, dirs, files in os.walk(library_root):
-                # Skip hidden directories and TARGET_DIR
+                # Skip hidden directories, WATCH and TARGET
                 dirs[:] = [
                     d
                     for d in dirs
                     if not is_hidden(os.path.join(root, d))
-                    and not is_in_target_dir(os.path.join(root, d))
+                    and not _staging(os.path.join(root, d), is_dir=True)
                 ]
+                # A staging folder that *is* this library root owns the loose
+                # files directly in it; its sub-folders are the library.
+                files = [f for f in files if not _staging(os.path.join(root, f))]
 
                 # Index directories
                 for name in dirs:
@@ -4527,47 +4551,28 @@ def update_index_on_move(old_path, new_path, reconcile=True):
         normalized_old = os.path.normpath(old_path)
         normalized_new = os.path.normpath(new_path)
 
-        # Get TARGET from app.config (the authoritative source)
-        target_dir = app.config.get("TARGET", "/downloads/processed")
-        normalized_target_dir = os.path.normpath(target_dir)
-
-        # Check if path is in TARGET folder (should be excluded from index)
-        def is_in_target_dir(path):
-            try:
-                common_path = os.path.commonpath([path, normalized_target_dir])
-                return os.path.samefile(common_path, normalized_target_dir)
-            except (ValueError, OSError):
-                # Fallback: the path is TARGET or under it, on a separator
-                # boundary so a sibling like /downloads/processed2 is not.
-                return path == normalized_target_dir or path.startswith(
-                    normalized_target_dir.rstrip(os.sep) + os.sep
-                )
-
         # "In the library" means under ANY enabled library root, not a
         # hard-coded /data: a library at /comics made every move look like
         # outside -> outside, so the index was never updated.
-        # Same predicate as log_file_if_in_data() for consistency.
-        old_in_data = is_valid_library_path(normalized_old)
-        new_in_data = is_valid_library_path(normalized_new)
-        new_in_target = is_in_target_dir(normalized_new)
+        # WATCH and TARGET are never "in the library", even when they are
+        # nested inside one: a move into either is a move *out* of the index
+        # (so the old row is dropped), and a move out of either is an add.
+        _staging = staging_matcher()
+        _is_dir = os.path.isdir(new_path)
+        old_in_data = is_valid_library_path(normalized_old) and not _staging(
+            normalized_old, is_dir=_is_dir
+        )
+        new_in_data = is_valid_library_path(normalized_new) and not _staging(
+            normalized_new, is_dir=_is_dir
+        )
 
         # Debug logging to help diagnose path comparison issues
         app_logger.debug(
             f"Path comparison - Old: {normalized_old} (in_data: {old_in_data})"
         )
         app_logger.debug(
-            f"Path comparison - New: {normalized_new} (in_data: {new_in_data}, in_target: {new_in_target})"
+            f"Path comparison - New: {normalized_new} (in_data: {new_in_data})"
         )
-        app_logger.debug(
-            f"Path comparison - TARGET_DIR: {normalized_target_dir}"
-        )
-
-        # Skip files in TARGET_DIR - they should not be indexed
-        if new_in_target:
-            app_logger.debug(
-                f"Skipping index update - file is in TARGET folder: {new_path}"
-            )
-            return
 
         # Scenario 1: Moving INTO /data (from WATCH/TEMP) -> ADD to index
         if not old_in_data and new_in_data:
@@ -4708,6 +4713,12 @@ def update_index_on_create(path):
         name = os.path.basename(path)
         parent = os.path.dirname(path)
 
+        # WATCH and TARGET are never indexed (add_file_index_entry refuses
+        # them too; returning here keeps that from reading as a failure).
+        if staging_matcher()(path, is_dir=not is_file):
+            app_logger.debug(f"Not indexing a path in WATCH/TARGET: {path}")
+            return
+
         if is_file:
             # Check if file should be indexed (but allow specific files like missing.txt)
             if name.lower() in excluded_files:
@@ -4740,12 +4751,14 @@ def update_index_on_create(path):
 
             # Recursively index all files and subdirectories
             try:
+                _staging = staging_matcher()
                 for root, dirs, files in os.walk(path):
-                    # Skip hidden directories
+                    # Skip hidden directories, and WATCH/TARGET nested here
                     dirs[:] = [
                         d
                         for d in dirs
                         if not is_hidden(os.path.join(root, d))
+                        and not _staging(os.path.join(root, d), is_dir=True)
                     ]
 
                     # Index subdirectories

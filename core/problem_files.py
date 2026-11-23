@@ -123,6 +123,37 @@ def _file_mtime(path):
         return None
 
 
+# The only sources that may list a file sitting in WATCH: the folder monitor's
+# own reports (an archive that will not unpack, a PDF or CBR that will not
+# convert). Nothing else reports it, and the file never reaches a library.
+WATCH_REPORT_SOURCES = (SOURCE_UNPACK, SOURCE_CONVERT)
+
+
+def staging_refusal(path, source, matcher=None):
+    """Why ``path`` may not be listed under ``source``, or None if it may.
+
+    Library Health is about the library. A file under TARGET is a download
+    waiting to be filed and is never listed, whoever reports it. A file under
+    WATCH is listed only by the folder monitor's own sources
+    (``WATCH_REPORT_SOURCES``). ``matcher`` is a
+    ``helpers.library.staging_matcher()`` for a caller checking many paths.
+    """
+    try:
+        if matcher is None:
+            from helpers.library import staging_matcher
+
+            matcher = staging_matcher()
+        kind = matcher(path) or matcher(path, is_dir=True)
+    except Exception as e:
+        app_logger.debug(f"Staging check failed for {path}: {e}")
+        return None
+    if kind is None:
+        return None
+    if kind == "watch" and source in WATCH_REPORT_SOURCES:
+        return None
+    return kind
+
+
 def record_problem(path, source, exc=None, error_class=None, error_message=None):
     """Record — or re-record — that ``path`` failed under ``source``.
 
@@ -130,10 +161,15 @@ def record_problem(path, source, exc=None, error_class=None, error_message=None)
     from it; pass ``error_class``/``error_message`` directly for failures that
     are not exceptions. Returns True if the row was written.
 
+    A path under TARGET, or under WATCH from anything but the folder monitor's
+    own sources, is refused (``staging_refusal``): False, nothing written.
+
     Never raises.
     """
     global _cap_warned
     try:
+        if staging_refusal(path, source) is not None:
+            return False
         if exc is not None:
             from helpers import archive_error_detail
 

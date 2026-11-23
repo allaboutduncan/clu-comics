@@ -664,3 +664,39 @@ class TestDeleteFolder:
             resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
             assert resp.status_code == 404
             self.trash.assert_not_called()
+
+
+class TestListCost:
+    def test_the_page_asks_for_a_screenful_not_everything(self):
+        """Each listed row costs the server up to two stat calls on what is
+        often a network mount; the page used to take 500 rows on every load
+        and reloads after every action."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        src = (root / "static" / "js" / "problem_files.js").read_text(encoding="utf-8")
+        assert "var LIST_PAGE = 100;" in src
+        assert "params.set('limit', String(listLimit));" in src
+        assert 'id="pf-more"' in (root / "templates" / "problem_files.html").read_text(
+            encoding="utf-8")
+
+    def test_listing_does_not_log_a_line_per_row(self, client, tmp_path, caplog):
+        """The Search context is parsed with the app's filename parser, which
+        logged at INFO on every match: about 500 lines per page load."""
+        import logging
+
+        from core.problem_files import SOURCE_THUMBNAIL, record_problem
+
+        for i in range(5):
+            # On disk: a listed file that is provably gone is pruned on sight.
+            (tmp_path / f"Batman {i:03d} (2016).cbz").write_bytes(b"not a zip")
+            record_problem(str(tmp_path / f"Batman {i:03d} (2016).cbz"), SOURCE_THUMBNAIL,
+                           error_class="BadZipFile", error_message="File is not a zip file")
+        with caplog.at_level(logging.INFO):
+            data = client.get("/api/problem-files").get_json()
+        assert len(data["problems"]) == 5
+        assert data["problems"][0]["search"]["series"]
+        noisy = [r.getMessage() for r in caplog.records
+                 if "Matched " in r.getMessage() or "pattern matched" in r.getMessage()
+                 or " matched: " in r.getMessage()]
+        assert noisy == []
