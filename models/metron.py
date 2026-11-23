@@ -537,7 +537,8 @@ def purge_arc_issues_cache(arc_id, api=None) -> int:
     )
 
 
-# mokkari 5 Session's read methods, plus ``collection_scrobble`` -- the one
+# mokkari 5 Session's read methods (through 5.2, which added
+# ``issues_by_cover_hash``), plus ``collection_scrobble`` -- the one
 # write CLU sends. Every other write (``*_post``, ``*_patch``,
 # ``collection_add``...) is deliberately absent, so it cannot be called.
 _MOKKARI_READS = frozenset({
@@ -545,7 +546,7 @@ _MOKKARI_READS = frozenset({
     "characters_list", "collection", "collection_missing_issues",
     "collection_missing_series", "collection_scrobble", "collection_stats",
     "collections_list", "creator", "creators_list", "imprint", "imprints_list",
-    "issue", "issues_list", "publisher", "publishers_list", "pull_list",
+    "issue", "issues_by_cover_hash", "issues_list", "publisher", "publishers_list", "pull_list",
     "pull_list_issues", "pull_list_series", "reading_list", "reading_list_items",
     "reading_lists_list", "role_list", "series", "series_issues_list",
     "series_list", "series_type_list", "team", "team_issues_list", "teams_list",
