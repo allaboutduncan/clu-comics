@@ -245,7 +245,7 @@ class TestOneMillionException:
         ("Action Comics 1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
         ("Superman 1000000 (1998).cbz", "Superman 1000000 (1998).cbz"),
         ("Action Comics #1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
-        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998)"),
+        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998).cbz"),
         ("Superman 1000000 (1998) (digital) (Son of Ultron).cbz",
          "Superman 1000000 (1998).cbz"),
     ])
@@ -1270,6 +1270,67 @@ class TestTryRuleEngine:
         )
         result = try_rule_engine("batman 5.cbz", str(cfg))
         assert result == "Batman 005.cbz"
+
+    # #843: five shipped rules ended in a greedy ".*(?P<ext>\.\w+)?$". The ".*"
+    # took the extension, the optional group matched empty, and the file was
+    # renamed on disk with no extension at all.
+    @pytest.mark.parametrize("filename,expected", [
+        # rule40
+        ("Spider-Man 2099 (1992) #44 (digital) (Colecionadores.GO).cbz",
+         "Spider-Man 2099 044 (1992).cbz"),
+        ("Spider-Man 2099 (1992) #44.cbr", "Spider-Man 2099 044 (1992).cbr"),
+        # rule85_yearmonth
+        ("Hokum & Hex v1 001 (199309) (digital).cbz", "Hokum & Hex v1 001 (1993).cbz"),
+        # rule55
+        ("199309 Hokum & Hex 001 ( ) (digital).cbz", "Hokum & Hex 001 (1993).cbz"),
+        # rule201_one_million
+        ("Action Comics (1998) #1000000 (digital).cbz",
+         "Action Comics 1000000 (1998).cbz"),
+    ])
+    def test_shipped_rules_keep_the_extension(self, filename, expected):
+        from cbz_ops.rename import try_rule_engine
+        assert try_rule_engine(filename, "config/rename_rules.ini", width=3) == expected
+
+    def test_rule30_keeps_the_extension(self, tmp_path):
+        # rule60 outranks rule30 for every name it can match, so the shipped
+        # pattern is exercised on its own.
+        import configparser
+        from cbz_ops.rename import try_rule_engine
+        cp = configparser.ConfigParser()
+        cp.read("config/rename_rules.ini")
+        cfg = tmp_path / "rules.ini"
+        cfg.write_text(
+            "[RENAME]\n"
+            f"rule30.pattern = {cp['RENAME']['rule30.pattern']}\n"
+            f"rule30.output = {cp['RENAME']['rule30.output']}\n"
+        )
+        assert try_rule_engine(
+            "Mighty Comics 1985-03 ( 12) (1985) (digital).cbz", str(cfg), width=3
+        ) == "Mighty Comics 012 (1985).cbz"
+
+    def test_no_shipped_rule_has_a_greedy_tail_before_an_optional_ext(self):
+        import configparser
+        import re
+        cp = configparser.ConfigParser()
+        cp.read("config/rename_rules.ini")
+        greedy = [k for k, v in cp["RENAME"].items()
+                  if k.endswith(".pattern") and re.search(r"\.\*\(\?P<ext>[^)]*\)\?\$$", v)]
+        assert greedy == []
+
+    def test_engine_restores_an_extension_the_rule_did_not_capture(self, tmp_path):
+        # The engine itself must not depend on every rule being written
+        # carefully: an optional ext group that did not participate is None.
+        from cbz_ops.rename import try_rule_engine
+        cfg = tmp_path / "rules.ini"
+        cfg.write_text(
+            "[RENAME]\n"
+            "r.pattern = ^(?P<series>.*?)\\s*\\((?P<year>\\d{4})\\)\\s*#(?P<issue>\\d{1,4}).*(?P<ext>\\.\\w+)?$\n"
+            "r.output = {series|title} {issue|pad} ({year}){ext}\n"
+            "r.priority = 100\n"
+        )
+        assert try_rule_engine("Batman (1990) #5 (digital).cbz", str(cfg)) == "Batman 005 (1990).cbz"
+        # No extension to restore: nothing is invented.
+        assert try_rule_engine("Batman (1990) #5", str(cfg)) == "Batman 005 (1990)"
 
 
 # ===== parentheses_replacer =====
