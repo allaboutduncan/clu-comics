@@ -432,8 +432,11 @@ def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini", width: i
         app_logger.debug(f"Rule {name} (priority {prio}) matched: {filename}")
         g = m.groupdict()
 
-        # ensure ext available
-        g.setdefault("ext", g.get("extension", ext))
+        # ensure ext available. An optional (?P<ext>...)? group that did not
+        # participate is None, which setdefault() leaves alone, so a rule whose
+        # greedy tail swallowed the extension renamed the file without one (#843).
+        if not g.get("ext"):
+            g["ext"] = g.get("extension") or ext
 
         # normalize common fields
         if "series" in g:
