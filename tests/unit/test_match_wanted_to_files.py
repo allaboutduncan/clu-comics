@@ -122,6 +122,50 @@ class TestFilenameMatching:
         assert matches[0]["src"] == target
 
 
+class TestPageCountGiant:
+    """#807: a "<Series> - 80 Page Giant 001" in a pack was filed as #80, and
+    the real #1 beside it was left in TARGET."""
+
+    def test_only_the_real_issues_are_filed(self, tmp_path):
+        series_dir = tmp_path / "Green Lantern"
+        series_dir.mkdir()
+        names = [
+            "Green Lantern V3 - 80 Page Giant 001 (1998).cbz",
+            "Green Lantern V3 001 (1990).cbz",
+            "Green Lantern V3 080 (1996).cbz",
+        ]
+        files = []
+        for name in names:
+            path = str(tmp_path / name)
+            _touch(path)
+            files.append((name, path))
+
+        wanted = [
+            _wanted("Green Lantern", "1", str(series_dir)),
+            _wanted("Green Lantern", "80", str(series_dir)),
+        ]
+        matches = match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+        filed = {m["issue"]["number"]: m["filename"] for m in matches}
+        assert filed == {"1": names[1], "80": names[2]}
+
+    def test_the_giant_alone_is_left_in_target(self, tmp_path):
+        series_dir = tmp_path / "Green Lantern"
+        series_dir.mkdir()
+        name = "Green Lantern V3 - 80 Page Giant 001 (1998).cbz"
+        path = str(tmp_path / name)
+        _touch(path)
+
+        wanted = [
+            _wanted("Green Lantern", "1", str(series_dir)),
+            _wanted("Green Lantern", "80", str(series_dir)),
+        ]
+        assert match_wanted_issues_to_files(
+            wanted, [(name, path)], PATTERN, alias_lookup=_no_aliases
+        ) == []
+
+
 # ---- alias matching -----------------------------------------------------
 
 class TestAliasMatching:

@@ -250,3 +250,41 @@ class TestProtectedDirsIsBuiltFromEverySeries:
         assert min(a.lineno for a in assigns) < min(
             loop.lineno for loop in series_loops
         )
+
+
+class TestAutoMetadataFollowsTheFiledIssue:
+    """#807: the fetchers re-read the issue number from the filename. A file
+    filed as #80 whose name reads as #1 was tagged and renamed as #1, so the
+    fetch is skipped when the two disagree."""
+
+    FETCHERS = ("auto_fetch_metron_metadata", "auto_fetch_comicvine_metadata")
+
+    def _guard(self, func_node):
+        for node in ast.walk(func_node):
+            if isinstance(node, ast.If) and _calls(node.test, "filename_contradicts_issue"):
+                return node
+        pytest.fail("no `if filename_contradicts_issue(...)` in the match loop")
+
+    def test_the_fetchers_run_only_when_the_filename_agrees(self, func_node):
+        guard = self._guard(func_node)
+        for name in self.FETCHERS:
+            assert not any(_calls(stmt, name) for stmt in guard.body), (
+                f"{name} runs in the branch where the filename contradicts the issue"
+            )
+            assert any(_calls(stmt, name) for stmt in guard.orelse), (
+                f"{name} is not under the guard's else"
+            )
+
+    def test_no_fetcher_call_escapes_the_guard(self, func_node):
+        guard = self._guard(func_node)
+        for name in self.FETCHERS:
+            guarded = sum(len(_calls(stmt, name)) for stmt in guard.orelse)
+            assert len(_calls(func_node, name)) == guarded
+
+    def test_the_skip_is_logged_as_a_warning(self, func_node):
+        guard = self._guard(func_node)
+        assert any(_attr_calls(stmt, "warning") for stmt in guard.body)
+
+    def test_the_guard_is_asked_about_the_issue_that_was_filed(self, func_node):
+        call = _calls(self._guard(func_node).test, "filename_contradicts_issue")[0]
+        assert "issue['number']" in ast.unparse(call.args[1])

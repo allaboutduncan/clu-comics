@@ -188,6 +188,42 @@ the archive, wrapper-folder or page names.
 Tests: `tests/unit/test_cover_only_archive.py`, `TestCoverOnlyArchives` in
 `tests/unit/test_match_wanted_to_files.py`.
 
+### A page count is not the issue, and the tagger follows the filer (#807)
+
+`Green Lantern V3 - 80 Page Giant 001 (1998).cbz` was filed as Green Lantern
+#80, then tagged and renamed as #1, and the real #1 in the same pack stayed in
+TARGET. Two fixes, either of which would have stopped it.
+
+- **`_PAGE_COUNT_AHEAD` is a lookahead on the issue number, added only with
+  `strict_gap`.** A format name that starts with digits gets past `_STRICT_GAP`
+  (no letters before the number), and the tail after the number is a wildcard.
+  A number followed by "Page Giant" or "Page (Super) Spectacular" is refused.
+- **It is not a `PUBLICATION_TYPES` keyword, on purpose.**
+  `names_other_publication_type` reads everything before the first `(` with no
+  idea where the number is, and `Superman 183 - 80 Page Giant (1966)` is
+  Superman #183. The setting also feeds the GetComics scorer.
+- **The loose matcher is untouched**, so no `collection_status` purge shipped. A
+  Giant already sitting in a series folder is still painted as #80 there.
+- **`filename_contradicts_issue` gates the auto-fetch in
+  `process_incoming_wanted_issues`.** The fetchers read the number from the
+  filename again; when it is not the issue just filed, the fetch is skipped
+  with one WARNING. Only positive disagreement counts: a name with no readable
+  number (a ComicInfo-tier match) is still tagged. The fetchers do not take the
+  matched issue as an argument yet.
+- **A volume marker's number is the issue only when no other number comes
+  straight after it.** `_STRICT_GAP` used to take the `V` and leave its digit,
+  so `Green Lantern V3 045` matched #3 as well as #45. The gap now has two
+  volume alternatives: the marker with its number consumed (`Batman v2 012` is
+  #12), and the marker alone with a lookahead. `Saga v07 (2015)`,
+  `Saga v07 2015` and `Series V02 - Title 2026` are still the volume (a
+  following year or title text is not an issue number). Strict only.
+
+Tests: `TestPageCountIsNotTheIssue`, `TestVolumeNumberIsNotTheIssue` and `TestFilenameContradictsIssue` in
+`tests/unit/test_filename_pattern.py`, `TestPageCountGiant` in
+`tests/unit/test_match_wanted_to_files.py`,
+`TestAutoMetadataFollowsTheFiledIssue` in
+`tests/unit/test_wanted_scan_target_guard.py`.
+
 ### Never reuse `VARIANT_TYPES` for filename matching
 
 > **Never reuse `VARIANT_TYPES` for filename matching.** It carries adjectives
