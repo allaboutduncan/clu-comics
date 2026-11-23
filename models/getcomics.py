@@ -4472,6 +4472,12 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     # here is how the two would silently stop agreeing.
     _slugify = _slugify_entry_title
 
+    # One session per page (the callers run this from a thread pool, and a
+    # requests session is not thread-safe) -- closed in the finally below. A
+    # cloudscraper session that is merely dropped is never reclaimed, even by
+    # gc.collect(): it keeps its socket and about a megabyte for the life of
+    # the process. This function runs once per page, so a sweep leaked
+    # hundreds of each (#842).
     scraper = cloudscraper.create_scraper()
     # Load stored Last-Modified for conditional fetch (skip if page unchanged).
     # Closed before the fetch: no connection is held across network I/O.
@@ -4650,6 +4656,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     except Exception as e:
         logger.debug(f"Error scraping {url}: {e}")
         return []
+    finally:
+        close_quietly(scraper)
 
 
 def _store_scraped_rows(rows: list) -> None:
