@@ -1146,8 +1146,11 @@ class TestScoreGetcomicsResult:
 
     def test_year_match_adds_points(self):
         from models.getcomics import score_getcomics_result
-        with_year, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
-        without_year, _, _ = score_getcomics_result("Batman #1", "Batman", "1", 2020)
+        # The clock is pinned: an undated title for a back-catalogue issue is
+        # also capped below ACCEPT (#730), which would hide the arithmetic.
+        with patch("models.getcomics._current_year", return_value=2020):
+            with_year, _, _ = score_getcomics_result("Batman #1 (2020)", "Batman", "1", 2020)
+            without_year, _, _ = score_getcomics_result("Batman #1", "Batman", "1", 2020)
         # Year match adds 20; yearless title searched with specific year gets -10 penalty
         assert with_year - without_year == 30
 

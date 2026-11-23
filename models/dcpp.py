@@ -156,7 +156,7 @@ def search_dcpp_for_issue(
     ``chosen`` ((result, score) or None), ``tier``, ``best_accept``,
     ``best_fallback``, ``all_results`` (scored dicts) and ``errors``.
     """
-    from models.getcomics import score_getcomics_result, accept_result
+    from models.getcomics import score_getcomics_result, accept_result, better_fallback
 
     empty = {
         "chosen": None, "tier": None, "best_accept": None,
@@ -280,8 +280,8 @@ def search_dcpp_for_issue(
             if best_accept is None or score > best_accept[1]:
                 best_accept = (entry, score)
             single_found = True
-        elif decision == "FALLBACK" and best_fallback is None:
-            best_fallback = (entry, score)
+        elif decision == "FALLBACK":
+            best_fallback = better_fallback(best_fallback, entry, score)
 
     chosen = best_accept or best_fallback
     return {

@@ -30,6 +30,7 @@ from models.getcomics import (
     download_filename,
     score_getcomics_result,
     accept_result,
+    better_fallback,
     get_series_alias_list,
     select_download_url,
     PROVIDER_LABELS,
@@ -486,8 +487,8 @@ def _run_wanted_simulation(limit, target_series_id, target_series_name):
                     if best_accept is None or score > best_accept[1]:
                         best_accept = (result, score)
                     single_found = True
-                elif decision == "FALLBACK" and best_fallback is None:
-                    best_fallback = (result, score)
+                elif decision == "FALLBACK":
+                    best_fallback = better_fallback(best_fallback, result, score)
 
             chosen = best_accept or best_fallback
             if chosen:
