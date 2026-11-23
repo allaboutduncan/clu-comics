@@ -321,8 +321,37 @@ cap: there is no shared call site. Tests:
   fallback. A series whose own name holds the colon matches whole first.
 - **Fan-made, unofficial and bootleg editions are -100** (`_UNOFFICIAL_MARKER`),
   read from the text after the series name.
-- Not covered: a collected-edition series matching a single issue (the
-  original report in #730, a follow-up), and a limit on pack size.
+- Not covered: a limit on pack size.
+
+### A Collected Series Needs a Collected Title (#730)
+
+A trade/hardcover series has "issues" that are volumes. "Laura Kinney –
+Wolverine #2 (2025)", the single, scored 95 for volume 2 of the trade series,
+and the real volume ("… Vol. 2 – My So-Called Perfect Life (TPB)") scored -40,
+so the series could only ever download the wrong thing.
+
+- **`collected_series` is asked of the series, never guessed from the title**:
+  `helpers.collection.is_collected_series(series_name, issues)`, the filer's
+  own test, computed once per series by the sweep and the simulation and
+  passed down to `score_getcomics_result`, `search_getcomics_for_issue` (the
+  scrape-index and sitemap tiers answer *instead of* a live search, so they
+  must reject the single too), Usenet and DC++. `None` means not known and
+  scores as single issues: reading-list items and the manual search.
+- **`score_comic` dispatches.** `_score_collected_title` reads a title with a
+  collected marker ("Vol. N", "vN", "Book N", or a format word); everything
+  else goes to `_score_issue_title`, and for a collected series a result that
+  matched an issue number or a range there is -100. The unnumbered one-shot
+  rule is the only way through without a marker.
+- **The volume number is the issue number**, and a format word with no number
+  is only ever #1, with the wanted year. Text between the series name and the
+  marker is another book; the subtitle after it is ignored. A run of volumes
+  ("Vol. 1 – 9") is refused: nothing downstream can split it.
+- **`is_collected_series` also counts an issue named only for its format**
+  ("TPB", "TPB/HC"), which is how ComicVine names a one-volume trade's only
+  issue. The filer shares the function, so such a series now reads a `v01`
+  filename marker as the number too. That only adds matches.
+- DC++'s `_normalize_hub_title` drops the `vN` token before scoring, so a
+  collected series finds nothing there rather than the single. Not fixed.
 
 ### Variant Keywords
 

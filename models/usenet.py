@@ -102,6 +102,7 @@ def search_usenet_for_issue(
     search_variants=None,
     series_aliases=None,
     limit=100,
+    collected_series=None,
 ):
     """Search enabled indexers for an issue and score the results.
 
@@ -167,6 +168,7 @@ def search_usenet_for_issue(
             publisher_name=publisher_name,
             series_aliases=series_aliases,
             return_issue_matched=True,
+            collected_series=collected_series,
         )
         decision = accept_result(
             score, is_range, series_match, single_issue_found=single_found
@@ -275,6 +277,7 @@ def try_download_for_issue(
     search_variants=None,
     series_aliases=None,
     dry_run=False,
+    collected_series=None,
 ):
     """Search Usenet for an issue and (unless dry_run) submit the best match.
 
@@ -291,6 +294,7 @@ def try_download_for_issue(
         publisher_name=publisher_name,
         search_variants=search_variants,
         series_aliases=series_aliases,
+        collected_series=collected_series,
     )
     out = {
         "source": "usenet",
