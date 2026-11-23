@@ -239,6 +239,116 @@ def test_maybe_unwrap_failure_keeps_source(handler, tmp_path, monkeypatch):
     assert not os.path.exists(str(work)), "work dir removed even on failure"
 
 
+def _failing_release(handler, tmp_path, monkeypatch, partial=False):
+    """A release whose unwrap yields nothing (or, partial, one comic). Returns
+    (handler, folder, unwrap call list, recorded rows, cleared rows)."""
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    h, watch, target = handler
+    rel = _make_release(watch, "Broken.Release")
+    calls, recorded, cleared = [], [], []
+
+    def fake_unwrap(folder, root, **k):
+        calls.append(folder)
+        work = tmp_path / f"work{len(calls)}"
+        work.mkdir()
+        comics = []
+        if partial:
+            comic = work / "x.cbz"
+            _write(str(comic))
+            comics = [str(comic)]
+        return UnwrapResult(comics, bool(partial), None if partial else "no_comics",
+                            partial, str(work))
+
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release", fake_unwrap)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda path, source, **k: recorded.append(
+                            (path, source, k.get("error_class"))))
+    monkeypatch.setattr(monitor, "clear_problem",
+                        lambda path, source=None: cleared.append((path, source)))
+    return h, rel, calls, recorded, cleared
+
+
+def test_failed_unwrap_is_listed_on_library_health(handler, tmp_path, monkeypatch):
+    """#844: a release that cannot be extracted only logged a warning."""
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(handler, tmp_path, monkeypatch)
+
+    assert h._maybe_unwrap_release_folder(rel) is True
+    assert recorded == [(os.path.abspath(rel), monitor.SOURCE_UNPACK,
+                         monitor.CLASS_RELEASE_UNWRAP_FAILED)]
+
+
+def test_failed_unwrap_backs_off_and_is_not_re_extracted(handler, tmp_path, monkeypatch):
+    """Unchanged parts are not extracted again inside the cooldown, and the
+    cooldown grows with each failure instead of repeating every sweep."""
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(handler, tmp_path, monkeypatch)
+    key = os.path.abspath(rel)
+
+    h._maybe_unwrap_release_folder(rel)
+    assert h._maybe_unwrap_release_folder(rel) is True, "still claimed while cooling down"
+    assert len(calls) == 1 and len(recorded) == 1
+
+    # Cooldown over, same parts: one more attempt, and a longer wait.
+    fp, failures, _ = h._failed_unwraps[key]
+    h._failed_unwraps[key] = (fp, failures, 0)
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 2
+    fp, failures, retry_at = h._failed_unwraps[key]
+    assert failures == 2
+    base = max(h.reconcile_interval_minutes, 5) * 60
+    assert retry_at - time.time() > base * 1.5
+    assert retry_at - time.time() <= monitor.ORPHAN_MIN_AGE_SECONDS + 1
+
+
+def test_failed_unwrap_retries_at_once_when_a_part_arrives(handler, tmp_path, monkeypatch):
+    """The missing first volume turning up must not wait out the cooldown."""
+    h, rel, calls, _, _ = _failing_release(handler, tmp_path, monkeypatch)
+
+    h._maybe_unwrap_release_folder(rel)
+    _write(os.path.join(rel, "--bbyvt3ga.z01"))
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 2
+
+
+def test_partial_unwrap_is_listed_and_not_re_handed_off(handler, tmp_path, monkeypatch):
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(
+        handler, tmp_path, monkeypatch, partial=True)
+
+    h._maybe_unwrap_release_folder(rel)
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 1, "the staged comic leaving must not read as a changed release"
+    assert [r[2] for r in recorded] == [monitor.CLASS_RELEASE_UNWRAP_PARTIAL]
+    assert os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "parts kept"
+
+
+def test_successful_unwrap_clears_the_library_health_row(handler, tmp_path, monkeypatch):
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    h, watch, target = handler
+    rel = _make_release(watch, "Fixed.Release")
+    work = tmp_path / "work"
+    work.mkdir()
+    comic = work / "x.cbz"
+    _write(str(comic))
+    cleared = []
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release",
+                        lambda folder, root, **k: UnwrapResult([str(comic)], True, None, False, str(work)))
+    monkeypatch.setattr(monitor, "clear_problem",
+                        lambda path, source=None: cleared.append((path, source)))
+
+    h._maybe_unwrap_release_folder(rel)
+    assert (os.path.abspath(rel), monitor.SOURCE_UNPACK) in cleared
+
+
 def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
     """End-to-end with real zip extraction (no RAR binary needed): a release of
     obfuscated zip parts carrying a .cbz is unwrapped, renamed, and moved to
@@ -490,6 +600,42 @@ def test_rar_in_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch):
     h._process_file(rpath)
 
     assert os.path.exists(rpath), "the part is left for the unwrapper"
+
+
+@pytest.mark.parametrize("name", ["f23734c.r00", "f23734c.r01", "f23734c.nfo", "file_id.diz"])
+def test_any_file_of_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch, name):
+    """A scene release with old-style volumes (.r00-.r02, no .rar) plus cruft:
+    the event for any one of its files hands the folder to the unwrapper.
+    Before, these were not archives to _process_file and each was moved raw."""
+    import monitor
+    h, watch, target = handler
+    rel = os.path.join(watch, "Marvel.-.FF.2011.No.12.2012.HYBRID.COMIC.eBook-21A1")
+    os.makedirs(rel)
+    for part in ("f23734c.r00", "f23734c.r01", "f23734c.r02", "f23734c.nfo", "file_id.diz"):
+        _write(os.path.join(rel, part))
+    assert monitor.classify_release_folder(rel) == monitor.MULTIPART_ARCHIVE
+
+    offered = []
+    monkeypatch.setattr(h, "_maybe_unwrap_release_folder", lambda p: offered.append(p) or True)
+    monkeypatch.setattr(h, "_move_file", lambda p: pytest.fail(f"moved a release part alone: {p}"))
+
+    assert h._process_file(os.path.join(rel, name)) is True
+    assert offered == [os.path.abspath(rel)]
+    assert os.listdir(target) == []
+
+
+def test_a_file_in_an_ordinary_subfolder_is_still_moved(handler, monkeypatch):
+    import monitor
+    h, watch, target = handler
+    sub = os.path.join(watch, "Batman")
+    os.makedirs(sub)
+    path = os.path.join(sub, "notes.txt")
+    _write(path)
+    moved = []
+    monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p) or True)
+    monkeypatch.setattr(h, "_rename_file", lambda p: None)
+    h._process_file(path)
+    assert moved == [path]
 
 
 def test_strip_comic_extension():

@@ -86,6 +86,29 @@ Two consequences that are easy to undo by accident:
 Multipart/hybrid release **folders** still go to `unwrap_release` first, and
 `_process_archive` re-checks that before touching a part.
 
+#### A release folder is offered to the unwrapper by every file in it (#844)
+
+`.r00`, `.nfo` and `file_id.diz` are not in `ARCHIVE_EXTS`, so their own file
+events never reached `_process_archive`'s folder check and each part was
+renamed and moved to TARGET by itself. The reconcile sweep offers folders
+first, which is why this only showed where file events arrive (not on NFS).
+`_process_file` therefore offers the parent of **any** file in a WATCH
+subfolder to `_maybe_unwrap_release_folder` before the plain path.
+
+- **A folder in `_in_flight_dirs` is skipped there.** The unwrapper's own
+  staged output comes back through `_process_file` while the claim is held;
+  without the skip it would be answered "claimed" and never moved.
+- **A failed unwrap is `_report_unwrap_failure`**: a `SOURCE_UNPACK` row on the
+  *folder* (`CLASS_RELEASE_UNWRAP_FAILED` / `_PARTIAL`, the only directory that
+  source lists), cleared by a later full success, and an exponential backoff
+  capped at `ORPHAN_MIN_AGE_SECONDS`. It was a fixed 5-minute cooldown with a
+  WARNING per attempt and nothing on any page. The WARNING is first-failure
+  only now.
+- **`_failed_unwraps` is `(fingerprint, failures, retry_at)`**, the fingerprint
+  being the archive *parts* only. A missing volume arriving retries at once; a
+  comic staged by a partial unwrap leaving the folder must not, or the 24h
+  partial hold would re-hand-off the same comics on the next sweep.
+
 #### A damaged archive must be opened once, not once per sweep
 
 `zipfile.extractall` writes members in order and raises on the first damaged

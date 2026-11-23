@@ -77,6 +77,15 @@ comic: the file never reached `/data`, which is why nothing else reports it.
 `is_critical_path` protects the WATCH *folder*, not files inside it, so Delete
 still works from the page.
 
+`unpack` also lists one kind of **directory**: a multipart release folder the
+monitor could not unwrap (`RELEASE_FOLDER_CLASSES`, #844). `list_problems`
+marks it `is_release_folder` from the recorded class, not a stat. The page
+offers Delete, Dismiss and Remove only: no Search (`_attach_search_context`
+skips it, because a replacement claim files onto the row's path) and no
+Rebuild. `/api/problem-files/delete` trashes such a folder with its parts and
+skips the empty-folder re-inspection; any other directory still has to be a
+listed, still-empty `empty-folder` row.
+
 **WATCH and TARGET are not the library, and `record_problem` enforces it**
 (`staging_refusal`). A path under TARGET is refused whatever the source; a
 path under WATCH is accepted only from the monitor's own sources

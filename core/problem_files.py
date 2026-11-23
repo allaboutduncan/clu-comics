@@ -100,6 +100,13 @@ CLASS_RAR_PARTIAL = "RarExtractIncomplete"
 # A PDF the folder monitor could not turn into a CBZ. The row's path is the
 # PDF in WATCH: it is held there, never moved to TARGET unconverted.
 CLASS_PDF_FAILED = "PdfConversionFailed"
+# A multipart/scene release *folder* in WATCH that the monitor could not
+# unwrap (a missing or damaged volume). The row's path is the folder, the one
+# directory SOURCE_UNPACK lists; nothing was moved to TARGET (FAILED), or only
+# what did extract was (PARTIAL), and the parts are kept either way.
+CLASS_RELEASE_UNWRAP_FAILED = "ReleaseUnwrapFailed"
+CLASS_RELEASE_UNWRAP_PARTIAL = "ReleaseUnwrapPartial"
+RELEASE_FOLDER_CLASSES = (CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL)
 CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
@@ -495,6 +502,13 @@ def list_problems(
                 row["source_label"] = SOURCE_LABELS.get(row["source"], row["source"])
                 row["dismissed"] = bool(row.get("dismissed_at"))
                 row["reachable"] = os.path.exists(row["path"])
+                # A release folder the monitor could not unwrap. Told by the
+                # recorded class, not a stat: the page needs to know what the
+                # row *is* even while the folder cannot be reached.
+                row["is_release_folder"] = (
+                    row["source"] == SOURCE_UNPACK
+                    and row.get("error_class") in RELEASE_FOLDER_CLASSES
+                )
                 row["can_retry"] = row["source"] in (
                     SOURCE_THUMBNAIL, SOURCE_SERIES_JSON,
                     SOURCE_INTEGRITY, SOURCE_ORPHAN, SOURCE_EMPTY_FOLDER,
@@ -649,6 +663,27 @@ _RULES = (
         "Replace the file. Rebuild cannot repair a PDF; the folder monitor "
         "tries the conversion again on its own.",
         ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_RELEASE_UNWRAP_FAILED.lower(),),
+        "This release folder in the download folder could not be unpacked: a "
+        "volume of its multi-part archive is missing or damaged. Nothing was "
+        "filed and the folder was left as it is.",
+        "Download the release again, add the missing part to the folder, or "
+        "delete the folder. The folder monitor tries again on its own, at "
+        "once when a part changes.",
+        ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_RELEASE_UNWRAP_PARTIAL.lower(),),
+        "Only some of this release folder's archive parts could be unpacked. "
+        "What came out was processed; the parts were kept in the download "
+        "folder.",
+        "Check what arrived. Delete the folder once you have what you need, "
+        "or download the release again.",
+        ACTION_INSPECT, False, False,
     ),
     (
         (),

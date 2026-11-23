@@ -30,6 +30,7 @@ from core.database import init_db
 # kind of damaged file /library-health exists to surface.
 from core.problem_files import (
     record_problem, clear_problem, SOURCE_UNPACK, SOURCE_CONVERT, CLASS_PDF_FAILED,
+    CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL,
 )
 
 load_config()
@@ -110,9 +111,10 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # the per-file loop from moving the obfuscated archive parts of a release
         # while its folder-level unwrap is mid-flight. Same lock as _in_flight.
         self._in_flight_dirs = set()
-        # Multipart release folders to skip until a timestamp: failed unwraps get
-        # a short retry cooldown; partial ones a long skip. In-memory (cleared on
-        # restart) so a release the user later fixes is eventually retried.
+        # Multipart release folders on cooldown, as (parts fingerprint, failures,
+        # retry_at); see _report_unwrap_failure. Failed unwraps back off; partial
+        # ones get a long skip. In-memory (cleared on restart), and a changed
+        # part set lifts the cooldown, so a release the user fixes is retried.
         self._failed_unwraps = {}
 
         # Files whose processing failed, as abspath -> (fingerprint, failures,
@@ -321,8 +323,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         # Cooldown: a folder that recently failed/partially unwrapped is left
         # pruned (claimed) but not retried until its skip window elapses.
-        skip_until = self._failed_unwraps.get(folder_abs)
-        if skip_until and time.time() < skip_until:
+        if self._unwrap_backoff_active(folder_abs):
             monitor_logger.debug(f"Unwrap on cooldown, skipping: {folder_abs}")
             return True
 
@@ -342,11 +343,12 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             try:
                 if not result.comics:
-                    # Nothing emerged — keep the source intact, retry after a cooldown.
-                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
-                    self._failed_unwraps[folder_abs] = time.time() + cooldown
-                    monitor_logger.warning(
-                        f"Unwrap produced no comic ({result.reason}); keeping source: {folder_abs}"
+                    # Nothing emerged — keep the source intact, back off, and
+                    # put the folder on the Library Health page (#844).
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                        f"No comic could be extracted from this release "
+                        f"({result.reason}). A volume may be missing or damaged.",
                     )
                     return True
 
@@ -369,20 +371,27 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                         monitor_logger.error(f"Failed to stage unwrapped comic {comic}: {e}")
 
                 if not staged:
-                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
-                    self._failed_unwraps[folder_abs] = time.time() + cooldown
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                        "The release was extracted, but its comic could not be "
+                        "moved out of the scratch folder.",
+                    )
                     return True
 
                 if result.partial:
                     # Some parts failed to extract: hand off what we got but keep
                     # the source parts for manual recovery, and don't re-hand-off.
-                    monitor_logger.warning(
-                        f"Partial unwrap for {folder_abs}; keeping source parts for recovery"
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_PARTIAL,
+                        "Some archive parts of this release could not be "
+                        "extracted. What did come out was processed; the "
+                        "parts were kept.",
+                        delay=24 * 3600,
                     )
-                    self._failed_unwraps[folder_abs] = time.time() + 24 * 3600
                 else:
                     self._cleanup_release_cruft(folder_abs)
                     self._failed_unwraps.pop(folder_abs, None)
+                    clear_problem(folder_abs, SOURCE_UNPACK)
 
                 for s in staged:
                     self._handoff_unwrapped(s)
@@ -393,10 +402,78 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     shutil.rmtree(result.work_dir, ignore_errors=True)
         except Exception as e:
             monitor_logger.error(f"Error unwrapping release {folder_abs}: {e}")
+            self._report_unwrap_failure(
+                folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                f"The release could not be unwrapped: {e}",
+            )
             return True
         finally:
             with self._processing_lock:
                 self._in_flight_dirs.discard(folder_abs)
+
+
+    @staticmethod
+    def _release_fingerprint(folder_path):
+        """(name, size, mtime) of every archive part in a release folder.
+
+        Parts only: a comic staged by a partial unwrap comes and goes, and must
+        not read as "the release changed". A missing volume arriving does.
+        """
+        from helpers.unwrap import is_archive_part
+        parts = []
+        try:
+            for entry in os.listdir(folder_path):
+                if not is_archive_part(entry):
+                    continue
+                try:
+                    st = os.stat(os.path.join(folder_path, entry))
+                except OSError:
+                    continue
+                parts.append((entry, st.st_size, st.st_mtime))
+        except OSError:
+            return None
+        return tuple(sorted(parts))
+
+    def _unwrap_backoff_active(self, folder_abs):
+        """True when this release last failed, is unchanged, and is cooling down."""
+        entry = self._failed_unwraps.get(folder_abs)
+        if not entry:
+            return False
+        fingerprint, _failures, retry_at = entry
+        if self._release_fingerprint(folder_abs) != fingerprint:
+            # A part arrived or was replaced: new content, new attempt.
+            del self._failed_unwraps[folder_abs]
+            return False
+        return time.time() < retry_at
+
+    def _report_unwrap_failure(self, folder_abs, error_class, message, delay=None):
+        """Back a failed release off and list it on Library Health.
+
+        A release that cannot be extracted (a missing first volume, say) cannot
+        fix itself, and the orphan sweep never removes it. It used to be
+        re-extracted every cooldown for as long as it sat in WATCH, with one
+        WARNING per attempt and nothing on any page (#844). Now the retry backs
+        off, a changed part set earns a fresh attempt at once, the WARNING is
+        logged on the first failure only, and the folder gets a
+        ``SOURCE_UNPACK`` row, which a later success clears.
+        """
+        previous = self._failed_unwraps.get(folder_abs)
+        failures = (previous[1] + 1) if previous else 1
+        if delay is None:
+            base = max(self.reconcile_interval_minutes, 5) * 60
+            delay = min(base * (2 ** (failures - 1)), ORPHAN_MIN_AGE_SECONDS)
+        self._failed_unwraps[folder_abs] = (
+            self._release_fingerprint(folder_abs), failures, time.time() + delay
+        )
+        log = monitor_logger.warning if failures == 1 else monitor_logger.debug
+        log(
+            f"Release not unwrapped ({error_class}): {message} Keeping the "
+            f"source and retrying in {delay // 60:.0f}m; see the Library "
+            f"Health page: {folder_abs}"
+        )
+        record_problem(
+            folder_abs, SOURCE_UNPACK, error_class=error_class, error_message=message
+        )
 
 
     def on_created(self, event):
@@ -925,6 +1002,16 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             extension = os.path.splitext(filepath)[1].lower()
             if extension in ARCHIVE_EXTS:
                 return self._process_archive(filepath)
+
+            # Old-style volumes (".r00") and release cruft (".nfo") are not in
+            # ARCHIVE_EXTS, but their own file event must still hand the folder
+            # to the unwrapper, or each part is moved to TARGET on its own. A
+            # folder already being unwrapped is skipped: its output comes here.
+            parent = os.path.dirname(os.path.abspath(filepath))
+            if (parent != os.path.abspath(self.directory)
+                    and parent not in self._in_flight_dirs
+                    and self._maybe_unwrap_release_folder(parent)):
+                return True
 
             # A PDF is converted whichever way it got here: dropped loose,
             # extracted from a pack, or staged by the unwrapper. Only that
