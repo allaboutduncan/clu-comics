@@ -16,6 +16,7 @@ from helpers.collection import (
     strip_empty_groups,
     build_series_match_names,
     names_other_publication_type,
+    filename_contradicts_issue,
     issue_match_key,
 )
 
@@ -688,6 +689,154 @@ class TestStrictGap:
             self.PATTERN, self.SERIES, "3", strict_gap=True
         )
         assert not regex.match(self.SERIES + " " + "- x " * 60 + ".cbz")
+
+
+class TestPageCountIsNotTheIssue:
+    """#807: "Green Lantern V3 - 80 Page Giant 001" was filed as #80.
+
+    A format name that starts with a number gets past the letter-free gap, and
+    the tail after the number is a wildcard. The number of a "<n> Page Giant"
+    is a page count.
+    """
+
+    PATTERN = "{series_name} {issue_number}"
+    SERIES = "Green Lantern"
+
+    def _strict(self, series, number):
+        return generate_filename_pattern(self.PATTERN, series, number, strict_gap=True)
+
+    @pytest.mark.parametrize("filename", [
+        "Green Lantern V3 - 80 Page Giant 001 (1998).cbz",
+        "Green Lantern 80-Page Giant 002 (1999).cbz",
+        "Green Lantern 80 Page Giant 003.cbz",
+        "Green Lantern - 80_Page_Giant 001.cbz",
+    ])
+    def test_the_page_count_is_not_issue_80(self, filename):
+        assert not self._strict(self.SERIES, "80").match(filename)
+
+    def test_the_giant_is_not_its_own_number_either(self):
+        # Letters sit between the series name and "001", so the gap refuses it.
+        for number in ("1", "2", "3"):
+            assert not self._strict(self.SERIES, number).match(
+                f"Green Lantern V3 - 80 Page Giant 00{number} (1998).cbz"
+            )
+
+    def test_super_spectacular_is_a_page_count_too(self):
+        assert not self._strict("Batman", "100").match(
+            "Batman 100 Page Super Spectacular 001 (1971).cbz"
+        )
+
+    def test_the_real_issue_80_still_matches(self):
+        regex = self._strict(self.SERIES, "80")
+        assert regex.match("Green Lantern 080 (1997).cbz")
+        assert regex.match("Green Lantern V3 080 (1997).cbz")
+        assert regex.match("Green Lantern 080 - Page One (1997).cbz")
+
+    def test_a_giant_that_is_a_regular_issue_still_matches(self):
+        # Superman #183 IS an 80 Page Giant; the marker follows the number.
+        assert self._strict("Superman", "183").match(
+            "Superman 183 - 80 Page Giant (1966).cbz"
+        )
+
+    def test_the_giant_series_keeps_its_own_files(self):
+        assert self._strict("Green Lantern 80-Page Giant", "1").match(
+            "Green Lantern 80-Page Giant 001 (1998).cbz"
+        )
+
+    def test_the_loose_matcher_is_unchanged(self):
+        # Collection status stays as it was, so no cached match is purged.
+        regex = generate_filename_pattern(self.PATTERN, self.SERIES, "80")
+        assert regex.match("Green Lantern V3 - 80 Page Giant 001 (1998).cbz")
+
+
+class TestVolumeNumberIsNotTheIssue:
+    """#807: "Green Lantern V3 045" matched #3 as well as #45, because the gap
+    took the "V" and left its digit to be read as the issue number."""
+
+    PATTERN = "{series_name} {issue_number}"
+
+    def _strict(self, series, number):
+        return generate_filename_pattern(self.PATTERN, series, number, strict_gap=True)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "3", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "2", "Batman v2 012.cbz"),
+        ("Batman", "3", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "3", "Batman Volume 3 #50.cbz"),
+        ("X-Men", "2", "X-Men v2_012 (1992).cbz"),
+    ])
+    def test_the_volume_is_not_the_issue_when_an_issue_follows(
+        self, series, number, filename
+    ):
+        assert not self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "45", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "12", "Batman v2 012.cbz"),
+        ("Batman", "50", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "50", "Batman Volume 3 #50.cbz"),
+        ("Batman", "3", "Batman v3 003 (2016).cbz"),
+        ("Batman", "5", "Batman No. 5.cbz"),
+    ])
+    def test_the_issue_after_the_volume_still_matches(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Saga", "7", "Saga v07 (2015).cbz"),
+        ("Saga", "7", "Saga v07 2015.cbz"),
+        ("Saga", "7", "Saga v07.cbz"),
+        ("Absolute Flash", "2", "Absolute Flash V02 - Of Two Worlds 2025.cbz"),
+        ("Saga", "3", "Saga Vol. 3 (2014) (Digital).cbz"),
+    ])
+    def test_a_collected_volume_is_still_the_number(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    def test_the_loose_matcher_is_unchanged(self):
+        regex = generate_filename_pattern(self.PATTERN, "Batman", "2")
+        assert regex.match("Batman v2 012.cbz")
+
+
+class TestFilenameContradictsIssue:
+    """helpers.collection.filename_contradicts_issue (#807)."""
+
+    def test_the_giant_filed_as_80_contradicts(self):
+        assert filename_contradicts_issue(
+            "Green Lantern V3 - 80 Page Giant 001 (1998).cbz", "80", ["Green Lantern"]
+        )
+
+    def test_the_matching_issue_does_not(self):
+        assert not filename_contradicts_issue(
+            "Green Lantern 080 (1997).cbz", "80", ["Green Lantern"]
+        )
+
+    def test_padding_is_not_a_disagreement(self):
+        assert not filename_contradicts_issue("Batman 005.cbz", "5", ["Batman"])
+
+    def test_a_name_with_no_number_is_not_a_contradiction(self):
+        assert not filename_contradicts_issue("scan.cbz", "5", ["Batman"])
+
+    def test_a_number_inside_the_series_name_is_not_the_issue(self):
+        assert not filename_contradicts_issue(
+            "Spider-Man 2099 005 (1993).cbz", "5", ["Spider-Man 2099"]
+        )
+
+    def test_a_collected_volume_marker_counts_as_the_number(self):
+        assert not filename_contradicts_issue(
+            "Absolute Flash V02 - Of Two Worlds 2025.cbz", "2", ["Absolute Flash"]
+        )
+
+    def test_the_sign_is_part_of_the_number(self):
+        assert filename_contradicts_issue(
+            "Spider-Man -1 (1997).cbz", "1", ["Spider-Man"]
+        )
+        assert not filename_contradicts_issue(
+            "Spider-Man -1 (1997).cbz", "-1", ["Spider-Man"]
+        )
+
+    def test_a_suffixed_issue_agrees_with_itself(self):
+        assert not filename_contradicts_issue(
+            "Amazing Spider-Man 078.BEY (2022).cbz", "78.BEY", ["Amazing Spider-Man"]
+        )
 
 
 class TestLiteralSeparatorBetweenSeriesAndIssue:

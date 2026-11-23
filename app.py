@@ -1108,10 +1108,25 @@ def process_incoming_wanted_issues():
                     )
 
             # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-            app_logger.info(f"Auto-fetching metadata for: {final_path}")
+            # The fetchers read the issue number out of the filename again.
+            # When that is not the issue this file was just filed as, they
+            # would write another issue's metadata and rename the file to it
+            # (#807), so the file is left untagged for the user to look at.
             pre_fetch_path = final_path
-            final_path = auto_fetch_metron_metadata(final_path)
-            final_path = auto_fetch_comicvine_metadata(final_path)
+            if filename_contradicts_issue(
+                os.path.basename(final_path),
+                issue["number"],
+                [actual_series_name, issue["series_name"]],
+            ):
+                app_logger.warning(
+                    f"Skipping auto-metadata for {final_path}: filed as "
+                    f"'{actual_series_name} #{issue['number']}' but the "
+                    f"filename names another issue"
+                )
+            else:
+                app_logger.info(f"Auto-fetching metadata for: {final_path}")
+                final_path = auto_fetch_metron_metadata(final_path)
+                final_path = auto_fetch_comicvine_metadata(final_path)
 
             # Refresh the index entry (upsert) — metadata injection
             # changes size, and the fetchers may have renamed the file
@@ -3166,6 +3181,7 @@ def refresh_wanted_cache_background():
 # Moved to helpers/collection.py - re-exported for backward compatibility
 # Moved to helpers/collection.py - re-exported for backward compatibility
 from helpers.collection import (
+    filename_contradicts_issue,
     generate_filename_pattern,
     strip_year_token,
     strip_title_token,

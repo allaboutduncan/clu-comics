@@ -286,11 +286,36 @@ _STRICT_GAP = (
     r"(?:"
     r"\([^()]*\)"                                              # (2024) (Digital) (Zone-Empire)
     r"|\[[^\[\]]*\]"                                           # [2016] [c2c]
-    # Volume/issue markers, but only when digits follow: this lets
-    # "Batman No. 5" through while still rejecting "Batman - No Mans Land 005".
-    r"|(?:volume|vol|v|issues|issue|numbers|number|nos|no|num)\.?(?=[\s._\-]*\d)"
+    # Issue markers, but only when digits follow: this lets "Batman No. 5"
+    # through while still rejecting "Batman - No Mans Land 005".
+    r"|(?:issues|issue|numbers|number|nos|no|num)\.?(?=[\s._\-]*\d)"
+    # A volume marker with its number, consumed whole: "Batman v2 012" is #12.
+    r"|(?:volume|vol|v)\.?[\s._\-]*\d+(?!\d)"
+    # A volume marker whose number is left to be the issue ("Series v07
+    # (2015)", "Series V02 - Title 2026": a collected volume). Refused when
+    # another number comes straight after it, because then that one is the
+    # issue: "Green Lantern V3 045" used to match #3 as well as #45 (#807). A
+    # following year is not such a number ("Series v07 2015").
+    r"|(?:volume|vol|v)\.?"
+    r"(?=[\s._\-]*\d+(?!\d)(?![\s._\-#]*(?!(?:19|20)\d\d(?!\d))\d))"
     r"|[^A-Za-z]"                                              # space, dash, dot, #, digits
     r")*?"
+)
+
+# A number that opens a format name is a page count, not the issue (#807):
+# "Green Lantern V3 - 80 Page Giant 001" was filed as Green Lantern #80. Every
+# other format name starts with a letter and is stopped by the gap above; this
+# one starts with digits, so the gap lets it through and the tail after the
+# number is a wildcard.
+#
+# It is a lookahead on the number rather than a keyword on the filename because
+# position is the whole question: "Superman 183 - 80 Page Giant (1966)" IS
+# Superman #183, and a keyword test would report that owned issue as missing.
+# Applied only with strict_gap, so the collection-status matcher is unchanged
+# and no cached match has to be purged.
+_PAGE_COUNT_AHEAD = (
+    r"(?![\s._\-]*page[\s._\-]+"
+    r"(?:giant|super[\s._\-]+spectacular|spectacular)(?![A-Za-z]))"
 )
 
 
@@ -370,6 +395,8 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # so it can never match a fragment of a longer number, and sign-aware so
         # #1 and #-1 keep their own files. See ``issue_number_regex``.
         issue_pattern = issue_number_regex(issue_number)
+        if strict_gap:
+            issue_pattern += _PAGE_COUNT_AHEAD
 
         # Now substitute our patterns back in
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
@@ -639,6 +666,42 @@ def fallback_issue_numbers(filename, series_name, collected=False):
         stem, start=start, prefer_volume=collected
     )
     return {issue_match_key(t).lower() for t in tokens}, is_range
+
+
+def filename_contradicts_issue(filename, issue_number, series_names_for_file):
+    """True when ``filename`` names an issue number and it is not ``issue_number``.
+
+    The filer matches a download to an issue and then hands the file to the
+    auto-taggers, which read the number out of the filename again. When the two
+    disagree the tagger writes another issue's metadata and renames the file to
+    it (#807: a file filed as #80 was tagged and renamed as #1).
+
+    Only positive disagreement counts. A name no parser reads a number from
+    returns False, so a file matched through its ComicInfo keeps being tagged.
+    The number is accepted if any reading gives it: the taggers' own parser,
+    and the scan's reading with and without a volume marker as the number
+    ("Series v02 - Title 2026" is volume 2 of a collected series).
+    """
+    wanted = issue_match_key(issue_number).lower()
+    found = set()
+    try:
+        from models.providers.base import extract_issue_number
+
+        parsed = extract_issue_number(filename or "")
+        if parsed:
+            found.add(issue_match_key(parsed).lower())
+    except Exception as e:
+        app_logger.debug(f"Could not read an issue number from '{filename}': {e}")
+    for name in series_names_for_file or []:
+        for collected in (False, True):
+            try:
+                numbers, _is_range = fallback_issue_numbers(
+                    filename, name, collected=collected
+                )
+            except Exception:
+                continue
+            found.update(numbers)
+    return bool(found) and wanted not in found
 
 
 def names_other_publication_type(filename, series_name):
