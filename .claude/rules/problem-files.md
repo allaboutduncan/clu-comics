@@ -408,6 +408,16 @@ Things that look arbitrary and are not:
   (`core.series_json_check.claim_scan`; the routes import that lock). The page's
   scan and "Refresh all" rewrite the same rows, so the health scan skips that
   stage while either holds it.
+- **A scan's operation is kept alive, not only updated** (#841).
+  `core.app_state.operation_keepalive(op_id)` wraps `run_scan`,
+  `scan_library` and `scan_empty_folders` (the page's own buttons call the
+  last two directly). Progress from the work is only as frequent as its
+  slowest step, and one `os.walk` of a library on a busy NAS is silent for
+  longer than `STALE_TIMEOUT`: the registry marked a live scan "Operation
+  stalled" and pruned it while the scan still held its claim, so the page
+  said it had died and a restart answered 409. `run_scan` also passes its
+  `op_id` to both walks, and the batch reports before every file. The
+  keepalive ends with the block, so abandoned work is still swept.
 - **Heavy walks are daily, the batch is not.** `run_scheduled_scan` is a 30-minute
   heartbeat gated on the persisted `last_run_at` (same reasoning as
   `core.comicvine_db_update`: an interval trigger restarts with the process and

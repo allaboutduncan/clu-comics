@@ -2380,38 +2380,30 @@ def api_add_library():
             def rebuild_index_for_new_library():
                 # The scan reports no progress of its own, and a big library
                 # outlasts STALE_TIMEOUT; keep the op from reading "stalled".
-                done = threading.Event()
-
-                def keepalive():
-                    while not done.wait(60):
-                        app_state.update_operation(op_id)
-
-                threading.Thread(target=keepalive, daemon=True).start()
-                try:
-                    app_logger.info(
-                        f"Rebuilding file index after adding library: {name}"
-                    )
-                    app_state.update_operation(op_id, detail="Scanning folders...")
-                    walked_roots = []
-                    filesystem_entries = scan_filesystem_for_sync(
-                        walked_roots=walked_roots
-                    )
-                    app_state.update_operation(
-                        op_id,
-                        detail=f"Updating the index ({len(filesystem_entries)} entries)...",
-                    )
-                    sync_file_index_incremental(
-                        filesystem_entries, walked_roots=walked_roots
-                    )
-                    app_logger.info(
-                        f"File index rebuilt successfully for new library: {name}"
-                    )
-                    app_state.complete_operation(op_id)
-                except Exception as e:
-                    app_logger.error(f"Error rebuilding index for new library: {e}")
-                    app_state.complete_operation(op_id, error=True)
-                finally:
-                    done.set()
+                with app_state.operation_keepalive(op_id):
+                    try:
+                        app_logger.info(
+                            f"Rebuilding file index after adding library: {name}"
+                        )
+                        app_state.update_operation(op_id, detail="Scanning folders...")
+                        walked_roots = []
+                        filesystem_entries = scan_filesystem_for_sync(
+                            walked_roots=walked_roots
+                        )
+                        app_state.update_operation(
+                            op_id,
+                            detail=f"Updating the index ({len(filesystem_entries)} entries)...",
+                        )
+                        sync_file_index_incremental(
+                            filesystem_entries, walked_roots=walked_roots
+                        )
+                        app_logger.info(
+                            f"File index rebuilt successfully for new library: {name}"
+                        )
+                        app_state.complete_operation(op_id)
+                    except Exception as e:
+                        app_logger.error(f"Error rebuilding index for new library: {e}")
+                        app_state.complete_operation(op_id, error=True)
 
             thread = threading.Thread(target=rebuild_index_for_new_library, daemon=True)
             thread.start()

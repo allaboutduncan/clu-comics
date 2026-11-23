@@ -599,7 +599,9 @@ def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
                             finished = True
                             break
                         path = item["path"]
-                        if op_id and seen % 10 == 0:
+                        if op_id:
+                            # Before every file, not every tenth: ten large
+                            # archives on a slow disk outlast STALE_TIMEOUT.
                             update_operation(
                                 op_id, detail=f"Checked {seen} of {total} files"
                             )
@@ -999,11 +1001,23 @@ def scan_empty_folders(op_id=None):
     roots that were actually walked: an unmounted library would otherwise look
     like "every empty folder was filled".
     """
-    from core.app_state import update_operation
-    from helpers.library import get_library_roots
+    from core.app_state import operation_keepalive
 
     if not _empty_scan_lock.acquire(blocking=False):
         return None
+    try:
+        # One os.walk per library root reports nothing while it runs.
+        with operation_keepalive(op_id):
+            return _scan_empty_folders(op_id)
+    finally:
+        _empty_scan_lock.release()
+
+
+def _scan_empty_folders(op_id):
+    """The walk itself. The caller holds ``_empty_scan_lock``."""
+    from core.app_state import update_operation
+    from helpers.library import get_library_roots
+
     stats = {"folders": 0, "flagged": 0, "cleared": 0, "capped": 0}
     try:
         protected = _protected_realpaths()
@@ -1036,8 +1050,6 @@ def scan_empty_folders(op_id=None):
                     stats["cleared"] += 1
     except Exception as e:
         app_logger.error(f"Library health: empty-folder scan failed: {e}")
-    finally:
-        _empty_scan_lock.release()
     app_logger.info(
         f"Empty-folder scan: {stats['flagged']} listed, {stats['cleared']} cleared"
         + (f", {stats['capped']} more not listed (cap {MAX_EMPTY_FOLDER_ROWS})"
@@ -1712,7 +1724,19 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
     restart must not repeat the daily walks at the next heartbeat. A stop
     request (``request_stop``) ends it after the current file; what was done
     is kept and the remaining stages are skipped.
+
+    The op is kept alive for the whole scan (``operation_keepalive``): every
+    stage has a step that can be silent for longer than ``STALE_TIMEOUT`` on a
+    big library, and an op marked "stalled" while this still holds the claim
+    cannot be restarted (#841).
     """
+    from core.app_state import operation_keepalive
+
+    with operation_keepalive(op_id):
+        return _run_scan(op_id, run_cheap, batch, time_budget)
+
+
+def _run_scan(op_id, run_cheap, batch, time_budget):
     from core.app_state import update_operation
     from core.settings import get_int
 
@@ -1760,7 +1784,7 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
             # same rows; whoever holds the claim owns them.
             if series_json_check.claim_scan():
                 try:
-                    result["series_json"] = series_json_check.scan_library()
+                    result["series_json"] = series_json_check.scan_library(op_id=op_id)
                 finally:
                     series_json_check.release_scan()
             else:
@@ -1770,7 +1794,7 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
                 result["orphans"] = scan_orphans()
             if not stop_requested():
                 progress("Looking for empty folders")
-                found = scan_empty_folders()
+                found = scan_empty_folders(op_id=op_id)
                 # None: the page's own empty-folder scan holds the lock.
                 result["empty_folders"] = (
                     found if found is not None

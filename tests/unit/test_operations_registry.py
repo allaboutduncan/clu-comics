@@ -121,3 +121,82 @@ class TestRegisterOperation:
         assert len(ops) == 200
         # All IDs should be unique
         assert len(set(results)) == 200
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestOperationKeepalive:
+    """Work that is silent for longer than STALE_TIMEOUT is not "stalled" (#841)."""
+
+    def setup_method(self):
+        _clear_operations()
+
+    def teardown_method(self):
+        _clear_operations()
+
+    @staticmethod
+    def _backdate(op_id):
+        stamp = time.time() - app_state.STALE_TIMEOUT - 60
+        with app_state._operations_lock:
+            app_state._operations[op_id]["updated_at"] = stamp
+        return stamp
+
+    def test_a_silent_op_is_touched_and_stays_running(self):
+        op_id = app_state.register_operation("library_health", "scan")
+        app_state.update_operation(op_id, detail="Checking series.json files")
+        with app_state.operation_keepalive(op_id, interval=0.01):
+            stamp = self._backdate(op_id)
+            assert _wait_for(
+                lambda: app_state._operations[op_id]["updated_at"] > stamp
+            )
+            op = app_state.get_active_operations()[0]
+        assert op["status"] == "running"
+        # Only the timestamp moves: the detail is the work's own.
+        assert op["detail"] == "Checking series.json files"
+
+    def test_it_stops_with_the_block(self):
+        """Abandoned work must still be caught by the stale sweep."""
+        op_id = app_state.register_operation("library_health", "scan")
+        with app_state.operation_keepalive(op_id, interval=0.01):
+            pass
+        time.sleep(0.05)
+        self._backdate(op_id)
+        time.sleep(0.1)
+        op = app_state.get_active_operations()[0]
+        assert op["status"] == "error"
+        assert op["detail"] == "Operation stalled"
+
+    def test_it_stops_when_the_block_raises(self):
+        op_id = app_state.register_operation("library_health", "scan")
+        try:
+            with app_state.operation_keepalive(op_id, interval=0.01):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        time.sleep(0.05)
+        stamp = self._backdate(op_id)
+        time.sleep(0.1)
+        assert app_state._operations[op_id]["updated_at"] == stamp
+
+    def test_it_does_not_revive_a_finished_op(self):
+        op_id = app_state.register_operation("library_health", "scan")
+        with app_state.operation_keepalive(op_id, interval=0.01):
+            app_state.complete_operation(op_id, error=True)
+            time.sleep(0.05)
+        assert app_state.get_operation(op_id)["status"] == "error"
+
+    def test_no_op_id_starts_no_thread(self):
+        with patch.object(app_state.threading, "Thread") as thread:
+            with app_state.operation_keepalive(None):
+                pass
+        thread.assert_not_called()
+
+    def test_the_default_interval_is_well_inside_the_stale_timeout(self):
+        assert app_state.KEEPALIVE_INTERVAL * 3 <= app_state.STALE_TIMEOUT
