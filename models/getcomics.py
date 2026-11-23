@@ -432,8 +432,11 @@ def _classify_remaining(remaining: str, series_lower: str,
     Returns ``(sub_series_type, detected_variant)``.
     """
     sub_series_type = None
-    if remaining.startswith(('-', '–', '—')):
-        dash_part = remaining.lstrip('-–—').strip().lower()
+    # A colon opens a subtitle exactly as a dash does: "Empyre: Avengers" is the
+    # tie-in, not Empyre (#730). A series whose own name holds the colon matched
+    # whole, so its subtitle never reaches here.
+    if remaining.startswith(('-', '–', '—', ':')):
+        dash_part = remaining.lstrip('-–—:').strip().lower()
         # Try to match a variant keyword
         detected_variant = _find_sub_series_keyword(dash_part, variant_keywords)
         if detected_variant:
@@ -2211,6 +2214,12 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     if not series_match:
         return ComicScore(score=score, series_match=False)
 
+    # A fan-made or unofficial edition is never the wanted issue, whatever it
+    # scores (#730). Read from the text after the series name, so a series
+    # whose own name carries the word is not caught.
+    if _UNOFFICIAL_MARKER.search(remaining):
+        return ComicScore(score=-100)
+
     # Range detection — early return for DIFFERENT-SERIES ranges ending on target
     range_contains_target = _detect_range_contains_target(title_lower, issue_num)
     range_ends_on_target = _detect_range_ends_on_target(title_lower, issue_num)
@@ -2227,6 +2236,12 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         if search.series_volume == result_volume:
             score += 10
         elif not series_has_same_brand(search.series_name, result_title, search.publisher_name):
+            # A pack that names another volume is that volume's run. As a score
+            # the -40 was cancelled by name + range points and landed on exactly
+            # FALLBACK_MIN: one wanted Wolverine Vol. 3 issue queued the
+            # 189-issue Vol. 2 pack (#730).
+            if range_contains_target:
+                return ComicScore(score=-100, range_contains_target=True)
             score -= 40
 
     # Variant acceptance
@@ -2267,7 +2282,8 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
 
     # Remaining analysis: check if text after series name indicates a different series
     remaining_is_different_series, rem_delta = _score_remaining(
-        remaining, sub_series_type, used_the_swap
+        remaining, sub_series_type, used_the_swap,
+        name_years={str(y) for y in (search.year, search.volume_year) if y},
     )
     score += rem_delta
 
@@ -2293,9 +2309,13 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     )
 
     # Phase 2: Year matching (+20/-20, +10/-10 with volume_year)
-    score, year_in_series_name = _score_year(
+    score, year_in_series_name, year_mismatch = _score_year(
         score, result_title, remaining, search, series_lower, issue_num
     )
+    # A pack dated outside the wanted run is another volume's run: "30 Days of
+    # Night #1 – 6 (2017-2018)" for the series that started in 2012 (#730).
+    if range_contains_target and year_mismatch:
+        return ComicScore(score=-100, range_contains_target=True)
 
     # Phase 3: Title tightness (+15/-10)
     score += _score_title_tightness(title_lower, series_lower, issue_num, is_dot_issue, search)
@@ -2320,6 +2340,14 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         if not unnumbered_oneshot:
             score = min(score, ACCEPT_THRESHOLD - 1)
 
+    # A title with no year says nothing about which volume it is, and the
+    # scorer treated that as agreement: "Amazing Fantasy #15" was accepted for
+    # the 2004 series and was the 2012 reprint (#730). Posts without a year are
+    # listing entries for new releases, so only a back-catalogue issue is held
+    # back; a current one still downloads.
+    if not range_contains_target and _is_undated_back_issue(remaining, search):
+        score = min(score, ACCEPT_THRESHOLD - 1)
+
     return ComicScore(
         score=score,
         unnumbered_oneshot=unnumbered_oneshot,
@@ -2333,6 +2361,39 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         year_in_series_name=year_in_series_name,
         issue_matched=issue_matched,
     )
+
+
+_UNOFFICIAL_MARKER = re.compile(
+    r'\bfan[\s-]?(?:made|edit(?:ed|s)?)\b|\bunofficial\b|\bbootleg\b|\bcustom\s+omnibus\b',
+    re.IGNORECASE)
+_TITLE_YEAR = re.compile(r'\b(?:19|20)\d{2}\b')
+_YEAR_SPAN = re.compile(r'\b((?:19|20)\d{2})\s*[-\u2013\u2014]\s*((?:19|20)\d{2})\b')
+
+
+def _is_undated_back_issue(remaining: str, search: SearchCriteria) -> bool:
+    """Whether a title carries no year while the wanted issue is back catalogue.
+
+    ``remaining`` is the title after the series name, so a year that is part of
+    the name ("Spider-Man 2099") is not mistaken for a date. "Back catalogue"
+    is older than last year; the clock is read per call. An issue with no known
+    year is never held back.
+    """
+    wanted_year = search.year or search.volume_year
+    if not wanted_year or _TITLE_YEAR.search(remaining or ''):
+        return False
+    return int(wanted_year) < _current_year() - 1
+
+
+def _current_year() -> int:
+    """This year. A function so the tests can pin the clock."""
+    return time.localtime().tm_year
+
+
+def _year_in_title_span(title: str, year: int | None) -> bool:
+    """True when ``year`` lies inside a "(2001-2008)" span in the title."""
+    if not year:
+        return False
+    return any(int(a) <= year <= int(b) for a, b in _YEAR_SPAN.findall(title))
 
 
 _ONESHOT_NOISE = frozenset({
@@ -2458,23 +2519,29 @@ def _score_year(
     search: SearchCriteria,
     series_lower: str,
     issue_num: str,
-) -> tuple[int, bool]:
+) -> tuple[int, bool, bool]:
     """
     Phase 2 — Year matching.
 
-    Returns (new_score, year_in_series_name).
+    Returns (new_score, year_in_series_name, year_mismatch).
     year_in_series_name is True when a year at the start of remaining text
     is part of the series name (e.g. "Flash Gordon Annual 2014" — the 2014
     belongs to the series name, not a publication year to match).
+    year_mismatch is True when the title is dated and its date fits neither the
+    wanted issue nor the volume; a range pack is rejected on it. A pack's
+    "(2001-2008)" span matches any issue year inside it, not only its two ends.
     """
     year_in_series_name = False
+    year_mismatch = False
+    in_span = _year_in_title_span(result_title, search.year)
     if search.volume_year is not None:
         result_years = re.findall(r'\b(\d{4})\b', result_title)
         if result_years:
             year_ints = [int(y) for y in result_years]
             ryr = year_ints[0]
             vol_match = (ryr == search.volume_year or abs(ryr - search.volume_year) == 1)
-            issue_match = search.year is not None and search.year in year_ints
+            issue_match = search.year is not None and (
+                search.year in year_ints or in_span)
 
             if issue_match:
                 # Title year matches the wanted issue's publication year — strongest
@@ -2490,8 +2557,10 @@ def _score_year(
                 # (common on reboots sharing issue numbers) — penalize hard enough
                 # to drop a same-series-and-issue-number collision below ACCEPT.
                 score -= 30
+                year_mismatch = True
             else:
                 score -= 10
+                year_mismatch = True
     else:
         if remaining and search.year is None:
             yr_match = re.match(r'^(\d{4})\s+', remaining.strip())
@@ -2504,17 +2573,21 @@ def _score_year(
                         year_in_series_name = True
                         break
 
-        if search.year and str(search.year) in result_title:
+        if search.year and (str(search.year) in result_title or in_span):
             score += 20 if not year_in_series_name else -20
         elif search.year:
             other_years = re.findall(r'\b(\d{4})\b', result_title)
             if other_years:
                 if any(int(y) != search.year for y in other_years):
                     score -= 20
+                    # With no volume year to go by, a pack dated one year off
+                    # still holds the issue (cover date against store date).
+                    year_mismatch = not any(
+                        abs(int(y) - search.year) <= 1 for y in other_years)
             else:
                 score -= 10
 
-    return score, year_in_series_name
+    return score, year_in_series_name, year_mismatch
 
 
 def _score_title_tightness(
@@ -2582,12 +2655,15 @@ def _score_collected_edition(
 
 _LEADING_VOLUME = re.compile(r'^vol\.?\s*\d+\b\s*', re.IGNORECASE)
 _ISSUE_MARKER = re.compile(r'#|\bissues?\s*\d', re.IGNORECASE)
+_NAME_NUMBER = re.compile(
+    r"^(\d[\w.']*)\s+(?:vol\.?\s*\d+\s+)?(?:#|issues?\s*\d)", re.IGNORECASE)
 
 
 def _score_remaining(
     remaining: str,
     sub_series_type: str | None,
     used_the_swap: bool,
+    name_years: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[bool, int]:
     """
     Analyze text remaining after the series name to determine if it indicates
@@ -2597,6 +2673,8 @@ def _score_remaining(
         remaining: Text after the series name in the result title (may be empty)
         sub_series_type: 'variant', 'arc', 'different_edition' or None from series matching
         used_the_swap: True if "The " prefix swap was used to match the series
+        name_years: the wanted issue's and volume's years, as strings. A
+            leading number equal to one of them is a date, not part of a name.
 
     Returns:
         (remaining_is_different_series, score_delta):
@@ -2616,6 +2694,14 @@ def _score_remaining(
     remaining = _LEADING_VOLUME.sub('', remaining.strip())
     if not remaining:
         return False, 0
+
+    # A number between the name and the issue marker belongs to the name:
+    # "Spider-Man 2099 #1" and "Justice League 3001 #6" are other series, not
+    # issue 2099 or 3001 of this one (#730). Checked before the pure-range test
+    # below, which would read "2099 #1 (2015)" as nothing but numbers.
+    name_number = _NAME_NUMBER.match(remaining.strip())
+    if name_number and name_number.group(1) not in name_years:
+        return True, -30
 
     remaining_cleaned = (remaining.strip()
         .replace('-', '').replace('\u2013', '').replace('\u2014', '')
@@ -2720,6 +2806,18 @@ def accept_result(
             and not single_issue_found):
         return "FALLBACK"
     return "REJECT"
+
+
+def better_fallback(current, candidate, score):
+    """The FALLBACK to keep: ``current`` or the ``(candidate, score)`` just scored.
+
+    The highest score wins and a tie keeps the earlier result. Every caller
+    used to keep whichever FALLBACK came first, so a pack that barely qualified
+    beat a clean one later in the same result list (#730).
+    """
+    if current is None or score > current[1]:
+        return (candidate, score)
+    return current
 
 
 def simulate_search(

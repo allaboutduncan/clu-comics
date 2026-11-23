@@ -1316,6 +1316,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             download_filename,
             score_getcomics_result,
             accept_result,
+            better_fallback,
             get_series_alias_list,
             select_download_url,
             PROVIDER_LABELS,
@@ -1778,8 +1779,8 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         if best_accept is None or score > best_accept[1]:
                             best_accept = (result, score)
                         single_found = True
-                    elif decision == "FALLBACK" and best_fallback is None:
-                        best_fallback = (result, score)
+                    elif decision == "FALLBACK":
+                        best_fallback = better_fallback(best_fallback, result, score)
 
                 # Refine with year when multiple ACCEPT matches are ambiguous.
                 # Example: "Lobo 2" returns multiple Lobo volumes; "Lobo 2 2026"

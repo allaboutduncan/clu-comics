@@ -110,7 +110,7 @@ def search_usenet_for_issue(
     mirroring the GetComics engine's decision shape.
     """
     from core.database import get_enabled_indexers
-    from models.getcomics import score_getcomics_result, accept_result
+    from models.getcomics import score_getcomics_result, accept_result, better_fallback
     from models.indexers import IndexerConfig, IndexerType, get_indexer_impl
 
     queries = _build_queries(series_name, issue_num)
@@ -190,8 +190,8 @@ def search_usenet_for_issue(
             if best_accept is None or score > best_accept[1]:
                 best_accept = (r, score)
             single_found = True
-        elif decision == "FALLBACK" and best_fallback is None:
-            best_fallback = (r, score)
+        elif decision == "FALLBACK":
+            best_fallback = better_fallback(best_fallback, r, score)
 
     chosen = best_accept or best_fallback
     return {
