@@ -12,6 +12,8 @@ from mokkari.exceptions import ApiError
 HASH = "c585eb18bf1e5423"
 ONE_OFF = "c585eb18bf1e5422"
 FOUR_OFF = "c585eb18bf1e542c"
+FIVE_OFF = "c585eb18bf1e546c"
+TEN_OFF = "c585eb18bf1e57dc"
 TWELVE_OFF = "c585eb18bf1eabdc"
 FAR = "3a7a14e740e1abdc"
 
@@ -134,6 +136,27 @@ class TestMatchIssueByCover:
     def test_number_and_year_carry_a_differently_named_series(self):
         hit, _ = self._match(
             [[_row(7, "1", HASH, series="Detective Comics", year_began=1937)]])
+        assert hit["id"] == 7
+
+    def test_number_and_year_do_not_carry_a_stranger_at_the_edge(self):
+        # "Simon Dark" is not on Metron. An unrelated #1 from the year before,
+        # 10 bits off, was accepted and its series written to the cvinfo.
+        hit, library = self._match(
+            [[_row(7, "1", TEN_OFF, series="Marvel Adventures The Avengers",
+                   year_began=2006, cover_date=(2006, 7, 1))]],
+            series="Simon Dark", number="001", year=2007)
+        assert hit is None
+        assert library.issues_list.call_count == 1
+
+    def test_a_differently_named_series_needs_a_near_identical_cover(self):
+        def other(cover_hash):
+            return [[_row(7, "1", cover_hash, series="Detective Comics", year_began=1937)]]
+
+        assert self._match(other(FOUR_OFF))[0]["id"] == 7
+        assert self._match(other(FIVE_OFF))[0] is None
+
+    def test_a_named_series_is_accepted_out_to_the_search_distance(self):
+        hit, _ = self._match([[_row(7, "1", TEN_OFF)]])
         assert hit["id"] == 7
 
     def test_series_start_year_counts_as_the_year(self):
