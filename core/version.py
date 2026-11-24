@@ -2,7 +2,7 @@
 Version information for Comic Library Utilities (CLU)
 """
 
-__version__ = "7.3"
+__version__ = "7.4"
 
 # How CLU identifies itself to metadata providers that ask clients not to
 # pretend to be a browser (Metron, MangaDex, MangaUpdates, Bedetheque,
