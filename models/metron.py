@@ -1722,6 +1722,12 @@ def search_series_list(
 # Metron's own default for ``cover_hash_near``: on digital files the right issue
 # is within 10 bits 98.6% of the time and is the only result 92% of the time.
 COVER_MATCH_DISTANCE = 10
+# How close a cover must be when the filename does not name the candidate's
+# series. Unrelated covers come within 8 bits, and "issue #1 from about that
+# year" describes hundreds of comics: "Simon Dark 001 (2007)", a series Metron
+# does not have, was taken for "Marvel Adventures The Avengers" (2006) #1 at 10
+# bits. Only a near-identical cover carries a differently named series.
+COVER_MATCH_UNNAMED_DISTANCE = 4
 # The retry for print-vs-digital trade dress (no price box or barcode on the
 # digital cover), which lands 12-18 bits off. Only ever sent with a cover year:
 # unfiltered, every query at 16 also returns unrelated covers.
@@ -1807,8 +1813,10 @@ def _cover_candidate_corroborated(
     bits, and a collected edition often carries an issue's cover exactly (a
     trade at 0 bits, ahead of the issue itself). So the filename has to agree
     on two of series, number and year, and a number it does give must not
-    contradict. A wide search returns more strangers, so it needs the series
-    and the number.
+    contradict. Number and year without the series are common to too many
+    comics to mean much, so that pair counts only when the cover is within
+    ``COVER_MATCH_UNNAMED_DISTANCE`` bits. A wide search returns more
+    strangers, so it needs the series and the number.
     """
     want_number = _norm_issue_number(issue_number)
     number_ok = bool(want_number) and want_number == _norm_issue_number(candidate["number"])
@@ -1829,7 +1837,12 @@ def _cover_candidate_corroborated(
         year_ok = (
             cover_year is not None and abs(cover_year - year) <= 1
         ) or candidate.get("series_year") == year
-    return (number_ok + series_ok + year_ok) >= 2
+    if not series_ok:
+        return (
+            number_ok and year_ok
+            and candidate["distance"] <= COVER_MATCH_UNNAMED_DISTANCE
+        )
+    return number_ok or year_ok
 
 
 def match_issue_by_cover(

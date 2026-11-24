@@ -186,6 +186,10 @@ matches by name exactly as before. Auto-tag on move does not use it yet.
   trade can sort ahead of the issue at 0 bits. A candidate is accepted only
   when the filename agrees on two of series, number and year, a number the
   filename gives never contradicts, and **exactly one** candidate qualifies.
+  Number and year **without the series** count only within
+  `COVER_MATCH_UNNAMED_DISTANCE` (4) bits: "Simon Dark 001 (2007)", a series
+  Metron does not have, was taken for "Marvel Adventures The Avengers" (2006)
+  #1 at 10 bits, and that series went into the folder's cvinfo.
 - **At most two requests per file** (`COVER_MATCH_MAX_CALLS`): distance 10,
   then, only if that returned nothing and the filename has a year, distance 16
   with `cover_year`. The wide search needs series **and** number; unfiltered at
