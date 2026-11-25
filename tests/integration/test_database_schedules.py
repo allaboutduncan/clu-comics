@@ -32,7 +32,7 @@ class TestUnifiedSchedules:
     def test_all_schedule_names_exist(self, db_connection):
         from core.database import get_schedule
 
-        for name in ["rebuild", "sync", "getcomics", "weekly_packs", "komga"]:
+        for name in ["rebuild", "sync", "getcomics", "weekly_packs", "komga", "kavita"]:
             sched = get_schedule(name)
             assert sched is not None, f"Schedule '{name}' not found"
 

@@ -138,9 +138,16 @@ def db_connection(db_path):
         # the thread would outlive the get_db_path patch above, writing to
         # whatever DB the next test is using). Wait for quiet first.
         wait_for_background_analyze()
+        # core.settings caches one snapshot of every setting for 5s. This is a
+        # new database, so a snapshot taken from the previous test's is stale:
+        # without this a setting saved by one test reads back in the next.
+        from core import settings as _settings
+
+        _settings.invalidate()
         conn = get_db_connection()
         yield conn
         conn.close()
+        _settings.invalidate()
 
 
 # ---------------------------------------------------------------------------

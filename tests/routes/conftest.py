@@ -103,6 +103,7 @@ def _make_mock_app_module(data_dir, target_dir):
     mock.configure_sync_schedule = MagicMock()
     mock.configure_komga_sync_schedule = MagicMock()
     mock.run_komga_sync = MagicMock()
+    mock.configure_kavita_sync_schedule = MagicMock()
     mock.configure_getcomics_schedule = MagicMock()
     mock.configure_weekly_packs_schedule = MagicMock()
     mock.scheduled_getcomics_download = MagicMock()
@@ -228,6 +229,8 @@ def app(db_connection, tmp_path):
     test_app.register_blueprint(insights_bp)
     test_app.register_blueprint(wrapped_bp)
     test_app.register_blueprint(komga_bp)
+    from routes.kavita import kavita_bp
+    test_app.register_blueprint(kavita_bp)
     test_app.register_blueprint(logs_bp)
 
     # Stub routes that app.py defines but aren't in any blueprint.

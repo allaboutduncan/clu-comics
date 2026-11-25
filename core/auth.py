@@ -381,6 +381,7 @@ _OWNER_PREFIXES = (
     "/api/config/",
     "/api/database",
     "/api/komga",
+    "/api/kavita",             # site-wide Kavita sync settings (a user's own link is /api/account/kavita)
     "/api/save-",              # schedule save endpoints
     "/schedules",
     "/gcd-import",

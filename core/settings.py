@@ -76,6 +76,8 @@ SETTINGS_SCHEMA = {
     "DOWNLOAD_PROVIDER_PRIORITY": _s("download_provider_priority", _S, "pixeldrain,download_now,mega", "downloads"),
     "PIXELDRAIN_API_KEY": _s("pixeldrain_api_key", _S, "", "downloads"),
     "HEADERS": _s("custom_headers", _S, "", "downloads"),
+    # Kavita reading sync: the server every user's own auth key is used against.
+    "KAVITA_SERVER_URL": _s("kavita_server_url", _S, "", "downloads"),
     # Owner opt-out for core.url_guard's address check (LAN download hosts,
     # fake-ip / split-horizon DNS). Off by default. Never in an ini.
     "DOWNLOAD_ALLOW_PRIVATE_HOSTS": _s("download_allow_private_hosts", _B, False, "downloads"),

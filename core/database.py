@@ -1588,6 +1588,50 @@ def _init_db_locked():
                 "ALTER TABLE komga_sync_config ADD COLUMN connection_valid INTEGER DEFAULT 0"
             )
 
+        # Kavita reading sync. The server URL is a setting; these hold the
+        # per-library path prefixes, each user's own Kavita auth key, and the
+        # log of what has been imported for whom.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_library_mappings (
+                library_id INTEGER NOT NULL PRIMARY KEY,
+                kavita_path_prefix TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_user_links (
+                user_id INTEGER NOT NULL PRIMARY KEY,
+                credentials_encrypted BLOB,
+                credentials_nonce BLOB,
+                kavita_username TEXT,
+                connection_valid INTEGER DEFAULT 1,
+                last_sync TIMESTAMP,
+                last_sync_read_count INTEGER DEFAULT 0,
+                last_sync_progress_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                last_sync_detail TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("PRAGMA table_info(kavita_user_links)")
+        if "last_sync_detail" not in [col[1] for col in c.fetchall()]:
+            c.execute("ALTER TABLE kavita_user_links ADD COLUMN last_sync_detail TEXT")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kavita_chapter_id TEXT NOT NULL,
+                kavita_path TEXT NOT NULL,
+                clu_path TEXT,
+                sync_type TEXT NOT NULL,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, kavita_chapter_id, sync_type),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+
         # Create unified schedules table
         c.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -1695,6 +1739,13 @@ def _init_db_locked():
             app_logger.info(
                 "Migrated schedule data from legacy tables to unified schedules table"
             )
+
+        # Schedules added after the legacy-table migration above get their
+        # row here, so an existing install has one too.
+        c.execute(
+            "INSERT OR IGNORE INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+            ("kavita", "disabled", "05:30", 0),
+        )
 
         # Migration: Randomize default schedule times to reduce API thundering herd
         for sched_name, default_time in [('sync', '03:00'), ('getcomics', '03:00')]:
