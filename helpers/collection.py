@@ -282,6 +282,12 @@ def issue_number_regex(issue_number):
 #
 # The alternatives are mutually exclusive (the final class excludes letters and
 # brackets), which keeps a failed lazy match from backtracking exponentially.
+#
+# Brackets are excluded for a second reason (#859): a bracket may only be
+# crossed as a whole balanced group. When the class took a lone "(", the gap
+# could run over the file's own number and stop inside a later group, so
+# "Series 058 (2010) (1).cbz" (a browser's second-copy suffix) was filed as #1
+# and "Batman 012 (2010)" could have been #2010.
 _STRICT_GAP = (
     r"(?:"
     r"\([^()]*\)"                                              # (2024) (Digital) (Zone-Empire)
@@ -298,7 +304,7 @@ _STRICT_GAP = (
     # following year is not such a number ("Series v07 2015").
     r"|(?:volume|vol|v)\.?"
     r"(?=[\s._\-]*\d+(?!\d)(?![\s._\-#]*(?!(?:19|20)\d\d(?!\d))\d))"
-    r"|[^A-Za-z]"                                              # space, dash, dot, #, digits
+    r"|[^A-Za-z()\[\]]"                                        # space, dash, dot, #, digits
     r")*?"
 )
 
@@ -389,8 +395,18 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # the custom pattern can't be filled, so CLU could rename a file into a
         # name its own matcher then refused.
         if 0 <= pattern.find('<<<SERIES>>>') < pattern.find('<<<ISSUE>>>'):
+            def _relax_separator(m):
+                # The strict gap cannot cross a lone bracket (#859), so a
+                # pattern that itself brackets the number, such as
+                # "{series_name} ({issue_number})", keeps that bracket as a
+                # literal after the gap. What the pattern writes between that
+                # bracket and the number ("(#") stays optional.
+                bracketed = strict_gap and r'\(' in m.group(1)
+                keep = r'\([^A-Za-z0-9()\[\]]*?' if bracketed else ''
+                return '<<<GAP>>>' + keep + '<<<ISSUE>>>'
+
             pattern = re.sub(
-                r'[^A-Za-z0-9<>]*<<<ISSUE>>>', '<<<GAP>>><<<ISSUE>>>',
+                r'([^A-Za-z0-9<>]*)<<<ISSUE>>>', _relax_separator,
                 pattern, count=1,
             )
 
