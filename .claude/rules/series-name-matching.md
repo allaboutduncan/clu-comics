@@ -73,6 +73,19 @@ Things that look arbitrary and are not:
   start "Vol. N"). `Series V02 - Title 2026` is volume 2 there; `Batman v2 012`
   is #12 and `Batman v2 (2011)` is nothing. A spelled-out `Volume 003` is read
   on any series, but only when the name carries no other number.
+- **A format word after the year disqualifies a file only when no number
+  comes before the year (#857).** `Symbiote Spider-Man (2019) Volume 01 TPB`
+  in the five-issue series' folder was #1: `names_other_publication_type`
+  stops at the first `(`, and the spelled-out `Volume 01` was read.
+  `names_other_format_after_year` reads the unbracketed text after the first
+  group, and only when the text before it names no issue. Testing the whole
+  name instead would refuse `Nightwing 001 (2016) - Annual Checkup`, an owned
+  issue that would then be downloaded again. The scan asks it before any tier
+  (the trade is tagged `<Number>1` too) and **never of a collected series**:
+  ComicVine's one-book `All-New Doop` trade volume is correctly
+  `All-New Doop (2014) Volume 01 TPB`. Scan only; the filing and reading-list
+  matchers already refuse these names. Shipped a purge
+  (`collection_status_format_after_year_purge`).
 - **4a's gap is a wildcard, so it refuses a number that follows "of"**
   (`X 012 of 6` is not #6). That check is in the scan, not in
   `generate_filename_pattern`, which the filing matcher shares.

@@ -647,6 +647,74 @@ class TestCollectedVolumes:
         assert _found(status) == []
 
 
+class TestFormatWordAfterTheYear:
+    """#857: "Symbiote Spider-Man (2019) Volume 01 TPB.cbz" in the five-issue
+    series' folder was #1, so #1 read as owned and was never searched for."""
+
+    MINI = ["1", "2", "3", "4", "5"]
+
+    def _status(self, tmp_path, series, filenames, issues, pattern):
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup_named(tmp_path, series, filenames, issues, pattern)
+        issue_objs, series_obj = _objs(series_id)
+        return match_issues_to_collection(path, issue_objs, series_obj, use_cache=False), path
+
+    @pytest.mark.parametrize("pattern", [RENAME_PATTERN, ""])
+    @pytest.mark.parametrize("series,filename", [
+        ("Symbiote Spider-Man", "Symbiote Spider-Man (2019) Volume 01 TPB.cbz"),
+        ("What If? Age of Ultron", "What If - Age of Ultron (2014) Volume 01 TPB.cbr"),
+        ("Venom: First Host", "Venom - First Host (2018) Volume 01 TPB.cbz"),
+    ])
+    def test_a_trade_is_not_issue_one(self, db_connection, tmp_path, series, filename, pattern):
+        status, _path = self._status(tmp_path, series, [filename], self.MINI, pattern)
+        assert _found(status) == []
+
+    def test_the_real_issue_beside_it_is_the_one_found(self, db_connection, tmp_path):
+        status, _path = self._status(
+            tmp_path, "Symbiote Spider-Man",
+            ["Symbiote Spider-Man (2019) Volume 01 TPB.cbz",
+             "Symbiote Spider-Man 001 (2019).cbz"],
+            self.MINI, "",
+        )
+        assert _found(status) == ["1"]
+        assert status["1"]["file_path"].endswith("Symbiote Spider-Man 001 (2019).cbz")
+
+    def test_its_comicinfo_number_does_not_claim_the_issue(self, db_connection, tmp_path):
+        """A trade is tagged <Number>1 of a volume with the same name."""
+        import os
+        from helpers.collection import match_issues_to_collection
+
+        series_id, path = _setup_named(tmp_path, "Symbiote Spider-Man", [], self.MINI, "")
+        _cbz(os.path.join(path, "Symbiote Spider-Man (2019) Volume 01 TPB.cbz"),
+             "Symbiote Spider-Man", 1)
+        issue_objs, series_obj = _objs(series_id)
+
+        status = match_issues_to_collection(path, issue_objs, series_obj, use_cache=False)
+
+        assert _found(status) == []
+
+    @pytest.mark.parametrize("pattern", [RENAME_PATTERN, ""])
+    def test_a_one_book_trade_series_keeps_its_file(self, db_connection, tmp_path, pattern):
+        """ComicVine's "All-New Doop" TPB volume: one issue, named "TPB"."""
+        status, _path = self._status(
+            tmp_path, "All-New Doop", ["All-New Doop (2014) Volume 01 TPB.cbz"],
+            [("1", "TPB")], pattern,
+        )
+        assert _found(status) == ["1"]
+
+    @pytest.mark.parametrize("filename", [
+        "Nightwing 001 (2016) - Annual Checkup.cbz",
+        "Nightwing 001 (2016) (Digital) (TPB-Empire).cbz",
+        "Nightwing (2016) Volume 001.cbz",
+    ])
+    def test_a_real_issue_is_still_owned(self, db_connection, tmp_path, filename):
+        """Title text after the year, a release tag, and a name with no format
+        word at all are not format labels."""
+        status, _path = self._status(tmp_path, "Nightwing", [filename], ["1", "2"], "")
+        assert _found(status) == ["1"]
+
+
 class TestRangeFiles:
     def test_every_issue_in_the_range_is_owned(self, db_connection, tmp_path):
         from helpers.collection import match_issues_to_collection

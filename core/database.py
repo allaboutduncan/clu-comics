@@ -1364,6 +1364,30 @@ def _init_db_locked():
             except sqlite3.OperationalError:
                 pass
 
+        # Fourth cause (#857): "Series (2019) Volume 01 TPB.cbz" in a
+        # miniseries folder was cached as #1. The scan now skips that file,
+        # but the found row is only re-checked when the file changes.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_format_after_year_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_format_after_year_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(format-after-year fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (
