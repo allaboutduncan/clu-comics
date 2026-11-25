@@ -898,3 +898,31 @@ class TestCoverOnlyArchives:
             self._match(series, [pack])
         lines = [r for r in caplog.records if "Not filing" in r.getMessage()]
         assert [r.levelname for r in lines] == ["WARNING", "DEBUG"]
+
+
+class TestVolumeTokenPattern:
+    """#861: a rename pattern with {volume_number} must still file the names
+    the renamer writes for it, with and without a volume."""
+
+    MATCH_PATTERN = "{series_name} {volume_number} #{issue_number}"
+
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #010 (2025).cbz",
+        "Hello Darkness v01 #010 (2025).cbz",
+    ])
+    def test_the_renamed_download_is_filed(self, tmp_path, filename):
+        series_dir = tmp_path / "Hello Darkness"
+        series_dir.mkdir()
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        f = str(incoming / filename)
+        _touch(f)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Hello Darkness", "10", str(series_dir)),
+             _wanted("Hello Darkness", "1", str(series_dir))],
+            [(filename, f)],
+            self.MATCH_PATTERN,
+            alias_lookup=_no_aliases,
+        )
+        assert [(m["issue"]["number"], m["src"]) for m in matches] == [("10", f)]

@@ -319,6 +319,14 @@ _PAGE_COUNT_AHEAD = (
 )
 
 
+# What {volume_number} may be in a filename: "v01", "Vol. 2", "2", or absent.
+# Never able to take a volume marker without its number, which is what keeps
+# "Green Lantern V3 045" from matching #3 (#807).
+_VOLUME_BODY = r"(?:volume|vol\.?|v)?\s*\d+(?!\d)"
+_VOLUME_OPTIONAL = rf"(?:\s*{_VOLUME_BODY})?"
+_VOLUME_IN_PARENS = rf"(?:\s*\(\s*{_VOLUME_BODY}\s*\))?"
+
+
 def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_gap=False):
     """
     Convert CUSTOM_RENAME_PATTERN to a precise regex for matching a specific issue.
@@ -329,6 +337,7 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
     - {volume_year}/{issue_year} (and legacy {year}) -> matches any 4-digit year
     - {issue_month_m} -> matches a 2-digit month
     - {issue_month_M} -> matches a month name
+    - {volume_number} -> optionally matches "v01", "Vol. 2" or a bare number
     Any other (unrecognized) {token} is stripped defensively so it never leaks
     into the compiled regex as a literal requirement.
 
@@ -385,6 +394,22 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
                 pattern, count=1,
             )
 
+        # The volume token is optional, with its leading space and any literal
+        # "V" the pattern writes before it (#861). The renamer fills it with
+        # "v01"/"v2" when it knows the volume and with nothing when it does
+        # not, and this used to demand a bare number, a form it never writes:
+        # every download renamed under such a pattern stayed in TARGET and
+        # was fetched again. Substituted here, before the series name goes in,
+        # so the "V" lookbehind can only ever see the user's own pattern.
+        pattern = re.sub(
+            r'\s*\\\(\s*(?:(?<![A-Za-z])[vV])?<<<VOLUME>>>\s*\\\)',
+            lambda _m: _VOLUME_IN_PARENS, pattern,
+        )
+        pattern = re.sub(
+            r'\s*(?:(?<![A-Za-z])[vV])?<<<VOLUME>>>',
+            lambda _m: _VOLUME_OPTIONAL, pattern,
+        )
+
         # The series name: optional leading "The" in both directions, optional
         # apostrophes and connecting words, and no punctuation a filename
         # cannot be relied on to carry. One table, shared with the ComicInfo
@@ -404,7 +429,6 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         pattern = pattern.replace('<<<YEAR>>>', r'\d{4}')
         pattern = pattern.replace('<<<MONTHNUM>>>', r'\d{2}')
         pattern = pattern.replace('<<<MONTHNAME>>>', r'[A-Za-z]+')
-        pattern = pattern.replace('<<<VOLUME>>>', r'\d+')
         pattern = pattern.replace('<<<TITLE>>>', r'[^()]*?')
 
         # Make spaces between components flexible (allow punctuation like trailing periods)

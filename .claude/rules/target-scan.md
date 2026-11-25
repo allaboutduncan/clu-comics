@@ -224,6 +224,24 @@ Tests: `TestPageCountIsNotTheIssue`, `TestVolumeNumberIsNotTheIssue` and `TestFi
 `TestAutoMetadataFollowsTheFiledIssue` in
 `tests/unit/test_wanted_scan_target_guard.py`.
 
+### The matcher must accept what the renamer writes (#861)
+
+`{volume_number}` compiled to a required bare number. The renamer writes `v01`
+or `v2` when it knows the volume and nothing when it does not, so with that
+token in the pattern no renamed download matched: it stayed in TARGET, the
+issue stayed wanted, and the sweep fetched it again after `QUEUE_COOLDOWN_DAYS`.
+
+- **The token is optional in `generate_filename_pattern`** (`_VOLUME_OPTIONAL`),
+  together with its leading space and a literal `V` the pattern writes before
+  it. It is not a `strip_*_token` at the call sites, because three callers
+  build a pattern (`app.py`, `core/problem_replacements.py`, tier 4a) and a
+  strip would have to be pasted into each.
+- **It cannot take a volume marker without its number**, so the #807 rule
+  holds under these patterns too: `Green Lantern V3 045` is not #3.
+- **Only adds matches**, so no `collection_status` purge shipped.
+- `TestRenamerOutputRoundTrips` runs `apply_custom_pattern`'s output through
+  the matcher for each pattern shape. A new rename token gets a row there.
+
 ### Never reuse `VARIANT_TYPES` for filename matching
 
 > **Never reuse `VARIANT_TYPES` for filename matching.** It carries adjectives

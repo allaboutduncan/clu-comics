@@ -958,3 +958,139 @@ class TestDownloadNamedAfterTheHost:
         regex = self._regex("!!!", "1")
         assert not regex.match("Batman 001.cbz")
         assert regex.match("!!! 001.cbz")
+
+
+def _match_pattern(pattern):
+    """The pattern as process_incoming_wanted_issues hands it to the matcher."""
+    return strip_empty_groups(
+        strip_month_token(strip_title_token(strip_year_token(pattern)))
+    )
+
+
+VOLUME_PATTERNS = [
+    "{series_name} {volume_number} #{issue_number} ({volume_year})",
+    "{series_name} {volume_number} {issue_number} ({volume_year})",
+    "{series_name} #{issue_number} V{volume_number} ({volume_year})",
+    "{series_name} {issue_number} ({volume_number}) ({volume_year})",
+    "{series_name} - {volume_number} - {issue_number}",
+]
+
+
+class TestVolumeTokenIsOptional:
+    """#861: {volume_number} compiled to a required bare number, a form the
+    renamer never writes ("v01", or nothing when the volume is unknown), so
+    every download renamed under such a pattern stayed in TARGET and was
+    downloaded again."""
+
+    PATTERN = "{series_name} {volume_number} #{issue_number}"
+
+    @pytest.mark.parametrize("strict", [True, False])
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #010 (2025).cbz",       # renamer, volume unknown
+        "Hello Darkness v01 #010 (2025).cbz",   # renamer, volume known
+        "Hello Darkness 1 #010 (2025).cbz",
+        "Hello Darkness Vol. 1 #010 (2025).cbz",
+        "Hello Darkness 010 (2025).cbz",
+    ])
+    def test_the_reported_names_match(self, filename, strict):
+        regex = generate_filename_pattern(
+            self.PATTERN, "Hello Darkness", "10", strict_gap=strict
+        )
+        assert regex.match(filename)
+        assert _no_placeholder_leak(regex)
+
+    @pytest.mark.parametrize("pattern", VOLUME_PATTERNS)
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #011 (2025).cbz",
+        "Hello Darkness v01 #011 (2025).cbz",
+        "Hello Darkness v10 #011 (2025).cbz",
+        "Goodbye Darkness v01 #010 (2025).cbz",
+    ])
+    def test_another_issue_or_series_is_refused(self, pattern, filename):
+        regex = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "10", strict_gap=True
+        )
+        assert not regex.match(filename)
+
+    def test_a_spin_off_is_still_refused(self):
+        regex = generate_filename_pattern(
+            self.PATTERN, "TMNT", "3", strict_gap=True
+        )
+        assert not regex.match("TMNT v01 - Nightwatcher 003 (2024).cbz")
+
+    # The #807 tables again, under a pattern that carries the token.
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "3", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "2", "Batman v2 012.cbz"),
+        ("Batman", "3", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "3", "Batman Volume 3 #50.cbz"),
+        ("X-Men", "2", "X-Men v2_012 (1992).cbz"),
+    ])
+    def test_the_volume_is_still_not_the_issue(self, series, number, filename):
+        regex = generate_filename_pattern(
+            self.PATTERN, series, number, strict_gap=True
+        )
+        assert not regex.match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "45", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "12", "Batman v2 012.cbz"),
+        ("Batman", "50", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "50", "Batman Volume 3 #50.cbz"),
+        ("Batman", "3", "Batman v3 003 (2016).cbz"),
+        ("Saga", "7", "Saga v07 (2015).cbz"),
+        ("Saga", "7", "Saga v07.cbz"),
+        ("Absolute Flash", "2", "Absolute Flash V02 - Of Two Worlds 2025.cbz"),
+    ])
+    def test_the_issue_and_the_collected_volume_still_match(
+        self, series, number, filename
+    ):
+        regex = generate_filename_pattern(
+            self.PATTERN, series, number, strict_gap=True
+        )
+        assert regex.match(filename)
+
+
+class TestRenamerOutputRoundTrips:
+    """Whatever the renamer writes for a pattern, the filing matcher built
+    from that same pattern must accept. A token the two read differently
+    strands every download (#861, and the separator fix before it)."""
+
+    PATTERNS = VOLUME_PATTERNS + [
+        "{series_name} {issue_number} ({volume_year})",
+        "{series_name} #{issue_number} ({volume_year})",
+        "{series_name} - {issue_number} ({issue_month_M}, {issue_year})",
+        "{series_name} #{issue_number} [{issue_month_m}-{issue_year}]",
+        "{series_name} {issue_number} - {issue_title} ({volume_year})",
+        "{series_name} {volume_number} #{issue_number} - {issue_title} ({issue_year})",
+    ]
+
+    VALUES = [
+        {},
+        {"volume_number": "v01"},
+        {"volume_number": "v2"},
+        {"issue_title": "The Dawn"},
+        {"volume_number": "v01", "issue_title": "The Dawn",
+         "issue_month_M": "July", "issue_month_m": "07", "issue_year": "2025"},
+    ]
+
+    @pytest.mark.parametrize("pattern", PATTERNS)
+    @pytest.mark.parametrize("extra", VALUES)
+    def test_the_matcher_accepts_the_renamers_name(self, pattern, extra):
+        from cbz_ops.rename import apply_custom_pattern
+
+        values = {"series_name": "Hello Darkness", "issue_number": "010",
+                  "year": "2025"}
+        values.update(extra)
+        name = apply_custom_pattern(values, pattern)
+        assert name, "the renamer produced nothing for this pattern"
+
+        regex = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "10", strict_gap=True
+        )
+        assert regex.match(name + ".cbz"), (name, regex.pattern)
+
+        other = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "11", strict_gap=True
+        )
+        assert not other.match(name + ".cbz"), (name, other.pattern)
