@@ -227,6 +227,7 @@ Optional AI-powered reading recommendations based on your library and reading hi
 - **Per-user API tokens** — created and revoked from My Account, stored hashed and shown only once.
 - **OPDS feeds** — `/opds`, `/opds/browse` and `/opds/to-read` for third-party comic reader apps, with HTTP Basic Auth whenever login is on (any account has a password) and library scoping per user.
 - **Komga reading sync** — pull reading history and in-progress books from a [Komga](https://komga.org/) server.
+- **Kavita reading sync** — pull reading history and in-progress books from a [Kavita](https://www.kavitareader.com/) server (0.9 or newer), per user. The owner sets the server and schedule in Settings; each user adds their own Kavita auth key (Kavita: User Settings → Manage Auth Keys) under My Account → Kavita. The sync only adds: anything already read in CLU, and any position further along in CLU, is left as it is.
 - **`/health`** — a health endpoint for container orchestration and uptime monitoring.
 
 ## Administration

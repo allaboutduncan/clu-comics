@@ -65,6 +65,9 @@ class TestTablesExist:
         "komga_sync_config",
         "komga_sync_log",
         "komga_library_mappings",
+        "kavita_library_mappings",
+        "kavita_user_links",
+        "kavita_sync_log",
         "schedules",
         "download_clients",
         "indexers",
@@ -264,6 +267,7 @@ class TestDefaultData:
         assert "getcomics" in names
         assert "weekly_packs" in names
         assert "komga" in names
+        assert "kavita" in names
 
 
 class TestForeignKeys:

@@ -103,6 +103,36 @@ def test_controls_without_a_visible_label_carry_one(config_html, label):
     assert label in config_html
 
 
+def _kavita_js():
+    return (ROOT / "static" / "js" / "kavita.js").read_text(encoding="utf-8")
+
+
+def test_kavita_panel_is_a_step_of_the_download_tab_save(config_html):
+    """Kavita has no Save of its own: it goes with the tab, after Komga."""
+    download = config_html.split("await runTabSave('saveDownloadApiBtn', [")[1].split("]);")[0]
+    assert "['Kavita', CLU.kavita.saveConfig]" in download
+    assert "js/kavita.js" in config_html
+    assert "CLU.kavita.initConfig()" in config_html
+
+
+def test_kavita_save_leaves_an_unconfigured_or_unchanged_form_alone():
+    """Saving a PixelDrain key must not post Kavita or reschedule its sync."""
+    fn = _kavita_js().split("async function saveConfig()")[1].split("\n    }\n")[0]
+    before_post = fn.split("request('/api/kavita/config', 'POST'")[0]
+    assert "&& !loadedUrl) return null" in before_post
+    assert "if (!formChanged()) return null" in before_post
+
+
+def test_kavita_schedule_time_is_converted_both_ways():
+    js = _kavita_js()
+    assert "CLU.utcToLocal(input.dataset.utc" in js
+    assert "CLU.localToUtc(byId('kavitaSyncTime').value, CLU.tzOffsetHours())" in js
+
+
+def test_kavita_prefix_inputs_are_labelled():
+    assert "aria-label=\"Kavita path prefix for ' + CLU.escapeHtml(m.library_name)" in _kavita_js()
+
+
 def test_dashboard_rows_wrap_and_checkboxes_are_labelled(dashboard_editor):
     assert 'aria-label="Show {{ meta.name }}"' in dashboard_editor
     assert "min-width: 0" in dashboard_editor

@@ -398,10 +398,12 @@ app.register_blueprint(wrapped_bp)
 
 # Komga sync controls and the Logs page (moved out of app.py so the routes can
 # be tested). The reader's page routes moved into routes/reading.py.
+from routes.kavita import kavita_bp
 from routes.komga import komga_bp
 from routes.logs import logs_bp
 
 app.register_blueprint(komga_bp)
+app.register_blueprint(kavita_bp)
 app.register_blueprint(logs_bp)
 
 # Start unified scheduler
@@ -2957,6 +2959,27 @@ def configure_komga_sync_schedule():
     configure_schedule("komga")
 
 
+def scheduled_kavita_sync():
+    """Wrapper. The body is core.kavita_sync.sync_all.
+
+    A wrapper on purpose, like scheduled_reading_list_sync: app.py cannot be
+    imported in tests.
+    """
+    try:
+        from core.database import update_schedule_last_run
+        from core.kavita_sync import sync_all
+
+        update_schedule_last_run("kavita")
+        sync_all(app=app)
+    except Exception as e:
+        app_logger.error(f"Scheduled Kavita sync failed: {e}")
+
+
+def configure_kavita_sync_schedule():
+    """Configure the Kavita sync schedule based on database settings."""
+    configure_schedule("kavita")
+
+
 def scheduled_reading_list_sync():
     """Re-check every imported reading list against the source it came from.
 
@@ -3018,6 +3041,11 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_komga_sync,
             "job_id": "komga_sync",
             "label": "Komga Reading Sync",
+        },
+        "kavita": {
+            "callback": scheduled_kavita_sync,
+            "job_id": "kavita_sync",
+            "label": "Kavita Reading Sync",
         },
         "reading_list_sync": {
             "callback": scheduled_reading_list_sync,
@@ -7372,6 +7400,9 @@ def start_background_services():
 
     # Configure Komga reading sync schedule from database
     configure_komga_sync_schedule()
+
+    # Configure Kavita reading sync schedule from database
+    configure_kavita_sync_schedule()
 
     # Configure Reading List sync schedule from database
     configure_reading_list_sync_schedule()
