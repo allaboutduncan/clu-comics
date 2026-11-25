@@ -242,6 +242,28 @@ issue stayed wanted, and the sweep fetched it again after `QUEUE_COOLDOWN_DAYS`.
 - `TestRenamerOutputRoundTrips` runs `apply_custom_pattern`'s output through
   the matcher for each pattern shape. A new rename token gets a row there.
 
+### A copy suffix is not the issue (#859)
+
+`Marvel Adventures Spider-Man 058 (2010) (1).cbz`, a second copy saved by a
+browser, was filed as #1. `_STRICT_GAP`'s last class was `[^A-Za-z]`, which
+takes a lone `(`: the gap ran over the file's own `058`, over `(2010)`, and
+stopped inside the suffix.
+
+- **The gap crosses a bracket only as a whole balanced group.** The class now
+  excludes `()[]`, which is what its comment always claimed. The same edit
+  stops `Batman 012 (2010)` matching #2010.
+- **A pattern that brackets the number keeps that bracket as a literal**
+  (`{series_name} ({issue_number})`), because the gap can no longer absorb it.
+  Strict only. Under such a pattern a `(1)` suffix is still read as #1; the
+  pattern itself says a bracketed number is the issue.
+- **The loose matcher is untouched**, so no `collection_status` purge shipped.
+- Not done: comparing against `fallback_issue_numbers` before the move (the
+  issue's other suggestion). A misread there would strand a correct download
+  in TARGET, and the regex fix needs no second parser.
+
+Tests: `TestCopySuffixIsNotTheIssue` in `tests/unit/test_filename_pattern.py`,
+`TestCopySuffix` in `tests/unit/test_match_wanted_to_files.py`.
+
 ### Never reuse `VARIANT_TYPES` for filename matching
 
 > **Never reuse `VARIANT_TYPES` for filename matching.** It carries adjectives

@@ -796,6 +796,63 @@ class TestVolumeNumberIsNotTheIssue:
         assert regex.match("Batman v2 012.cbz")
 
 
+class TestCopySuffixIsNotTheIssue:
+    """#859: a second copy saved as "Series 058 (2010) (1).cbz" was filed as
+    #1. The gap took a lone "(", ran over the file's own number and stopped
+    inside the suffix."""
+
+    PATTERN = "{series_name} {issue_number}"
+    MASM = "Marvel Adventures Spider-Man"
+
+    def _strict(self, series, number, pattern=None):
+        return generate_filename_pattern(
+            pattern or self.PATTERN, series, number, strict_gap=True
+        )
+
+    @pytest.mark.parametrize("series, number, filename", [
+        (MASM, "1", "Marvel Adventures Spider-Man 058 (2010) (1).cbz"),
+        (MASM, "1", "Marvel Adventures Spider-Man 058 (1).cbz"),
+        ("Batman", "2", "Batman 012 (2010) (2).cbz"),
+        ("Batman", "2", "Batman 012 [2].cbz"),
+        ("Batman", "3", "Batman #012 (2010) (Digital) (3).cbz"),
+        # The same hole, without a copy: the year group is not the issue.
+        ("Batman", "2010", "Batman 012 (2010).cbz"),
+        ("Batman", "2", "Batman 012 (2 covers).cbz"),
+    ])
+    def test_a_number_inside_a_later_group_is_not_the_issue(
+        self, series, number, filename
+    ):
+        assert not self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        (MASM, "58", "Marvel Adventures Spider-Man 058 (2010) (1).cbz"),
+        (MASM, "58", "Marvel Adventures Spider-Man 058 (1).cbz"),
+        ("Batman", "12", "Batman 012 (2010) (2).cbz"),
+        ("Batman", "1", "Batman 001 (2016) (1).cbz"),
+        # A whole group before the number is still crossed.
+        ("Batman", "12", "Batman (2016) 012.cbz"),
+        ("Batman", "12", "Batman [2016] (Digital) #012.cbz"),
+    ])
+    def test_the_files_own_number_still_matches(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("pattern", [
+        "{series_name} ({issue_number})",
+        "{series_name} (#{issue_number}) ({volume_year})",
+    ])
+    def test_a_pattern_that_brackets_the_number_still_matches(self, pattern):
+        pattern = pattern.replace(" ({volume_year})", "")
+        assert self._strict("Batman", "12", pattern).match("Batman (012).cbz")
+        assert self._strict("Batman", "12", pattern).match("Batman (#012) (2016).cbz")
+        assert not self._strict("Batman", "13", pattern).match("Batman (012).cbz")
+
+    def test_the_loose_matcher_is_unchanged(self):
+        regex = generate_filename_pattern(self.PATTERN, "Batman", "2")
+        assert regex.match("Batman 012 (2010) (2).cbz")
+        loose = generate_filename_pattern("{series_name} ({issue_number})", "Batman", "12")
+        assert loose.match("Batman 012).cbz")
+
+
 class TestFilenameContradictsIssue:
     """helpers.collection.filename_contradicts_issue (#807)."""
 

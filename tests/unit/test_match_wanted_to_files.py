@@ -166,6 +166,33 @@ class TestPageCountGiant:
         ) == []
 
 
+class TestCopySuffix:
+    """#859: "Series 058 (2010) (1).cbz", a browser's second copy of #58, was
+    filed as #1."""
+
+    NAME = "Marvel Adventures Spider-Man 058 (2010) (1).cbz"
+
+    def _run(self, tmp_path, numbers):
+        series_dir = tmp_path / "Marvel Adventures Spider-Man"
+        series_dir.mkdir()
+        path = str(tmp_path / self.NAME)
+        _touch(path)
+        wanted = [
+            _wanted("Marvel Adventures Spider-Man", n, str(series_dir))
+            for n in numbers
+        ]
+        return match_wanted_issues_to_files(
+            wanted, [(self.NAME, path)], PATTERN, alias_lookup=_no_aliases
+        )
+
+    def test_the_copy_is_not_filed_as_issue_one(self, tmp_path):
+        assert self._run(tmp_path, ["1"]) == []
+
+    def test_the_copy_is_still_its_own_issue(self, tmp_path):
+        matches = self._run(tmp_path, ["1", "58"])
+        assert [m["issue"]["number"] for m in matches] == ["58"]
+
+
 # ---- alias matching -----------------------------------------------------
 
 class TestAliasMatching:
