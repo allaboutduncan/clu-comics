@@ -15,6 +15,7 @@ from helpers.collection import (
     strip_month_token,
     strip_empty_groups,
     build_series_match_names,
+    names_other_format_after_year,
     names_other_publication_type,
     filename_contradicts_issue,
     issue_match_key,
@@ -649,6 +650,46 @@ class TestNamesOtherPublicationType:
         assert not names_other_publication_type(
             "Nightwing Annualized 001 (2023).cbz", "Nightwing"
         )
+
+
+class TestFormatAfterYear:
+    """helpers.collection.names_other_format_after_year (#857).
+
+    "Series (2019) Volume 01 TPB" is another manager's name for a trade. The
+    format word follows the first group, where names_other_publication_type
+    does not look. It counts only when no issue number precedes the group:
+    after a number, the same text is the issue's title.
+    """
+
+    @pytest.mark.parametrize("filename,series", [
+        ("Symbiote Spider-Man (2019) Volume 01 TPB.cbz", "Symbiote Spider-Man"),
+        ("What If - Age of Ultron (2014) Volume 01 TPB.cbr", "What If? Age of Ultron"),
+        ("Venom - First Host (2018) Volume 01 TPB.cbz", "Venom: First Host"),
+        ("Batman (2016) Annual 001.cbz", "Batman"),
+        # The number in the series name is not an issue number.
+        ("Spider-Man 2099 (1992) Volume 01 TPB.cbz", "Spider-Man 2099"),
+        ("Symbiote Spider-Man [2019] TPB (Digital).cbz", "Symbiote Spider-Man"),
+    ])
+    def test_format_label_after_the_year(self, filename, series):
+        assert names_other_format_after_year(filename, series)
+
+    @pytest.mark.parametrize("filename,series", [
+        # Title text after the issue number and year.
+        ("Nightwing 001 (2016) - Annual Checkup.cbz", "Nightwing"),
+        ("Batman 050 (2018) Wedding Annual tie-in.cbz", "Batman"),
+        # Release tags live in groups and are never read.
+        ("Nightwing 001 (2016) (Digital) (TPB-Empire).cbz", "Nightwing"),
+        ("Nightwing (2016) (TPB-Empire).cbz", "Nightwing"),
+        # No format word.
+        ("Nightwing (2016) Volume 001.cbz", "Nightwing"),
+        # No group: names_other_publication_type's ground.
+        ("Nightwing TPB Vol 01.cbz", "Nightwing"),
+        # The series is the format.
+        ("Batman TPB (2019) Volume 01 TPB.cbz", "Batman TPB"),
+        ("Batman (2016) Annualized 001.cbz", "Batman"),
+    ])
+    def test_not_a_format_label(self, filename, series):
+        assert not names_other_format_after_year(filename, series)
 
 
 class TestStrictGap:

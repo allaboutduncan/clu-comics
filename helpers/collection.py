@@ -760,7 +760,42 @@ def names_other_publication_type(filename, series_name):
     *is* the format ("Nightwing Annual") keeps its own files.
     """
     name_part = os.path.splitext(filename or "")[0].split("(")[0]
-    haystack = _normalize_for_keywords(name_part)
+    return _names_other_format(name_part, series_name)
+
+
+def names_other_format_after_year(filename, series_name):
+    """True when a format word follows the first group and no number precedes it.
+
+    "Symbiote Spider-Man (2019) Volume 01 TPB.cbz" is another manager's name
+    for a trade, and in the five-issue series' folder it was reported as #1
+    (#857): ``names_other_publication_type`` stops at the first "(", and the
+    scan's last tier reads the spelled-out "Volume 01".
+
+    The first group is the anchor (``core/filename_parse.py``): the issue
+    number sits before it and what follows is title text. So the text after
+    it is a format label only when no number comes before the group.
+    "Nightwing 001 (2016) - Annual Checkup" is Nightwing #1 and is not
+    flagged. Text inside any group is never read, so release tags
+    ("(Digital) (TPB-Empire)") cannot trip it.
+
+    The caller must not ask this of a collected series: ComicVine's one-book
+    "All-New Doop" trade volume is correctly "All-New Doop (2014) Volume 01
+    TPB.cbz".
+    """
+    stem = os.path.splitext(filename or "")[0]
+    prefix, has_group = filename_parse.prefix_before_first_group(stem)
+    if not has_group:
+        return False
+    numbers, _is_range = fallback_issue_numbers(prefix, series_name)
+    if numbers:
+        return False
+    tail = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", stem[len(prefix):])
+    return _names_other_format(tail, series_name)
+
+
+def _names_other_format(text, series_name):
+    """Whole-word test: ``text`` carries a format keyword the series does not."""
+    haystack = _normalize_for_keywords(text)
     series_haystack = _normalize_for_keywords(series_name)
     for keyword in _publication_type_keywords():
         kw = _normalize_for_keywords(keyword)
@@ -1389,6 +1424,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     # Step 2: Scan directory and build file metadata
     local_files = []
     file_metadata = {}
+    collected = is_collected_series(series_name, issues)
 
     try:
         for filename in os.listdir(mapped_path):
@@ -1396,7 +1432,13 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                 # An annual/TPB/omnibus in the series folder numbers its own
                 # issues from 1, so it must never be offered to any tier below:
                 # all three would happily match "... Annual 001 ..." as #1.
-                if names_other_publication_type(filename, series_name):
+                # The format word may also follow the year ("Series (2019)
+                # Volume 01 TPB", #857); on a collected series that name is
+                # the series' own volume, so it is not asked there.
+                if names_other_publication_type(filename, series_name) or (
+                    not collected
+                    and names_other_format_after_year(filename, series_name)
+                ):
                     app_logger.debug(
                         f"Skipping '{filename}' for series '{series_name}': "
                         "names a different publication type"
@@ -1494,7 +1536,6 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     # owned read as owned and were never looked for (#792), while "Series V02 -
     # Title" was never volume 2 and was downloaded again (#795).
     if len(matched) < len(wanted):
-        collected = is_collected_series(series_name, issues)
         named = {
             file_path: fallback_issue_numbers(metadata['filename'], series_name, collected)
             for file_path, metadata in file_metadata.items()
