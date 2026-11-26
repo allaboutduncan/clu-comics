@@ -3223,7 +3223,7 @@ from helpers.collection import (
     match_wanted_issues_to_files,
     collect_target_candidates,
 )
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 
 
 # app = Flask(__name__)
@@ -3569,7 +3569,7 @@ def get_directory_listing(path):
 
             for entry in entries:
                 full_path = os.path.join(path, entry)
-                if is_hidden(full_path):
+                if is_library_hidden(full_path):
                     continue
 
                 # Hide the trash directory from listings
@@ -3747,7 +3747,7 @@ def warmup_cache():
                     d
                     for d in os.listdir(base_path)
                     if os.path.isdir(os.path.join(base_path, d))
-                    and not is_hidden(os.path.join(base_path, d))
+                    and not is_library_hidden(os.path.join(base_path, d))
                 ]
                 # Add first few subdirectories to warmup
                 for subdir in subdirs[:5]:
@@ -4329,7 +4329,7 @@ def _build_file_index_locked():
                 # library: a download in transit is not part of the library.
                 dirs[:] = [
                     d for d in dirs
-                    if not is_hidden(os.path.join(root, d))
+                    if not is_library_hidden(os.path.join(root, d))
                     and not _staging(os.path.join(root, d), is_dir=True)
                 ]
                 # A staging folder that *is* this library root owns the loose
@@ -4516,7 +4516,7 @@ def scan_filesystem_for_sync(walked_roots=None):
                 dirs[:] = [
                     d
                     for d in dirs
-                    if not is_hidden(os.path.join(root, d))
+                    if not is_library_hidden(os.path.join(root, d))
                     and not _staging(os.path.join(root, d), is_dir=True)
                 ]
                 # A staging folder that *is* this library root owns the loose
@@ -4816,7 +4816,7 @@ def update_index_on_create(path):
                     dirs[:] = [
                         d
                         for d in dirs
-                        if not is_hidden(os.path.join(root, d))
+                        if not is_library_hidden(os.path.join(root, d))
                         and not _staging(os.path.join(root, d), is_dir=True)
                     ]
 

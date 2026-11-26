@@ -16,6 +16,15 @@ class TestIsHidden:
         from helpers import is_hidden
         assert is_hidden("/some/path/_prefixed") is True
 
+    def test_library_folder_with_underscore_is_visible(self):
+        from helpers import is_library_hidden
+        assert is_library_hidden("/data/___Misc") is False
+        assert is_library_hidden("/data/__Publisher") is False
+
+    def test_library_still_hides_dot_names(self):
+        from helpers import is_library_hidden
+        assert is_library_hidden("/data/.hidden") is True
+
     def test_normal_file(self, tmp_path):
         from helpers import is_hidden
         f = tmp_path / "normal_file.txt"

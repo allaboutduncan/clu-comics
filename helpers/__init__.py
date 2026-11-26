@@ -49,15 +49,29 @@ def reload_hidden_directories():
     except Exception:
         _hidden_directories = {"@eaDir"}
 
-def is_hidden(filepath):
+def is_library_hidden(filepath):
+    """``is_hidden`` for library folders: a leading '_' is a normal name.
+
+    Library folders such as ``__Publisher`` must be indexed and browsable.
+    Dot-names, user-configured hidden directories and the Windows hidden
+    attribute still apply.
+    """
+    return is_hidden(filepath, underscore_hidden=False)
+
+
+def is_hidden(filepath, *, underscore_hidden=True):
     """
     Returns True if the file or directory is considered hidden.
     This function marks files as hidden if their names start with a '.' or '_',
     and it also checks the Windows hidden attribute.
+
+    ``underscore_hidden=False`` treats a leading '_' as an ordinary name. The
+    library scans use that (see :func:`is_library_hidden`); the watch-folder
+    and staging code keep the default, where '_' marks junk.
     """
     name = os.path.basename(filepath)
     # Check for names starting with '.' or '_'
-    if name.startswith('.') or name.startswith('_'):
+    if name.startswith('.') or (underscore_hidden and name.startswith('_')):
         return True
     # Check against user-configured hidden directory names
     if name in _get_hidden_directories():
