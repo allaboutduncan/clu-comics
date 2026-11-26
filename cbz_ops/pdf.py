@@ -39,15 +39,58 @@ def scan_and_convert(directory):
                 gc.collect()
 
 
-def process_pdf_file(pdf_path):
-    """
-    Process a single PDF file with memory-efficient streaming.
+def scratch_dir_for(pdf_path):
+    """The hidden folder a PDF's pages are rendered into, beside the PDF.
+
+    ``.temp_<name>``, the same shape the CBR conversion uses: hidden, so the
+    library walkers skip it, and matched by ``monitor.is_scratch_dir``. It
+    used to be a bare ``<name>/``, which the folder monitor read as an
+    ordinary sub-folder of WATCH -- a sweep landing mid-conversion moved the
+    loose page images to TARGET one at a time.
     """
     pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
-    output_folder = os.path.join(os.path.dirname(pdf_path), pdf_name)
+    return os.path.join(os.path.dirname(pdf_path), f".temp_{pdf_name}")
+
+
+def process_pdf_file(pdf_path):
+    """
+    Convert one PDF to a sibling ``.cbz`` with memory-efficient streaming.
+
+    Returns True only when every page was rendered and saved, the CBZ was
+    written and the source PDF was removed. On any failure it returns False
+    and leaves things as it found them: the PDF stays and no ``.cbz`` this
+    call wrote is left behind. Same contract as ``convert_to_cbz`` -- the
+    operation reports its own outcome, and ``os.path.exists(<base>.cbz)`` is a
+    different question. It used to return nothing, swallow a failed CBZ write
+    and then delete the PDF anyway, and ship a CBZ short of the pages that
+    failed to save.
+    """
+    pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
+    output_folder = scratch_dir_for(pdf_path)
     cbz_path = os.path.join(os.path.dirname(pdf_path), f"{pdf_name}.cbz")
-    
+    cbz_existed = os.path.exists(cbz_path)
+
+    def _fail(reason):
+        app_logger.error(f"Error processing {pdf_path}: {reason}")
+        cleanup_temp_folder(output_folder)
+        # Only a CBZ this call wrote: one that was already there is somebody
+        # else's file.
+        if not cbz_existed and os.path.exists(cbz_path):
+            try:
+                os.remove(cbz_path)
+            except OSError as e:
+                app_logger.error(f"Could not remove incomplete {cbz_path}: {e}")
+        return False
+
     app_logger.info(f"Processing: {pdf_path}")
+
+    # The CBZ is written with an overwrite, and a comic already under that
+    # name is a different file until proven otherwise.
+    if cbz_existed:
+        app_logger.error(
+            f"Not converting {pdf_path}: {cbz_path} already exists"
+        )
+        return False
 
     # Resolve the output image format once per PDF (default JPEG). WebP yields
     # significantly smaller pages at similar quality; anything unknown falls
@@ -62,17 +105,20 @@ def process_pdf_file(pdf_path):
     try:
         # Get PDF info first
         pdf_info = pdfinfo_from_path(pdf_path)
-        total_pages = pdf_info["Pages"]
-        
-        # Create output folder
+        total_pages = int(pdf_info["Pages"])
+        if total_pages < 1:
+            return _fail("the PDF has no pages")
+
+        # A scratch folder left by a conversion that died holds stale pages.
+        cleanup_temp_folder(output_folder)
         os.makedirs(output_folder, exist_ok=True)
-        
+
         # Process pages in batches to reduce memory usage
         batch_size = 2  # Process 2 pages at a time (300 DPI uses ~4x more memory per page)
         for batch_start in range(1, total_pages + 1, batch_size):
             batch_end = min(batch_start + batch_size - 1, total_pages)
             
-            app_logger.info(f"Processing pages {batch_start}-{batch_end} of {total_pages}")
+            app_logger.debug(f"Processing pages {batch_start}-{batch_end} of {total_pages}")
             
             # Convert batch of pages
             pages = convert_from_path(
@@ -88,38 +134,48 @@ def process_pdf_file(pdf_path):
                 # white borders around every page.
             )
             
+            expected = batch_end - batch_start + 1
+            rendered = len(pages)
+            saved = 0
             # Process each page in the batch
             for i, page in enumerate(pages):
                 page_number = batch_start + i
-                process_single_page(
+                if process_single_page(
                     page, page_number, pdf_name, output_folder,
                     image_format=image_format,
-                )
+                ):
+                    saved += 1
                 # Explicitly close the page to free memory
                 page.close()
-            
+
             # Clear the pages list to free memory
             pages.clear()
             gc.collect()
-        
+
+            if rendered != expected or saved != expected:
+                return _fail(
+                    f"pages {batch_start}-{batch_end}: expected {expected}, "
+                    f"rendered {rendered}, saved {saved}"
+                )
+
         # Create CBZ file using streaming approach
-        create_cbz_file(output_folder, cbz_path)
-        
-        # Clean up source PDF
+        if not create_cbz_file(output_folder, cbz_path):
+            return _fail("the CBZ could not be written")
+
+        # Clean up source PDF. A PDF that cannot be removed would sit beside
+        # its own CBZ and be converted again, so that is a failure too.
         try:
             os.remove(pdf_path)
             app_logger.info(f"Deleted source PDF: {pdf_path}")
         except OSError as e:
-            app_logger.info(f"Failed to delete source PDF {pdf_path}: {e}")
-        
+            return _fail(f"the source PDF could not be removed: {e}")
+
         # Clean up temporary folder
         cleanup_temp_folder(output_folder)
-        
+        return True
+
     except Exception as e:
-        app_logger.error(f"Error processing {pdf_path}: {e}")
-        # Clean up on error
-        if os.path.exists(output_folder):
-            cleanup_temp_folder(output_folder)
+        return _fail(e)
 
 
 def process_single_page(page, page_number, pdf_name, output_folder, image_format="jpeg"):
@@ -129,6 +185,8 @@ def process_single_page(page, page_number, pdf_name, output_folder, image_format
     :param image_format: "jpeg" (default) or "webp" — controls the saved page
         extension and encoder. WebP is written lossy for a smaller file at
         comparable quality.
+    :returns: True when the page was saved, False when it was not. The caller
+        counts these: a CBZ missing a page is not a converted PDF.
     """
     try:
         image_format = (image_format or "jpeg").strip().lower()
@@ -138,7 +196,7 @@ def process_single_page(page, page_number, pdf_name, output_folder, image_format
         width, height = page.size
         total_pixels = width * height
 
-        app_logger.info(f"Page {page_number} size: {width}x{height} pixels ({total_pixels}px)")
+        app_logger.debug(f"Page {page_number} size: {width}x{height} pixels ({total_pixels}px)")
 
         extension = "webp" if image_format == "webp" else "jpg"
         page_filename = f"{pdf_name} page_{page_number}.{extension}"
@@ -159,15 +217,19 @@ def process_single_page(page, page_number, pdf_name, output_folder, image_format
             page.save(page_path, "WEBP", quality=90, method=6)
         else:
             page.save(page_path, "JPEG", quality=92, optimize=True)
-        app_logger.info(f"Saved page {page_number} as {page_filename}")
-        
+        app_logger.debug(f"Saved page {page_number} as {page_filename}")
+        return True
+
     except Exception as e:
         app_logger.error(f"Error processing page {page_number}: {e}")
+        return False
 
 
 def create_cbz_file(output_folder, cbz_path):
     """
     Create CBZ file using streaming approach to avoid loading all files into memory.
+
+    Returns True when the archive was written, False when it was not.
     """
     try:
         with open_zip_for_write(cbz_path, zipfile.ZIP_STORED) as cbz:
@@ -181,9 +243,11 @@ def create_cbz_file(output_folder, cbz_path):
                     cbz.write(file_path_in_folder, arcname)
         
         app_logger.info(f"CBZ file created: {cbz_path}")
-        
+        return True
+
     except Exception as e:
         app_logger.error(f"Error creating CBZ file {cbz_path}: {e}")
+        return False
 
 
 def cleanup_temp_folder(folder_path):

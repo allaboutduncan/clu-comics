@@ -184,15 +184,18 @@ Point CLU at a downloads folder and let it file new comics automatically.
 - **Empty-folder cleanup** in the target after a move.
 - A debounced file watcher feeds a background metadata scanner that keeps the file index current.
 
-Turn it on under **Settings → File Processing → Folder Monitoring**; the change applies without a restart. (The old `MONITOR=yes` environment variable is imported once on upgrade and then ignored.)
+Turn it on under **Settings → File Processing → Folder Monitoring**; the change applies without a restart. (The old `MONITOR=yes` environment variable is no longer read.)
 
 📖 [Folder monitoring docs](https://clucomics.org/features/folder-monitoring/) · [Setup](https://clucomics.org/features/folder-monitoring/setup/)
 
 ## Insights, Timeline & CLU Wrapped
 
 - **Insights** — collection size, file counts, disk usage, publisher and series breakdowns, reading stats by year, and favorite writers, artists and characters.
+- **Reading goal and streaks** — set a yearly goal and see your pace against it on a dial, with current and longest streaks, this week against last, the last five weeks by series, and what you have open now.
+- **Reading clock** — when you read, by hour of day and by weekday, built from reading sessions recorded in the CLU reader. Click a day to see its sittings on a 24-hour ruler.
+- **Constellation** — a graph of the characters (or creators) in what you read, sized by appearances and joined when they share an issue.
 - **Timeline** — a full chronological history of everything you have read, filterable by year and month.
-- **CLU Wrapped** — Spotify-Wrapped-style yearly *and* monthly stat images, generated as downloadable slides you can share.
+- **CLU Wrapped** — a full-screen, tap-through recap of your year *or* month: totals, goal, streaks, time and pages, top series, creators and characters, your reading clock and a reading personality. Pick a style (your theme, Comic Panels, Halftone, Newsprint or Neon), add text or emoji to any slide, and download them all to share.
 - **Insights API** — exposes the same numbers for dashboards such as [gethomepage.dev](https://gethomepage.dev/), with per-user bearer-token support.
 
 📖 [Insights docs](https://clucomics.org/features/insights/) · [Timeline](https://clucomics.org/features/insights/timeline/) · [Insights API](https://clucomics.org/features/insights/api/)
@@ -224,12 +227,13 @@ Optional AI-powered reading recommendations based on your library and reading hi
 - **Per-user API tokens** — created and revoked from My Account, stored hashed and shown only once.
 - **OPDS feeds** — `/opds`, `/opds/browse` and `/opds/to-read` for third-party comic reader apps, with HTTP Basic Auth whenever login is on (any account has a password) and library scoping per user.
 - **Komga reading sync** — pull reading history and in-progress books from a [Komga](https://komga.org/) server.
+- **Kavita reading sync** — pull reading history and in-progress books from a [Kavita](https://www.kavitareader.com/) server (0.9 or newer), per user. The owner sets the server and schedule in Settings; each user adds their own Kavita auth key (Kavita: User Settings → Manage Auth Keys) under My Account → Kavita. The sync only adds: anything already read in CLU, and any position further along in CLU, is left as it is.
 - **`/health`** — a health endpoint for container orchestration and uptime monitoring.
 
 ## Administration
 
 - **Schedules** — scheduled jobs for file-index rebuilds, reading-list sync, GetComics runs and the scrape index.
-- **Library health scan** (opt-in, Library Health page) — a rolling, resumable background pass that hashes and CRC-checks comics in small batches, flags `.cbr` files sitting beside their `.cbz` and comics left unfiled in your download folders, lists library folders left empty or holding only `cvinfo`/`series.json` (with their own filter and a quick **Scan empty folders** button), and finds exact and likely duplicates for review. A coverage bar says how much of the library has been checked, and a health score shows beside Library Health in the gear menu. Off by default because it reads every comic; nothing is deleted without you choosing which copy to keep.
+- **Library health scan** (opt-in, Library Health page) — a rolling, resumable background pass that hashes and CRC-checks comics in small batches, flags `.cbr` files sitting beside their `.cbz`, lists library folders left empty or holding only `cvinfo`/`series.json` (with their own filter and a quick **Scan empty folders** button), and finds exact and likely duplicates for review. A coverage bar says how much of the library has been checked, and a health score shows beside Library Health in the File Manager menu. Off by default because it reads every comic; nothing is deleted without you choosing which copy to keep.
 - **Database tools** — backup, restore and download the SQLite database from the UI, with corruption detection and a salvage tool. The database lives in `/config`, so it persists across container updates.
 - **Logs** — an in-app log viewer with a polled tail, plus separate application and folder-monitoring logs.
 - **Debug package export** — bundle logs and config with secrets redacted, for bug reports.

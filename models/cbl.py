@@ -7,10 +7,11 @@ from core.database import (
     search_file_index,
     search_file_index_all_words,
     search_by_comic_metadata,
-    normalize_issue_number,
+    issue_identity_key,
 )
 from core.metadata_dates import years_in_path
 from helpers.collection import (
+    _APOS_CLASS,
     _LEADING_ARTICLE,
     names_other_publication_type,
     series_names_compatible,
@@ -70,6 +71,13 @@ def _normalise_series(name):
     return " ".join(text.split())
 
 
+_APOSTROPHE = re.compile(_APOS_CLASS)
+_WORD = re.compile(r"\w+")
+# "world's" as ONE token. The apostrophe must sit between word characters, so
+# a quoted or spaced one ("Marvel 's") is still a break.
+_WORD_WITH_APOSTROPHES = re.compile(r"\w+(?:" + _APOS_CLASS + r"\w+)*")
+
+
 def _starts_with_series(name, wanted):
     """Whether ``name`` begins with the whole word(s) of ``wanted``."""
     return bool(wanted) and (name == wanted or name.startswith(wanted + " "))
@@ -86,21 +94,37 @@ def _series_remainder(filename, series):
     the issue number lives there and its punctuation matters.
     """
     stem = os.path.splitext(os.path.basename(filename or ""))[0]
-    spans = list(re.finditer(r"\w+", stem.lower()))
-    name_words = [m.group() for m in spans]
-    wanted = _normalise_series(series).split()
-    if not name_words or not wanted:
-        return None
 
     def article_len(words):
         return 1 if words and _LEADING_ARTICLE.match(words[0] + " ") else 0
 
-    for skip_name in dict.fromkeys((0, article_len(name_words))):
-        for skip_wanted in dict.fromkeys((0, article_len(wanted))):
-            target = wanted[skip_wanted:]
-            end = skip_name + len(target)
-            if target and name_words[skip_name:end] == target:
-                return stem[spans[end - 1].end():]
+    # An apostrophe is read two ways on each side: as a word break (the
+    # original rule, which is what matches GetComics' "Marvel 's Voices") and
+    # as nothing at all. Without the second reading "World's Finest" was the
+    # words "world s finest" and could never match "Worlds Finest 001.cbz" --
+    # a spelling the filing matcher has always accepted.
+    readings = []
+    for token_re in (_WORD, _WORD_WITH_APOSTROPHES):
+        spans = list(token_re.finditer(stem.lower()))
+        words = [_APOSTROPHE.sub("", m.group()) for m in spans]
+        if words and (words, spans) not in readings:
+            readings.append((words, spans))
+    wanted_readings = list(dict.fromkeys((
+        tuple(_normalise_series(series).split()),
+        tuple(_normalise_series(_APOSTROPHE.sub("", series or "")).split()),
+    )))
+
+    for name_words, spans in readings:
+        for wanted in wanted_readings:
+            if not wanted:
+                continue
+            wanted = list(wanted)
+            for skip_name in dict.fromkeys((0, article_len(name_words))):
+                for skip_wanted in dict.fromkeys((0, article_len(wanted))):
+                    target = wanted[skip_wanted:]
+                    end = skip_name + len(target)
+                    if target and name_words[skip_name:end] == target:
+                        return stem[spans[end - 1].end():]
     return None
 
 
@@ -150,18 +174,18 @@ def issue_token(text):
 def filename_issue_matches(filename, series, number):
     """True when ``filename`` is issue ``number`` of ``series``.
 
-    Compares whole issue tokens through ``normalize_issue_number``, so
+    Compares whole issue tokens through ``issue_identity_key``, so
     "#050.LR" is issue 50.LR and never issue 50 -- the old pattern accepted
     any "50" followed by a non-digit, and "." is one.
     """
     rest = _series_remainder(filename, series)
     if rest is None:
         return False
-    wanted = normalize_issue_number(number)
+    wanted = issue_identity_key(number)
     if not wanted:
         return False
     token = issue_token(rest)
-    return token is not None and normalize_issue_number(token) == wanted
+    return token is not None and issue_identity_key(token) == wanted
 
 
 def year_verdict(candidate_years, volume_year=None, issue_years=None):
@@ -305,20 +329,33 @@ _cv_folder_cache = {"at": 0.0, "map": None}
 _cv_folder_build_lock = threading.Lock()
 
 
-def _build_cv_volume_map():
-    """The map from disk, or None when the folder list could not be read."""
+def _build_cv_volume_map(metron_out=None):
+    """The map from disk, or None when the folder list could not be read.
+
+    ``metron_out``, when given, is filled with ``{metron series id: [folder]}``
+    from the same read of each cvinfo (its ``series_id:`` line).
+    """
     from core.database import list_comic_dirs
-    from models.comicvine import find_cvinfo_in_folder, parse_cvinfo_volume_id
+    from models.comicvine import find_cvinfo_in_folder, parse_cvinfo_ids
     folders = list_comic_dirs()
     if folders is None:
         return None
     mapping = {}
     for folder in folders:
         cvinfo = find_cvinfo_in_folder(folder)
-        volume_id = parse_cvinfo_volume_id(cvinfo) if cvinfo else None
+        volume_id, metron_id = parse_cvinfo_ids(cvinfo) if cvinfo else (None, None)
         if volume_id:
             mapping.setdefault(volume_id, []).append(folder)
+        if metron_id and metron_out is not None:
+            metron_out.setdefault(metron_id, []).append(folder)
     return mapping
+
+
+def metron_series_folders():
+    """``{metron series id: [folder, ...]}`` from every indexed folder's
+    cvinfo. Built with, and exactly as fresh as, :func:`cv_volume_folders`."""
+    cv_volume_folders()
+    return _cv_folder_cache.get("metron") or {}
 
 
 def cv_volume_folders():
@@ -340,11 +377,12 @@ def cv_volume_folders():
         if (current["map"] is not None
                 and time.monotonic() - current["at"] < _CV_FOLDER_TTL):
             return current["map"]
-        mapping = _build_cv_volume_map()
+        metron = {}
+        mapping = _build_cv_volume_map(metron)
         if mapping is None:
             # A failed read is not "no cvinfo anywhere": don't cache it.
             return current["map"] or {}
-        _cv_folder_cache.update(at=time.monotonic(), map=mapping)
+        _cv_folder_cache.update(at=time.monotonic(), map=mapping, metron=metron)
         return mapping
     finally:
         _cv_folder_build_lock.release()
@@ -635,7 +673,7 @@ class CBLLoader:
         title ("Spider-Man: Sins Rising Prelude") is still that volume's issue.
         """
         key = _as_id(cv_volume_id)
-        wanted = normalize_issue_number(number)
+        wanted = issue_identity_key(number)
         if not key or not wanted:
             return None
         folders = cv_volume_folders().get(key)
@@ -656,12 +694,12 @@ class CBLLoader:
                 continue
             ci_number = row.get('ci_number')
             if ci_number not in (None, ''):
-                ok = normalize_issue_number(ci_number) == wanted
+                ok = issue_identity_key(ci_number) == wanted
             else:
                 stem = os.path.splitext(name)[0]
                 rest = _series_remainder(name, series)
                 token = issue_token(stem if rest is None else rest)
-                ok = token is not None and normalize_issue_number(token) == wanted
+                ok = token is not None and issue_identity_key(token) == wanted
             if ok:
                 hits.append(row['path'])
         return _preferred(hits)

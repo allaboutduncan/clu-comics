@@ -378,8 +378,13 @@ def get_reading_heatmap_data():
     Get reading counts grouped by year and month for heatmap display.
     Returns dict: { "2024": [jan_count, feb_count, ..., dec_count], ... }
     """
+    # Bucketed by the user's local month (it was raw UTC, so a late-evening
+    # read on the last day of a month sat in the next one). The offset is in
+    # the cache key because changing it moves reads between cells.
+    from core.user_time import localise_read_at_sql, sql_offset_modifier
+
     uid = current_user_id()
-    cache_key = f'u{uid}:reading_heatmap'
+    cache_key = f'u{uid}:reading_heatmap:{sql_offset_modifier()}'
     cached = get_cached_stats(cache_key)
     if cached:
         return cached
@@ -392,15 +397,15 @@ def get_reading_heatmap_data():
         c = conn.cursor()
 
         # Get counts grouped by year and month
-        c.execute("""
+        c.execute(localise_read_at_sql("""
             SELECT strftime('%Y', read_at) as year,
                    strftime('%m', read_at) as month,
                    COUNT(*) as count
             FROM issues_read
-            WHERE user_id = ?
+            WHERE user_id = ? AND read_at IS NOT NULL
             GROUP BY year, month
             ORDER BY year, month
-        """, (uid,))
+        """), (uid,))
 
         rows = c.fetchall()
         conn.close()

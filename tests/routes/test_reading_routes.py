@@ -6,6 +6,7 @@ where I left off". It previously lived in app.py, where the route test suite
 could not reach it at all.
 """
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -309,3 +310,141 @@ def _wait_idle(timeout=10):
     deadline = time.time() + timeout
     while bf.is_running() and time.time() < deadline:
         time.sleep(0.02)
+
+
+# ---------------------------------------------------------------------------
+# /api/mark-comic-read (moved from app.py)
+# ---------------------------------------------------------------------------
+
+
+def _read_row(path=COMIC):
+    conn = get_db_connection()
+    row = conn.execute(
+        "SELECT * FROM issues_read WHERE issue_path = ?", (path,)
+    ).fetchone()
+    conn.close()
+    return row
+
+
+class TestMarkComicRead:
+    def test_missing_path_is_400(self, client):
+        r = client.post("/api/mark-comic-read", json={})
+        assert r.status_code == 400
+
+    def test_records_the_read(self, client):
+        r = client.post(
+            "/api/mark-comic-read",
+            json={"path": COMIC, "page_count": 22, "time_spent": 600},
+        )
+        assert r.status_code == 200
+        assert r.get_json() == {"success": True}
+        row = _read_row()
+        assert (row["page_count"], row["time_spent"]) == (22, 600)
+
+    def test_read_at_backfills_the_date(self, client):
+        client.post(
+            "/api/mark-comic-read",
+            json={"path": COMIC, "read_at": "2021-03-04T05:06:07"},
+        )
+        assert _read_row()["read_at"].startswith("2021-03-04")
+
+    def test_credits_come_from_comicinfo(self, client):
+        info = {
+            "Writer": "Tom King", "Penciller": "David Finch",
+            "Characters": "Batman, Robin", "Publisher": "DC Comics", "Number": "1",
+        }
+        with patch("routes.reading.os.path.exists", return_value=True),              patch("core.comicinfo.read_comicinfo_from_zip", return_value=info):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        row = _read_row()
+        assert row["writer"] == "Tom King"
+        assert row["penciller"] == "David Finch"
+        assert row["publisher"] == "DC Comics"
+        assert "Batman" in row["characters"]
+
+    def test_unreadable_comicinfo_still_records_the_read(self, client):
+        with patch("routes.reading.os.path.exists", return_value=True),              patch("core.comicinfo.read_comicinfo_from_zip", side_effect=OSError("bad zip")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        assert _read_row() is not None
+
+    def test_clears_the_users_stats_cache(self, client):
+        with patch("routes.reading.clear_stats_cache_prefix") as clear:
+            client.post("/api/mark-comic-read", json={"path": COMIC})
+        clear.assert_called_once()
+        assert clear.call_args.args[0].startswith("u")
+
+    def test_a_failed_save_is_a_500(self, client):
+        with patch("routes.reading.mark_issue_read", side_effect=RuntimeError("locked")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 500
+        assert r.get_json() == {"error": "locked"}
+
+    def test_a_failed_metron_scrobble_does_not_fail_the_read(self, client):
+        with patch("models.metron.get_flask_api", side_effect=RuntimeError("down")):
+            r = client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert r.status_code == 200
+        assert _read_row() is not None
+
+
+# ---------------------------------------------------------------------------
+# Reading sessions recorded from the reader's own saves
+# ---------------------------------------------------------------------------
+
+SESSION = "3f2b6c1e-8a44-4d0b-9a57-0c1f5f1f0a11"
+
+
+def _sessions():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM reading_sessions ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+class TestSessionsFromSaves:
+    def _save(self, client, page, session=SESSION):
+        return client.post("/api/reading-position", json={
+            "comic_path": COMIC, "page_number": page, "total_pages": 20,
+            "time_spent": 60, "session_id": session,
+        })
+
+    def test_saves_in_one_reader_open_are_one_session(self, client):
+        self._save(client, 3)
+        self._save(client, 7)
+        (session,) = _sessions()
+        assert session["comic_path"] == COMIC
+        assert session["client_session_id"] == SESSION
+        assert (session["start_page"], session["max_page"]) == (3, 7)
+
+    def test_page_one_is_not_a_sitting(self, client):
+        # Page 1 clears the bookmark; opening to the cover is not reading.
+        assert self._save(client, 1).get_json()["cleared"] is True
+        assert _sessions() == []
+
+    def test_a_save_without_an_id_still_records(self, client):
+        # An older cached reader.js sends no session id.
+        self._save(client, 4, session=None)
+        (session,) = _sessions()
+        assert session["client_session_id"] is None
+
+    def test_a_session_failure_does_not_fail_the_save(self, client):
+        with patch("core.reading_sessions.record_reading_activity",
+                   side_effect=RuntimeError("database is locked")):
+            r = self._save(client, 5)
+        assert r.get_json() == {"success": True}
+        assert get_reading_position(COMIC)["page_number"] == 5
+
+    def test_finishing_in_the_reader_closes_the_session(self, client):
+        self._save(client, 3)
+        client.post("/api/mark-comic-read", json={
+            "path": COMIC, "page_count": 20, "time_spent": 600, "session_id": SESSION,
+        })
+        (session,) = _sessions()
+        assert session["finished"] == 1
+        assert session["max_page"] == 20
+
+    def test_mark_as_read_from_the_grid_is_not_a_sitting(self, client):
+        client.post("/api/mark-comic-read", json={"path": COMIC})
+        assert _read_row() is not None
+        assert _sessions() == []
+

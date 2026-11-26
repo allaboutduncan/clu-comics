@@ -171,8 +171,7 @@ the **issue** directly. `models.metron.match_issue_by_cover` is the one policy
 function; the single-file cascade (`_try_metron_single`), the batch route's
 `try_metron` and bulk one-shot folders (`_oneshot_cover_match`) call it, each
 only when there is no Metron series id. A miss returns `None` and the caller
-matches by name exactly as before. Auto-tag on move and bulk series folders do
-not use it yet.
+matches by name exactly as before. Auto-tag on move does not use it yet.
 
 - **`core/cover_hash.py` is `imagehash.phash` on Pillow alone.** The real
   library needs numpy, scipy and PyWavelets. `tests/unit/test_cover_hash.py`
@@ -187,6 +186,10 @@ not use it yet.
   trade can sort ahead of the issue at 0 bits. A candidate is accepted only
   when the filename agrees on two of series, number and year, a number the
   filename gives never contradicts, and **exactly one** candidate qualifies.
+  Number and year **without the series** count only within
+  `COVER_MATCH_UNNAMED_DISTANCE` (4) bits: "Simon Dark 001 (2007)", a series
+  Metron does not have, was taken for "Marvel Adventures The Avengers" (2006)
+  #1 at 10 bits, and that series went into the folder's cvinfo.
 - **At most two requests per file** (`COVER_MATCH_MAX_CALLS`): distance 10,
   then, only if that returned nothing and the filename has a year, distance 16
   with `cover_year`. The wide search needs series **and** number; unfiltered at
@@ -197,7 +200,24 @@ not use it yet.
   Metron could not be asked and `[]` for no match.
 - **A typed search term skips the cover** in `/api/search-metadata`: a manual
   search is the user overruling the automatic answer.
-- **No cvinfo is written from a cover match.** It identifies one file.
+- **A per-file cover match writes no cvinfo.** It identifies one file.
+- **A folder with no cvinfo asks the covers for its series before the name
+  search** (`resolve_series_by_cover`). Metron's `name` filter is a substring
+  match and the old search took the first hit, so a "Crimson" folder of 24
+  issues became the one-issue "Batman: Crimson Mist" and that went into a new
+  cvinfo. It hashes up to `COVER_SERIES_MAX_FILES` (3) files in name order and
+  the first one `match_issue_by_cover` accepts decides; there is no second
+  acceptance rule. It stops when `paused_reason()` is set. Callers:
+  `routes.metadata._metron_series_for_folder` (batch, which writes the cvinfo
+  the name search used to write; an id in the folder's series.json comes
+  first) and `core.bulk_metadata._folder_cover_series` (series folders, only
+  when Metron is a job provider; the folder year check still runs before any
+  sidecar). Both build their samples with `routes.metadata.cover_series_samples`,
+  which leaves a missing issue number as `None` rather than "1".
+- **`search_series_by_name` ranks** (`_rank_series_candidates`): a title that
+  *is* the name (`ascii_words`), then the nearest start year, then a series
+  with room for `file_count` files. The count only ranks. Batch passes the
+  folder's year ahead of the first file's, which is an issue year.
 - `metron_cover_match` (default on) switches it off. It has no settings UI yet.
 
 Tests: `tests/unit/test_cover_hash.py`, `tests/mocked/test_metron_cover_match.py`,

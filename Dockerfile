@@ -121,7 +121,7 @@ RUN dpkg -i /tmp/libgl1-mesa-dri.deb /tmp/adwaita-icon-theme.deb \
 
 # unrar binary built from RARLAB source in the builder stage — matches the
 # target architecture automatically under Buildx multi-arch builds.
-# Falls back to 7z/unar if unavailable — see helpers.py extract_rar_with_unar()
+# Falls back to 7z/unar if unavailable — see helpers.extract_rar_with_unar()
 COPY --from=builder /usr/local/bin/unrar /usr/local/bin/unrar
 
 WORKDIR /app
@@ -155,11 +155,17 @@ RUN chmod -R 755 /app/templates
 EXPOSE 5577
 
 # Set default env vars
+# MALLOC_ARENA_MAX: glibc gives each thread its own malloc arena (up to 8 per
+# core) and freed memory in one arena is not reused by another, so a worker
+# with 8 request threads plus the background pools keeps growing while its
+# Python heap is flat (#842). Two arenas cost a little lock contention and cap
+# that; a user can still override it from compose.
 ENV PUID=99 \
     PGID=100 \
     UMASK=000 \
     FLASK_ENV=production \
-    XDG_CACHE_HOME=/config/.cache
+    XDG_CACHE_HOME=/config/.cache \
+    MALLOC_ARENA_MAX=2
 
 # Setup entrypoint
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

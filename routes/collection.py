@@ -26,7 +26,8 @@ from core.metadata_normalize import strip_provider_ids
 from core import folder_art
 from core import folder_thumbnails
 from core import app_state
-from helpers.paging import COLLECTION_DEFAULT_PER_PAGE, DEFAULT_PER_PAGE
+from helpers.paging import (COLLECTION_DEFAULT_PER_PAGE, DEFAULT_PER_PAGE,
+                            per_page_from)
 from helpers.library import (get_library_roots,
                              get_default_library_root, is_library_root,
                              is_valid_library_path, is_allowed_path)
@@ -40,7 +41,8 @@ from core.database import (
     get_directory_children, get_path_counts_batch, get_recent_files,
     invalidate_browse_cache, add_file_index_entry, delete_file_index_entry,
     search_file_index, get_user_preference, get_files_recursive_paged,
-    count_files_recursive,
+    count_files_recursive, get_new_release_items, get_new_releases_page,
+    get_new_release_facets, NEW_RELEASE_SORTS,
     get_user_setting, get_folder_pin, set_folder_pin, delete_folder_pin
 )
 
@@ -110,6 +112,17 @@ DASHBOARD_SECTION_DEFS = {
         'settings_label': 'Discover / Recommendations',
         'settings_note': 'Also requires Recommendations enabled',
     },
+    'new_releases': {
+        'id': 'new_releases',
+        'title': 'New Releases',
+        'icon': 'bi-calendar-event-fill text-success',
+        'swiper_id': 'newReleasesSwiper',
+        'view_all_type': 'link',
+        'view_all_href': '/recent',
+        'view_all_text': 'View All',
+        # Store dates only exist for issues of a mapped series.
+        'settings_note': 'Issues from mapped series, by store date',
+    },
     'recently_added': {
         'id': 'recently_added',
         'title': 'Recently Added',
@@ -126,7 +139,7 @@ DASHBOARD_SECTION_DEFS = {
     },
 }
 
-DEFAULT_DASHBOARD_ORDER = ['favorites', 'want_to_read', 'continue_reading', 'on_the_stack', 'discover', 'recently_added', 'library']
+DEFAULT_DASHBOARD_ORDER = ['favorites', 'want_to_read', 'continue_reading', 'on_the_stack', 'discover', 'new_releases', 'recently_added', 'library']
 
 VALID_DASHBOARD_IDS = frozenset(DASHBOARD_SECTION_DEFS)
 
@@ -371,7 +384,7 @@ def browse_by_metadata(category, name):
     normalized_category = category_mapping.get(category.lower())
     if not normalized_category:
         flash(f"Invalid browse category: {category}", "error")
-        return redirect(url_for('insights_page'))
+        return redirect(url_for('insights.insights_page'))
 
     # Links from the CBZ Info modal carry the raw XML value, which may still
     # hold a tagger's provider ID ("Ron Lim [3258]"). Show the canonical name.
@@ -621,8 +634,17 @@ def api_scan_directory():
         )
         dir_count += 1
 
+        # WATCH/TARGET nested under the scanned folder are not library.
+        from helpers.library import staging_matcher
+        _staging = staging_matcher()
+
         for root, dirs, files in os.walk(path):
-            dirs[:] = [d for d in dirs if not d.startswith(('.', '_'))]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(('.', '_'))
+                and not _staging(os.path.join(root, d), is_dir=True)
+            ]
+            files = [f for f in files if not _staging(os.path.join(root, f))]
 
             for d in dirs:
                 full_path = os.path.join(root, d)
@@ -1552,6 +1574,113 @@ def list_recent_files():
     except Exception as e:
         app_logger.error(f"Error in list_recent_files: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@collection_bp.route('/api/new-releases', methods=['GET'])
+def api_new_releases():
+    """Owned issues of mapped series, newest store date first."""
+    try:
+        limit = request.args.get('limit', 10, type=int) or 10
+        limit = max(1, min(limit, 100))
+
+        # Folder scope goes into the query, so the limit is applied to what
+        # this user may actually see.
+        items = get_new_release_items(
+            limit=limit,
+            allowed_prefixes=accessible_folder_prefixes(current_user()),
+        )
+        return jsonify({
+            "success": True,
+            "items": items,
+            "total_count": len(items),
+        })
+    except Exception as e:
+        app_logger.error(f"Error in api_new_releases: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# The size last picked on /recent; used when the URL does not say.
+NEW_RELEASES_PER_PAGE_COOKIE = 'clu_per_page_recent'
+
+
+def _new_releases_args():
+    """Search, filters, sort, page and size from the query string. Anything
+    the page does not offer falls back to its default."""
+    args = request.args
+    try:
+        publisher_id = int(args.get('publisher') or '')
+    except ValueError:
+        publisher_id = None
+    year = (args.get('year') or '').strip()
+    if not (len(year) == 4 and year.isdigit()):
+        year = ''
+    sort = args.get('sort') or ''
+    if sort not in NEW_RELEASE_SORTS:
+        sort = NEW_RELEASE_SORTS[0]
+    try:
+        page = max(1, int(args.get('page', 1)))
+    except (TypeError, ValueError):
+        page = 1
+    per_page = per_page_from(args.get('per_page'),
+                             request.cookies.get(NEW_RELEASES_PER_PAGE_COOKIE))
+    return {
+        'q': (args.get('q') or '').strip(),
+        'publisher_id': publisher_id,
+        'year': year,
+        'sort': sort,
+        'page': page,
+        'per_page': per_page,
+    }
+
+
+@collection_bp.route('/recent')
+def new_releases_page():
+    """New Releases: owned issues grouped by store date. recent.js fills the
+    page from /api/new-releases/page."""
+    a = _new_releases_args()
+    facets = get_new_release_facets(
+        allowed_prefixes=accessible_folder_prefixes(current_user()))
+    return render_template(
+        'recent.html',
+        query=a['q'], publisher_id=a['publisher_id'], year=a['year'],
+        sort=a['sort'], page=a['page'], per_page=a['per_page'],
+        publishers=facets['publishers'], years=facets['years'],
+        per_page_cookie=NEW_RELEASES_PER_PAGE_COOKIE,
+    )
+
+
+@collection_bp.route('/api/new-releases/page', methods=['GET'])
+def api_new_releases_page():
+    """One page of New Releases for the /recent pager."""
+    try:
+        a = _new_releases_args()
+        prefixes = accessible_folder_prefixes(current_user())
+        filters = dict(allowed_prefixes=prefixes, search=a['q'],
+                       publisher_id=a['publisher_id'], year=a['year'],
+                       sort=a['sort'])
+        page, per_page = a['page'], a['per_page']
+        items, total = get_new_releases_page(
+            offset=(page - 1) * per_page, limit=per_page, **filters)
+        total_pages = max(1, -(-total // per_page))
+        if page > total_pages:
+            # A page past the end (a filter shrank the list): show the last.
+            page = total_pages
+            items, total = get_new_releases_page(
+                offset=(page - 1) * per_page, limit=per_page, **filters)
+        for item in items:
+            item['thumbnail_url'] = url_for('get_thumbnail', path=item['file_path'])
+        return jsonify({
+            "success": True,
+            "items": items,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+            "sort": a['sort'],
+        })
+    except Exception as e:
+        app_logger.error(f"Error in api_new_releases_page: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @collection_bp.route('/search-files', methods=['GET'])

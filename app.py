@@ -35,9 +35,7 @@ import re
 import heapq
 import sqlite3
 import zipfile
-import zlib
 import rarfile
-import tempfile
 import traceback
 
 # Prefer unrar (proprietary, handles solid archives) over unar
@@ -88,7 +86,7 @@ from core.memory_utils import (
     memory_context,
     get_global_monitor,
 )
-from core.app_logging import app_logger, APP_LOG, MONITOR_LOG, read_log_tail
+from core.app_logging import app_logger
 from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from core.version import __version__
@@ -233,16 +231,11 @@ load_config()
 # Initialize Database
 init_db()
 
-# api.py filled app.config at import, before this database existed. On the first
-# start after the config.ini import (and on a fresh volume) that was all
-# defaults -- trash, rename pattern, cache paths -- until the next settings save.
-# Re-run it now that the preferences are there. It keeps the secret key.
+# api.py filled app.config at import, before this database existed. On a fresh
+# volume (and after a restore) that was all defaults -- trash, rename pattern,
+# cache paths -- until the next settings save. Re-run it now that the
+# preferences are there. It keeps the secret key.
 load_flask_config(app)
-
-# Folder Monitoring was the MONITOR env var; import it into the setting once.
-from core.config import seed_monitor_from_env  # noqa: E402
-
-seed_monitor_from_env()
 
 # Multi-user: ensure a Store Owner account exists (implicit-owner mode until
 # a password is set; seeded from CLU_USERNAME/CLU_PASSWORD when present).
@@ -292,9 +285,6 @@ from core.database import (
     get_user_setting_override,
     delete_user_setting,
 )
-
-# The database exists now: finish the one-time config.ini import if it is owed.
-load_config()
 
 # Migrate the legacy {year} rename token to {volume_year} (one-time, in-place).
 # Exact literal replace never touches {cover_year}/{store_year}/{issue_year}.
@@ -397,6 +387,24 @@ app.register_blueprint(setup_bp)
 from routes.download_runs import download_runs_bp
 
 app.register_blueprint(download_runs_bp)
+
+# Insights, Timeline and the reading-stats API (moved out of app.py so the
+# routes can be tested), and the Wrapped image routes.
+from routes.insights import insights_bp
+from routes.wrapped import wrapped_bp
+
+app.register_blueprint(insights_bp)
+app.register_blueprint(wrapped_bp)
+
+# Komga sync controls and the Logs page (moved out of app.py so the routes can
+# be tested). The reader's page routes moved into routes/reading.py.
+from routes.kavita import kavita_bp
+from routes.komga import komga_bp
+from routes.logs import logs_bp
+
+app.register_blueprint(komga_bp)
+app.register_blueprint(kavita_bp)
+app.register_blueprint(logs_bp)
 
 # Start unified scheduler
 app_state.scheduler.start()
@@ -1102,10 +1110,25 @@ def process_incoming_wanted_issues():
                     )
 
             # Auto-fetch metadata (try Metron first, then ComicVine as fallback)
-            app_logger.info(f"Auto-fetching metadata for: {final_path}")
+            # The fetchers read the issue number out of the filename again.
+            # When that is not the issue this file was just filed as, they
+            # would write another issue's metadata and rename the file to it
+            # (#807), so the file is left untagged for the user to look at.
             pre_fetch_path = final_path
-            final_path = auto_fetch_metron_metadata(final_path)
-            final_path = auto_fetch_comicvine_metadata(final_path)
+            if filename_contradicts_issue(
+                os.path.basename(final_path),
+                issue["number"],
+                [actual_series_name, issue["series_name"]],
+            ):
+                app_logger.warning(
+                    f"Skipping auto-metadata for {final_path}: filed as "
+                    f"'{actual_series_name} #{issue['number']}' but the "
+                    f"filename names another issue"
+                )
+            else:
+                app_logger.info(f"Auto-fetching metadata for: {final_path}")
+                final_path = auto_fetch_metron_metadata(final_path)
+                final_path = auto_fetch_comicvine_metadata(final_path)
 
             # Refresh the index entry (upsert) — metadata injection
             # changes size, and the fetchers may have renamed the file
@@ -1310,6 +1333,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             download_filename,
             score_getcomics_result,
             accept_result,
+            better_fallback,
             get_series_alias_list,
             select_download_url,
             PROVIDER_LABELS,
@@ -1470,6 +1494,10 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             # Get manual status for this series (owned/skipped)
             manual_status = get_manual_status_for_series(series_id)
 
+            # A trade/hardcover series is only satisfied by a collected
+            # edition: its "#2" is volume 2, not the single issue #2 (#730).
+            collected_series = is_collected_series(series_name, issues)
+
             # Issues this sweep queued a download for recently. Read once per
             # series, not once per issue. Ignored on a scoped run: clicking
             # "Check for Missing Issues" is an explicit request, the same reason
@@ -1527,6 +1555,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                     "series_volume": series_volume,
                     "publisher_name": publisher_name,
                     "series_aliases": series_aliases,
+                    "collected_series": collected_series,
                     "cover_date": issue.get("cover_date"),
                 })
 
@@ -1581,6 +1610,9 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
             series_volume = item["series_volume"]
             publisher_name = item["publisher_name"]
             series_aliases = item["series_aliases"]
+            # Absent on a reading-list item: nothing says what kind of series
+            # an entry belongs to, so it is scored as single issues.
+            collected_series = item.get("collected_series")
             issue = {"number": issue_num, "cover_date": item["cover_date"]}
             try:
                 # Skip if this issue is covered by a downloaded range pack.
@@ -1664,6 +1696,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         search_variants=search_variants,
                         series_aliases=series_aliases,
                         dry_run=bool(dry_run),
+                        collected_series=collected_series,
                     )
                     if dry_run and u.get("status") == "match_found":
                         simulation_results.append({
@@ -1709,6 +1742,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                     series_year=series_year,  # Pass volume_year to help find correct series edition
                     search_variants=search_variants,
                     series_aliases=series_aliases,
+                    collected_series=collected_series,
                 ) or []
 
                 if not results:
@@ -1754,6 +1788,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         volume_year=series_year,
                         publisher_name=publisher_name,
                         series_aliases=series_aliases,
+                        collected_series=collected_series,
                     )
                     decision = accept_result(
                         score, is_range, series_match,
@@ -1772,8 +1807,8 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                         if best_accept is None or score > best_accept[1]:
                             best_accept = (result, score)
                         single_found = True
-                    elif decision == "FALLBACK" and best_fallback is None:
-                        best_fallback = (result, score)
+                    elif decision == "FALLBACK":
+                        best_fallback = better_fallback(best_fallback, result, score)
 
                 # Refine with year when multiple ACCEPT matches are ambiguous.
                 # Example: "Lobo 2" returns multiple Lobo volumes; "Lobo 2 2026"
@@ -1802,6 +1837,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                             volume_year=series_year,
                             publisher_name=publisher_name,
                             series_aliases=series_aliases,
+                            collected_series=collected_series,
                         )
                         r_decision = accept_result(
                             r_score, r_is_range, r_series_match,
@@ -2122,6 +2158,7 @@ def scheduled_getcomics_download(dry_run=False, only_series_id=None, op_id=None,
                             publisher_name=publisher_name,
                             search_variants=search_variants,
                             series_aliases=series_aliases,
+                            collected_series=collected_series,
                         )
                         if u.get("submitted"):
                             download_count += 1
@@ -2924,6 +2961,27 @@ def configure_komga_sync_schedule():
     configure_schedule("komga")
 
 
+def scheduled_kavita_sync():
+    """Wrapper. The body is core.kavita_sync.sync_all.
+
+    A wrapper on purpose, like scheduled_reading_list_sync: app.py cannot be
+    imported in tests.
+    """
+    try:
+        from core.database import update_schedule_last_run
+        from core.kavita_sync import sync_all
+
+        update_schedule_last_run("kavita")
+        sync_all(app=app)
+    except Exception as e:
+        app_logger.error(f"Scheduled Kavita sync failed: {e}")
+
+
+def configure_kavita_sync_schedule():
+    """Configure the Kavita sync schedule based on database settings."""
+    configure_schedule("kavita")
+
+
 def scheduled_reading_list_sync():
     """Re-check every imported reading list against the source it came from.
 
@@ -2985,6 +3043,11 @@ SCHEDULE_JOBS.update(
             "callback": scheduled_komga_sync,
             "job_id": "komga_sync",
             "label": "Komga Reading Sync",
+        },
+        "kavita": {
+            "callback": scheduled_kavita_sync,
+            "job_id": "kavita_sync",
+            "label": "Kavita Reading Sync",
         },
         "reading_list_sync": {
             "callback": scheduled_reading_list_sync,
@@ -3148,6 +3211,7 @@ def refresh_wanted_cache_background():
 # Moved to helpers/collection.py - re-exported for backward compatibility
 # Moved to helpers/collection.py - re-exported for backward compatibility
 from helpers.collection import (
+    filename_contradicts_issue,
     generate_filename_pattern,
     strip_year_token,
     strip_title_token,
@@ -3157,6 +3221,7 @@ from helpers.collection import (
     get_series_name_from_files,
     extract_comicinfo,
     match_issues_to_collection,
+    is_collected_series,
     match_wanted_issues_to_files,
     collect_target_candidates,
 )
@@ -3214,6 +3279,7 @@ from helpers.library import (
     get_library_for_path,
     watch_target_verdict,
     is_root_mounted,
+    staging_matcher,
 )
 
 #########################
@@ -3283,68 +3349,66 @@ def update_recent_files_from_scan(comic_files):
             return
 
         # Get database connection
-        conn = get_db_connection()
-        if not conn:
-            app_logger.error(
-                "Could not get database connection for recent files update"
+        with db_conn() as conn:
+            if not conn:
+                app_logger.error(
+                    "Could not get database connection for recent files update"
+                )
+                return
+
+            c = conn.cursor()
+
+            # Check how many files we currently have
+            c.execute("SELECT COUNT(*) FROM recent_files")
+            current_count = c.fetchone()[0]
+
+            # Only do a full rescan if we have fewer than 100 files
+            # This preserves files added via the app (which have accurate timestamps)
+            # while still populating the list for files added externally
+            if current_count >= 100:
+                app_logger.debug(
+                    f"Recent files already has {current_count} entries, skipping scan update"
+                )
+                return
+
+            app_logger.info(
+                f"Populating recent_files database from {len(comic_files)} scanned files ({current_count} existing)..."
             )
-            return
 
-        c = conn.cursor()
+            # Sort by modification time (most recent first) - use heapq for efficiency with large lists
+            # If we have a huge number of files, use heapq.nlargest for better performance
+            if len(comic_files) > 10000:
+                app_logger.info("Large library detected, using optimized sorting...")
+                top_100 = heapq.nlargest(100, comic_files, key=lambda x: x["mtime"])
+            else:
+                sorted_files = sorted(comic_files, key=lambda x: x["mtime"], reverse=True)
+                top_100 = sorted_files[:100]
 
-        # Check how many files we currently have
-        c.execute("SELECT COUNT(*) FROM recent_files")
-        current_count = c.fetchone()[0]
+            # Clear existing entries and insert fresh data
+            c.execute("DELETE FROM recent_files")
 
-        # Only do a full rescan if we have fewer than 100 files
-        # This preserves files added via the app (which have accurate timestamps)
-        # while still populating the list for files added externally
-        if current_count >= 100:
-            conn.close()
-            app_logger.debug(
-                f"Recent files already has {current_count} entries, skipping scan update"
+            # Batch insert for better performance
+            records = [
+                (
+                    file_info["path"],
+                    file_info["name"],
+                    file_info["size"],
+                    datetime.fromtimestamp(file_info["mtime"]).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                )
+                for file_info in top_100
+            ]
+
+            c.executemany(
+                """
+                INSERT INTO recent_files (file_path, file_name, file_size, added_at)
+                VALUES (?, ?, ?, ?)
+            """,
+                records,
             )
-            return
 
-        app_logger.info(
-            f"Populating recent_files database from {len(comic_files)} scanned files ({current_count} existing)..."
-        )
-
-        # Sort by modification time (most recent first) - use heapq for efficiency with large lists
-        # If we have a huge number of files, use heapq.nlargest for better performance
-        if len(comic_files) > 10000:
-            app_logger.info("Large library detected, using optimized sorting...")
-            top_100 = heapq.nlargest(100, comic_files, key=lambda x: x["mtime"])
-        else:
-            sorted_files = sorted(comic_files, key=lambda x: x["mtime"], reverse=True)
-            top_100 = sorted_files[:100]
-
-        # Clear existing entries and insert fresh data
-        c.execute("DELETE FROM recent_files")
-
-        # Batch insert for better performance
-        records = [
-            (
-                file_info["path"],
-                file_info["name"],
-                file_info["size"],
-                datetime.fromtimestamp(file_info["mtime"]).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-            )
-            for file_info in top_100
-        ]
-
-        c.executemany(
-            """
-            INSERT INTO recent_files (file_path, file_name, file_size, added_at)
-            VALUES (?, ?, ?, ?)
-        """,
-            records,
-        )
-
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         app_logger.info(f"✅ Recent files database populated with {len(top_100)} files")
 
@@ -3765,97 +3829,123 @@ def clear_cache():
 #########################
 
 
+# One rebuild at a time: two walks would only race over the same rows.
+_rebuild_index_lock = threading.Lock()
+
+
 @app.route("/api/rebuild-file-index", methods=["POST"])
 def api_rebuild_file_index():
-    """Manually rebuild the file index using incremental sync."""
-    global index_built
+    """Start a file index rebuild (incremental sync), off-request.
 
+    The walk reads every library folder, which on a large or networked library
+    outlasts gunicorn's 120s timeout: the worker was killed mid-sync and the
+    page reported a network error. So it runs on a thread, one at a time, and
+    the caller follows ``/api/operation/<op_id>``; the outcome ("N added, M
+    removed") is the operation's ``detail`` when it completes.
+    """
+    from core.app_state import complete_operation, register_operation, update_operation
+
+    if not _rebuild_index_lock.acquire(blocking=False):
+        return jsonify(
+            {"success": False, "error": "A file index rebuild is already running"}
+        ), 409
     try:
-        app_logger.info("🔄 Manual file index sync requested...")
-        start_time = time.time()
+        op_id = register_operation("file_index_rebuild", "Rebuilding file index")
+    except Exception:
+        _rebuild_index_lock.release()
+        raise
 
-        # Scan filesystem to get current state
-        app_logger.info("Scanning filesystem...")
-        # Vanished folders first: this also clears their reading-list
-        # matches, which the sync's own removal does not (#693).
-        prune_vanished_index_dirs()
-        walked_roots = []
-        filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
-        scan_time = time.time() - start_time
-        app_logger.info(
-            f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
-        )
+    def _run():
+        global index_built
 
-        # Incremental sync (preserves metadata for existing files)
-        app_logger.info("Performing incremental sync...")
-        sync_result = sync_file_index_incremental(
-            filesystem_entries, walked_roots=walked_roots
-        )
-        app_logger.info(
-            f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
-        )
+        failed = False
+        try:
+            with app.app_context():
+                app_logger.info("🔄 Manual file index sync requested...")
+                start_time = time.time()
 
-        # Queue only NEW files for metadata scanning
-        if sync_result["added"] > 0:
-            from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
-
-            new_cbz_paths = [
-                p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
-            ]
-            if new_cbz_paths:
-                queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
+                # Scan filesystem to get current state
+                app_logger.info("Scanning filesystem...")
+                # Vanished folders first: this also clears their reading-list
+                # matches, which the sync's own removal does not (#693).
+                prune_vanished_index_dirs()
+                walked_roots = []
+                filesystem_entries = scan_filesystem_for_sync(walked_roots=walked_roots)
+                scan_time = time.time() - start_time
                 app_logger.info(
-                    f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning"
+                    f"Filesystem scan completed: {len(filesystem_entries)} entries in {scan_time:.2f}s"
                 )
 
-        # Also queue any other files that still need metadata scanning
-        # (e.g., previously added files that were never scanned)
-        from core.metadata_scanner import queue_pending_files
+                # Incremental sync (preserves metadata for existing files)
+                app_logger.info("Performing incremental sync...")
+                sync_result = sync_file_index_incremental(
+                    filesystem_entries, walked_roots=walked_roots
+                )
+                app_logger.info(
+                    f"Sync result: {sync_result['added']} added, {sync_result['removed']} removed, {sync_result['unchanged']} unchanged"
+                )
 
-        queued = queue_pending_files()
-        if queued:
-            app_logger.info(f"Queued {queued} additional files for metadata scanning")
+                # Queue only NEW files for metadata scanning
+                if sync_result["added"] > 0:
+                    from core.metadata_scanner import queue_files_for_scan, PRIORITY_NEW_FILE
 
-        # Refresh in-memory index from DB: read it aside and swap it in, so a
-        # reader never sees it empty and a failed read keeps the old one.
-        from core.file_index_memory import replace_index_contents
+                    new_cbz_paths = [
+                        p for p in sync_result["new_paths"] if p.lower().endswith(".cbz")
+                    ]
+                    if new_cbz_paths:
+                        queue_files_for_scan(new_cbz_paths, PRIORITY_NEW_FILE)
+                        app_logger.info(
+                            f"Queued {len(new_cbz_paths)} new CBZ files for metadata scanning"
+                        )
 
-        replace_index_contents(
-            file_index,
-            get_file_index_from_db(),
-            sync_result["added"] + sync_result["unchanged"],
-        )
-        index_built = True
+                # Also queue any other files that still need metadata scanning
+                # (e.g., previously added files that were never scanned)
+                from core.metadata_scanner import queue_pending_files
 
-        # Update last rebuild timestamp
-        update_last_rebuild()
+                queued = queue_pending_files()
+                if queued:
+                    app_logger.info(f"Queued {queued} additional files for metadata scanning")
 
-        # Clear and pre-populate stats cache
-        clear_stats_cache()
-        get_library_stats()
-        get_file_type_distribution()
-        get_top_publishers()
-        get_reading_history_stats()
+                # Refresh in-memory index from DB: read it aside and swap it in, so a
+                # reader never sees it empty and a failed read keeps the old one.
+                from core.file_index_memory import replace_index_contents
 
-        elapsed = time.time() - start_time
-        app_logger.info(f"✅ Manual file index sync completed in {elapsed:.2f}s")
+                replace_index_contents(
+                    file_index,
+                    get_file_index_from_db(),
+                    sync_result["added"] + sync_result["unchanged"],
+                )
+                index_built = True
 
-        return jsonify(
-            {
-                "success": True,
-                "message": f"File index synced successfully in {elapsed:.2f} seconds",
-                "added": sync_result["added"],
-                "removed": sync_result["removed"],
-                "unchanged": sync_result["unchanged"],
-                "total_files": len([e for e in file_index if e["type"] == "file"]),
-                "total_directories": len(
-                    [e for e in file_index if e["type"] == "directory"]
-                ),
-            }
-        )
-    except Exception as e:
-        app_logger.error(f"❌ File index sync failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+                # Update last rebuild timestamp
+                update_last_rebuild()
+
+                # Clear and pre-populate stats cache
+                clear_stats_cache()
+                get_library_stats()
+                get_file_type_distribution()
+                get_top_publishers()
+                get_reading_history_stats()
+
+                elapsed = time.time() - start_time
+                app_logger.info(f"✅ Manual file index sync completed in {elapsed:.2f}s")
+
+                update_operation(
+                    op_id,
+                    detail=(
+                        f"{sync_result['added']} added, {sync_result['removed']} removed, "
+                        f"{sync_result['unchanged']} unchanged"
+                    ),
+                )
+        except Exception as e:
+            failed = True
+            app_logger.error(f"❌ File index sync failed: {e}")
+        finally:
+            complete_operation(op_id, error=failed)
+            _rebuild_index_lock.release()
+
+    threading.Thread(target=_run, daemon=True, name="file-index-rebuild").start()
+    return jsonify({"success": True, "op_id": op_id})
 
 
 @app.route("/api/file-index-status", methods=["GET"])
@@ -4227,6 +4317,7 @@ def _build_file_index_locked():
         if not library_roots:
             app_logger.warning("No libraries configured, cannot build file index")
             return
+        _staging = staging_matcher()
 
         for library_root in library_roots:
             if not os.path.exists(library_root):
@@ -4236,10 +4327,16 @@ def _build_file_index_locked():
             app_logger.info(f"Indexing library: {library_root}")
 
             for root, dirs, files in os.walk(library_root):
-                # Skip hidden directories
+                # Skip hidden directories, and WATCH/TARGET nested in the
+                # library: a download in transit is not part of the library.
                 dirs[:] = [
-                    d for d in dirs if not is_hidden(os.path.join(root, d))
+                    d for d in dirs
+                    if not is_hidden(os.path.join(root, d))
+                    and not _staging(os.path.join(root, d), is_dir=True)
                 ]
+                # A staging folder that *is* this library root owns the loose
+                # files directly in it (see helpers.library.staging_matcher).
+                files = [f for f in files if not _staging(os.path.join(root, f))]
 
                 # Index directories
                 for name in dirs:
@@ -4384,22 +4481,9 @@ def scan_filesystem_for_sync(walked_roots=None):
     excluded_files = {"cvinfo"}
     allowed_files = {"missing.txt"}
 
-    # Get TARGET from app.config (the authoritative source)
-    target_dir = app.config.get("TARGET", "/downloads/processed")
-    normalized_target_dir = os.path.normpath(target_dir)
-
-    def is_in_target_dir(path):
-        """Check if path is within TARGET folder (should be excluded from index)."""
-        normalized_path = os.path.normpath(path)
-        try:
-            common_path = os.path.commonpath([normalized_path, normalized_target_dir])
-            return os.path.samefile(common_path, normalized_target_dir)
-        except (ValueError, OSError):
-            # On a separator boundary: a bare prefix test put a sibling such
-            # as /downloads/processed2 inside TARGET /downloads/processed.
-            return normalized_path == normalized_target_dir or normalized_path.startswith(
-                normalized_target_dir.rstrip(os.sep) + os.sep
-            )
+    # WATCH and TARGET are never indexed, wherever they sit. One matcher for
+    # the whole walk: it resolves the roots once and costs no syscall per path.
+    _staging = staging_matcher()
 
     # Folder art lives in the cache (core/folder_art.py); a legacy folder.* on
     # disk still counts. The cached set is read once for the whole walk rather
@@ -4430,13 +4514,16 @@ def scan_filesystem_for_sync(walked_roots=None):
 
         try:
             for root, dirs, files in os.walk(library_root):
-                # Skip hidden directories and TARGET_DIR
+                # Skip hidden directories, WATCH and TARGET
                 dirs[:] = [
                     d
                     for d in dirs
                     if not is_hidden(os.path.join(root, d))
-                    and not is_in_target_dir(os.path.join(root, d))
+                    and not _staging(os.path.join(root, d), is_dir=True)
                 ]
+                # A staging folder that *is* this library root owns the loose
+                # files directly in it; its sub-folders are the library.
+                files = [f for f in files if not _staging(os.path.join(root, f))]
 
                 # Index directories
                 for name in dirs:
@@ -4525,47 +4612,28 @@ def update_index_on_move(old_path, new_path, reconcile=True):
         normalized_old = os.path.normpath(old_path)
         normalized_new = os.path.normpath(new_path)
 
-        # Get TARGET from app.config (the authoritative source)
-        target_dir = app.config.get("TARGET", "/downloads/processed")
-        normalized_target_dir = os.path.normpath(target_dir)
-
-        # Check if path is in TARGET folder (should be excluded from index)
-        def is_in_target_dir(path):
-            try:
-                common_path = os.path.commonpath([path, normalized_target_dir])
-                return os.path.samefile(common_path, normalized_target_dir)
-            except (ValueError, OSError):
-                # Fallback: the path is TARGET or under it, on a separator
-                # boundary so a sibling like /downloads/processed2 is not.
-                return path == normalized_target_dir or path.startswith(
-                    normalized_target_dir.rstrip(os.sep) + os.sep
-                )
-
         # "In the library" means under ANY enabled library root, not a
         # hard-coded /data: a library at /comics made every move look like
         # outside -> outside, so the index was never updated.
-        # Same predicate as log_file_if_in_data() for consistency.
-        old_in_data = is_valid_library_path(normalized_old)
-        new_in_data = is_valid_library_path(normalized_new)
-        new_in_target = is_in_target_dir(normalized_new)
+        # WATCH and TARGET are never "in the library", even when they are
+        # nested inside one: a move into either is a move *out* of the index
+        # (so the old row is dropped), and a move out of either is an add.
+        _staging = staging_matcher()
+        _is_dir = os.path.isdir(new_path)
+        old_in_data = is_valid_library_path(normalized_old) and not _staging(
+            normalized_old, is_dir=_is_dir
+        )
+        new_in_data = is_valid_library_path(normalized_new) and not _staging(
+            normalized_new, is_dir=_is_dir
+        )
 
         # Debug logging to help diagnose path comparison issues
         app_logger.debug(
             f"Path comparison - Old: {normalized_old} (in_data: {old_in_data})"
         )
         app_logger.debug(
-            f"Path comparison - New: {normalized_new} (in_data: {new_in_data}, in_target: {new_in_target})"
+            f"Path comparison - New: {normalized_new} (in_data: {new_in_data})"
         )
-        app_logger.debug(
-            f"Path comparison - TARGET_DIR: {normalized_target_dir}"
-        )
-
-        # Skip files in TARGET_DIR - they should not be indexed
-        if new_in_target:
-            app_logger.debug(
-                f"Skipping index update - file is in TARGET folder: {new_path}"
-            )
-            return
 
         # Scenario 1: Moving INTO /data (from WATCH/TEMP) -> ADD to index
         if not old_in_data and new_in_data:
@@ -4706,6 +4774,12 @@ def update_index_on_create(path):
         name = os.path.basename(path)
         parent = os.path.dirname(path)
 
+        # WATCH and TARGET are never indexed (add_file_index_entry refuses
+        # them too; returning here keeps that from reading as a failure).
+        if staging_matcher()(path, is_dir=not is_file):
+            app_logger.debug(f"Not indexing a path in WATCH/TARGET: {path}")
+            return
+
         if is_file:
             # Check if file should be indexed (but allow specific files like missing.txt)
             if name.lower() in excluded_files:
@@ -4738,12 +4812,14 @@ def update_index_on_create(path):
 
             # Recursively index all files and subdirectories
             try:
+                _staging = staging_matcher()
                 for root, dirs, files in os.walk(path):
-                    # Skip hidden directories
+                    # Skip hidden directories, and WATCH/TARGET nested here
                     dirs[:] = [
                         d
                         for d in dirs
                         if not is_hidden(os.path.join(root, d))
+                        and not _staging(os.path.join(root, d), is_dir=True)
                     ]
 
                     # Index subdirectories
@@ -4817,7 +4893,6 @@ def inject_metron_available():
 #     Logging Setup     #
 #########################
 
-# app_logger, APP_LOG, and MONITOR_LOG are now imported from app_logging module
 # Set log level from config (default to INFO = debug disabled)
 debug_enabled = get_bool("ENABLE_DEBUG_LOGGING")
 app_logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO)
@@ -5411,7 +5486,6 @@ def resize_upload(file_path, target_dir):
 from helpers import find_folder_thumbnail  # noqa: E402  (re-export for callers)
 from helpers import FOLDER_THUMBNAIL_EXTENSIONS  # noqa: E402
 from helpers import match_parent_permissions  # noqa: E402
-from helpers import describe_archive_error  # noqa: E402
 
 
 def find_folder_thumbnails_batch(folder_paths):
@@ -5427,540 +5501,6 @@ def find_folder_thumbnails_batch(folder_paths):
         path: (rec["path"] if rec else None)
         for path, rec in folder_art.find_art_batch(folder_paths).items()
     }
-
-
-# ---------------------------------------------------------------------------
-# RAR full-archive extraction cache
-# ---------------------------------------------------------------------------
-# Single-flight per archive, reference-counted eviction: see
-# core/rar_extract_cache.py. The extractor is defined below.
-from core.rar_extract_cache import RarExtractCache  # noqa: E402
-import atexit  # noqa: E402
-
-
-def _find_extracted_file(directory, filename):
-    """Walk *directory* and return the path of the first file matching *filename* (case-insensitive)."""
-    target = filename.lower()
-    for root, _dirs, files in os.walk(directory):
-        for f in files:
-            if f.lower() == target:
-                full = os.path.join(root, f)
-                # Path traversal guard (realpath, separator-bounded)
-                if is_within_roots(full, [directory]):
-                    return full
-    return None
-
-
-def _is_valid_image_data(data):
-    """Check if image data appears complete (not truncated)."""
-    if not data or len(data) < 10:
-        return False
-    # JPEG: must start with FF D8 and end with FF D9
-    if data[:2] == b'\xff\xd8':
-        return data[-2:] == b'\xff\xd9'
-    # PNG: must start with PNG signature and end with IEND chunk
-    if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return b'IEND' in data[-12:]
-    # Other formats — assume valid if non-empty
-    return True
-
-
-
-def _try_full_extraction(tool_cmd, rar_path, tmp_dir):
-    """Run a full-archive extraction with the given tool. Returns True if files were produced."""
-    try:
-        result = subprocess.run(tool_cmd, capture_output=True, timeout=120)
-        has_files = any(os.scandir(tmp_dir))
-        if has_files:
-            tool_name = tool_cmd[0]
-            if result.returncode != 0:
-                app_logger.warning(
-                    f"{tool_name} full extraction partial success (rc={result.returncode}) for {rar_path}"
-                )
-            else:
-                app_logger.info(f"{tool_name} full extraction succeeded for {rar_path}")
-            return True
-    except FileNotFoundError:
-        pass  # tool not installed
-    except Exception as e:
-        app_logger.warning(f"{tool_cmd[0]} full extraction failed for {rar_path}: {e}")
-    return False
-
-
-def _extract_full_rar_into(rar_path, dest_dir):
-    """Extract the whole RAR into *dest_dir* (an empty folder the cache owns).
-
-    Tries unrar first (proprietary, best solid-archive support), then 7z, then
-    unar. Each attempt gets its own sub-folder, created and (on failure)
-    removed here, so a discarded attempt never mixes with the next one.
-    Returns True when an attempt produced files.
-    """
-    tools = [
-        ["unrar", "x", "-y", "-o+", rar_path],       # unrar x -y -o+ archive.rar tmp_dir/
-        ["7z", "x", f"-y", rar_path],                  # 7z x -y archive.rar -o{tmp_dir}
-        ["unar", "-f", "-o", None, rar_path],           # unar -f -o tmp_dir archive.rar
-    ]
-
-    for attempt, tool_cmd in enumerate(tools):
-        tmp_dir = os.path.join(dest_dir, f"attempt{attempt}")
-        os.mkdir(tmp_dir)
-        # Fix up output dir argument per tool
-        tool_name = tool_cmd[0]
-        if tool_name == "unrar":
-            cmd = tool_cmd + [tmp_dir + "/"]
-        elif tool_name == "7z":
-            cmd = tool_cmd[:2] + [f"-o{tmp_dir}"] + tool_cmd[2:]
-        else:  # unar
-            cmd = tool_cmd.copy()
-            cmd[3] = tmp_dir  # replace None placeholder
-
-        if _try_full_extraction(cmd, rar_path, tmp_dir):
-            return True
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    app_logger.error(f"All full extraction tools failed for {rar_path}")
-    return False
-
-
-_rar_cache = RarExtractCache(_extract_full_rar_into, max_entries=3)
-atexit.register(_rar_cache.shutdown)
-
-
-def _extract_single_rar_entry(rar_path, entry_name):
-    """Extract a single file from a RAR archive.
-
-    Fallback chain:
-    1. unrar single-entry (proprietary, handles solid archives)
-    2. 7z single-entry
-    3. unar single-entry
-    4. Full-archive extraction (cached) + file lookup
-    Each step validates image completeness before returning.
-    """
-    rar_path = os.path.realpath(rar_path)
-    from helpers.library import is_allowed_path
-    if not is_allowed_path(rar_path):
-        app_logger.error(f"Path not in allowed directory: {rar_path}")
-        return None
-
-    safe_name = os.path.basename(entry_name)
-    if not safe_name:
-        app_logger.error(f"Invalid RAR entry name: {entry_name}")
-        return None
-
-    # --- Attempts 1-3: single-entry extraction with each tool ---
-    single_tools = [
-        ["unrar", "e", "-y", "-o+"],  # unrar e -y -o+ archive entry dest/
-        ["7z", "e", "-y"],             # 7z e -y -o{dir} archive entry
-        ["unar", "-f", "-o"],          # unar -f -o dir archive entry
-    ]
-    for tool_cmd in single_tools:
-        try:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tool_name = tool_cmd[0]
-                if tool_name == "unrar":
-                    cmd = tool_cmd + [rar_path, entry_name, tmp_dir + "/"]
-                elif tool_name == "7z":
-                    cmd = tool_cmd + [f"-o{tmp_dir}", rar_path, entry_name]
-                else:  # unar
-                    cmd = tool_cmd + [tmp_dir, rar_path, entry_name]
-
-                result = subprocess.run(cmd, capture_output=True, timeout=60)
-                found = _find_extracted_file(tmp_dir, safe_name)
-                if found:
-                    with open(found, "rb") as f:
-                        data = f.read()
-                    if _is_valid_image_data(data):
-                        return data
-                    app_logger.warning(f"{tool_name} extracted truncated data for {entry_name}")
-        except FileNotFoundError:
-            continue  # tool not installed
-        except Exception as e:
-            app_logger.warning(f"{tool_cmd[0]} single-entry extraction failed for {entry_name}: {e}")
-
-    # --- Attempt 4: full-archive extraction (cached) ---
-    app_logger.info(
-        f"Single-entry extraction failed for {entry_name}, trying full archive extraction"
-    )
-    # The folder stays in place for the whole block: the cache holds a
-    # reference until it exits, so eviction cannot remove it mid-read.
-    with _rar_cache.acquire(rar_path) as cache_dir:
-        found = _find_extracted_file(cache_dir, safe_name) if cache_dir else None
-        if found:
-            try:
-                with open(found, "rb") as f:
-                    data = f.read()
-                if _is_valid_image_data(data):
-                    return data
-                app_logger.warning(f"Full extraction produced truncated data for {entry_name}")
-            except Exception as e:
-                app_logger.error(f"Failed to read extracted file {found}: {e}")
-
-    app_logger.error(f"All extraction methods failed for {entry_name} in {rar_path}")
-    return None
-
-
-@app.route("/api/read/<path:comic_path>/page/<int:page_num>")
-def read_comic_page(comic_path, page_num):
-    """Serve a specific page from a comic file."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        app_logger.error(f"Comic file not found: {comic_path}")
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-    try:
-        # Determine archive type
-        ext = os.path.splitext(comic_path)[1].lower()
-
-        # Get list of image files from archive
-        image_files = []
-        archive = None
-
-        if ext in [".cbz", ".zip"]:
-            archive = zipfile.ZipFile(comic_path, "r")
-            all_files = archive.namelist()
-        elif ext == ".cbr":
-            archive = rarfile.RarFile(comic_path, "r")
-            all_files = archive.namelist()
-        else:
-            return jsonify({"error": "Unsupported file format"}), 400
-
-        # Filter for image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        for filename in all_files:
-            if filename.lower().endswith(image_extensions):
-                # Skip macOS metadata files
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        # Sort naturally
-        def natural_sort_key(s):
-            return [
-                int(text) if text.isdigit() else text.lower()
-                for text in re.split("([0-9]+)", s)
-            ]
-
-        image_files.sort(key=natural_sort_key)
-
-        # Check if page number is valid
-        if page_num < 0 or page_num >= len(image_files):
-            return jsonify({"error": "Invalid page number"}), 400
-
-        # Read the requested page
-        target_file = image_files[page_num]
-        image_data = None
-        rar_read_failed = False
-
-        if ext == ".cbr":
-            try:
-                image_data = archive.read(target_file)
-                if not _is_valid_image_data(image_data):
-                    app_logger.warning(
-                        f"rarfile returned truncated data for {target_file} from {comic_path}"
-                    )
-                    image_data = None
-                    rar_read_failed = True
-            except Exception as exc:
-                app_logger.warning(
-                    f"rarfile failed to read {target_file} from {comic_path} "
-                    f"({type(exc).__name__}), falling back to subprocess extraction"
-                )
-                rar_read_failed = True
-
-            if rar_read_failed:
-                if archive:
-                    archive.close()
-                    archive = None
-                image_data = _extract_single_rar_entry(comic_path, target_file)
-                if image_data is None:
-                    return send_file("static/images/error.svg", mimetype="image/svg+xml")
-        else:
-            image_data = archive.read(target_file)
-
-        # Close archive
-        if archive:
-            archive.close()
-
-        # Determine mime type
-        file_ext = os.path.splitext(target_file)[1].lower()
-        mime_types = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-        }
-        mime_type = mime_types.get(file_ext, "image/jpeg")
-
-        # Return image
-        return Response(image_data, mimetype=mime_type)
-
-    except (zipfile.BadZipFile, zlib.error) as e:
-        app_logger.warning(
-            f"Damaged archive, cannot read page {page_num} from {comic_path}: "
-            f"{describe_archive_error(e)}"
-        )
-        if archive:
-            archive.close()
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-    except Exception as e:
-        app_logger.error(f"Error reading comic page {page_num} from {comic_path}: {e}")
-        app_logger.error(traceback.format_exc())
-        if archive:
-            archive.close()
-        return send_file("static/images/error.svg", mimetype="image/svg+xml")
-
-
-@app.route("/api/read/<path:comic_path>/page/<int:page_num>/info")
-def read_comic_page_info(comic_path, page_num):
-    """Get information about a specific page in a comic file."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        return jsonify({"success": False, "error": "File not found"}), 404
-
-    try:
-        ext = os.path.splitext(comic_path)[1].lower()
-        archive = None
-
-        if ext in [".cbz", ".zip"]:
-            archive = zipfile.ZipFile(comic_path, "r")
-        elif ext == ".cbr":
-            archive = rarfile.RarFile(comic_path, "r")
-        else:
-            return jsonify({"success": False, "error": "Unsupported format"}), 400
-
-        # Get list of image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        image_files = []
-        for filename in archive.namelist():
-            if filename.lower().endswith(image_extensions):
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        # Sort naturally
-        def natural_sort_key(s):
-            return [
-                int(text) if text.isdigit() else text.lower()
-                for text in re.split("([0-9]+)", s)
-            ]
-
-        image_files.sort(key=natural_sort_key)
-
-        if page_num < 0 or page_num >= len(image_files):
-            archive.close()
-            return jsonify({"success": False, "error": "Invalid page number"}), 400
-
-        target_file = image_files[page_num]
-
-        # Get file info from archive
-        info = archive.getinfo(target_file)
-        file_size = info.file_size if hasattr(info, "file_size") else info.compress_size
-        file_name = os.path.basename(target_file)
-
-        archive.close()
-
-        return jsonify(
-            {
-                "success": True,
-                "page_num": page_num,
-                "file_name": file_name,
-                "file_size": file_size,
-                "archive_path": target_file,
-            }
-        )
-
-    except Exception as e:
-        detail = describe_archive_error(e)
-        app_logger.error(
-            f"Error getting page info for {comic_path} page {page_num}: {detail}"
-        )
-        if archive:
-            archive.close()
-        return jsonify({"success": False, "error": detail}), 500
-
-
-@app.route("/api/read/<path:comic_path>/info")
-def read_comic_info(comic_path):
-    """Get information about a comic file (page count, etc.)."""
-
-    # Add leading slash if missing (for absolute paths on Unix systems)
-    if not comic_path.startswith("/"):
-        comic_path = "/" + comic_path
-
-    denied = enforce_path_access(comic_path)
-    if denied:
-        return denied
-
-    if not os.path.exists(comic_path):
-        return jsonify({"error": "Comic file not found"}), 404
-
-    try:
-        # Determine archive type
-        ext = os.path.splitext(comic_path)[1].lower()
-
-        # Get list of image files from archive
-        image_files = []
-
-        if ext in [".cbz", ".zip"]:
-            with zipfile.ZipFile(comic_path, "r") as archive:
-                all_files = archive.namelist()
-        elif ext == ".cbr":
-            with rarfile.RarFile(comic_path, "r") as archive:
-                all_files = archive.namelist()
-        else:
-            return jsonify({"error": "Unsupported file format"}), 400
-
-        # Filter for image files
-        image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
-        for filename in all_files:
-            if filename.lower().endswith(image_extensions):
-                # Skip macOS metadata files
-                if not filename.startswith("__MACOSX") and not os.path.basename(
-                    filename
-                ).startswith("."):
-                    image_files.append(filename)
-
-        return jsonify(
-            {
-                "success": True,
-                "page_count": len(image_files),
-                "filename": os.path.basename(comic_path),
-            }
-        )
-
-    except Exception as e:
-        app_logger.error(f"Error getting comic info for {comic_path}: {e}")
-        app_logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/mark-comic-read", methods=["POST"])
-def api_mark_comic_read():
-    """Mark a comic as read in the database."""
-    data = request.get_json()
-    comic_path = data.get("path")
-    read_at = data.get("read_at")  # Optional ISO timestamp for backfilling
-    page_count = data.get("page_count", 0)
-    time_spent = data.get("time_spent", 0)
-
-    if not comic_path:
-        return jsonify({"error": "Missing path parameter"}), 400
-
-    # Extract metadata from ComicInfo.xml if available
-    comic_info = None
-    writer = ""
-    penciller = ""
-    characters = ""
-    publisher = ""
-    try:
-        from core.comicinfo import read_comicinfo_from_zip
-
-        if os.path.exists(comic_path) and comic_path.lower().endswith((".cbz", ".zip")):
-            comic_info = read_comicinfo_from_zip(comic_path)
-            if comic_info:
-                writer = comic_info.get("Writer", "")
-                penciller = comic_info.get("Penciller", "")
-                characters = comic_info.get("Characters", "")
-                publisher = comic_info.get("Publisher", "")
-    except Exception as e:
-        app_logger.warning(f"Could not extract ComicInfo.xml metadata: {e}")
-
-    try:
-        mark_issue_read(
-            comic_path,
-            read_at,
-            page_count,
-            time_spent,
-            writer=writer,
-            penciller=penciller,
-            characters=characters,
-            publisher=publisher,
-        )
-        clear_stats_cache_prefix(f"u{current_user_id()}:")  # per-user reading caches
-        app_logger.info(
-            f"Marked comic as read: {comic_path}"
-            + (f" at {read_at}" if read_at else "")
-        )
-    except Exception as e:
-        app_logger.error(f"Error marking comic as read: {e}")
-        return jsonify({"error": str(e)}), 500
-
-    # Scrobble to Metron if configured (non-blocking — local read already saved)
-    try:
-        from models import metron as metron_module
-
-        api = metron_module.get_flask_api(app)
-        if api:
-            metron_issue_id = metron_module.resolve_metron_issue_id(
-                api, comic_path, comic_info.get("Number") if comic_info else None
-            )
-            if metron_issue_id:
-                metron_module.scrobble_issue(api, metron_issue_id, read_at)
-                app_logger.info(f"Scrobbled to Metron: issue {metron_issue_id}")
-    except Exception as e:
-        app_logger.warning(f"Metron scrobble failed (non-blocking): {e}")
-
-    return jsonify({"success": True})
-
-
-@app.route("/api/reading-trends/<field>")
-def api_reading_trends(field):
-    """Get top values for a metadata field (writer, penciller, characters, publisher)."""
-    from core.database import get_reading_trends
-
-    valid_fields = ["writer", "penciller", "characters", "publisher"]
-    if field not in valid_fields:
-        return jsonify(
-            {"error": f"Invalid field. Must be one of: {', '.join(valid_fields)}"}
-        ), 400
-
-    year = request.args.get("year", type=int)
-    limit = request.args.get("limit", 10, type=int)
-
-    trends = get_reading_trends(field, year=year, limit=limit)
-    return jsonify(trends)
-
-
-@app.route("/api/recently-read")
-def api_recently_read():
-    """Get recently read issues with metadata for display."""
-    limit = request.args.get("limit", 20, type=int)
-    issues = get_issues_read()[:limit]
-
-    result = []
-    for issue in issues:
-        path = issue["issue_path"]
-        if os.path.exists(path):
-            result.append(
-                {
-                    "name": os.path.basename(path),
-                    "path": path,
-                    "read_at": issue["read_at"],
-                    "thumbnail_url": url_for("get_thumbnail", path=path),
-                }
-            )
-    return jsonify(result)
 
 
 def generate_thumbnail_task(file_path, cache_path):
@@ -7367,46 +6907,6 @@ def schedules_page():
 
 
 #########################
-#        App Logs       #
-#########################
-# Route for app logs page
-@app.route("/logs")
-def logs_page():
-    """Combined logs page with tabs for app and monitor logs."""
-    return render_template("logs.html", config=app.config)
-
-
-@app.route("/app-logs")
-def app_logs_page():
-    return redirect(url_for("logs_page"))
-
-
-# Route for monitor logs page
-@app.route("/mon-logs")
-def mon_logs_page():
-    return redirect(url_for("logs_page"))
-
-
-# Incremental log tail endpoint (polled by the logs page; replaces SSE
-# streaming, which held a gunicorn thread per open tab and grew the browser
-# DOM without bound). Returns only the bytes added since the client's last
-# byte offset.
-_LOG_FILES = {"app": APP_LOG, "mon": MONITOR_LOG}
-
-
-@app.route("/logs/tail")
-def logs_tail():
-    log_type = request.args.get("type", "app")
-    log_file = _LOG_FILES.get(log_type)
-    if log_file is None:
-        return jsonify({"error": "Invalid log type"}), 400
-
-    pos = request.args.get("pos", type=int)
-    lines, new_pos, reset = read_log_tail(log_file, pos=pos)
-    return jsonify({"pos": new_pos, "lines": lines, "reset": reset})
-
-
-#########################
 #    Edit CBZ Routes    #
 #########################
 # Opening renames and extracts the archive, so /edit is a POST (a write, Clerk
@@ -7604,290 +7104,6 @@ def trigger_gcd_import():
         ), 408
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/insights")
-def insights_page():
-    from core.database import get_reading_totals
-
-    library_stats = get_library_stats()
-    file_types = get_file_type_distribution()
-    top_publishers = get_top_publishers()
-    reading_history = get_reading_history_stats()
-    largest_comics = get_largest_comics()
-    top_series = get_top_series_by_count()
-    reading_heatmap = get_reading_heatmap_data()
-    reading_totals = get_reading_totals()
-
-    return render_template(
-        "insights.html",
-        library_stats=library_stats,
-        file_types=file_types,
-        top_publishers=top_publishers,
-        reading_history=reading_history,
-        largest_comics=largest_comics,
-        top_series=top_series,
-        reading_heatmap=reading_heatmap,
-        reading_totals=reading_totals,
-        rec_enabled=get_user_preference("rec_enabled", default=True),
-    )
-
-
-@app.route("/api/insights")
-def api_insights():
-    """Return library + per-user reading stats as JSON for the Homepage custom
-    API widget (gethomepage.dev ``customapi`` type — a flat JSON object).
-
-    The library-wide counts (files, size, root folders) are global. The reading
-    counters (``issues_read``, ``pages_read``, ``time_reading*``) are per user:
-    present a per-user API token as ``Authorization: Bearer <token>`` (the same
-    tokens minted in Settings → Users for ``/api/v1``) and the numbers reflect
-    that account. Homepage's ``customapi`` widget supports this via its
-    per-widget ``headers`` option.
-
-    With no token the counters reflect the Store Owner, matching the previous
-    behaviour; a legacy global token also maps to the owner. A malformed or
-    unknown token is rejected with 401 so a misconfigured widget doesn't
-    silently surface the owner's stats.
-    """
-    from core.auth import resolve_optional_bearer_user
-    from core.auth_throttle import too_many_attempts_json
-    from models.stats import get_insights_stats
-
-    status, user = resolve_optional_bearer_user(
-        request.headers.get("Authorization", "")
-    )
-    if status == "throttled":
-        return too_many_attempts_json(user)
-    if status == "invalid":
-        return jsonify({"error": "unauthorized"}), 401
-
-    payload = get_insights_stats(user_id=user["id"] if user else None)
-    if payload is None:
-        return jsonify({"error": "Failed to get stats"}), 500
-
-    return jsonify(payload)
-
-
-@app.route("/api/reading-stats")
-def api_reading_stats():
-    """Get reading statistics, optionally filtered by year."""
-    from core.database import get_reading_stats_by_year
-    from wrapped import get_years_with_reading_data
-
-    year = request.args.get("year")
-
-    # If year is 'all' or empty, get all-time stats
-    if year and year != "all":
-        try:
-            year = int(year)
-        except ValueError:
-            return jsonify({"success": False, "error": "Invalid year"}), 400
-    else:
-        year = None
-
-    stats = get_reading_stats_by_year(year)
-
-    # Get available years for the dropdown
-    years = get_years_with_reading_data()
-    current_year = datetime.now().year
-    if current_year not in years:
-        years.insert(0, current_year)
-
-    # Calculate hours and minutes for display
-    total_seconds = stats.get("total_time", 0)
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-
-    return jsonify(
-        {
-            "success": True,
-            "stats": {
-                "total_read": stats.get("total_read", 0),
-                "total_pages": stats.get("total_pages", 0),
-                "total_time": total_seconds,
-                "hours": hours,
-                "minutes": minutes,
-            },
-            "years": years,
-            "selected_year": year if year else "all",
-        }
-    )
-
-
-#########################
-#   Yearly Wrapped      #
-#########################
-
-
-@app.route("/api/wrapped/years")
-def api_wrapped_years():
-    """Get list of years with reading data. Defaults to current year if none found."""
-    from wrapped import get_years_with_reading_data
-
-    try:
-        years = get_years_with_reading_data()
-    except Exception as e:
-        app_logger.error(f"Error getting wrapped years: {e}")
-        years = []
-
-    # Default to current year if no data found
-    if not years:
-        years = [datetime.now().year]
-
-    return jsonify({"years": years})
-
-
-@app.route("/api/wrapped/<int:year>")
-def api_wrapped_data(year):
-    """Return wrapped stats as JSON."""
-    from wrapped import get_all_wrapped_stats
-
-    try:
-        stats = get_all_wrapped_stats(year)
-        return jsonify(stats)
-    except Exception as e:
-        app_logger.error(f"Error getting wrapped stats: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/wrapped/<int:year>/image/<int:slide_num>")
-def api_wrapped_image(year, slide_num):
-    """Return individual wrapped slide as PNG image."""
-    from wrapped import (
-        generate_summary_slide,
-        generate_most_read_series_slide,
-        generate_series_highlights_slide,
-    )
-
-    # Get current theme from config
-    # Get current theme from config
-    theme = get_setting("BOOTSTRAP_THEME")
-
-    try:
-        if slide_num == 1:
-            image_bytes = generate_summary_slide(year, theme)
-        elif slide_num == 2:
-            image_bytes = generate_most_read_series_slide(year, theme)
-        elif slide_num == 3:
-            image_bytes = generate_series_highlights_slide(year, theme)
-        else:
-            return jsonify({"error": "Invalid slide number (1-3)"}), 400
-
-        return Response(image_bytes, mimetype="image/png")
-    except Exception as e:
-        app_logger.error(f"Error generating wrapped image: {e}")
-        app_logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/wrapped/<int:year>/download")
-def api_wrapped_download(year):
-    """Download all wrapped images as ZIP."""
-    from wrapped import generate_all_wrapped_images
-    import zipfile
-
-    theme = get_setting("BOOTSTRAP_THEME")
-
-    try:
-        slides = generate_all_wrapped_images(year, theme)
-
-        # Create ZIP in memory
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for filename, image_bytes in slides:
-                zf.writestr(f"wrapped_{year}/{filename}", image_bytes)
-
-        zip_buffer.seek(0)
-
-        return Response(
-            zip_buffer.getvalue(),
-            mimetype="application/zip",
-            headers={"Content-Disposition": f"attachment; filename=wrapped_{year}.zip"},
-        )
-    except Exception as e:
-        app_logger.error(f"Error generating wrapped ZIP: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-##########################
-#   Monthly Wrapped      #
-##########################
-
-
-@app.route("/api/wrapped/monthly/<int:year>/<int:month>")
-def api_monthly_wrapped_data(year, month):
-    """Return monthly wrapped stats as JSON."""
-    from wrapped import get_monthly_wrapped_stats
-
-    if month < 1 or month > 12:
-        return jsonify({"error": "Invalid month (1-12)"}), 400
-    try:
-        stats = get_monthly_wrapped_stats(year, month)
-        return jsonify(stats)
-    except Exception as e:
-        app_logger.error(f"Error getting monthly wrapped stats: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/wrapped/monthly/<int:year>/<int:month>/image/<int:slide_num>")
-def api_monthly_wrapped_image(year, month, slide_num):
-    """Return a monthly wrapped slide as PNG image."""
-    from wrapped import generate_monthly_recap_slide, generate_monthly_all_issues_slide
-
-    if month < 1 or month > 12:
-        return jsonify({"error": "Invalid month (1-12)"}), 400
-    if slide_num not in (1, 2):
-        return jsonify({"error": "Invalid slide number (1-2)"}), 400
-
-    theme = get_setting("BOOTSTRAP_THEME")
-
-    try:
-        if slide_num == 1:
-            image_bytes = generate_monthly_recap_slide(year, month, theme)
-        else:
-            image_bytes = generate_monthly_all_issues_slide(year, month, theme)
-        return Response(image_bytes, mimetype="image/png")
-    except Exception as e:
-        app_logger.error(f"Error generating monthly wrapped image: {e}")
-        app_logger.error(f"Traceback: {traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/wrapped/monthly/<int:year>/<int:month>/download")
-def api_monthly_wrapped_download(year, month):
-    """Download all monthly wrapped images as ZIP."""
-    from wrapped import generate_all_monthly_wrapped, MONTH_NAMES
-    import zipfile
-
-    if month < 1 or month > 12:
-        return jsonify({"error": "Invalid month (1-12)"}), 400
-
-    theme = get_setting("BOOTSTRAP_THEME")
-
-    try:
-        slides = generate_all_monthly_wrapped(year, month, theme)
-        month_str = str(month).zfill(2)
-
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for filename, image_bytes in slides:
-                zf.writestr(
-                    f"monthly_wrapped_{year}_{month_str}/{filename}", image_bytes
-                )
-
-        zip_buffer.seek(0)
-
-        return Response(
-            zip_buffer.getvalue(),
-            mimetype="application/zip",
-            headers={
-                "Content-Disposition": f"attachment; filename=monthly_wrapped_{year}_{month_str}.zip"
-            },
-        )
-    except Exception as e:
-        app_logger.error(f"Error generating monthly wrapped ZIP: {e}")
-        return jsonify({"error": str(e)}), 500
 
 
 #########################
@@ -8187,6 +7403,9 @@ def start_background_services():
     # Configure Komga reading sync schedule from database
     configure_komga_sync_schedule()
 
+    # Configure Kavita reading sync schedule from database
+    configure_kavita_sync_schedule()
+
     # Configure Reading List sync schedule from database
     configure_reading_list_sync_schedule()
 
@@ -8205,132 +7424,6 @@ def start_background_services():
 
 # Start background services when module is imported (works with Gunicorn)
 start_background_services()
-
-
-#########################
-# Komga API Endpoints   #
-#########################
-
-
-@app.route("/api/komga/config", methods=["GET"])
-def api_get_komga_config():
-    """Get current Komga sync configuration (password masked)."""
-    from core.database import get_komga_config
-
-    cfg_list = get_komga_config()
-    cfg = cfg_list[0]
-    if cfg:
-        # Mask password for display
-        cfg["password"] = "***" if cfg.get("password") else ""
-    return jsonify({"success": True, "config": cfg or {}})
-
-
-@app.route("/api/komga/config", methods=["POST"])
-def api_save_komga_config():
-    """Save Komga sync configuration."""
-    from core.database import save_komga_config as db_save_komga_config
-
-    data = request.get_json()
-
-    success = db_save_komga_config(
-        server_url=data.get("server_url", ""),
-        username=data.get("username", ""),
-        password=data.get("password", ""),
-        enabled=data.get("enabled", False),
-        frequency=data.get("frequency", "disabled"),
-        time=data.get("time", "05:00"),
-        weekday=data.get("weekday", 0),
-        library_mappings=data.get("library_mappings", []),
-    )
-
-    if success:
-        configure_komga_sync_schedule()
-        return jsonify({"success": True, "message": "Komga configuration saved"})
-    return jsonify({"success": False, "error": "Failed to save configuration"}), 500
-
-
-@app.route("/api/komga/test", methods=["POST"])
-def api_test_komga_connection():
-    """Test Komga server connectivity."""
-    from core.database import get_komga_config, update_komga_connection_valid
-    from models.komga import KomgaClient
-
-    cfg_list= get_komga_config()
-    cfg = cfg_list[0]
-    if not cfg or not cfg.get("server_url"):
-        return jsonify(
-            {
-                "success": False,
-                "valid": False,
-                "error": "Komga not configured. Save settings first.",
-            }
-        )
-
-    username = cfg.get("username", "")
-    password = cfg.get("password", "")
-
-    app_logger.info(
-        f"Komga test: url={cfg['server_url']}, user={'set' if username else 'empty'}, pass={'set' if password else 'empty'}"
-    )
-
-    if not username or not password:
-        return jsonify(
-            {
-                "success": False,
-                "valid": False,
-                "error": "Komga credentials not set. Save credentials first.",
-            }
-        )
-
-    try:
-        client = KomgaClient(cfg["server_url"], username, password)
-        valid, details = client.test_connection()
-        update_komga_connection_valid(valid)
-        if valid:
-            return jsonify({"success": True, "valid": True, "message": details})
-        else:
-            return jsonify({"success": True, "valid": False, "error": details})
-    except Exception as e:
-        app_logger.error(f"Komga connection test error: {e}")
-        update_komga_connection_valid(False)
-        return jsonify({"success": False, "valid": False, "error": str(e)})
-
-
-@app.route("/api/komga/sync", methods=["POST"])
-def api_sync_komga_now():
-    """Manually trigger Komga reading sync."""
-    threading.Thread(target=run_komga_sync, daemon=True).start()
-    return jsonify({"success": True, "message": "Komga sync started in background"})
-
-
-@app.route("/api/komga/sync/status", methods=["GET"])
-def api_komga_sync_status():
-    """Get Komga sync status and statistics."""
-    from core.database import get_komga_sync_stats, get_komga_config
-
-    stats = get_komga_sync_stats()
-    cfg_list = get_komga_config()
-    cfg = cfg_list[0]
-
-    # Get next scheduled run
-    next_run_str = get_next_run_for_job("komga_sync")
-    next_run = next_run_str if next_run_str != "Not scheduled" else None
-
-    return jsonify(
-        {
-            "success": True,
-            "total_synced_read": stats.get("total_synced_read", 0),
-            "total_synced_progress": stats.get("total_synced_progress", 0),
-            # Stored UTC, displayed beside next_run, so both go through the
-            # user's offset.
-            "last_sync": format_user_time(stats.get("last_sync")),
-            "last_sync_read_count": cfg.get("last_sync_read_count", 0) if cfg else 0,
-            "last_sync_progress_count": cfg.get("last_sync_progress_count", 0)
-            if cfg
-            else 0,
-            "next_run": next_run,
-        }
-    )
 
 
 @app.route("/api/metadata-scan-status", methods=["GET"])
@@ -8439,74 +7532,6 @@ def api_recommendations():
     except Exception as e:
         app_logger.error(f"Error generating recommendations: {e}")
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/timeline")
-def timeline():
-    limit = 50
-    year = request.args.get("year", None, type=int)
-    month = request.args.get("month", None, type=int)
-
-    data = get_reading_timeline(limit=limit, offset=0, year=year, month=month)
-
-    if not data:
-        flash("Error loading timeline data", "error")
-        return redirect(url_for("index"))
-
-    # Get distinct years for the filter dropdown
-    available_years = []
-    try:
-        conn = get_db_connection()
-        if conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT DISTINCT strftime('%Y', read_at) FROM issues_read ORDER BY 1 DESC"
-            )
-            available_years = [row[0] for row in c.fetchall()]
-            conn.close()
-    except Exception:
-        pass
-
-    return render_template(
-        "timeline.html",
-        stats=data["stats"],
-        timeline=data["timeline"],
-        filter_year=year,
-        filter_month=month,
-        available_years=available_years,
-    )
-
-
-@app.route("/api/timeline")
-def api_timeline():
-    """API endpoint for lazy loading timeline data."""
-    offset = request.args.get("offset", 0, type=int)
-    limit = request.args.get("limit", 50, type=int)
-    year = request.args.get("year", None, type=int)
-    month = request.args.get("month", None, type=int)
-
-    data = get_reading_timeline(limit=limit, offset=offset, year=year, month=month)
-
-    if not data:
-        return jsonify({"error": "Failed to load timeline data"}), 500
-
-    # Add thumbnail URLs to each item
-    for group in data["timeline"]:
-        for item in group["entries"]:
-            if item.get("issue_path"):
-                item["thumbnail_url"] = url_for(
-                    "get_thumbnail", path=item["issue_path"]
-                )
-            else:
-                item["thumbnail_url"] = None
-
-    return jsonify(
-        {
-            "timeline": data["timeline"],
-            "has_more": len(data["timeline"]) > 0,
-            "stats": data["stats"],
-        }
-    )
 
 
 @app.cli.command("rotate-api-token")

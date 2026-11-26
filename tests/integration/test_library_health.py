@@ -39,9 +39,12 @@ def library(tmp_path):
 
 
 def _good_cbz(path, payload=b"x"):
+    # A fixed entry timestamp: writestr() stamps "now" (2-second resolution),
+    # so two "identical" archives written either side of a tick hashed
+    # differently and the exact-duplicate tests failed under a loaded run.
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as zf:
-        zf.writestr("p001.jpg", payload * 64)
-        zf.writestr("p002.jpg", payload * 64)
+        for name in ("p001.jpg", "p002.jpg"):
+            zf.writestr(zipfile.ZipInfo(name, date_time=(2020, 1, 1, 0, 0, 0)), payload * 64)
     return str(path)
 
 
@@ -131,6 +134,52 @@ class TestInspectArchive:
         assert lh.inspect_archive(str(p)) == ("ok", None, None)
 
 
+class TestSingleRead:
+    """A small ZIP is read once; the verdict must not depend on which path ran."""
+
+    def _samples(self, library):
+        good = _good_cbz(library / "Good 001.cbz")
+        bad = _corrupt_cbz(library / "Bad 001.cbz")
+        rar = library / "Rar.cbz"
+        rar.write_bytes(b"Rar!\x1a\x07\x00 not a zip")
+        empty = library / "Empty.cbz"
+        empty.write_bytes(b"")
+        text = library / "Text.cbz"
+        with zipfile.ZipFile(text, "w") as zf:
+            zf.writestr("readme.txt", "hello")
+        cbr = library / "Old 001.cbr"
+        cbr.write_bytes(b"whatever")
+        return [good, bad, str(rar), str(empty), str(text), str(cbr)]
+
+    def test_both_paths_agree_on_digest_and_verdict(self, library):
+        samples = self._samples(library)
+        once = [lh.check_file(p) for p in samples]
+        with patch.object(lh, "SINGLE_READ_MAX_BYTES", -1):
+            twice = [lh.check_file(p) for p in samples]
+        assert once == twice
+        assert [r[1] for r in once] == ["ok", "damaged", "damaged", "damaged", "damaged", "ok"]
+        assert once[0][0] == lh.hash_file(samples[0])
+
+    def test_a_small_zip_is_opened_once(self, library):
+        p = _good_cbz(library / "Good 001.cbz")
+        import builtins
+
+        real_open, opened = builtins.open, []
+
+        def spy(file, *args, **kwargs):
+            if file == p:
+                opened.append(file)
+            return real_open(file, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=spy):
+            assert lh.check_file(p)[1] == "ok"
+        assert len(opened) == 1
+
+    def test_an_unreadable_file_still_raises_oserror(self, library):
+        with pytest.raises(OSError):
+            lh.check_file(str(library / "Nope 001.cbz"))
+
+
 class TestRollingBatch:
     def test_records_damage_and_clears_health(self, store, library):
         good = _good_cbz(library / "Good 001.cbz")
@@ -210,12 +259,185 @@ class TestRollingBatch:
             _index(store, _good_cbz(library / f"Mount {i:03d}.cbz", payload=bytes([70 + i])))
         with patch.object(lh, "check_file", side_effect=OSError(5, "I/O error")):
             stats = lh.run_batch(50, 90)
+        assert stats["checked"] == 0 and stats["damaged"] == 0
+        assert list_problems() == []
+        # The ten that tripped it are deferred (no hash, no ledger row) so they
+        # stop heading the queue; the place is left out for the rest of the run.
+        assert stats["deferred"] == 10
+        assert stats["skipped"] == [str(library)]
+        rows = store.execute("SELECT status, content_hash FROM file_health").fetchall()
+        assert len(rows) == 10
+        assert {r["status"] for r in rows} == {"deferred"}
+        assert {r["content_hash"] for r in rows} == {None}
+
+    def test_files_sharing_no_folder_or_library_abort_the_batch(self, store, library, tmp_path):
+        """A run of failures with nothing in common is not routed around."""
+        for i in range(12):
+            folder = tmp_path / f"elsewhere{i}"
+            folder.mkdir()
+            _index(store, _good_cbz(folder / "X 001.cbz", payload=bytes([70 + i])))
+        with patch.object(lh, "check_file", side_effect=OSError(5, "I/O error")):
+            stats = lh.run_batch(50, 90)
         assert stats["aborted"] is True
-        assert stats["checked"] == 0
         assert list_problems() == []
         assert store.execute("SELECT COUNT(*) FROM file_health").fetchone()[0] == 0
 
+    def test_an_unreadable_folder_does_not_stop_the_rest_of_the_library(self, store, library):
+        """A folder with the wrong permissions used to abort every batch after
+        ten files, for good: its files were never stamped, so they headed the
+        queue on every run and nothing else was ever checked."""
+        bad = library / "Locked"
+        good = library / "Fine"
+        bad.mkdir()
+        good.mkdir()
+        locked = [
+            _good_cbz(bad / f"Locked {i:03d}.cbz", payload=bytes([70 + i])) for i in range(14)
+        ]
+        fine = [
+            _good_cbz(good / f"Fine {i:03d}.cbz", payload=bytes([100 + i])) for i in range(3)
+        ]
+        # The locked folder first in the queue, as an unchecked folder is.
+        for p in locked + fine:
+            _index(store, p)
+        real = lh.check_file
+
+        def check(path):
+            if os.path.dirname(path) == str(bad):
+                raise PermissionError(13, "Permission denied", path)
+            return real(path)
+
+        with patch.object(lh, "check_file", side_effect=check):
+            stats = lh.run_batch(50, 90)
+            assert stats["aborted"] is False
+            assert stats["skipped"] == [str(bad)]
+            assert stats["checked"] == 3 and stats["deferred"] == 10
+            assert all(_health(store, p)["status"] == "ok" for p in fine)
+            assert list_problems() == []
+
+            # The next run does not go back to the ten it deferred: it takes
+            # the four that were never tried, and nothing else is held up.
+            tried = []
+
+            def check_again(path):
+                tried.append(path)
+                return check(path)
+
+            with patch.object(lh, "check_file", side_effect=check_again):
+                again = lh.run_batch(50, 90)
+        assert sorted(tried) == sorted(locked[10:])
+        assert again["aborted"] is False
+
+    def test_a_deferred_file_is_retried_after_the_backoff(self, store, library):
+        p = _good_cbz(library / "Later 001.cbz")
+        _index(store, p)
+        st = os.stat(p)
+        lh._store_health(store, p, None, st.st_size, st.st_mtime, lh.STATUS_DEFERRED)
+        store.commit()
+        assert lh.files_needing_check(10, 90) == []
+        store.execute("UPDATE file_health SET checked_at = ?",
+                      (time.time() - lh.DEFERRED_RETRY_SECONDS - 60,))
+        store.commit()
+        assert [f["path"] for f in lh.files_needing_check(10, 90)] == [p]
+        # Not counted as checked while it is deferred.
+        assert lh.coverage()["checked"] == 0
+
+    def test_an_empty_library_root_is_an_unmounted_one(self, store, library, tmp_path):
+        """An unmounted bind mount is still a directory, just an empty one."""
+        asleep = tmp_path / "nas"
+        asleep.mkdir()
+        p = str(asleep / "Series" / "Ghost 001.cbz")
+        store.execute(
+            "INSERT INTO file_index (name, path, type, size, parent, modified_at) "
+            "VALUES (?, ?, 'file', 1, ?, 1.0)", ("Ghost 001.cbz", p, os.path.dirname(p)),
+        )
+        store.commit()
+        with patch("helpers.library.get_library_roots", return_value=[str(asleep)]):
+            assert lh._unreachable_roots() == [str(asleep)]
+            stats = lh.run_batch(50, 90)
+        assert stats["checked"] == 0 and stats["missing"] == 0
+        assert list_problems() == []
+        # Still indexed: an unmounted library proves nothing about its files.
+        assert store.execute("SELECT COUNT(*) FROM file_index").fetchone()[0] == 1
+        assert _health(store, p) is None
+
+    def test_damage_that_cannot_be_listed_is_not_stamped_as_checked(self, store, library):
+        """Stamp after recording. With the ledger full (or the write failing)
+        the file was stamped damaged anyway, and so skipped by every scan for
+        90 days with its damage written down nowhere."""
+        p = _corrupt_cbz(library / "Bad 001.cbz")
+        _index(store, p)
+        with patch.object(lh, "record_problem", return_value=False):
+            stats = lh.run_batch(50, 90)
+        assert stats["damaged"] == 0 and stats["deferred"] == 1
+        assert _health(store, p)["status"] == lh.STATUS_DEFERRED
+        # Tried again once the backoff has passed, and listed this time.
+        store.execute("UPDATE file_health SET checked_at = 1.0")
+        store.commit()
+        assert lh.run_batch(50, 90)["damaged"] == 1
+        assert get_problem(p, SOURCE_INTEGRITY) is not None
+
+    def test_a_healthy_file_costs_no_ledger_call(self, store, library):
+        _index(store, _good_cbz(library / "Fine 001.cbz"))
+        with patch.object(lh, "clear_problem") as clear, \
+                patch.object(lh, "record_problem") as record:
+            assert lh.run_batch(50, 90)["checked"] == 1
+        clear.assert_not_called()
+        record.assert_not_called()
+
+    def test_stamps_are_committed_even_when_the_batch_is_cut_short(self, store, library):
+        for i in range(5):
+            _index(store, _good_cbz(library / f"Run {i:03d}.cbz", payload=bytes([70 + i])))
+        real = lh.check_file
+        calls = []
+
+        def check(path):
+            calls.append(path)
+            if len(calls) == 4:
+                raise RuntimeError("boom")
+            return real(path)
+
+        with patch.object(lh, "check_file", side_effect=check):
+            stats = lh.run_batch(50, 90)
+        assert stats["aborted"] is True
+        # A second connection sees them: they were committed, not just written.
+        import sqlite3
+        from core.database import get_db_path
+
+        other = sqlite3.connect(get_db_path())
+        try:
+            assert other.execute("SELECT COUNT(*) FROM file_health").fetchone()[0] == 3
+        finally:
+            other.close()
+
+    def test_a_stop_request_ends_the_batch_and_keeps_what_was_done(self, store, library):
+        for i in range(4):
+            _index(store, _good_cbz(library / f"Stop {i:03d}.cbz", payload=bytes([70 + i])))
+        assert lh.claim_scan()
+        try:
+            real = lh.check_file
+
+            def check(path):
+                lh.request_stop()
+                return real(path)
+
+            with patch.object(lh, "check_file", side_effect=check):
+                stats = lh.run_batch(50, 90)
+        finally:
+            lh.release_scan()
+        assert stats["stopped"] is True and stats["checked"] == 1
+        assert store.execute("SELECT COUNT(*) FROM file_health").fetchone()[0] == 1
+        # The claim clears the flag, so the next scan is not born stopped.
+        assert lh.claim_scan()
+        try:
+            assert lh.stop_requested() is False
+        finally:
+            lh.release_scan()
+
+    def test_stop_is_refused_when_nothing_is_running(self):
+        assert lh.request_stop() is False
+
     def test_a_file_gone_from_a_present_folder_stops_heading_the_queue(self, store, library):
+        _good_cbz(library / "Keep 001.cbz")  # the library is mounted
         p = _good_cbz(library / "Gone 001.cbz")
         _index(store, p)
         os.remove(p)
@@ -314,97 +536,49 @@ class TestOrphans:
         _index(store, str(cbr))
         assert lh.scan_orphans()["pairs"] == 0
 
-    def test_old_comic_in_watch_is_stray_and_young_one_is_not(self, store, tmp_path, library):
+    def test_watch_and_target_are_never_walked(self, store, tmp_path, library):
+        """A comic waiting in a staging folder is not a library problem. The
+        "left in WATCH for over a day" check is gone, and nothing walks either
+        folder."""
         watch = tmp_path / "watch"
-        watch.mkdir()
-        old = watch / "Old 001.cbz"
-        young = watch / "Young 001.cbz"
-        _good_cbz(old)
-        _good_cbz(young, payload=b"Y")
-        long_ago = time.time() - 3 * 86400
-        os.utime(old, (long_ago, long_ago))
-        with patch("core.config.get_target_dir", return_value=""), \
-             patch("core.config.get_watch_dir", return_value=str(watch)):
+        target = tmp_path / "processed"
+        for folder in (watch, target):
+            folder.mkdir()
+            old = _good_cbz(folder / "Old 001.cbz")
+            long_ago = time.time() - 3 * 86400
+            os.utime(old, (long_ago, long_ago))
+        with patch("core.config.get_target_dir", return_value=str(target)), \
+                patch("core.config.get_watch_dir", return_value=str(watch)), \
+                patch("os.walk", side_effect=AssertionError("walked a folder")):
             stats = lh.scan_orphans()
-        assert stats["strays"] == 1
-        assert get_problem(str(old), SOURCE_ORPHAN)["error_class"] == "StrayInStaging"
-        assert get_problem(str(young), SOURCE_ORPHAN) is None
+        assert stats == {"pairs": 0, "cleared": 0}
+        assert list_problems() == []
 
-    def test_target_is_never_checked_for_strays(self, store, tmp_path, library):
-        """Files are expected to wait in TARGET; an old one there is not a problem."""
+    def test_a_cbr_beside_its_cbz_in_target_is_not_listed(self, store, tmp_path, library):
         target = tmp_path / "processed"
         target.mkdir()
-        old = target / "Old 001.cbz"
-        _good_cbz(old)
-        long_ago = time.time() - 3 * 86400
-        os.utime(old, (long_ago, long_ago))
+        cbr = target / "Twin 001.cbr"
+        cbr.write_bytes(b"rar")
+        _index(store, str(cbr))
+        _good_cbz(target / "Twin 001.cbz")
         with patch("core.config.get_target_dir", return_value=str(target)), \
-             patch("core.config.get_watch_dir", return_value=""):
-            assert lh.scan_orphans()["strays"] == 0
-        assert get_problem(str(old), SOURCE_ORPHAN) is None
+                patch("core.config.get_watch_dir", return_value=""):
+            assert lh.scan_orphans()["pairs"] == 0
+        assert list_problems() == []
 
-    def test_target_nested_in_watch_is_not_walked(self, store, tmp_path, library):
-        watch = tmp_path / "watch"
-        target = watch / "processed"
-        target.mkdir(parents=True)
-        old = target / "Old 001.cbz"
-        _good_cbz(old)
-        long_ago = time.time() - 3 * 86400
-        os.utime(old, (long_ago, long_ago))
-        with patch("core.config.get_target_dir", return_value=str(target)), \
-             patch("core.config.get_watch_dir", return_value=str(watch)):
-            assert lh.scan_orphans()["strays"] == 0
-        assert get_problem(str(old), SOURCE_ORPHAN) is None
-
-    def test_existing_target_rows_are_cleared_by_a_scan(self, store, tmp_path, library):
-        """Rows recorded before TARGET was excluded go on the next scan, even
-        when TARGET itself is not reachable."""
-        target = tmp_path / "processed"  # never created
-        listed = str(target / "Old 001.cbz")
-        record_problem(listed, SOURCE_ORPHAN, error_class="StrayInStaging",
-                       error_message="Unfiled in TARGET for over a day")
-        with patch("core.config.get_target_dir", return_value=str(target)), \
-             patch("core.config.get_watch_dir", return_value=""):
-            assert lh.scan_orphans()["cleared"] == 1
-        assert get_problem(listed, SOURCE_ORPHAN) is None
-
-    def test_existing_target_row_is_cleared_by_a_recheck(self, store, tmp_path, library):
-        target = tmp_path / "processed"
-        target.mkdir()
-        old = _good_cbz(target / "Old 001.cbz")
-        long_ago = time.time() - 3 * 86400
-        os.utime(old, (long_ago, long_ago))
-        record_problem(str(old), SOURCE_ORPHAN, error_class="StrayInStaging",
-                       error_message="Unfiled in TARGET for over a day")
-        with patch("core.config.get_target_dir", return_value=str(target)), \
-             patch("core.config.get_watch_dir", return_value=""):
-            ok, _ = lh.recheck_orphan(str(old))
-        assert ok is True
-        assert get_problem(str(old), SOURCE_ORPHAN) is None
-
-    def test_partial_downloads_are_never_strays(self, store, tmp_path, library):
+    def test_an_old_stray_row_is_cleared_by_a_recheck(self, store, tmp_path, library):
         watch = tmp_path / "watch"
         watch.mkdir()
-        part = watch / "Big 001.cbz.0.crdownload"
-        part.write_bytes(b"x")
-        long_ago = time.time() - 3 * 86400
-        os.utime(part, (long_ago, long_ago))
+        old = _good_cbz(watch / "Old 001.cbz")
+        # Written before the check was removed (no staging folder configured,
+        # so the ledger accepts it here).
+        record_problem(old, SOURCE_ORPHAN, error_class="StrayInStaging",
+                       error_message="Unfiled in WATCH for over a day")
         with patch("core.config.get_target_dir", return_value=""), \
-             patch("core.config.get_watch_dir", return_value=str(watch)):
-            assert lh.scan_orphans()["strays"] == 0
-
-    def test_staging_inside_a_library_is_left_alone(self, store, library):
-        """Inside a library every folder is library structure; guessing is how
-        26 comics were once moved into the wrong series."""
-        inside = library / "incoming"
-        inside.mkdir()
-        old = inside / "Old 001.cbz"
-        _good_cbz(old)
-        long_ago = time.time() - 3 * 86400
-        os.utime(old, (long_ago, long_ago))
-        with patch("core.config.get_target_dir", return_value=str(inside)), \
-             patch("core.config.get_watch_dir", return_value=""):
-            assert lh.scan_orphans()["strays"] == 0
+                patch("core.config.get_watch_dir", return_value=str(watch)):
+            ok, _ = lh.recheck_orphan(old)
+        assert ok is True
+        assert get_problem(old, SOURCE_ORPHAN) is None
 
     def test_recheck_orphan_clears_a_resolved_pair(self, store, library):
         cbr = library / "Twin 002.cbr"
@@ -1054,3 +1228,448 @@ class TestEmptyFolders:
         assert get_problem(inside, SOURCE_SERIES_JSON) is None
         assert get_problem(sibling, SOURCE_SERIES_JSON) is not None
         assert get_problem(own, "empty-folder") is not None
+
+
+class TestStagingIsNotTheLibrary:
+    """WATCH and TARGET hold downloads in transit. Nothing in them is hashed,
+    counted, paired as a duplicate or listed -- whoever put a row there."""
+
+    @pytest.fixture
+    def staging(self, tmp_path):
+        watch = tmp_path / "downloads" / "temp"
+        target = tmp_path / "downloads" / "processed"
+        watch.mkdir(parents=True)
+        target.mkdir(parents=True)
+        with patch("core.config.get_watch_dir", return_value=str(watch)), \
+                patch("core.config.get_target_dir", return_value=str(target)):
+            yield watch, target
+
+    def test_staged_files_are_not_hashed_or_counted(self, store, library, staging):
+        watch, target = staging
+        mine = _good_cbz(library / "Mine 001.cbz")
+        in_target = _corrupt_cbz(target / "Waiting 001.cbz")
+        in_watch = _corrupt_cbz(watch / "Arriving 001.cbz")
+        for p in (mine, in_target, in_watch):
+            _index(store, p)
+
+        assert [f["path"] for f in lh.files_needing_check(50, 90)] == [mine]
+        stats = lh.run_batch(50, 90)
+        assert stats["checked"] == 1 and stats["damaged"] == 0
+        assert list_problems() == []
+        assert _health(store, in_target) is None and _health(store, in_watch) is None
+
+    def test_a_download_is_not_a_duplicate_of_the_library_copy(self, store, library, staging):
+        _, target = staging
+        mine = _good_cbz(library / "Batman 001 (2016).cbz")
+        waiting = _good_cbz(target / "Batman 001 (2016).cbz")
+        tags = {"ci_series": "Batman", "ci_number": "1", "ci_year": "2016",
+                "ci_publisher": "DC", "has_comicinfo": 1}
+        _index(store, mine, **tags)
+        _index(store, waiting, **tags)
+        # Identical bytes, hashed by an older version.
+        digest = lh.hash_file(mine)
+        for p in (mine, waiting):
+            st = os.stat(p)
+            lh._store_health(store, p, digest, st.st_size, st.st_mtime, "ok")
+        store.commit()
+        assert lh.find_duplicates(include_dismissed=True) == {"exact": [], "likely": []}
+
+    def test_copy_markers_inside_target_are_not_a_group(self, store, library, staging):
+        _, target = staging
+        _index(store, _good_cbz(target / "Saga 001.cbz"))
+        _index(store, _good_cbz(target / "Saga 001 (1).cbz"))
+        assert lh.find_duplicates() == {"exact": [], "likely": []}
+
+    def test_the_index_refuses_a_staged_path(self, store, library, staging):
+        from core.database import add_file_index_entry
+
+        watch, target = staging
+        for folder in (watch, target):
+            p = _good_cbz(folder / "New 001.cbz")
+            assert add_file_index_entry("New 001.cbz", p, "file", size=1,
+                                        parent=str(folder)) is False
+        mine = _good_cbz(library / "Mine 001.cbz")
+        assert add_file_index_entry("Mine 001.cbz", mine, "file", size=1,
+                                    parent=str(library)) is True
+        assert [r["path"] for r in store.execute("SELECT path FROM file_index")] == [mine]
+
+    def test_nothing_in_target_is_ever_listed(self, store, library, staging):
+        from core import problem_files as pf
+
+        _, target = staging
+        p = _corrupt_cbz(target / "Waiting 001.cbz")
+        for source in (pf.SOURCE_THUMBNAIL, pf.SOURCE_REBUILD, pf.SOURCE_CONVERT,
+                       pf.SOURCE_UNPACK, pf.SOURCE_METADATA_WRITE, pf.SOURCE_INTEGRITY,
+                       pf.SOURCE_ORPHAN):
+            assert record_problem(p, source, error_class="X", error_message="y") is False
+        assert list_problems() == []
+
+    def test_watch_is_listed_only_by_the_folder_monitor(self, store, library, staging):
+        from core import problem_files as pf
+
+        watch, _ = staging
+        p = _corrupt_cbz(watch / "Arriving 001.cbz")
+        assert record_problem(p, pf.SOURCE_THUMBNAIL, error_class="X", error_message="y") is False
+        assert record_problem(p, pf.SOURCE_INTEGRITY, error_class="X", error_message="y") is False
+        # What the monitor reports about its own inbox is the only place the
+        # user sees it: the file never reaches a library.
+        assert record_problem(p, pf.SOURCE_UNPACK, error_class="BadZipFile",
+                              error_message="y") is True
+        assert record_problem(p, pf.SOURCE_CONVERT, error_class=pf.CLASS_PDF_FAILED,
+                              error_message="y") is True
+        assert {r["source"] for r in list_problems()} == {pf.SOURCE_UNPACK, pf.SOURCE_CONVERT}
+
+    def test_a_recheck_of_a_staged_file_drops_its_row(self, store, library, tmp_path):
+        target = tmp_path / "processed"
+        target.mkdir()
+        p = _corrupt_cbz(target / "Waiting 001.cbz")
+        record_problem(p, SOURCE_INTEGRITY, error_class="BadCRC", error_message="y")
+        with patch("core.config.get_watch_dir", return_value=""), \
+                patch("core.config.get_target_dir", return_value=str(target)):
+            ok, _ = lh.recheck_file(p)
+        assert ok is True
+        assert get_problem(p, SOURCE_INTEGRITY) is None
+
+    def test_purge_removes_what_older_versions_recorded(self, store, library, tmp_path):
+        from core import problem_files as pf
+
+        watch = tmp_path / "downloads" / "temp"
+        target = tmp_path / "downloads" / "processed"
+        watch.mkdir(parents=True)
+        target.mkdir(parents=True)
+        mine = _good_cbz(library / "Mine 001.cbz")
+        in_target = _corrupt_cbz(target / "Waiting 001.cbz")
+        in_watch = _corrupt_cbz(watch / "Arriving 001.cbz")
+        # Recorded while no staging folder was configured, as an older version did.
+        for p in (mine, in_target, in_watch):
+            _index(store, p)
+            st = os.stat(p)
+            lh._store_health(store, p, "h", st.st_size, st.st_mtime, "ok")
+        store.execute(
+            "INSERT INTO file_index (name, path, type, parent) VALUES (?, ?, 'directory', ?)",
+            ("Sub", str(target / "Sub"), str(target)),
+        )
+        store.commit()
+        record_problem(mine, pf.SOURCE_THUMBNAIL, error_class="X", error_message="y")
+        record_problem(in_target, SOURCE_INTEGRITY, error_class="BadCRC", error_message="y")
+        record_problem(in_target, pf.SOURCE_CONVERT, error_class="X", error_message="y")
+        record_problem(in_watch, pf.SOURCE_THUMBNAIL, error_class="X", error_message="y")
+        record_problem(in_watch, pf.SOURCE_UNPACK, error_class="BadZipFile", error_message="y")
+        record_problem(in_watch, SOURCE_ORPHAN, error_class="StrayInStaging",
+                       error_message="Unfiled in WATCH for over a day")
+
+        with patch("core.config.get_watch_dir", return_value=str(watch)), \
+                patch("core.config.get_target_dir", return_value=str(target)):
+            out = lh.purge_staging_rows()
+            assert out == {"index": 3, "health": 2, "problems": 4}
+            assert [r["path"] for r in store.execute("SELECT path FROM file_index")] == [mine]
+            assert [r["path"] for r in store.execute("SELECT path FROM file_health")] == [mine]
+            left = {(r["path"], r["source"]) for r in list_problems()}
+            assert left == {(mine, pf.SOURCE_THUMBNAIL), (in_watch, pf.SOURCE_UNPACK)}
+            # Nothing left to do the second time.
+            assert lh.purge_staging_rows() == {"index": 0, "health": 0, "problems": 0}
+
+    def test_a_scan_purges_first(self, store, library, staging):
+        _, target = staging
+        mine = _good_cbz(library / "Mine 001.cbz")
+        waiting = _good_cbz(target / "Mine 001 (1).cbz")
+        _index(store, mine)
+        _index(store, waiting)
+        with patch("core.series_json_check.scan_library", return_value={}):
+            result = lh.run_scan(run_cheap=False, batch=10)
+        assert result["staging_purged"]["index"] == 1
+        assert result["batch"]["checked"] == 1
+        assert lh.load_state()["coverage"] == {"total": 1, "checked": 1, "pct": 100}
+
+    def test_staging_rows_are_purged_even_with_the_scan_off(self, store, library, staging):
+        _, target = staging
+        _index(store, _good_cbz(target / "Waiting 001.cbz"))
+        lh._staging_purge_at["at"] = 0.0
+        with patch.object(lh, "run_scan") as run:
+            assert lh.run_scheduled_scan() is None
+            run.assert_not_called()
+        assert store.execute("SELECT COUNT(*) FROM file_index").fetchone()[0] == 0
+
+
+class TestDuplicateGroupingIsReused:
+    def _pair(self, store, library):
+        a = _good_cbz(library / "Batman 001 (2016).cbz")
+        b = _good_cbz(library / "Batman 001 (2016) (1).cbz")
+        _index(store, a)
+        _index(store, b)
+        return a, b
+
+    def test_an_unchanged_index_is_not_regrouped(self, store, library):
+        self._pair(store, library)
+        lh.invalidate_duplicates()
+        with patch.object(lh, "name_key", wraps=lh.name_key) as key:
+            first = lh.find_duplicates()
+            assert key.call_count == 2
+            assert lh.find_duplicates() == first
+            assert lh.count_duplicates() == (0, 1)
+            assert key.call_count == 2
+
+    def test_any_change_to_the_rows_regroups(self, store, library):
+        a, b = self._pair(store, library)
+        lh.invalidate_duplicates()
+        assert len(lh.find_duplicates()["likely"]) == 1
+        # A rename made anywhere, by anything: no hook has to say so.
+        renamed = str(library / "Batman 002 (2016).cbz")
+        os.rename(b, renamed)
+        store.execute("UPDATE file_index SET path = ?, name = ? WHERE path = ?",
+                      (renamed, os.path.basename(renamed), b))
+        store.commit()
+        assert lh.find_duplicates() == {"exact": [], "likely": []}
+
+    def test_dismissing_costs_no_regrouping(self, store, library):
+        self._pair(store, library)
+        lh.invalidate_duplicates()
+        group = lh.find_duplicates()["likely"][0]
+        with patch.object(lh, "name_key", wraps=lh.name_key) as key:
+            assert lh.dismiss_group(group["id"], until_scan=True)["success"] is True
+            assert lh.find_duplicates() == {"exact": [], "likely": []}
+            shown = lh.find_duplicates(include_dismissed=True)["likely"]
+            assert shown[0]["dismissed"] is True and shown[0]["dismiss_mode"] == "scan"
+            key.assert_not_called()
+
+    def test_a_cached_group_is_not_shared_with_the_caller(self, store, library):
+        self._pair(store, library)
+        lh.find_duplicates()["likely"][0]["dismissed"] = "tampered"
+        assert lh.find_duplicates()["likely"][0]["dismissed"] is False
+
+
+class TestScanStages:
+    def test_series_json_walk_is_skipped_while_the_page_holds_the_claim(self, store, library):
+        from core import series_json_check
+
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        assert series_json_check.claim_scan()
+        try:
+            with patch("core.series_json_check.scan_library") as walk:
+                result = lh.run_scan(run_cheap=True, batch=10)
+            walk.assert_not_called()
+        finally:
+            series_json_check.release_scan()
+        assert "skipped" in result["series_json"]
+        # ...and it gives the claim back when it did take it.
+        with patch("core.series_json_check.scan_library", return_value={}):
+            lh.run_scan(run_cheap=True, batch=10)
+        assert series_json_check.claim_scan()
+        series_json_check.release_scan()
+
+    def test_a_busy_empty_folder_scan_is_reported_as_skipped(self, store, library):
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        with patch("core.series_json_check.scan_library", return_value={}), \
+                patch.object(lh, "scan_empty_folders", return_value=None):
+            result = lh.run_scan(run_cheap=True, batch=10)
+        assert "skipped" in result["empty_folders"]
+
+    def test_state_is_saved_after_the_batch_not_only_at_the_end(self, store, library):
+        """A scan killed during the walks must not lose the batch it finished."""
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        with patch("core.series_json_check.scan_library", side_effect=RuntimeError("killed")):
+            result = lh.run_scan(run_cheap=True, batch=10)
+        assert "error" in result
+        state = lh.load_state()
+        assert state["last_batch"]["checked"] == 1
+        assert state["coverage"]["checked"] == 1
+        assert not state.get("cheap_checks_at")
+
+    def test_a_stopped_scan_skips_the_walks_and_keeps_the_batch(self, store, library):
+        for i in range(3):
+            _index(store, _good_cbz(library / f"Stop {i:03d}.cbz", payload=bytes([70 + i])))
+        assert lh.claim_scan()
+        try:
+            real = lh.check_file
+
+            def check(path):
+                lh.request_stop()
+                return real(path)
+
+            with patch.object(lh, "check_file", side_effect=check), \
+                    patch("core.series_json_check.scan_library") as walk:
+                result = lh.run_scan(run_cheap=True, batch=10)
+            walk.assert_not_called()
+        finally:
+            lh.release_scan()
+        assert result["stopped"] is True
+        state = lh.load_state()
+        assert state["last_batch"]["checked"] == 1
+        assert not state.get("cheap_checks_at")
+
+    def test_the_summary_uses_the_stored_coverage(self, store, library):
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        lh.save_state({"last_run_at": 1.0,
+                       "coverage": {"total": 7, "checked": 3, "pct": 42}})
+        with patch.object(lh, "coverage", side_effect=AssertionError("counted")):
+            assert lh.get_summary()["coverage"]["pct"] == 42
+        lh._coverage_cache["value"] = None
+        assert lh.get_summary(live=True)["coverage"]["total"] == 1
+
+
+class TestScanIsNotReportedStalled:
+    """A scan that is still running must not be shown as "Operation stalled".
+
+    The stale sweep errors an op with no update for STALE_TIMEOUT and prunes
+    it, while the scan still holds its claim: the page said the scan had died
+    and a restart answered 409 (#841).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry(self):
+        from core import app_state
+
+        with app_state._operations_lock:
+            app_state._operations.clear()
+        # Hold the claim as every real caller does: taking it clears a stop
+        # request left behind by an earlier test.
+        assert lh.claim_scan()
+        try:
+            with patch.object(app_state, "KEEPALIVE_INTERVAL", 0.01):
+                yield app_state
+        finally:
+            lh.release_scan()
+        with app_state._operations_lock:
+            app_state._operations.clear()
+
+    @staticmethod
+    def _go_silent(app_state, op_id):
+        """Age the op past STALE_TIMEOUT, as a long silent step would.
+
+        Returns the status the operations poll then reports.
+        """
+        stamp = time.time() - app_state.STALE_TIMEOUT - 60
+        with app_state._operations_lock:
+            app_state._operations[op_id]["updated_at"] = stamp
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if app_state._operations[op_id]["updated_at"] > stamp:
+                break
+            time.sleep(0.01)
+        ops = [op for op in app_state.get_active_operations() if op["id"] == op_id]
+        return ops[0]["status"] if ops else "pruned"
+
+    def test_both_walks_are_given_the_operation(self, store, library, _registry):
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        op_id = _registry.register_operation("library_health", "scan")
+        with patch("core.series_json_check.scan_library", return_value={}) as series, \
+                patch.object(lh, "scan_empty_folders", return_value={}) as empty:
+            lh.run_scan(op_id=op_id, run_cheap=True, batch=10)
+        series.assert_called_once_with(op_id=op_id)
+        empty.assert_called_once_with(op_id=op_id)
+
+    def test_a_silent_stage_does_not_stall_the_scan(self, store, library, _registry):
+        """Any stage, not only the two walks: the keepalive spans the scan."""
+        _index(store, _good_cbz(library / "One 001.cbz"))
+        op_id = _registry.register_operation("library_health", "scan")
+        seen = {}
+
+        def slow_orphans():
+            seen["status"] = self._go_silent(_registry, op_id)
+            return {"pairs": 0, "cleared": 0}
+
+        with patch("core.series_json_check.scan_library", return_value={}), \
+                patch.object(lh, "scan_orphans", side_effect=slow_orphans):
+            result = lh.run_scan(op_id=op_id, run_cheap=True, batch=10)
+        assert seen["status"] == "running"
+        assert "error" not in result
+
+    def test_the_series_json_walk_keeps_its_own_operation_alive(self, store, library, _registry):
+        """The page's Scan series.json button calls it with no run_scan around it."""
+        from core import series_json_check
+
+        (library / "Series").mkdir()
+        (library / "Series" / "series.json").write_text("{}", encoding="utf-8")
+        op_id = _registry.register_operation("series_json_scan", "scan")
+        seen = {}
+
+        def slow_check(path):
+            seen["status"] = self._go_silent(_registry, op_id)
+            return None
+
+        with patch.object(series_json_check, "check_file", side_effect=slow_check):
+            series_json_check.scan_library(op_id)
+        assert seen["status"] == "running"
+
+    def test_the_empty_folder_walk_keeps_its_own_operation_alive(self, store, library, _registry):
+        (library / "Empty").mkdir()
+        op_id = _registry.register_operation("empty_folder_scan", "scan")
+        seen = {}
+        real = lh._empty_tree
+
+        def slow_tree(top, protected):
+            seen["status"] = self._go_silent(_registry, op_id)
+            return real(top, protected)
+
+        with patch.object(lh, "_empty_tree", side_effect=slow_tree):
+            stats = lh.scan_empty_folders(op_id)
+        assert seen["status"] == "running"
+        assert stats["flagged"] == 1
+        # The lock is given back, and a refused scan still returns None.
+        assert lh._empty_scan_lock.acquire(blocking=False)
+        try:
+            assert lh.scan_empty_folders(op_id) is None
+        finally:
+            lh._empty_scan_lock.release()
+
+    def test_the_batch_reports_before_every_file(self, store, library, _registry):
+        """Not every tenth: ten large archives on a slow disk outlast the timeout."""
+        for i in range(3):
+            _index(store, _good_cbz(library / f"Each {i:03d}.cbz", payload=bytes([80 + i])))
+        op_id = _registry.register_operation("library_health", "scan")
+        details = []
+        real = _registry.update_operation
+
+        def record(oid, **kwargs):
+            if kwargs.get("detail"):
+                details.append(kwargs["detail"])
+            return real(oid, **kwargs)
+
+        with patch.object(_registry, "update_operation", side_effect=record):
+            lh.run_batch(10, 30, op_id=op_id)
+        assert details == [f"Checked {i} of 3 files" for i in range(3)]
+
+
+class TestUnreadableFoldersAreNotEmpty:
+    """"Could not look" must never become "nothing there"."""
+
+    def test_a_folder_that_will_not_list_keeps_its_parent_off_the_list(self, store, library):
+        series = library / "Publisher" / "Series"
+        series.mkdir(parents=True)
+        _good_cbz(series / "Issue 001.cbz")
+        real_scandir = os.scandir
+
+        def scandir(path="."):
+            if os.path.normpath(str(path)) == os.path.normpath(str(series)):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_scandir(path)
+
+        with patch("helpers.library.get_protected_roots", return_value=[str(library)]), \
+                patch("os.scandir", side_effect=scandir):
+            found = lh._empty_tree(str(library), {os.path.realpath(str(library))})
+            assert str(series) not in found
+            assert str(library / "Publisher") not in found
+            assert lh.inspect_folder(str(library / "Publisher")) is None
+            assert lh.inspect_folder(str(series)) is None
+
+    def test_series_json_rows_under_an_unreadable_folder_are_kept(self, store, library):
+        from core import problem_files as pf
+        from core.series_json_check import scan_library
+
+        _good_cbz(library / "Keep 001.cbz")
+        locked = library / "Locked"
+        locked.mkdir()
+        listed = str(locked / "Series" / "series.json")
+        record_problem(listed, pf.SOURCE_SERIES_JSON, error_class=pf.CLASS_SERIES_JSON_BLANK,
+                       error_message="name is blank")
+        real_scandir = os.scandir
+
+        def scandir(path="."):
+            if os.path.normpath(str(path)) == os.path.normpath(str(locked)):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_scandir(path)
+
+        with patch("os.scandir", side_effect=scandir):
+            stats = scan_library()
+        assert stats["cleared"] == 0
+        assert get_problem(listed, pf.SOURCE_SERIES_JSON) is not None

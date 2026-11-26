@@ -3114,3 +3114,124 @@ class TestMetronCoverMatch:
         assert match.call_args.args[1:] == (cbz, "Batman", "1", 2020)
         write.assert_called_once()
         assert '"source": "Metron"' in body
+
+
+class TestBatchFolderSeriesFromCover:
+    """A folder with no cvinfo asks the covers which series it is before it
+    searches by name. "Crimson" (24 files) used to become the one-issue
+    "Batman: Crimson Mist", and that went straight into a new cvinfo."""
+
+    SERIES = {"series_id": 55, "series_name": "Crimson", "series_year": 1998,
+              "issue_number": "1", "file": "x"}
+
+    def _folder(self, tmp_path, count=3):
+        folder = tmp_path / "Crimson"
+        folder.mkdir()
+        paths = []
+        # Written out of order: the samples must come back in issue order.
+        for n in reversed(range(1, count + 1)):
+            path = str(folder / f"Crimson {n:03d} (1999).cbz")
+            # Already tagged, so the per-file loop asks no provider.
+            with zipfile.ZipFile(path, 'w') as zf:
+                zf.writestr("page_001.png", b"x")
+                zf.writestr("ComicInfo.xml",
+                            "<ComicInfo><Notes>Metadata from Metron.</Notes></ComicInfo>")
+            paths.append(path)
+        return folder, sorted(paths)
+
+    def _post(self, client, folder):
+        resp = client.post('/api/batch-metadata', json={
+            'directory': str(folder), 'library_id': 1,
+        })
+        resp.get_data(as_text=True)
+        return resp
+
+    def test_the_cover_series_is_written_to_cvinfo_without_a_name_search(
+            self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder, paths = self._folder(tmp_path)
+
+        with ExitStack() as stack:
+            TestBatchMetadataSkipProviders._batch_stack(self, app, stack)
+            search = stack.enter_context(patch(
+                "models.metron.search_series_by_name",
+                return_value={"id": 9, "name": "Batman: Crimson Mist", "cv_id": 1,
+                              "publisher_name": "DC Comics", "year_began": 1999}))
+            cover = stack.enter_context(patch(
+                "models.metron.resolve_series_by_cover", return_value=self.SERIES))
+            stack.enter_context(patch("models.metron.get_series_details", return_value={
+                "id": 55, "cv_id": 6000, "publisher_name": "Image", "year_began": 1998}))
+            resp = self._post(client, folder)
+
+        assert resp.status_code == 200
+        search.assert_not_called()
+        samples = cover.call_args.args[1]
+        assert [s[0] for s in samples] == paths
+        assert samples[0][1:] == ("Crimson", "1", 1999)
+        cvinfo = (folder / "cvinfo").read_text(encoding="utf-8")
+        assert "series_id: 55" in cvinfo
+        assert "4050-6000" in cvinfo
+        assert "start_year: 1998" in cvinfo
+
+    def test_no_cover_answer_searches_by_name_with_the_file_count(
+            self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder, _ = self._folder(tmp_path)
+
+        with ExitStack() as stack:
+            TestBatchMetadataSkipProviders._batch_stack(self, app, stack)
+            search = stack.enter_context(patch(
+                "models.metron.search_series_by_name",
+                return_value={"id": 55, "name": "Crimson", "cv_id": 6000,
+                              "publisher_name": "Image", "year_began": 1998}))
+            stack.enter_context(patch(
+                "models.metron.resolve_series_by_cover", return_value=None))
+            resp = self._post(client, folder)
+
+        assert resp.status_code == 200
+        assert search.call_args.args[1:] == ("Crimson", 1999)
+        assert search.call_args.kwargs == {"file_count": 3}
+        assert "series_id: 55" in (folder / "cvinfo").read_text(encoding="utf-8")
+
+    def test_the_folder_year_is_the_series_year_for_the_name_search(
+            self, app, client, tmp_path):
+        """A file's year is its issue's; the folder's is the series' start."""
+        from contextlib import ExitStack
+        folder = tmp_path / "Crimson (1998)"
+        folder.mkdir()
+        with zipfile.ZipFile(str(folder / "Crimson 012 (1999).cbz"), 'w') as zf:
+            zf.writestr("page_001.png", b"x")
+            zf.writestr("ComicInfo.xml",
+                        "<ComicInfo><Notes>Metadata from Metron.</Notes></ComicInfo>")
+
+        with ExitStack() as stack:
+            TestBatchMetadataSkipProviders._batch_stack(self, app, stack)
+            search = stack.enter_context(patch(
+                "models.metron.search_series_by_name", return_value=None))
+            stack.enter_context(patch(
+                "models.metron.resolve_series_by_cover", return_value=None))
+            stack.enter_context(patch("models.comicvine.search_volumes", return_value=[]))
+            self._post(client, folder)
+
+        assert search.call_args.args[1:] == ("Crimson", 1998)
+
+    def test_a_series_json_id_is_used_without_asking_either(self, app, client, tmp_path):
+        from contextlib import ExitStack
+        folder, _ = self._folder(tmp_path)
+        (folder / "series.json").write_text(
+            json.dumps({"metadata": {"name": "Crimson", "metron_id": 55}}), encoding="utf-8")
+
+        with ExitStack() as stack:
+            TestBatchMetadataSkipProviders._batch_stack(self, app, stack)
+            search = stack.enter_context(patch(
+                "models.metron.search_series_by_name", return_value=None))
+            cover = stack.enter_context(patch(
+                "models.metron.resolve_series_by_cover", return_value=self.SERIES))
+            stack.enter_context(patch("models.metron.get_series_details", return_value={
+                "id": 55, "cv_id": 6000, "publisher_name": "Image", "year_began": 1998}))
+            resp = self._post(client, folder)
+
+        assert resp.status_code == 200
+        search.assert_not_called()
+        cover.assert_not_called()
+        assert "series_id: 55" in (folder / "cvinfo").read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 import os
 import re
 import logging
-from core import series_names
+from core import filename_parse, series_names
 from core.app_logging import app_logger
 
 
@@ -152,15 +152,28 @@ def get_series_name_from_files(mapped_path, db_series_name):
     # "[...]" at the end, so the end-anchored issue strip below never fired and
     # the WHOLE filename ("Sicko #01 [July 2026]") became the series name --
     # baked into the match regex as a literal, so no download was ever filed.
-    name = re.sub(r"\s*\([^)]*\)", "", name)
-    name = re.sub(r"\s*\[[^\]]*\]", "", name)
+    #
+    # When the text before the FIRST group ends in an issue number, that group
+    # is the anchor and everything after it is an issue title, so cut there:
+    # "Batman 497 (1993) - Knightfall, Part 11" is "Batman 497", not
+    # "Batman 497 - Knightfall, Part" (#790). Cutting at the first number
+    # followed by a dash instead would shorten "Spider-Man 2099 - Dark Genesis
+    # 001" to "Spider-Man", and a too-short name claims more files.
+    prefix, has_group = filename_parse.prefix_before_first_group(name)
+    if has_group and filename_parse.ends_with_issue_number(prefix):
+        name = prefix
+    else:
+        name = re.sub(r"\s*\([^)]*\)", "", name)
+        name = re.sub(r"\s*\[[^\]]*\]", "", name)
     # An explicit "#NNN" marks the issue number wherever it sits; anything after
     # it (an issue title, "- Title") is not part of the series name.
     name = re.sub(r"\s*#-?\d.*$", "", name)
     # Remove issue number at end, including "001 of 5" and "#001" forms.
     # Renamed files can use a "NNN of M" count (see cbz_ops/rename.py); without
     # the "of M" branch only " M" is stripped, leaving "Series 001 of" as the name.
-    name = re.sub(r"\s+#?\d+(?:\s+of\s+\d+)?\s*$", "", name, flags=re.IGNORECASE)
+    # A sign glued to the digits ("-001") and a point suffix ("001.5") are part
+    # of the number too.
+    name = filename_parse.TRAILING_ISSUE.sub("", name)
     # Drop a trailing separator left by a "Series - NNN" naming style, so the
     # derived name is "Black Cat" not "Black Cat -". Guarded below so a name
     # that is *only* separators falls back to the DB name.
@@ -196,16 +209,22 @@ _word_regex = series_names.word_regex
 #   * padding is written sign-first ("Amazing Spider-Man -001 (1997).cbz"), so
 #     a "0*" + "-1" pattern hunts for zeros in front of the minus and matches
 #     nothing, while the pattern for #1 happily claims that same file.
-_SIGN_CHARS = "-‐‑‒–—―−"
-_SIGN_CLASS = "[" + _SIGN_CHARS + "]"
+# One definition, in core/filename_parse.py, shared with the provider-side
+# issue-number parser so the two agree on what a sign is.
+_SIGN_CHARS = filename_parse.SIGN_CHARS
+_SIGN_CLASS = filename_parse.SIGN_CLASS
 
 
-def normalize_issue_number(value):
+def issue_match_key(value):
     """Canonical form of an issue number for equality comparison.
 
     Drops leading zeros but keeps a leading sign, normalizing every dash
     variant to ASCII "-": "007" -> "7", "-001" -> "-1", "-01" -> "-1".
     Empty input returns "0", matching the historical ``lstrip('0') or '0'``.
+
+    Not interchangeable with ``core.database.issue_identity_key`` (the
+    reading-list matcher's form). Both were called ``normalize_issue_number``
+    once; see that function for how they differ.
     """
     text = str(value if value is not None else "").strip()
     sign = ""
@@ -218,9 +237,10 @@ def normalize_issue_number(value):
 def issue_number_regex(issue_number):
     r"""Regex fragment matching one issue number inside a filename.
 
-    Shared by the pattern matcher and the loose filename fallback so both agree
-    on which files a "-1" issue — and, just as importantly, which files a #1
-    issue — may claim.
+    Used by the pattern matcher to decide which files a "-1" issue — and, just
+    as importantly, which files a #1 issue — may claim. (The scan's loose
+    filename fallback no longer searches for a number: it reads the one the
+    file names, through ``fallback_issue_numbers``.)
 
     Anchors on both sides:
       (?<!\d)    the digit run must start here. Without it the separator in the
@@ -240,7 +260,7 @@ def issue_number_regex(issue_number):
     ("Batman - 001") or preceded by a digit ("Batman 001-006") is a separator.
     Issue #1 refuses the first form, issue #-1 requires it.
     """
-    clean = normalize_issue_number(issue_number)
+    clean = issue_match_key(issue_number)
     negative = clean.startswith("-")
     digits = clean[1:] if negative else clean
     body = r"0*" + re.escape(digits) + r"(?!\d)(?!\.\d)"
@@ -262,16 +282,55 @@ def issue_number_regex(issue_number):
 #
 # The alternatives are mutually exclusive (the final class excludes letters and
 # brackets), which keeps a failed lazy match from backtracking exponentially.
+#
+# Brackets are excluded for a second reason (#859): a bracket may only be
+# crossed as a whole balanced group. When the class took a lone "(", the gap
+# could run over the file's own number and stop inside a later group, so
+# "Series 058 (2010) (1).cbz" (a browser's second-copy suffix) was filed as #1
+# and "Batman 012 (2010)" could have been #2010.
 _STRICT_GAP = (
     r"(?:"
     r"\([^()]*\)"                                              # (2024) (Digital) (Zone-Empire)
     r"|\[[^\[\]]*\]"                                           # [2016] [c2c]
-    # Volume/issue markers, but only when digits follow: this lets
-    # "Batman No. 5" through while still rejecting "Batman - No Mans Land 005".
-    r"|(?:volume|vol|v|issues|issue|numbers|number|nos|no|num)\.?(?=[\s._\-]*\d)"
-    r"|[^A-Za-z]"                                              # space, dash, dot, #, digits
+    # Issue markers, but only when digits follow: this lets "Batman No. 5"
+    # through while still rejecting "Batman - No Mans Land 005".
+    r"|(?:issues|issue|numbers|number|nos|no|num)\.?(?=[\s._\-]*\d)"
+    # A volume marker with its number, consumed whole: "Batman v2 012" is #12.
+    r"|(?:volume|vol|v)\.?[\s._\-]*\d+(?!\d)"
+    # A volume marker whose number is left to be the issue ("Series v07
+    # (2015)", "Series V02 - Title 2026": a collected volume). Refused when
+    # another number comes straight after it, because then that one is the
+    # issue: "Green Lantern V3 045" used to match #3 as well as #45 (#807). A
+    # following year is not such a number ("Series v07 2015").
+    r"|(?:volume|vol|v)\.?"
+    r"(?=[\s._\-]*\d+(?!\d)(?![\s._\-#]*(?!(?:19|20)\d\d(?!\d))\d))"
+    r"|[^A-Za-z()\[\]]"                                        # space, dash, dot, #, digits
     r")*?"
 )
+
+# A number that opens a format name is a page count, not the issue (#807):
+# "Green Lantern V3 - 80 Page Giant 001" was filed as Green Lantern #80. Every
+# other format name starts with a letter and is stopped by the gap above; this
+# one starts with digits, so the gap lets it through and the tail after the
+# number is a wildcard.
+#
+# It is a lookahead on the number rather than a keyword on the filename because
+# position is the whole question: "Superman 183 - 80 Page Giant (1966)" IS
+# Superman #183, and a keyword test would report that owned issue as missing.
+# Applied only with strict_gap, so the collection-status matcher is unchanged
+# and no cached match has to be purged.
+_PAGE_COUNT_AHEAD = (
+    r"(?![\s._\-]*page[\s._\-]+"
+    r"(?:giant|super[\s._\-]+spectacular|spectacular)(?![A-Za-z]))"
+)
+
+
+# What {volume_number} may be in a filename: "v01", "Vol. 2", "2", or absent.
+# Never able to take a volume marker without its number, which is what keeps
+# "Green Lantern V3 045" from matching #3 (#807).
+_VOLUME_BODY = r"(?:volume|vol\.?|v)?\s*\d+(?!\d)"
+_VOLUME_OPTIONAL = rf"(?:\s*{_VOLUME_BODY})?"
+_VOLUME_IN_PARENS = rf"(?:\s*\(\s*{_VOLUME_BODY}\s*\))?"
 
 
 def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_gap=False):
@@ -284,6 +343,7 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
     - {volume_year}/{issue_year} (and legacy {year}) -> matches any 4-digit year
     - {issue_month_m} -> matches a 2-digit month
     - {issue_month_M} -> matches a month name
+    - {volume_number} -> optionally matches "v01", "Vol. 2" or a bare number
     Any other (unrecognized) {token} is stripped defensively so it never leaks
     into the compiled regex as a literal requirement.
 
@@ -335,10 +395,36 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # the custom pattern can't be filled, so CLU could rename a file into a
         # name its own matcher then refused.
         if 0 <= pattern.find('<<<SERIES>>>') < pattern.find('<<<ISSUE>>>'):
+            def _relax_separator(m):
+                # The strict gap cannot cross a lone bracket (#859), so a
+                # pattern that itself brackets the number, such as
+                # "{series_name} ({issue_number})", keeps that bracket as a
+                # literal after the gap. What the pattern writes between that
+                # bracket and the number ("(#") stays optional.
+                bracketed = strict_gap and r'\(' in m.group(1)
+                keep = r'\([^A-Za-z0-9()\[\]]*?' if bracketed else ''
+                return '<<<GAP>>>' + keep + '<<<ISSUE>>>'
+
             pattern = re.sub(
-                r'[^A-Za-z0-9<>]*<<<ISSUE>>>', '<<<GAP>>><<<ISSUE>>>',
+                r'([^A-Za-z0-9<>]*)<<<ISSUE>>>', _relax_separator,
                 pattern, count=1,
             )
+
+        # The volume token is optional, with its leading space and any literal
+        # "V" the pattern writes before it (#861). The renamer fills it with
+        # "v01"/"v2" when it knows the volume and with nothing when it does
+        # not, and this used to demand a bare number, a form it never writes:
+        # every download renamed under such a pattern stayed in TARGET and
+        # was fetched again. Substituted here, before the series name goes in,
+        # so the "V" lookbehind can only ever see the user's own pattern.
+        pattern = re.sub(
+            r'\s*\\\(\s*(?:(?<![A-Za-z])[vV])?<<<VOLUME>>>\s*\\\)',
+            lambda _m: _VOLUME_IN_PARENS, pattern,
+        )
+        pattern = re.sub(
+            r'\s*(?:(?<![A-Za-z])[vV])?<<<VOLUME>>>',
+            lambda _m: _VOLUME_OPTIONAL, pattern,
+        )
 
         # The series name: optional leading "The" in both directions, optional
         # apostrophes and connecting words, and no punctuation a filename
@@ -350,6 +436,8 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         # so it can never match a fragment of a longer number, and sign-aware so
         # #1 and #-1 keep their own files. See ``issue_number_regex``.
         issue_pattern = issue_number_regex(issue_number)
+        if strict_gap:
+            issue_pattern += _PAGE_COUNT_AHEAD
 
         # Now substitute our patterns back in
         pattern = pattern.replace('<<<SERIES>>>', f'(?:{series_pattern})')
@@ -357,7 +445,6 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
         pattern = pattern.replace('<<<YEAR>>>', r'\d{4}')
         pattern = pattern.replace('<<<MONTHNUM>>>', r'\d{2}')
         pattern = pattern.replace('<<<MONTHNAME>>>', r'[A-Za-z]+')
-        pattern = pattern.replace('<<<VOLUME>>>', r'\d+')
         pattern = pattern.replace('<<<TITLE>>>', r'[^()]*?')
 
         # Make spaces between components flexible (allow punctuation like trailing periods)
@@ -395,8 +482,24 @@ def generate_filename_pattern(custom_pattern, series_name, issue_number, strict_
 # owned issues as missing and re-download them.
 _COLLECTED_EDITION_TYPES = (
     'tpb', 'trade paperback', 'omnibus', 'hardcover', 'one-shot', 'oneshot',
-    'giant-size',
+    'giant-size', 'epic collection',
 )
+
+# Words in a SERIES name that say its "issues" are collected volumes. Wider
+# than the list above on purpose: that one filters files out of a singles
+# series, where "masterworks" or "compendium" would be a guess; this one only
+# decides how a volume marker in a filename is read (#795).
+_COLLECTED_SERIES_WORDS = (
+    'tpb', 'trade paperback', 'omnibus', 'hardcover', 'epic collection',
+    'masterworks', 'compendium',
+)
+_VOLUME_ISSUE_NAME = re.compile(r'^\s*(?:vol(?:ume)?\.?|book)\s*\d+', re.IGNORECASE)
+# An issue whose whole name is a format: ComicVine names a one-volume trade's
+# only issue "TPB", "HC" or "TPB/HC" (#730).
+_FORMAT_ISSUE_NAME = re.compile(
+    r'^\s*(?:tpb|tp|hc|sc|gn|ogn|hardcover|softcover|trade paperback|omnibus)'
+    r'(?:\s*[/&,]\s*(?:tpb|tp|hc|sc|gn|ogn|hardcover|softcover|trade paperback|omnibus))*\s*$',
+    re.IGNORECASE)
 
 
 # What may follow the wanted series name inside a ComicInfo <Series> value and
@@ -545,7 +648,100 @@ def _publication_type_keywords():
 
 def _normalize_for_keywords(text):
     """Lower-case, punctuation-free, space-padded form for whole-word tests."""
-    return " " + re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip() + " "
+    return " " + series_names.ascii_words(text) + " "
+
+
+def is_collected_series(series_name, issues):
+    """True when the series' "issues" are collected volumes (TPB, Omnibus...).
+
+    No provider series type is stored, so the evidence is the name (a format
+    word) or the issue list (at least half the issues are named "Vol. N", or
+    are named nothing but a format: "TPB", "TPB/HC").
+    Such a series' files are commonly named "Series V02 - Title 2026" or
+    "Series v07 (2015)", and the "v07" is the number. On a singles series the
+    same marker is the series volume ("Batman v2 012"), which is why this is
+    asked of the series and never assumed from the filename.
+    """
+    haystack = _normalize_for_keywords(series_name)
+    for word in _COLLECTED_SERIES_WORDS:
+        if _normalize_for_keywords(word) in haystack:
+            return True
+    names = []
+    for issue in issues or []:
+        name = getattr(issue, 'name', None)
+        if name is None and isinstance(issue, dict):
+            name = issue.get('name')
+        if isinstance(name, (list, tuple)):
+            name = name[0] if name else ''
+        names.append(str(name or ''))
+    if not names:
+        return False
+    volumes = sum(1 for name in names
+                  if _VOLUME_ISSUE_NAME.match(name) or _FORMAT_ISSUE_NAME.match(name))
+    return volumes > 0 and volumes * 2 >= len(names)
+
+
+def fallback_issue_numbers(filename, series_name, collected=False):
+    """The issue number(s) ``filename`` names, for the loose scan tier.
+
+    Returns ``(numbers, is_range)`` with ``numbers`` a set of normalised,
+    lower-cased issue numbers. The series name is skipped when the file starts
+    with it, so a number inside the name ("Spider-Man 2099", "The New 52",
+    "X-23") is never an issue number; a file that does not start with it is
+    still read, because this tier does not check the series (#792).
+    """
+    stem = os.path.splitext(filename or '')[0]
+    start = 0
+    if series_name:
+        try:
+            lead = re.match(
+                series_names.series_name_regex(series_name), stem, re.IGNORECASE
+            )
+        except re.error:
+            lead = None
+        # The name must end where a word ends: "X" is not the start of "Xena".
+        if lead and lead.end() and not stem[lead.end():lead.end() + 1].isalpha():
+            start = lead.end()
+    tokens, is_range = filename_parse.issue_numbers(
+        stem, start=start, prefer_volume=collected
+    )
+    return {issue_match_key(t).lower() for t in tokens}, is_range
+
+
+def filename_contradicts_issue(filename, issue_number, series_names_for_file):
+    """True when ``filename`` names an issue number and it is not ``issue_number``.
+
+    The filer matches a download to an issue and then hands the file to the
+    auto-taggers, which read the number out of the filename again. When the two
+    disagree the tagger writes another issue's metadata and renames the file to
+    it (#807: a file filed as #80 was tagged and renamed as #1).
+
+    Only positive disagreement counts. A name no parser reads a number from
+    returns False, so a file matched through its ComicInfo keeps being tagged.
+    The number is accepted if any reading gives it: the taggers' own parser,
+    and the scan's reading with and without a volume marker as the number
+    ("Series v02 - Title 2026" is volume 2 of a collected series).
+    """
+    wanted = issue_match_key(issue_number).lower()
+    found = set()
+    try:
+        from models.providers.base import extract_issue_number
+
+        parsed = extract_issue_number(filename or "")
+        if parsed:
+            found.add(issue_match_key(parsed).lower())
+    except Exception as e:
+        app_logger.debug(f"Could not read an issue number from '{filename}': {e}")
+    for name in series_names_for_file or []:
+        for collected in (False, True):
+            try:
+                numbers, _is_range = fallback_issue_numbers(
+                    filename, name, collected=collected
+                )
+            except Exception:
+                continue
+            found.update(numbers)
+    return bool(found) and wanted not in found
 
 
 def names_other_publication_type(filename, series_name):
@@ -564,7 +760,42 @@ def names_other_publication_type(filename, series_name):
     *is* the format ("Nightwing Annual") keeps its own files.
     """
     name_part = os.path.splitext(filename or "")[0].split("(")[0]
-    haystack = _normalize_for_keywords(name_part)
+    return _names_other_format(name_part, series_name)
+
+
+def names_other_format_after_year(filename, series_name):
+    """True when a format word follows the first group and no number precedes it.
+
+    "Symbiote Spider-Man (2019) Volume 01 TPB.cbz" is another manager's name
+    for a trade, and in the five-issue series' folder it was reported as #1
+    (#857): ``names_other_publication_type`` stops at the first "(", and the
+    scan's last tier reads the spelled-out "Volume 01".
+
+    The first group is the anchor (``core/filename_parse.py``): the issue
+    number sits before it and what follows is title text. So the text after
+    it is a format label only when no number comes before the group.
+    "Nightwing 001 (2016) - Annual Checkup" is Nightwing #1 and is not
+    flagged. Text inside any group is never read, so release tags
+    ("(Digital) (TPB-Empire)") cannot trip it.
+
+    The caller must not ask this of a collected series: ComicVine's one-book
+    "All-New Doop" trade volume is correctly "All-New Doop (2014) Volume 01
+    TPB.cbz".
+    """
+    stem = os.path.splitext(filename or "")[0]
+    prefix, has_group = filename_parse.prefix_before_first_group(stem)
+    if not has_group:
+        return False
+    numbers, _is_range = fallback_issue_numbers(prefix, series_name)
+    if numbers:
+        return False
+    tail = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", stem[len(prefix):])
+    return _names_other_format(tail, series_name)
+
+
+def _names_other_format(text, series_name):
+    """Whole-word test: ``text`` carries a format keyword the series does not."""
+    haystack = _normalize_for_keywords(text)
     series_haystack = _normalize_for_keywords(series_name)
     for keyword in _publication_type_keywords():
         kw = _normalize_for_keywords(keyword)
@@ -828,6 +1059,26 @@ def wanted_year_fit(file_year, issue):
     return rank, (abs(file_year - issue_year) if issue_year else 99)
 
 
+def _announce_cover_only(filename, src, reason):
+    """WARNING the first time a file is held back, DEBUG after that.
+
+    The file stays where it is and is matched again on every pass while the
+    issue stays wanted, and a pass runs per completed download.
+    """
+    from core import app_state
+
+    try:
+        st = os.stat(src)
+        fingerprint = ("cover-only", st.st_mtime, st.st_size)
+    except OSError:
+        fingerprint = ("cover-only",)
+    message = f"Not filing {filename}: {reason}, so it is not the issue"
+    if app_state.first_filing_refusal(src, fingerprint):
+        app_logger.warning(f"{message}. Left in place: {src}")
+    else:
+        app_logger.debug(message)
+
+
 def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None):
     """Match wanted issues against a pool of files without touching the filesystem.
 
@@ -940,7 +1191,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         if debug:
             app_logger.debug(f"Checking: '{actual_series_name}' #{issue_number}")
 
-        check_num = normalize_issue_number(issue_number)
+        check_num = issue_match_key(issue_number)
         for file_order, (filename, src) in enumerate(remaining):
             # A downloaded annual/TPB would otherwise satisfy issue #1 and get
             # moved into (and renamed inside) the series folder — the same
@@ -959,7 +1210,7 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
             if not match_result:
                 ci = extract_comicinfo_cached(src, comicinfo_cache)
                 if ci and ci.get("number"):
-                    meta_num = normalize_issue_number(ci["number"])
+                    meta_num = issue_match_key(ci["number"])
                     if meta_num == check_num:
                         meta_series = (ci.get("series") or "").lower()
                         if meta_series and any(
@@ -1004,13 +1255,29 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
     # (rank, dist), so this reduces to the old order: wanted issues in turn,
     # each taking its first matching file.
     candidates.sort(key=lambda c: c[:4])
+    from helpers.archive_content import cover_only_reason
+
     used_files = set()
     used_issues = set()
+    cover_only = set()  # (filename, src) refused in this pass
     claims = {}  # (filename, src) -> distinct series that matched it
     for c in candidates:
         claims.setdefault((c[5], c[6]), set()).add(c[4].get("series_id"))
     for _r, _d, issue_idx, _o, issue, filename, src in candidates:
         if issue_idx in used_issues or (filename, src) in used_files:
+            continue
+        # A cover pack named like the issue (#794). Asked here, at the claim,
+        # for two reasons: it is one archive listing per file that is about to
+        # be filed rather than one per candidate, and a refusal leaves the
+        # issue open for the next candidate -- the real comic sitting beside
+        # the pack. The file stays unused too, and is refused again for any
+        # other issue it matched.
+        if (filename, src) in cover_only:
+            continue
+        reason = cover_only_reason(src, filename)
+        if reason:
+            cover_only.add((filename, src))
+            _announce_cover_only(filename, src, reason)
             continue
         used_issues.add(issue_idx)
         used_files.add((filename, src))
@@ -1029,6 +1296,17 @@ def match_wanted_issues_to_files(wanted, files, match_pattern, alias_lookup=None
         )
 
     return matches
+
+
+_OF_BEFORE = re.compile(r'\d\s+of\s+$', re.IGNORECASE)
+
+
+def _comicinfo_names_this_series(ci, series_name):
+    """The scan's loose ComicInfo series test: no <Series>, or one name inside
+    the other. Deliberately a substring test; see series-name-matching.md."""
+    meta_series = (ci.get('series') or '').lower()
+    wanted_series = (series_name or '').lower()
+    return not meta_series or wanted_series in meta_series or meta_series in wanted_series
 
 
 def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True):
@@ -1108,6 +1386,29 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                 except OSError:
                     pass
 
+            # Detect an issue the cache has never seen (#797). The cache is
+            # written per issue id, and the branch below answers from cached
+            # rows only, so an issue a series re-fetch added afterwards is
+            # simply absent from the result. Every caller reads "absent" as
+            # "missing": the issue went on the wanted list and was downloaded
+            # again while its file sat in the folder. The check above cannot
+            # catch it either -- with every cached row found, it never runs.
+            # Only issues the scan below would cache are compared (number and
+            # id both set), or one that can never get a row would force a
+            # re-scan on every call.
+            if valid_cache:
+                cached_ids = {entry['issue_id'] for entry in cached}
+                for issue in issues:
+                    number = getattr(issue, 'number', '') or (issue.get('number', '') if isinstance(issue, dict) else '')
+                    issue_id = getattr(issue, 'id', None) or (issue.get('id') if isinstance(issue, dict) else None)
+                    if number and issue_id and issue_id not in cached_ids:
+                        valid_cache = False
+                        app_logger.debug(
+                            f"Cache invalid for series {series_id}: issue #{number} "
+                            f"(id {issue_id}) has no cached row"
+                        )
+                        break
+
             if valid_cache:
                 # Return cached results
                 for entry in cached:
@@ -1123,6 +1424,7 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     # Step 2: Scan directory and build file metadata
     local_files = []
     file_metadata = {}
+    collected = is_collected_series(series_name, issues)
 
     try:
         for filename in os.listdir(mapped_path):
@@ -1130,7 +1432,13 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
                 # An annual/TPB/omnibus in the series folder numbers its own
                 # issues from 1, so it must never be offered to any tier below:
                 # all three would happily match "... Annual 001 ..." as #1.
-                if names_other_publication_type(filename, series_name):
+                # The format word may also follow the year ("Series (2019)
+                # Volume 01 TPB", #857); on a collected series that name is
+                # the series' own volume, so it is not asked there.
+                if names_other_publication_type(filename, series_name) or (
+                    not collected
+                    and names_other_format_after_year(filename, series_name)
+                ):
                     app_logger.debug(
                         f"Skipping '{filename}' for series '{series_name}': "
                         "names a different publication type"
@@ -1163,79 +1471,107 @@ def match_issues_to_collection(mapped_path, issues, series_info, use_cache=True)
     # Files already assigned to an issue by a PRECISE match (4a/4b). Without
     # this one archive could be reported as owned for many issues at once - the
     # series page showed dozens of owned issues whose "view file" all opened the
-    # same archive. The loose 4c filename fallback deliberately does NOT consume:
-    # a range/collected file ("Nightwing 001-006.cbz") may legitimately satisfy
-    # several issues, and claiming it would mark the rest missing.
+    # same archive. The loose 4c filename fallback never consumes, and it
+    # passes over a claimed file unless that file names a range: a range file
+    # ("Nightwing 001-006.cbz") legitimately satisfies several issues, and
+    # claiming it would mark the rest missing.
     claimed = set()
 
+    wanted = []
     for issue in issues:
         issue_num = str(getattr(issue, 'number', '') or (issue.get('number', '') if isinstance(issue, dict) else ''))
         issue_id = getattr(issue, 'id', None) or (issue.get('id') if isinstance(issue, dict) else None)
+        if issue_num:
+            wanted.append((issue_num, issue_id))
 
-        if not issue_num:
-            continue
+    # The tiers run as passes over every issue, not per issue: a precise match
+    # anywhere in the list must claim its file before the loose tier looks at
+    # it. Per issue, "Alpha Flight 5 (1983)" tagged <Number>6 was handed to #5
+    # by the filename before #6 ever asked for it by ComicInfo (#792).
+    matched = {}  # index into ``wanted`` -> (file_path, matched_via)
 
-        match_found = False
-        matched_file = None
-        matched_via = None
-
-        # 4a: Try CUSTOM_RENAME_PATTERN matching first (most reliable for user's files)
-        if custom_pattern and series_name:
+    # 4a: Try CUSTOM_RENAME_PATTERN matching first (most reliable for user's files)
+    if custom_pattern and series_name:
+        for idx, (issue_num, _issue_id) in enumerate(wanted):
             pattern_regex = generate_filename_pattern(custom_pattern, series_name, issue_num)
-            if pattern_regex:
-                for file_path, metadata in file_metadata.items():
-                    if file_path in claimed:
-                        continue
-                    if pattern_regex.search(metadata['filename']):
-                        match_found = True
-                        matched_file = file_path
-                        matched_via = 'pattern'
-                        break
-
-        # 4b: Fallback to ComicInfo.xml matching
-        if not match_found:
+            if not pattern_regex:
+                continue
             for file_path, metadata in file_metadata.items():
                 if file_path in claimed:
                     continue
-                # Lazy-load ComicInfo.xml only when needed (once per file).
-                ci = extract_comicinfo_cached(file_path, comicinfo_cache)
-                if ci.get('number'):
-                    # Normalize issue numbers for comparison
-                    meta_num = normalize_issue_number(ci['number'])
-                    check_num = normalize_issue_number(issue_num)
-
-                    if meta_num == check_num:
-                        # Check series name matches (loose match)
-                        meta_series = ci.get('series', '').lower()
-                        if not meta_series or series_name.lower() in meta_series or meta_series in series_name.lower():
-                            match_found = True
-                            matched_file = file_path
-                            matched_via = 'comicinfo'
-                            break
-
-        # 4c: Final fallback to generic filename patterns
-        if not match_found:
-            # The shared fragment carries its own leading zeros and sign rules,
-            # so "-1" needs "Series -001" while #1 must not settle for it.
-            num_re = issue_number_regex(issue_num)
-            patterns = [
-                rf'[\s\-_]{num_re}(?:[\s\-_\.\(]|$)',  # space/dash/underscore + number + delimiter
-                rf'#{num_re}(?:\D|$)',  # #1, #01, #001
-            ]
-
-            for file_path, metadata in file_metadata.items():
-                filename = metadata['filename']
-                for pattern in patterns:
-                    if re.search(pattern, filename, re.IGNORECASE):
-                        match_found = True
-                        matched_file = file_path
-                        matched_via = 'filename'
-                        break
-                if match_found:
+                hit = pattern_regex.search(metadata['filename'])
+                # The gap between series and number is a wildcard here, so
+                # "X 012 of 6 (2001)" also fits #6. A number that follows
+                # "of" is a count, never the issue.
+                if hit and hit.lastindex and _OF_BEFORE.search(
+                    metadata['filename'][:hit.start(1)]
+                ):
+                    continue
+                if hit:
+                    matched[idx] = (file_path, 'pattern')
+                    claimed.add(file_path)
                     break
 
-        if matched_via in ('pattern', 'comicinfo'):
-            claimed.add(matched_file)
+    # 4b: Fallback to ComicInfo.xml matching
+    for idx, (issue_num, _issue_id) in enumerate(wanted):
+        if idx in matched:
+            continue
+        check_num = issue_match_key(issue_num)
+        for file_path, metadata in file_metadata.items():
+            if file_path in claimed:
+                continue
+            # Lazy-load ComicInfo.xml only when needed (once per file).
+            ci = extract_comicinfo_cached(file_path, comicinfo_cache)
+            if ci.get('number') and issue_match_key(ci['number']) == check_num:
+                # Check series name matches (loose match)
+                if _comicinfo_names_this_series(ci, series_name):
+                    matched[idx] = (file_path, 'comicinfo')
+                    claimed.add(file_path)
+                    break
+
+    # 4c: Final fallback to the filename alone. Each file is read ONCE for the
+    # number it names in the issue position; the wanted number is compared with
+    # that, never searched for. Searching found "1" in "Batman 400 - Knightfall
+    # Part 1" and "2099" in "Spider-Man 2099 005 (1993)", so issues nobody
+    # owned read as owned and were never looked for (#792), while "Series V02 -
+    # Title" was never volume 2 and was downloaded again (#795).
+    if len(matched) < len(wanted):
+        named = {
+            file_path: fallback_issue_numbers(metadata['filename'], series_name, collected)
+            for file_path, metadata in file_metadata.items()
+        }
+        for idx, (issue_num, _issue_id) in enumerate(wanted):
+            if idx in matched:
+                continue
+            check_num = issue_match_key(issue_num).lower()
+            for file_path in file_metadata:
+                numbers, is_range = named[file_path]
+                if check_num not in numbers:
+                    continue
+                if not is_range:
+                    # A file a precise tier gave to another issue is that
+                    # issue. Only a real range file serves several.
+                    if file_path in claimed:
+                        continue
+                    # Its own ComicInfo naming a different issue of this
+                    # series outranks the filename. Not asked of a collected
+                    # series: a trade is often tagged <Number>1 of its own
+                    # volume, whatever volume of the line it is.
+                    if not collected:
+                        ci = extract_comicinfo_cached(file_path, comicinfo_cache)
+                        if (
+                            ci.get('number')
+                            and issue_match_key(ci['number']).lower() != check_num
+                            and ci.get('series')
+                            and _comicinfo_names_this_series(ci, series_name)
+                        ):
+                            continue
+                matched[idx] = (file_path, 'filename')
+                break
+
+    for idx, (issue_num, issue_id) in enumerate(wanted):
+        matched_file, matched_via = matched.get(idx, (None, None))
+        match_found = matched_file is not None
 
         results[issue_num] = {
             'found': match_found,

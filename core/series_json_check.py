@@ -23,6 +23,7 @@ Things that look arbitrary and are not:
 """
 
 import os
+import threading
 
 from core.app_logging import app_logger
 from core.problem_files import (
@@ -40,6 +41,23 @@ NULL_ONLY_FIELDS = ("comic_image", "description_text")
 
 # How often the scan reports progress. A library has thousands of folders.
 _PROGRESS_EVERY = 25
+
+# One series.json pass at a time. The page's scan, its "Refresh all" and the
+# walk inside the library health scan all rewrite the same rows, so all three
+# take this claim (the routes in routes/problem_files.py import the lock).
+_scan_lock = threading.Lock()
+
+
+def claim_scan():
+    """Take the series.json claim. False means a scan or refresh holds it."""
+    return _scan_lock.acquire(blocking=False)
+
+
+def release_scan():
+    try:
+        _scan_lock.release()
+    except RuntimeError:
+        pass
 
 
 def blank_fields(data):
@@ -138,28 +156,49 @@ def scan_library(op_id=None):
     Records a row per incomplete file and clears rows for files that now pass.
     Never raises. Returns ``{folders, checked, flagged, cleared}``.
     """
+    from core.app_state import operation_keepalive
+
+    # Progress is per 25 folders, and one slow directory listing can outlast
+    # STALE_TIMEOUT on its own.
+    with operation_keepalive(op_id):
+        return _scan_library(op_id)
+
+
+def _scan_library(op_id):
     from core.app_state import update_operation
     from core.config import is_oneshot_folder
     from helpers import is_hidden
-    from helpers.library import get_library_roots
+    from helpers.library import get_library_roots, staging_matcher
     from models.series_json import SERIES_JSON_FILENAME
 
     stats = {"folders": 0, "checked": 0, "flagged": 0, "cleared": 0}
+    # WATCH/TARGET nested inside a library are downloads in transit.
+    staging = staging_matcher()
     seen = set()
     # Rows are only cleared for a root that was actually walked: an unmounted
     # library looks exactly like "every series.json was deleted".
     walked_roots = []
+    # Folders os.walk could not list. Nothing under one was looked at, so a
+    # row there is not cleared: "could not look" is not "it was deleted".
+    unreadable = []
+
+    def _walk_error(err):
+        folder = getattr(err, "filename", None)
+        if folder:
+            unreadable.append(os.path.join(folder, ""))
 
     try:
         for root in get_library_roots():
             if not os.path.isdir(root):
                 continue
             walked_roots.append(root)
-            for dirpath, dirnames, filenames in os.walk(root):
+            for dirpath, dirnames, filenames in os.walk(root, onerror=_walk_error):
                 # Full path, not the bare name: is_hidden also asks the OS for
                 # the Windows hidden attribute, which needs a real path.
                 dirnames[:] = [
-                    d for d in dirnames if not is_hidden(os.path.join(dirpath, d))
+                    d for d in dirnames
+                    if not is_hidden(os.path.join(dirpath, d))
+                    and not staging(os.path.join(dirpath, d), is_dir=True)
                 ]
                 stats["folders"] += 1
                 if stats["folders"] % _PROGRESS_EVERY == 0 and op_id:
@@ -190,7 +229,10 @@ def scan_library(op_id=None):
         # root we did walk. Rows under roots we could not reach stay put.
         existing = _open_paths() or set()
         prefixes = tuple(os.path.join(r, "") for r in walked_roots)
+        blind = tuple(unreadable)
         for path in existing - seen:
+            if blind and path.startswith(blind):
+                continue
             if prefixes and path.startswith(prefixes) and not os.path.isfile(path):
                 if clear_problem(path, SOURCE_SERIES_JSON):
                     stats["cleared"] += 1

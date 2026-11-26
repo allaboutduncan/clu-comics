@@ -6,6 +6,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ asset('css/insights.css') }}">
+<link rel="stylesheet" href="{{ asset('css/wrapped-story.css') }}">
 {% endblock %}
 
 {% block content %}
@@ -126,6 +127,126 @@
         </div>
     </div>
 
+    <!-- Goal, streaks and this week -->
+    <div class="row g-3 mb-4">
+        <div class="col-lg-4">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-bullseye"></i>Reading Goal <span id="goalYearLabel" class="text-muted fw-normal"></span></h3>
+                </div>
+                <div class="section-card-body text-center">
+                    <svg class="goal-dial" viewBox="0 0 120 120" role="img" aria-labelledby="goalHeadline">
+                        <circle class="goal-dial-track" cx="60" cy="60" r="52"></circle>
+                        <circle class="goal-dial-progress" id="goalDialProgress" cx="60" cy="60" r="52"
+                            transform="rotate(-90 60 60)"></circle>
+                        <text class="goal-dial-value" id="goalDialValue" x="60" y="60" text-anchor="middle">&ndash;</text>
+                        <text class="goal-dial-caption" id="goalDialCaption" x="60" y="78" text-anchor="middle"></text>
+                    </svg>
+                    <div class="fw-semibold mt-2" id="goalHeadline">Loading&hellip;</div>
+                    <div class="text-muted small mb-3" id="goalDetail"></div>
+                    <button class="btn btn-sm btn-outline-secondary" id="editGoalBtn" type="button">
+                        <i class="bi bi-bullseye me-1" aria-hidden="true"></i>Set a goal
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-3">
+            <div class="d-flex flex-lg-column gap-3 h-100">
+                <div class="stat-card flex-fill">
+                    <div class="stat-icon warning">
+                        <i class="bi bi-fire"></i>
+                    </div>
+                    <div class="stat-value" id="statCurrentStreak">&ndash;</div>
+                    <div class="stat-label">Day Streak</div>
+                </div>
+                <div class="stat-card flex-fill">
+                    <div class="stat-icon success">
+                        <i class="bi bi-trophy"></i>
+                    </div>
+                    <div class="stat-value" id="statLongestStreak">&ndash;</div>
+                    <div class="stat-label">Longest Streak</div>
+                    <div class="stat-note" id="statLongestStreakRange"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-calendar-week"></i>This Week</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="d-flex align-items-baseline gap-3">
+                        <div><span class="week-count" id="weekThisCount">&ndash;</span> <span class="text-muted small">this week</span></div>
+                        <div><span class="week-count week-count-muted" id="weekLastCount">&ndash;</span> <span class="text-muted small">last week</span></div>
+                    </div>
+                    <div class="text-muted small mb-2" id="weekCompareNote"></div>
+                    <div class="chart-container week-chart">
+                        <canvas id="weekCompareChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Five weeks by series, and what is open now -->
+    <div class="row g-4 mb-4">
+        <div class="col-lg-7">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-bar-chart-steps"></i>Last Five Weeks by Series</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="chart-container" id="fiveWeekContainer">
+                        <canvas id="fiveWeekChart"></canvas>
+                    </div>
+                    {{ empty_state('Nothing read in the last five weeks', icon='bi-bar-chart', id='fiveWeekEmpty', hidden=True, compact=True) }}
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-bookmark"></i>Open Now</h3>
+                </div>
+                <div class="section-card-body">
+                    <div id="open-now-grid" class="recently-read-grid open-now-grid"></div>
+                    {{ empty_state('Nothing in progress', icon='bi-bookmark', id='open-now-empty', hidden=True, compact=True) }}
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reading clock: when the reading happens -->
+    <div class="row g-4 mb-4">
+        <div class="col-lg-5">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-clock"></i>Reading Clock</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="chart-container" id="clockContainer">
+                        <canvas id="readingClockChart"></canvas>
+                    </div>
+                    {{ empty_state('No reading times yet', message='Read in the CLU reader and your hours will appear here.', icon='bi-clock', id='clockEmpty', hidden=True, compact=True) }}
+                    <div class="text-muted small text-center mt-2" id="clockPeak"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+            <div class="section-card h-100">
+                <div class="section-card-header">
+                    <h3><i class="bi bi-calendar3-week"></i>Days of the Week</h3>
+                </div>
+                <div class="section-card-body">
+                    <div class="chart-container" id="weekdayContainer">
+                        <canvas id="weekdayChart"></canvas>
+                    </div>
+                    <div class="text-muted small mt-2" id="clockSourceNote"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Reading Heatmap & Publishers ChartGraph -->
     <div class="row g-4 mb-4">
         <div class="col-lg-5">
@@ -158,11 +279,11 @@
             <div class="section-card">
                 <div class="section-card-header">
                     <div class="float-end">
-                        <a href="{{ url_for('timeline') }}" class="btn btn-outline-secondary">
+                        <a href="{{ url_for('insights.timeline') }}" class="btn btn-outline-secondary">
                             <i class="bi bi-graph-up-arrow me-1"></i>Timeline
                         </a>
                     </div>
-                    <h3><i class="bi bi-clock-history"></i>Recently Read</h3>
+                    <h3><i class="bi bi-clock-history"></i>Recently Finished</h3>
                 </div>
                 <div class="section-card-body">
                     <div id="recently-read-grid" class="recently-read-grid">
@@ -238,6 +359,29 @@
         </div>
     </div>
 
+    <!-- Constellation: who appears with whom in what was read -->
+    <div class="row g-4 mb-4">
+        <div class="col-12">
+            <div class="section-card">
+                <div class="section-card-header d-flex justify-content-between align-items-center">
+                    <h3><i class="bi bi-stars"></i>Constellation</h3>
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Constellation of">
+                        <input type="radio" class="btn-check" name="constellationKind" id="constellationCharacters"
+                            value="characters" autocomplete="off" checked>
+                        <label class="btn btn-outline-secondary" for="constellationCharacters">Characters</label>
+                        <input type="radio" class="btn-check" name="constellationKind" id="constellationCreators"
+                            value="creators" autocomplete="off">
+                        <label class="btn btn-outline-secondary" for="constellationCreators">Creators</label>
+                    </div>
+                </div>
+                <div class="section-card-body">
+                    <div id="constellationCanvas" class="constellation-canvas"></div>
+                    <div class="text-muted small mt-2" id="constellationNote"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Top 20 Series by Issue Count -->
     <div class="row g-4 mb-4">
         <div class="col-12 col-sm-6">
@@ -271,7 +415,7 @@
 
     <!-- Wrapped Modal -->
     <div class="modal fade" id="wrappedModal" tabindex="-1" aria-labelledby="wrappedModalLabel" aria-hidden="true">
-        <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="wrappedModalLabel">
@@ -290,44 +434,64 @@
                         </div>
                     </div>
 
-                    <!-- Loading State -->
-                    <div id="wrappedLoading" class="text-center py-5" style="display: none;">
-                        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status">
-                            <span class="visually-hidden">Generating...</span>
-                        </div>
-                        <p class="text-muted">Generating your Wrapped images...</p>
-                    </div>
-
-                    <!-- Carousel -->
-                    <div id="wrappedCarousel" class="carousel slide" style="display: none;" data-bs-ride="false">
-                        <div class="carousel-indicators">
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="0"
-                                class="active"></button>
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="1"></button>
-                            <button type="button" data-bs-target="#wrappedCarousel" data-bs-slide-to="2"></button>
-                        </div>
-                        <div class="carousel-inner" id="wrappedCarouselInner">
-                            <!-- Slides will be inserted here -->
-                        </div>
-                        <button class="carousel-control-prev" type="button" data-bs-target="#wrappedCarousel"
-                            data-bs-slide="prev">
-                            <span class="carousel-control-prev-icon" aria-hidden="true"></span>
-                            <span class="visually-hidden">Previous</span>
-                        </button>
-                        <button class="carousel-control-next" type="button" data-bs-target="#wrappedCarousel"
-                            data-bs-slide="next">
-                            <span class="carousel-control-next-icon" aria-hidden="true"></span>
-                            <span class="visually-hidden">Next</span>
-                        </button>
-                    </div>
                 </div>
-                <div class="modal-footer" id="wrappedFooter" style="display: none;">
-                    <button type="button" class="btn btn-outline-secondary" id="wrappedBackBtn">
-                        <i class="bi bi-arrow-left me-1"></i>Choose Another Year
-                    </button>
-                    <a href="#" class="btn btn-success" id="wrappedDownloadBtn">
-                        <i class="bi bi-download me-1"></i>Download All
+            </div>
+        </div>
+    </div>
+
+    {% include 'partials/wrapped_story.html' %}
+
+    <!-- Reading Goal Modal -->
+    <div class="modal fade" id="goalModal" tabindex="-1" aria-labelledby="goalModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-sm modal-dialog-centered">
+            <form class="modal-content" id="goalForm">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="goalModalLabel">
+                        <i class="bi bi-bullseye me-2"></i>Reading goal for <span id="goalModalYear"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <label for="goalInput" class="form-label">Issues to read this year</label>
+                    <input type="number" class="form-control" id="goalInput" min="1" max="100000" step="1"
+                        inputmode="numeric" required>
+                    <div class="form-text" id="goalSuggestion"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-danger me-auto" id="clearGoalBtn">Remove goal</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Day Modal: one day's reading on a time ruler -->
+    <div class="modal fade" id="dayModal" tabindex="-1" aria-labelledby="dayModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="dayModalLabel">
+                        <i class="bi bi-calendar-day me-2"></i><span id="dayModalTitle"></span>
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="text-muted small mb-3" id="daySummary"></div>
+                    <div class="day-ruler" id="dayRuler" role="img" aria-label="Reading through the day">
+                        <div class="day-ruler-track" id="dayRulerTrack"></div>
+                        <div class="day-ruler-ticks" aria-hidden="true">
+                            <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>
+                        </div>
+                    </div>
+                    <div class="day-ruler-legend small text-muted mb-3" id="dayRulerLegend"></div>
+                    <div class="list-group" id="dayList"></div>
+                </div>
+                <div class="modal-footer">
+                    <a class="btn btn-outline-secondary me-auto" id="dayTimelineLink" href="#">
+                        <i class="bi bi-graph-up-arrow me-1" aria-hidden="true"></i>Open month in Timeline
                     </a>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -384,746 +548,17 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script>
-    document.addEventListener('DOMContentLoaded', function () {
-        // Get computed styles for theme colors
-        const computedStyle = getComputedStyle(document.documentElement);
-
-        // Helper to get CSS variable value
-        function getCssVar(name, fallback) {
-            const value = computedStyle.getPropertyValue(name).trim();
-            return value || fallback;
-        }
-
-        // Helper to convert CSS color to rgba with opacity
-        function colorWithOpacity(cssVar, fallback, opacity) {
-            const color = getCssVar(cssVar, fallback);
-            // If it's already rgba or rgb, parse and modify
-            if (color.startsWith('rgb')) {
-                return color.replace('rgb', 'rgba').replace(')', `, ${opacity})`);
-            }
-            // For hex colors, convert to rgba
-            if (color.startsWith('#')) {
-                const r = parseInt(color.slice(1, 3), 16);
-                const g = parseInt(color.slice(3, 5), 16);
-                const b = parseInt(color.slice(5, 7), 16);
-                return `rgba(${r}, ${g}, ${b}, ${opacity})`;
-            }
-            return color;
-        }
-
-        // Theme-aware colors from Bootstrap
-        const primaryColor = getCssVar('--bs-primary', '#0d6efd');
-        const successColor = getCssVar('--bs-success', '#198754');
-        const infoColor = getCssVar('--bs-info', '#0dcaf0');
-        const warningColor = getCssVar('--bs-warning', '#ffc107');
-        const dangerColor = getCssVar('--bs-danger', '#dc3545');
-        const secondaryColor = getCssVar('--bs-secondary', '#6c757d');
-
-        const textColor = getCssVar('--bs-body-color', '#212529');
-        const gridColor = getCssVar('--bs-border-color', 'rgba(0, 0, 0, 0.1)');
-
-        // Chart.js global defaults for theme
-        Chart.defaults.color = textColor;
-        Chart.defaults.borderColor = gridColor;
-        Chart.defaults.font.family = getCssVar('--bs-body-font-family',
-            "'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif");
-
-        // Color palette for charts (theme-aware)
-        const chartColors = [
-            primaryColor,
-            successColor,
-            warningColor,
-            infoColor,
-            dangerColor,
-            secondaryColor
-        ];
-
-        // ===== FILE TYPE CHART =====
-        const fileTypes = {{ file_types | tojson
-    }};
-    const fileTypeLabels = fileTypes.map(item => item.type.toUpperCase());
-    const fileTypeData = fileTypes.map(item => item.count);
-
-    new Chart(document.getElementById('fileTypeChart'), {
-        type: 'doughnut',
-        data: {
-            labels: fileTypeLabels,
-            datasets: [{
-                data: fileTypeData,
-                backgroundColor: chartColors,
-                borderWidth: 0,
-                hoverOffset: 8
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: {
-                    position: 'right',
-                    labels: {
-                        padding: 16,
-                        usePointStyle: true,
-                        pointStyle: 'circle',
-                        font: { size: 12 }
-                    }
-                }
-            },
-            cutout: '65%'
-        }
-    });
-
-    // ===== READING HISTORY CHART =====
-    const readingHistory = {{ reading_history | tojson }};
-    // Support both daily (date field) and monthly (month field) data
-    const historyLabels = readingHistory.map(item => item.date || item.month);
-    const historyData = readingHistory.map(item => item.count);
-
-    new Chart(document.getElementById('readingHistoryChart'), {
-        type: 'line',
-        data: {
-            labels: historyLabels,
-            datasets: [{
-                label: 'Issues Read',
-                data: historyData,
-                borderColor: primaryColor,
-                backgroundColor: colorWithOpacity('--bs-primary', '#0d6efd', 0.15),
-                borderWidth: 2,
-                fill: true,
-                tension: 0.3,
-                pointRadius: historyData.length > 60 ? 0 : 3,
-                pointHoverRadius: 5,
-                pointBackgroundColor: primaryColor,
-                pointBorderColor: getCssVar('--bs-body-bg', '#fff'),
-                pointBorderWidth: 2
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            interaction: {
-                intersect: false,
-                mode: 'index'
-            },
-            plugins: {
-                legend: { display: false },
-                tooltip: {
-                    callbacks: {
-                        title: function (context) {
-                            return context[0].label;
-                        },
-                        label: function (context) {
-                            const count = context.parsed.y;
-                            return count === 1 ? '1 issue' : `${count} issues`;
-                        }
-                    }
-                }
-            },
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: {
-                        precision: 0,
-                        font: { size: 11 }
-                    },
-                    grid: {
-                        color: gridColor,
-                        drawBorder: false
-                    }
-                },
-                x: {
-                    ticks: {
-                        font: { size: 10 },
-                        maxRotation: 45,
-                        autoSkip: true,
-                        maxTicksLimit: 12
-                    },
-                    grid: { display: false }
-                }
-            }
-        }
-    });
-
-    // ===== PUBLISHERS CHART =====
-    const topPublishers = {{ top_publishers | tojson }};
-    const publisherLabels = topPublishers.map(item => item.name);
-    const publisherData = topPublishers.map(item => item.count);
-
-    new Chart(document.getElementById('publishersChart'), {
-        type: 'bar',
-        data: {
-            labels: publisherLabels,
-            datasets: [{
-                label: 'Files',
-                data: publisherData,
-                backgroundColor: colorWithOpacity('--bs-success', '#198754', 0.7),
-                hoverBackgroundColor: successColor,
-                borderRadius: 4,
-                borderSkipped: false
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { display: false }
-            },
-            scales: {
-                x: {
-                    beginAtZero: true,
-                    ticks: {
-                        precision: 0,
-                        font: { size: 11 }
-                    },
-                    grid: {
-                        color: gridColor,
-                        drawBorder: false
-                    }
-                },
-                y: {
-                    ticks: { font: { size: 12 } },
-                    grid: { display: false }
-                }
-            }
-        }
-    });
-
-    // ===== TOP 20 LARGEST COMICS =====
-    const largestComicsData = {{ largest_comics | tojson }};
-    if (largestComicsData && largestComicsData.length > 0) {
-        new Chart(document.getElementById('largestComicsChart'), {
-            type: 'bar',
-            data: {
-                labels: largestComicsData.map(c => c.name.length > 45 ? c.name.substring(0, 45) + '...' : c.name),
-                datasets: [{
-                    label: 'Size (MB)',
-                    data: largestComicsData.map(c => (c.size / 1024 / 1024).toFixed(1)),
-                    backgroundColor: colorWithOpacity('--bs-info', '#0dcaf0', 0.7),
-                    hoverBackgroundColor: getCssVar('--bs-info', '#0dcaf0'),
-                    borderRadius: 4,
-                    borderSkipped: false
-                }]
-            },
-            options: {
-                indexAxis: 'y',
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: function (context) {
-                                return context.parsed.x + ' MB';
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        beginAtZero: true,
-                        ticks: {
-                            precision: 0,
-                            font: { size: 11 },
-                            callback: function (value) {
-                                return value + ' MB';
-                            }
-                        },
-                        grid: {
-                            color: gridColor,
-                            drawBorder: false
-                        }
-                    },
-                    y: {
-                        ticks: { font: { size: 11 } },
-                        grid: { display: false }
-                    }
-                }
-            }
-        });
-    }
-
-    // ===== TOP 20 SERIES BY ISSUE COUNT =====
-    const topSeriesData = {{ top_series | tojson }};
-    if (topSeriesData && topSeriesData.length > 0) {
-        new Chart(document.getElementById('topSeriesChart'), {
-            type: 'bar',
-            data: {
-                labels: topSeriesData.map(s => s.name.length > 45 ? s.name.substring(0, 45) + '...' : s.name),
-                datasets: [{
-                    label: 'Issues',
-                    data: topSeriesData.map(s => s.count),
-                    backgroundColor: colorWithOpacity('--bs-warning', '#ffc107', 0.7),
-                    hoverBackgroundColor: getCssVar('--bs-warning', '#ffc107'),
-                    borderRadius: 4,
-                    borderSkipped: false
-                }]
-            },
-            options: {
-                indexAxis: 'y',
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: function (context) {
-                                return context.parsed.x + ' issues';
-                            }
-                        }
-                    }
-                },
-                scales: {
-                    x: {
-                        beginAtZero: true,
-                        ticks: {
-                            precision: 0,
-                            font: { size: 11 }
-                        },
-                        grid: {
-                            color: gridColor,
-                            drawBorder: false
-                        }
-                    },
-                    y: {
-                        ticks: { font: { size: 11 } },
-                        grid: { display: false }
-                    }
-                }
-            }
-        });
-    }
-
-    // ===== RECENTLY READ =====
-    loadRecentlyRead();
-});
-
-    async function loadRecentlyRead() {
-        try {
-            const response = await fetch('/api/recently-read?limit=22');
-            const items = await response.json();
-
-            const grid = document.getElementById('recently-read-grid');
-            const empty = document.getElementById('recently-read-empty');
-
-            if (items.length === 0) {
-                grid.style.display = 'none';
-                empty.style.display = 'block';
-                return;
-            }
-
-            grid.innerHTML = items.map(item => `
-            <div class="recently-read-item"
-                 data-href="${CLU.escapeHtml('/collection?path=' + encodeURIComponent(item.path.substring(0, item.path.lastIndexOf('/'))))}"
-                 onclick="window.location.href = this.dataset.href">
-                <img class="recently-read-thumbnail"
-                     src="${CLU.escapeHtml(item.thumbnail_url)}"
-                     alt="${CLU.escapeHtml(item.name)}"
-                     title="${CLU.escapeHtml(item.name)}"
-                     loading="lazy"
-                     onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 150%22%3E%3Crect fill=%22%23dee2e6%22 width=%22100%22 height=%22150%22/%3E%3Ctext x=%2250%22 y=%2275%22 text-anchor=%22middle%22 fill=%22%236c757d%22 font-size=%2210%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-            </div>
-        `).join('');
-        } catch (err) {
-            console.error('Failed to load recently read:', err);
-            document.getElementById('recently-read-empty').style.display = 'block';
-            document.getElementById('recently-read-grid').style.display = 'none';
-        }
-    }
-
-    // ===== READING HEATMAP =====
-    const heatmapData = {{ reading_heatmap | tojson }};
-    const heatmapMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    function renderHeatmap() {
-        const container = document.getElementById('reading-heatmap');
-        if (!container || Object.keys(heatmapData).length === 0) {
-            container.replaceChildren(CLU.emptyState({ icon: 'bi-calendar-x', title: 'No reading history yet', compact: true }));
-            return;
-        }
-
-        // Find max count for color scaling
-        let maxCount = 0;
-        Object.values(heatmapData).forEach(monthCounts => {
-            monthCounts.forEach(c => { if (c > maxCount) maxCount = c; });
-        });
-
-        // Build grid HTML
-        let html = '<div class="heatmap-grid">';
-
-        // Header row with month labels
-        html += '<div class="heatmap-row"><div class="heatmap-year"></div>';
-        heatmapMonths.forEach(m => { html += `<div class="heatmap-month-label">${m}</div>`; });
-        html += '</div>';
-
-        // Data rows (sorted by year descending - newest first)
-        const years = Object.keys(heatmapData).sort((a, b) => b - a);
-        years.forEach(year => {
-            html += `<div class="heatmap-row"><div class="heatmap-year">${year}</div>`;
-            heatmapData[year].forEach((count, monthIdx) => {
-                const intensity = maxCount > 0 ? count / maxCount : 0;
-                const monthName = heatmapMonths[monthIdx];
-                html += `<div class="heatmap-cell"
-                             data-count="${count}"
-                             data-year="${year}"
-                             data-month="${monthIdx + 1}"
-                             style="--intensity: ${intensity}"
-                             title="${monthName} ${year}: ${count} comics read"></div>`;
-            });
-            html += '</div>';
-        });
-        html += '</div>';
-
-        container.innerHTML = html;
-    }
-
-    renderHeatmap();
-
-    // Make heatmap cells clickable - navigate to filtered timeline
-    document.getElementById('reading-heatmap')?.addEventListener('click', function(e) {
-        const cell = e.target.closest('.heatmap-cell');
-        if (cell && parseInt(cell.dataset.count) > 0) {
-            window.location.href = `/timeline?year=${cell.dataset.year}&month=${cell.dataset.month}`;
-        }
-    });
-
-    function formatReadDate(dateStr) {
-        const date = new Date(dateStr);
-        const now = new Date();
-        const diffMs = now - date;
-        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-        if (diffDays === 0) return 'Today';
-        if (diffDays === 1) return 'Yesterday';
-        if (diffDays < 7) return `${diffDays}d ago`;
-        if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
-        return date.toLocaleDateString();
-    }
-
-    // ==========================================
-    // Wrapped Feature
-    // ==========================================
-
-    const wrappedModal = document.getElementById('wrappedModal');
-    const yearButtonsContainer = document.getElementById('yearButtonsContainer');
-    const wrappedYearSelect = document.getElementById('wrappedYearSelect');
-    const wrappedLoading = document.getElementById('wrappedLoading');
-    const wrappedCarousel = document.getElementById('wrappedCarousel');
-    const wrappedCarouselInner = document.getElementById('wrappedCarouselInner');
-    const wrappedFooter = document.getElementById('wrappedFooter');
-    const wrappedBackBtn = document.getElementById('wrappedBackBtn');
-    const wrappedDownloadBtn = document.getElementById('wrappedDownloadBtn');
-
-    let selectedYear = null;
-
-    // Load available years when modal opens
-    wrappedModal.addEventListener('show.bs.modal', async function () {
-        resetWrappedModal();
-        try {
-            const response = await fetch('/api/wrapped/years');
-            const data = await response.json();
-
-            if (data.years && data.years.length > 0) {
-                yearButtonsContainer.innerHTML = data.years.map(year =>
-                    `<button class="btn btn-outline-primary btn-lg wrapped-year-btn" data-year="${year}">${year}</button>`
-                ).join('');
-
-                // Add click handlers
-                document.querySelectorAll('.wrapped-year-btn').forEach(btn => {
-                    btn.addEventListener('click', () => generateWrapped(parseInt(btn.dataset.year)));
-                });
-            } else {
-                yearButtonsContainer.innerHTML = '<p class="text-muted">No reading data available yet. Start reading to generate your Wrapped!</p>';
-            }
-        } catch (error) {
-            console.error('Error loading years:', error);
-            yearButtonsContainer.innerHTML = '<p class="text-danger">Error loading years. Please try again.</p>';
-        }
-    });
-
-    function resetWrappedModal() {
-        wrappedYearSelect.style.display = 'block';
-        wrappedLoading.style.display = 'none';
-        wrappedCarousel.style.display = 'none';
-        wrappedFooter.style.display = 'none';
-        wrappedCarouselInner.innerHTML = '';
-    }
-
-    async function generateWrapped(year) {
-        selectedYear = year;
-        wrappedYearSelect.style.display = 'none';
-        wrappedLoading.style.display = 'block';
-
-        try {
-            // Pre-generate all images by loading them
-            const slidePromises = [];
-            for (let i = 1; i <= 3; i++) {
-                slidePromises.push(loadImage(`/api/wrapped/${year}/image/${i}`));
-            }
-
-            const images = await Promise.all(slidePromises);
-
-            // Build carousel
-            wrappedCarouselInner.innerHTML = images.map((imgSrc, idx) => `
-                <div class="carousel-item ${idx === 0 ? 'active' : ''}">
-                    <div class="d-flex justify-content-center">
-                        <img src="${imgSrc}" class="img-fluid rounded shadow" alt="Wrapped Slide ${idx + 1}"
-                             style="max-height: 70vh; object-fit: contain;">
-                    </div>
-                </div>
-            `).join('');
-
-            // Update download link
-            wrappedDownloadBtn.href = `/api/wrapped/${year}/download`;
-
-            // Show carousel
-            wrappedLoading.style.display = 'none';
-            wrappedCarousel.style.display = 'block';
-            wrappedFooter.style.display = 'flex';
-
-            // Reinitialize carousel
-            const carousel = new bootstrap.Carousel(wrappedCarousel);
-
-        } catch (error) {
-            console.error('Error generating wrapped:', error);
-            wrappedLoading.innerHTML = '<p class="text-danger">Error generating images. Please try again.</p>';
-        }
-    }
-
-    function loadImage(url) {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => resolve(url);
-            img.onerror = () => reject(new Error(`Failed to load ${url}`));
-            img.src = url;
-        });
-    }
-
-    // Back button handler
-    wrappedBackBtn.addEventListener('click', resetWrappedModal);
-
-    // ===== READING STATS YEAR FILTER =====
-    const readingStatsYearSelect = document.getElementById('readingStatsYear');
-    const statIssuesRead = document.getElementById('statIssuesRead');
-    const statPagesRead = document.getElementById('statPagesRead');
-    const statTimeReading = document.getElementById('statTimeReading');
-
-    // Load available years and set current year as default
-    async function initReadingStatsFilter() {
-        try {
-            const response = await fetch('/api/reading-stats');
-            const data = await response.json();
-
-            if (data.success && data.years) {
-                // Clear and populate dropdown
-                readingStatsYearSelect.innerHTML = '<option value="all">All Time</option>';
-
-                const currentYear = new Date().getFullYear();
-                data.years.forEach(year => {
-                    const option = document.createElement('option');
-                    option.value = year;
-                    option.textContent = year;
-                    if (year === currentYear) {
-                        option.selected = true;
-                    }
-                    readingStatsYearSelect.appendChild(option);
-                });
-
-                // Load stats for current year
-                loadReadingStats(currentYear);
-            }
-        } catch (error) {
-            console.error('Error loading reading stats years:', error);
-        }
-    }
-
-    async function loadReadingStats(year) {
-        try {
-            const url = year === 'all' ? '/api/reading-stats?year=all' : `/api/reading-stats?year=${year}`;
-            const response = await fetch(url);
-            const data = await response.json();
-
-            if (data.success && data.stats) {
-                // Update the stat cards with animation
-                statIssuesRead.textContent = data.stats.total_read.toLocaleString();
-                statPagesRead.textContent = data.stats.total_pages.toLocaleString();
-                statTimeReading.textContent = `${data.stats.hours}h ${data.stats.minutes}m`;
-            }
-        } catch (error) {
-            console.error('Error loading reading stats:', error);
-        }
-    }
-
-    // Handle year selection change
-    readingStatsYearSelect.addEventListener('change', function () {
-        loadReadingStats(this.value);
-    });
-
-    // Initialize on page load
-    initReadingStatsFilter();
-
-    // ===== READING TRENDS =====
-    const trendsYearFilter = document.getElementById('trendsYearFilter');
-    const backfillMetadataBtn = document.getElementById('backfillMetadataBtn');
-
-    // Initialize trends year filter with available years
-    async function initTrendsYearFilter() {
-        try {
-            const response = await fetch('/api/reading-stats');
-            const data = await response.json();
-
-            if (data.success && data.years) {
-                trendsYearFilter.innerHTML = '<option value="all">All Time</option>';
-                data.years.forEach(year => {
-                    const option = document.createElement('option');
-                    option.value = year;
-                    option.textContent = year;
-                    trendsYearFilter.appendChild(option);
-                });
-            }
-        } catch (error) {
-            console.error('Error loading trends years:', error);
-        }
-    }
-
-    async function loadReadingTrends(year = 'all') {
-        const fields = [
-            { field: 'writer', elementId: 'topWritersList' },
-            { field: 'penciller', elementId: 'topPencillersList' },
-            { field: 'characters', elementId: 'topCharactersList' },
-            { field: 'publisher', elementId: 'topPublishersList' }
-        ];
-
-        for (const { field, elementId } of fields) {
-            const container = document.getElementById(elementId);
-            try {
-                const url = year === 'all'
-                    ? `/api/reading-trends/${field}?limit=10`
-                    : `/api/reading-trends/${field}?year=${year}&limit=10`;
-                const response = await fetch(url);
-                const data = await response.json();
-
-                if (data.length === 0) {
-                    container.replaceChildren(CLU.emptyState({ icon: 'bi-inbox', title: 'No data yet', compact: true }));
-                } else {
-                    const maxCount = data[0].count;
-                    container.innerHTML = data.map((item, index) => `
-                        <a href="/browse/${field}/${encodeURIComponent(item.name)}" class="trend-item text-decoration-none">
-                            <div class="d-flex justify-content-between align-items-center mb-1">
-                                <span class="trend-name text-truncate" title="${CLU.escapeHtml(item.name)}">${CLU.escapeHtml(item.name)}</span>
-                                <span class="trend-count badge bg-primary">${item.count}</span>
-                            </div>
-                            <div class="progress" style="height: 4px;">
-                                <div class="progress-bar" role="progressbar" style="width: ${(item.count / maxCount) * 100}%"></div>
-                            </div>
-                        </a>
-                    `).join('');
-                }
-            } catch (error) {
-                console.error(`Error loading ${field} trends:`, error);
-                container.innerHTML = '<div class="text-center text-danger py-3">Error loading data</div>';
-            }
-        }
-    }
-
-    // Handle trends year filter change
-    trendsYearFilter.addEventListener('change', function () {
-        loadReadingTrends(this.value);
-    });
-
-    // Backfill metadata - show confirmation modal
-    const backfillConfirmModal = new bootstrap.Modal(document.getElementById('backfillConfirmModal'));
-    const confirmBackfillBtn = document.getElementById('confirmBackfillBtn');
-
-    backfillMetadataBtn.addEventListener('click', function () {
-        backfillConfirmModal.show();
-    });
-
-    // Show the finished run's report: a toast with the counts, then the
-    // skipped-issues modal when anything was skipped.
-    function showBackfillResult(result) {
-        if (!result) {
-            CLU.showError('The backfill finished but its report is unavailable');
-            return;
-        }
-        if (result.error) {
-            CLU.showError('Backfill: ' + result.error);
-        }
-        CLU.showSuccess(`Backfill complete! Updated: ${result.updated} comics, Skipped: ${result.skipped} comics`);
-        loadReadingTrends(trendsYearFilter.value);
-
-        const skipped = result.skipped_issues || [];
-        if (skipped.length > 0) {
-            const skippedList = document.getElementById('skippedIssuesList');
-            skippedList.innerHTML = skipped.map(item => `
-                <div class="list-group-item d-flex justify-content-between align-items-start">
-                    <div class="me-auto">
-                        <div class="fw-medium text-truncate" style="max-width: 500px;" title="${CLU.escapeHtml(item.file)}">${CLU.escapeHtml(item.file)}</div>
-                    </div>
-                    <span class="badge bg-secondary">${CLU.escapeHtml(item.reason)}</span>
-                </div>
-            `).join('') + (result.skipped_issues_truncated
-                ? `<div class="list-group-item text-muted small">Only the first ${skipped.length} of ${result.skipped} skipped comics are listed.</div>`
-                : '');
-            new bootstrap.Modal(document.getElementById('skippedIssuesModal')).show();
-        }
-    }
-
-    // Handle confirmed backfill. The run is a background operation: start it,
-    // follow /api/operation/<id> (never /api/operations, which clears the
-    // header's notification queue), then read the report.
-    confirmBackfillBtn.addEventListener('click', async function () {
-        backfillConfirmModal.hide();
-
-        const btn = backfillMetadataBtn;
-        const originalHtml = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Processing...';
-        const restore = () => { btn.disabled = false; btn.innerHTML = originalHtml; };
-
-        let data;
-        try {
-            const response = await fetch('/api/backfill-reading-metadata', { method: 'POST' });
-            data = await response.json();
-        } catch (error) {
-            console.error('Backfill error:', error);
-            CLU.showError('Could not start the backfill: ' + error.message);
-            restore();
-            return;
-        }
-        if (!data.success) {
-            CLU.showError(data.error || 'Could not start the backfill');
-            restore();
-            return;
-        }
-
-        CLU.showToast('Backfill', 'Reading metadata from your reading history…', 'info');
-        const opId = data.op_id;
-        const timer = CLU.startPoll(signal =>
-            fetch(`/api/operation/${encodeURIComponent(opId)}`, { signal })
-                .then(r => r.json())
-                .then(opData => {
-                    if (!opData.success) return;  // transient; ask again next tick
-                    const op = opData.operation || null;
-                    if (op && (op.status === 'running' || op.status === 'queued')) {
-                        if (op.total) {
-                            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${op.current} / ${op.total}`;
-                        }
-                        return;
-                    }
-                    clearInterval(timer);
-                    return fetch('/api/backfill-reading-metadata/result', { signal })
-                        .then(r => r.json())
-                        .then(res => showBackfillResult(res.result))
-                        .catch(() => CLU.showError('Could not load the backfill report'))
-                        .finally(restore);
-                }), 2000);
-    });
-
-    // Initialize trends on page load
-    initTrendsYearFilter();
-    loadReadingTrends();
-</script>
+<script type="application/json" id="insightsData">{{ {
+    'file_types': file_types,
+    'top_publishers': top_publishers,
+    'reading_history': reading_history,
+    'largest_comics': largest_comics,
+    'top_series': top_series,
+    'reading_heatmap': reading_heatmap
+} | tojson }}</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.6.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<script src="{{ asset('js/clu-constellation.js') }}"></script>
+<script src="{{ asset('js/clu-wrapped-story.js') }}"></script>
+<script src="{{ asset('js/insights.js') }}"></script>
 {% endblock %}

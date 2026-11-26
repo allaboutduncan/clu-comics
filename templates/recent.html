@@ -1,0 +1,165 @@
+{% extends 'base.html' %}
+{% from 'partials/page_header.html' import page_header %}
+{% from 'partials/filters.html' import toolbar, search_input, select_field, per_page_select, pager_nav, result_count %}
+{% block title %}New Releases{% endblock %}
+{% block page_shell %}container-fluid clu-shell-wide{% endblock %}
+{% block extra_css %}
+<link rel="stylesheet" href="{{ asset('css/collection.css') }}">
+<link rel="stylesheet" href="{{ asset('css/reader.css') }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+{% endblock %}
+{% block content %}
+<div class="new-releases">
+    {% call(slot) page_header('New Releases', 'bi-calendar-event',
+                              subtitle='Issues in your library, by the date they went on sale') %}
+        {% if slot == 'crumbs' %}
+            <li class="breadcrumb-item"><a href="{{ url_for('index') }}"><i class="bi bi-house me-1" aria-hidden="true"></i>Home</a></li>
+            <li class="breadcrumb-item active">New Releases</li>
+        {% elif slot == 'help' %}
+            <p>A store date comes from a series' provider data, so only issues of a
+               series mapped to a folder are listed. Files outside a mapped series
+               have no store date and do not appear here.</p>
+        {% endif %}
+    {% endcall %}
+
+    {# Search, then the filters and sort; count, refresh and page size pushed
+       right. recent.js reads the starting state from these controls, and every
+       change fetches /api/new-releases/page. #}
+    {% call toolbar('New releases view', id='recentToolbar') %}
+        <div class="clu-toolbar-row">
+            {{ search_input('recentSearch', 'Search series or issue title', value=query) }}
+
+            {% call select_field('recentPublisher', 'Publisher') %}
+                <option value="">All</option>
+                {% for p in publishers %}
+                <option value="{{ p.id }}"{% if p.id == publisher_id %} selected{% endif %}>{{ p.name }}</option>
+                {% endfor %}
+            {% endcall %}
+
+            {% call select_field('recentYear', 'Year') %}
+                <option value="">All</option>
+                {% for y in years %}
+                <option value="{{ y }}"{% if y == year %} selected{% endif %}>{{ y }}</option>
+                {% endfor %}
+            {% endcall %}
+
+            {% call select_field('recentSort', 'Sort') %}
+                <option value="newest"{% if sort == 'newest' %} selected{% endif %}>Newest first</option>
+                <option value="oldest"{% if sort == 'oldest' %} selected{% endif %}>Oldest first</option>
+            {% endcall %}
+
+            <div class="clu-toolbar-end">
+                {{ result_count('recentCount', 0, 'issues', one='issue') }}
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="recentRefreshBtn" aria-label="Refresh" title="Refresh">
+                    <i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+                </button>
+                {{ per_page_select('recentPerPage', per_page) }}
+            </div>
+        </div>
+    {% endcall %}
+
+    {# One <section> per store date, drawn by recent.js: a date heading and a
+       .file-grid of that day's issues. #}
+    <div id="recentGroups" data-page="{{ page }}" data-per-page-cookie="{{ per_page_cookie }}"></div>
+    <div id="recentEmpty" style="display: none;"></div>
+    <div id="recentLoading" class="text-center py-5">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading…</span>
+        </div>
+    </div>
+    {{ pager_nav('recentPagination', 'New releases pagination') }}
+</div>
+
+{# The grid card from collection.html, without the file-management menu. #}
+<template id="recent-item-template">
+    <div class="grid-item file has-comic">
+        <div class="thumbnail-container">
+            <img src="" alt="" class="thumbnail" loading="lazy">
+            <span class="issue-badge" style="display: none;"><span class="issue-number"></span><i class="bi bi-book read-icon"></i></span>
+        </div>
+        <div class="item-info d-flex justify-content-between align-items-start mt-2">
+            <div class="item-details text-truncate flex-grow-1">
+                <div class="item-name text-truncate" title=""></div>
+                <div class="item-meta small"></div>
+            </div>
+        </div>
+    </div>
+</template>
+
+<!-- Comic Reader Modal (shared with collection and library) -->
+<div id="comicReaderModal" class="comic-reader-modal" style="display: none;">
+    <div class="comic-reader-overlay"></div>
+    <div class="comic-reader-container">
+        <div class="comic-reader-header">
+            <div class="comic-reader-title" id="comicReaderTitle">Loading...</div>
+            <div class="comic-reader-progress">
+                <div class="comic-reader-progress-bar">
+                    <div class="comic-reader-progress-fill"></div>
+                </div>
+                <span class="comic-reader-progress-text">0%</span>
+            </div>
+            <div class="comic-reader-controls">
+                <span class="comic-reader-page-info" id="comicReaderPageInfo">Page 1 of 1</span>
+                <button aria-label="Save Position" class="btn btn-sm btn-outline-light" id="comicReaderBookmark" title="Save Position">
+                    <i class="bi bi-bookmark text-primary"></i>
+                </button>
+                <button aria-label="Close" class="btn btn-sm btn-outline-light" id="comicReaderClose" title="Close">
+                    <i class="bi bi-x-lg text-light"></i>
+                </button>
+            </div>
+        </div>
+        <div class="swiper comic-reader-swiper" id="comicReaderSwiper">
+            <div class="swiper-wrapper" id="comicReaderWrapper"></div>
+            <div class="swiper-button-next"></div>
+            <div class="swiper-button-prev"></div>
+        </div>
+        <div id="nextIssueOverlay" class="next-issue-overlay" style="display: none;">
+            <div class="next-issue-panel">
+                <h4>Continue Reading?</h4>
+                <div class="next-issue-thumbnail-container">
+                    <img id="nextIssueThumbnail" src="" alt="Next Issue">
+                </div>
+                <p id="nextIssueName" class="next-issue-name">Next Issue Name</p>
+                <div class="next-issue-buttons">
+                    <button id="nextIssueContinue" class="btn btn-primary">
+                        <i class="bi bi-arrow-right-circle me-1"></i>Continue
+                    </button>
+                    <button id="nextIssueClose" class="btn btn-outline-light text-light">Close</button>
+                </div>
+            </div>
+        </div>
+        <div id="resumeReadingOverlay" class="resume-reading-overlay" style="display: none;">
+            <div class="resume-reading-panel">
+                <h4><i class="bi bi-bookmark-check me-2"></i>Resume Reading?</h4>
+                <p id="resumeReadingInfo" class="resume-reading-info">Continue from page 5 of 32?</p>
+                <div class="resume-reading-buttons">
+                    <button id="resumeReadingYes" class="btn btn-primary">
+                        <i class="bi bi-play-fill me-1"></i>Resume
+                    </button>
+                    <button id="resumeReadingNo" class="btn btn-outline-light">Start Over</button>
+                </div>
+            </div>
+        </div>
+        <div class="comic-reader-footer">
+            <div class="comic-reader-footer-controls">
+                <button aria-label="Zoom Out (Arrow Down)" class="btn btn-sm btn-outline-light zoom-btn" id="zoomOutBtn" title="Zoom Out (Arrow Down)">
+                    <i class="bi bi-zoom-out text-light"></i>
+                </button>
+                <button aria-label="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre" class="btn btn-sm btn-outline-light zoom-btn" id="zoomInBtn" title="Zoom In (Arrow Up). Pan with Shift+Arrows, WASD or scroll wheel; 0 to re-centre">
+                    <i class="bi bi-zoom-in text-light"></i>
+                </button>
+                <select class="form-select form-select-sm page-selector" id="pageSelector">
+                    <option value="0">Page 1</option>
+                </select>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="{{ asset('js/reader.js') }}"></script>
+<script src="{{ asset('js/recent.js') }}"></script>
+{% endblock %}

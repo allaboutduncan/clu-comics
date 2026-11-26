@@ -148,6 +148,10 @@ class SearchCriteria:
     volume_year: int | None = None
     publisher_name: str | None = None
     accept_variants: list[str] = field(default_factory=list)
+    # True when the series' "issues" are collected volumes (TPB, HC, Omnibus):
+    # the title must then name a collected edition. None means not known, and
+    # is scored as a series of single issues.
+    collected_series: bool | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +166,7 @@ def search_criteria(
     volume_year: int | None = None,
     publisher_name: str | None = None,
     accept_variants: list | None = None,
+    collected_series: bool | None = None,
 ) -> SearchCriteria:
     """Build a SearchCriteria from individual parameters."""
     return SearchCriteria(
@@ -172,6 +177,7 @@ def search_criteria(
         volume_year=volume_year,
         publisher_name=publisher_name,
         accept_variants=list(accept_variants) if accept_variants else [],
+        collected_series=collected_series,
     )
 
 
@@ -432,8 +438,11 @@ def _classify_remaining(remaining: str, series_lower: str,
     Returns ``(sub_series_type, detected_variant)``.
     """
     sub_series_type = None
-    if remaining.startswith(('-', '–', '—')):
-        dash_part = remaining.lstrip('-–—').strip().lower()
+    # A colon opens a subtitle exactly as a dash does: "Empyre: Avengers" is the
+    # tie-in, not Empyre (#730). A series whose own name holds the colon matched
+    # whole, so its subtitle never reaches here.
+    if remaining.startswith(('-', '–', '—', ':')):
+        dash_part = remaining.lstrip('-–—:').strip().lower()
         # Try to match a variant keyword
         detected_variant = _find_sub_series_keyword(dash_part, variant_keywords)
         if detected_variant:
@@ -2063,6 +2072,7 @@ def score_getcomics_result(
     publisher_name: str = None,
     series_aliases: list = None,
     return_issue_matched: bool = False,
+    collected_series: bool | None = None,
 ) -> tuple:
     """
     Score a GetComics search result against a wanted issue.
@@ -2082,6 +2092,11 @@ def score_getcomics_result(
                         (e.g., ["2000AD"] for series "2000 AD"). The result is
                         scored against the series name and each alias; the best
                         score wins.
+        collected_series: True when the series' issues are collected volumes
+                        (helpers.collection.is_collected_series). The title must
+                        then name a collected edition: a single issue or a pack
+                        of singles is rejected whatever it scores. None (not
+                        known) scores the series as single issues.
     Returns:
         (score, range_contains_target, series_match), or, when
         ``return_issue_matched`` is True,
@@ -2156,6 +2171,7 @@ def score_getcomics_result(
             volume_year=volume_year,
             publisher_name=publisher_name,
             accept_variants=accept_variants,
+            collected_series=collected_series,
         )
         comic_score = score_comic(result_title, search)
         candidate = (comic_score.score, comic_score.range_contains_target,
@@ -2167,9 +2183,110 @@ def score_getcomics_result(
     return best[:3]
 
 
+_COLLECTED_NUMBER = re.compile(
+    r'\b(?:vol(?:ume)?\.?|v|book)\s*\.?\s*0*(\d+)\b', re.IGNORECASE)
+_COLLECTED_WORD = re.compile(
+    r'\b(?:tp|hc|gn|ogn|compendium|collection|collected|complete)\b', re.IGNORECASE)
+
+
 def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
+    """Score a comic title against search criteria — pure functional core.
+
+    A series of single issues is scored by :func:`_score_issue_title`. A series
+    whose issues are collected volumes (``search.collected_series``) is read by
+    :func:`_score_collected_title` instead, and may never be satisfied by a
+    title that names an issue: "Laura Kinney – Wolverine #2 (2025)" is the
+    single, not volume 2 of the trade series, and it scored 95 (#730).
     """
-    Score a comic title against search criteria — pure functional core.
+    if search.collected_series:
+        collected = _score_collected_title(result_title, search)
+        if collected is not None:
+            return collected
+    scored = _score_issue_title(result_title, search)
+    if search.collected_series and (scored.issue_matched or scored.range_contains_target):
+        return ComicScore(score=-100, range_contains_target=scored.range_contains_target)
+    return scored
+
+
+def _score_collected_title(result_title: str, search: SearchCriteria) -> ComicScore | None:
+    """Score a title that names a collected edition, for a collected series.
+
+    Returns None when the title carries no collected marker ("Vol. 2", "v02",
+    "Book 2", TPB, HC, Omnibus...), leaving it to the single-issue scorer --
+    whose only way through for such a series is the unnumbered one-shot rule.
+
+    - The volume number is the issue number: "Vol. 2" is #2, and any other
+      number is a different book. A title with a format word and no number
+      can only be #1, and only when it carries the wanted year.
+    - Text between the series name and the marker is another book ("Batman
+      Beyond Vol. 2" is not Batman); the subtitle after it is ignored.
+    - A run of volumes ("Vol. 1 – 9") is not taken: nothing downstream can
+      split it.
+    """
+    title_lower = result_title.lower()
+    title_normalized = (title_lower
+        .replace('&', '+').replace('/', '+').replace(' and ', ' + ')
+        .replace('\u2013', '+').replace('\u2014', '+'))
+    delta, series_match, _, remaining, _, _ = _score_series_match(
+        title_lower, title_normalized, search)
+    if not series_match:
+        return None
+    if _UNOFFICIAL_MARKER.search(remaining):
+        return ComicScore(score=-100)
+
+    number = _COLLECTED_NUMBER.search(remaining)
+    format_words = [m for m in (
+        re.search(rf'(?<![a-z]){_keyword_pattern(kw)}(?![a-z])', remaining)
+        for kw in get_format_variants()) if m]
+    word = _COLLECTED_WORD.search(remaining)
+    if word:
+        format_words.append(word)
+    series_is_format = _detect_searching_for_format(
+        search.series_name.lower(), get_format_variants())
+    if not number and not format_words and not series_is_format:
+        return None
+    if not number and not format_words:
+        # "Batman Omnibus #2": the series name is the only marker, so the
+        # single-issue scorer reads the number and score_comic lets it stand.
+        return None
+
+    reject = ComicScore(score=0, series_match=True)
+
+    # Only the text before the marker names the book.
+    cut = number.start() if number else min(m.start() for m in format_words)
+    paren = remaining.find('(')
+    if paren != -1:
+        cut = min(cut, paren)
+    head = remaining[:cut]
+    for kw in get_format_variants():
+        head = re.sub(rf'(?<![a-z]){_keyword_pattern(kw)}(?![a-z])', ' ', head)
+    head = _COLLECTED_WORD.sub(' ', head)
+    if re.search(r'[a-z0-9]', head):
+        return reject
+
+    issue_num = str(search.issue_number).lstrip('0') or '0'
+    if number:
+        if re.match(r'\s*[-+\u2013\u2014]\s*\d', remaining[number.end():]):
+            return reject
+        if (number.group(1).lstrip('0') or '0') != issue_num:
+            return reject
+    elif issue_num != '1':
+        return reject
+
+    score, _, year_mismatch = _score_year(
+        delta + 30, result_title, remaining, search, search.series_name.lower(), issue_num)
+    year_matched = score > delta + 30
+    issue_matched = bool(number) or year_matched
+    if year_mismatch or not issue_matched:
+        score = min(score, ACCEPT_THRESHOLD - 1)
+    if _is_undated_back_issue(remaining, search):
+        score = min(score, ACCEPT_THRESHOLD - 1)
+    return ComicScore(score=score, series_match=True, issue_matched=issue_matched)
+
+
+def _score_issue_title(result_title: str, search: SearchCriteria) -> ComicScore:
+    """
+    Score a title against a series of single issues.
 
     This is the main scoring composition. It delegates to small, focused helpers
     for each scoring phase while maintaining sequential state.
@@ -2211,6 +2328,12 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     if not series_match:
         return ComicScore(score=score, series_match=False)
 
+    # A fan-made or unofficial edition is never the wanted issue, whatever it
+    # scores (#730). Read from the text after the series name, so a series
+    # whose own name carries the word is not caught.
+    if _UNOFFICIAL_MARKER.search(remaining):
+        return ComicScore(score=-100)
+
     # Range detection — early return for DIFFERENT-SERIES ranges ending on target
     range_contains_target = _detect_range_contains_target(title_lower, issue_num)
     range_ends_on_target = _detect_range_ends_on_target(title_lower, issue_num)
@@ -2227,6 +2350,12 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         if search.series_volume == result_volume:
             score += 10
         elif not series_has_same_brand(search.series_name, result_title, search.publisher_name):
+            # A pack that names another volume is that volume's run. As a score
+            # the -40 was cancelled by name + range points and landed on exactly
+            # FALLBACK_MIN: one wanted Wolverine Vol. 3 issue queued the
+            # 189-issue Vol. 2 pack (#730).
+            if range_contains_target:
+                return ComicScore(score=-100, range_contains_target=True)
             score -= 40
 
     # Variant acceptance
@@ -2267,7 +2396,8 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
 
     # Remaining analysis: check if text after series name indicates a different series
     remaining_is_different_series, rem_delta = _score_remaining(
-        remaining, sub_series_type, used_the_swap
+        remaining, sub_series_type, used_the_swap,
+        name_years={str(y) for y in (search.year, search.volume_year) if y},
     )
     score += rem_delta
 
@@ -2293,9 +2423,13 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
     )
 
     # Phase 2: Year matching (+20/-20, +10/-10 with volume_year)
-    score, year_in_series_name = _score_year(
+    score, year_in_series_name, year_mismatch = _score_year(
         score, result_title, remaining, search, series_lower, issue_num
     )
+    # A pack dated outside the wanted run is another volume's run: "30 Days of
+    # Night #1 – 6 (2017-2018)" for the series that started in 2012 (#730).
+    if range_contains_target and year_mismatch:
+        return ComicScore(score=-100, range_contains_target=True)
 
     # Phase 3: Title tightness (+15/-10)
     score += _score_title_tightness(title_lower, series_lower, issue_num, is_dot_issue, search)
@@ -2320,6 +2454,14 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         if not unnumbered_oneshot:
             score = min(score, ACCEPT_THRESHOLD - 1)
 
+    # A title with no year says nothing about which volume it is, and the
+    # scorer treated that as agreement: "Amazing Fantasy #15" was accepted for
+    # the 2004 series and was the 2012 reprint (#730). Posts without a year are
+    # listing entries for new releases, so only a back-catalogue issue is held
+    # back; a current one still downloads.
+    if not range_contains_target and _is_undated_back_issue(remaining, search):
+        score = min(score, ACCEPT_THRESHOLD - 1)
+
     return ComicScore(
         score=score,
         unnumbered_oneshot=unnumbered_oneshot,
@@ -2333,6 +2475,39 @@ def score_comic(result_title: str, search: SearchCriteria) -> ComicScore:
         year_in_series_name=year_in_series_name,
         issue_matched=issue_matched,
     )
+
+
+_UNOFFICIAL_MARKER = re.compile(
+    r'\bfan[\s-]?(?:made|edit(?:ed|s)?)\b|\bunofficial\b|\bbootleg\b|\bcustom\s+omnibus\b',
+    re.IGNORECASE)
+_TITLE_YEAR = re.compile(r'\b(?:19|20)\d{2}\b')
+_YEAR_SPAN = re.compile(r'\b((?:19|20)\d{2})\s*[-\u2013\u2014]\s*((?:19|20)\d{2})\b')
+
+
+def _is_undated_back_issue(remaining: str, search: SearchCriteria) -> bool:
+    """Whether a title carries no year while the wanted issue is back catalogue.
+
+    ``remaining`` is the title after the series name, so a year that is part of
+    the name ("Spider-Man 2099") is not mistaken for a date. "Back catalogue"
+    is older than last year; the clock is read per call. An issue with no known
+    year is never held back.
+    """
+    wanted_year = search.year or search.volume_year
+    if not wanted_year or _TITLE_YEAR.search(remaining or ''):
+        return False
+    return int(wanted_year) < _current_year() - 1
+
+
+def _current_year() -> int:
+    """This year. A function so the tests can pin the clock."""
+    return time.localtime().tm_year
+
+
+def _year_in_title_span(title: str, year: int | None) -> bool:
+    """True when ``year`` lies inside a "(2001-2008)" span in the title."""
+    if not year:
+        return False
+    return any(int(a) <= year <= int(b) for a, b in _YEAR_SPAN.findall(title))
 
 
 _ONESHOT_NOISE = frozenset({
@@ -2458,23 +2633,29 @@ def _score_year(
     search: SearchCriteria,
     series_lower: str,
     issue_num: str,
-) -> tuple[int, bool]:
+) -> tuple[int, bool, bool]:
     """
     Phase 2 — Year matching.
 
-    Returns (new_score, year_in_series_name).
+    Returns (new_score, year_in_series_name, year_mismatch).
     year_in_series_name is True when a year at the start of remaining text
     is part of the series name (e.g. "Flash Gordon Annual 2014" — the 2014
     belongs to the series name, not a publication year to match).
+    year_mismatch is True when the title is dated and its date fits neither the
+    wanted issue nor the volume; a range pack is rejected on it. A pack's
+    "(2001-2008)" span matches any issue year inside it, not only its two ends.
     """
     year_in_series_name = False
+    year_mismatch = False
+    in_span = _year_in_title_span(result_title, search.year)
     if search.volume_year is not None:
         result_years = re.findall(r'\b(\d{4})\b', result_title)
         if result_years:
             year_ints = [int(y) for y in result_years]
             ryr = year_ints[0]
             vol_match = (ryr == search.volume_year or abs(ryr - search.volume_year) == 1)
-            issue_match = search.year is not None and search.year in year_ints
+            issue_match = search.year is not None and (
+                search.year in year_ints or in_span)
 
             if issue_match:
                 # Title year matches the wanted issue's publication year — strongest
@@ -2490,8 +2671,10 @@ def _score_year(
                 # (common on reboots sharing issue numbers) — penalize hard enough
                 # to drop a same-series-and-issue-number collision below ACCEPT.
                 score -= 30
+                year_mismatch = True
             else:
                 score -= 10
+                year_mismatch = True
     else:
         if remaining and search.year is None:
             yr_match = re.match(r'^(\d{4})\s+', remaining.strip())
@@ -2504,17 +2687,21 @@ def _score_year(
                         year_in_series_name = True
                         break
 
-        if search.year and str(search.year) in result_title:
+        if search.year and (str(search.year) in result_title or in_span):
             score += 20 if not year_in_series_name else -20
         elif search.year:
             other_years = re.findall(r'\b(\d{4})\b', result_title)
             if other_years:
                 if any(int(y) != search.year for y in other_years):
                     score -= 20
+                    # With no volume year to go by, a pack dated one year off
+                    # still holds the issue (cover date against store date).
+                    year_mismatch = not any(
+                        abs(int(y) - search.year) <= 1 for y in other_years)
             else:
                 score -= 10
 
-    return score, year_in_series_name
+    return score, year_in_series_name, year_mismatch
 
 
 def _score_title_tightness(
@@ -2582,12 +2769,15 @@ def _score_collected_edition(
 
 _LEADING_VOLUME = re.compile(r'^vol\.?\s*\d+\b\s*', re.IGNORECASE)
 _ISSUE_MARKER = re.compile(r'#|\bissues?\s*\d', re.IGNORECASE)
+_NAME_NUMBER = re.compile(
+    r"^(\d[\w.']*)\s+(?:vol\.?\s*\d+\s+)?(?:#|issues?\s*\d)", re.IGNORECASE)
 
 
 def _score_remaining(
     remaining: str,
     sub_series_type: str | None,
     used_the_swap: bool,
+    name_years: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[bool, int]:
     """
     Analyze text remaining after the series name to determine if it indicates
@@ -2597,6 +2787,8 @@ def _score_remaining(
         remaining: Text after the series name in the result title (may be empty)
         sub_series_type: 'variant', 'arc', 'different_edition' or None from series matching
         used_the_swap: True if "The " prefix swap was used to match the series
+        name_years: the wanted issue's and volume's years, as strings. A
+            leading number equal to one of them is a date, not part of a name.
 
     Returns:
         (remaining_is_different_series, score_delta):
@@ -2616,6 +2808,14 @@ def _score_remaining(
     remaining = _LEADING_VOLUME.sub('', remaining.strip())
     if not remaining:
         return False, 0
+
+    # A number between the name and the issue marker belongs to the name:
+    # "Spider-Man 2099 #1" and "Justice League 3001 #6" are other series, not
+    # issue 2099 or 3001 of this one (#730). Checked before the pure-range test
+    # below, which would read "2099 #1 (2015)" as nothing but numbers.
+    name_number = _NAME_NUMBER.match(remaining.strip())
+    if name_number and name_number.group(1) not in name_years:
+        return True, -30
 
     remaining_cleaned = (remaining.strip()
         .replace('-', '').replace('\u2013', '').replace('\u2014', '')
@@ -2720,6 +2920,18 @@ def accept_result(
             and not single_issue_found):
         return "FALLBACK"
     return "REJECT"
+
+
+def better_fallback(current, candidate, score):
+    """The FALLBACK to keep: ``current`` or the ``(candidate, score)`` just scored.
+
+    The highest score wins and a tie keeps the earlier result. Every caller
+    used to keep whichever FALLBACK came first, so a pack that barely qualified
+    beat a clean one later in the same result list (#730).
+    """
+    if current is None or score > current[1]:
+        return (candidate, score)
+    return current
 
 
 def simulate_search(
@@ -3307,7 +3519,7 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     # one holdout.
     import defusedxml.ElementTree as SafeET
     from urllib.parse import urlparse
-    from core.database import get_db_connection
+    from core.database import db_conn
 
     # Ensure table exists before querying (handles fresh databases)
     _ensure_urls_table()
@@ -3339,23 +3551,21 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
     logger.info(f"Checking {len(sitemap_urls)} sitemap(s)")
 
     # ── Load stored page metadata for conditional fetching ─────────────────
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    stored_pages = {}
-    for row in conn.execute("SELECT sitemap_url, last_modified, etag FROM getcomics_sitemap_pages"):
-        stored_pages[row["sitemap_url"]] = {
-            "last_modified": row["last_modified"],
-            "etag": row["etag"],
-        }
-    conn.close()
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        stored_pages = {}
+        for row in conn.execute("SELECT sitemap_url, last_modified, etag FROM getcomics_sitemap_pages"):
+            stored_pages[row["sitemap_url"]] = {
+                "last_modified": row["last_modified"],
+                "etag": row["etag"],
+            }
 
     # ── Pre-load existing URL lastmod values for per-URL incremental skip ──
     existing_lastmod = {}
-    conn = get_db_connection()
-    conn.row_factory = sqlite3.Row
-    for row in conn.execute("SELECT full_url, lastmod FROM getcomics_urls"):
-        existing_lastmod[row["full_url"]] = row["lastmod"]
-    conn.close()
+    with db_conn() as conn:
+        conn.row_factory = sqlite3.Row
+        for row in conn.execute("SELECT full_url, lastmod FROM getcomics_urls"):
+            existing_lastmod[row["full_url"]] = row["lastmod"]
 
     total_indexed = 0
     total_skipped = 0
@@ -3376,14 +3586,13 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
             if resp.status_code == 304:
                 logger.info(f"  [304] {sm_url} — unchanged, skipping")
                 if sm_url in stored_pages:
-                    conn = get_db_connection()
-                    conn.execute(
-                        "UPDATE getcomics_sitemap_pages SET last_checked = CURRENT_TIMESTAMP "
-                        "WHERE sitemap_url = ?",
-                        (sm_url,)
-                    )
-                    conn.commit()
-                    conn.close()
+                    with db_conn() as conn:
+                        conn.execute(
+                            "UPDATE getcomics_sitemap_pages SET last_checked = CURRENT_TIMESTAMP "
+                            "WHERE sitemap_url = ?",
+                            (sm_url,)
+                        )
+                        conn.commit()
                 continue
 
             resp.raise_for_status()
@@ -3455,43 +3664,41 @@ def build_sitemap_index(max_sitemaps: int | None = None, force_refresh: bool = F
                 entries_count += 1
 
             if url_entries:
-                conn = get_db_connection()
-                c = conn.cursor()
-                # Upsert, not INSERT OR REPLACE. A single-comic page that has
-                # already been scraped carries its title, issue number and
-                # download_url on this very row; REPLACE deletes the row and
-                # re-inserts it, so a sitemap refresh would throw all of that
-                # away. COALESCE keeps whatever the scrape learned and lets the
-                # sitemap fill only what is still blank.
-                c.executemany(
-                    "INSERT INTO getcomics_urls "
-                    "(url, full_url, series_norm, series_norm_norm, url_slug, "
-                    " category, lastmod, indexed_at) "
-                    "VALUES (:url, :full_url, :series_norm, :series_norm_norm, "
-                    "        :url_slug, :category, :lastmod, CURRENT_TIMESTAMP) "
-                    "ON CONFLICT(url) DO UPDATE SET "
-                    "  series_norm = COALESCE(getcomics_urls.series_norm, excluded.series_norm), "
-                    "  series_norm_norm = COALESCE(getcomics_urls.series_norm_norm, excluded.series_norm_norm), "
-                    "  url_slug = COALESCE(getcomics_urls.url_slug, excluded.url_slug), "
-                    "  category = COALESCE(getcomics_urls.category, excluded.category), "
-                    "  lastmod = excluded.lastmod, "
-                    "  indexed_at = CURRENT_TIMESTAMP",
-                    url_entries
-                )
-                conn.commit()
-                conn.close()
+                with db_conn() as conn:
+                    c = conn.cursor()
+                    # Upsert, not INSERT OR REPLACE. A single-comic page that has
+                    # already been scraped carries its title, issue number and
+                    # download_url on this very row; REPLACE deletes the row and
+                    # re-inserts it, so a sitemap refresh would throw all of that
+                    # away. COALESCE keeps whatever the scrape learned and lets the
+                    # sitemap fill only what is still blank.
+                    c.executemany(
+                        "INSERT INTO getcomics_urls "
+                        "(url, full_url, series_norm, series_norm_norm, url_slug, "
+                        " category, lastmod, indexed_at) "
+                        "VALUES (:url, :full_url, :series_norm, :series_norm_norm, "
+                        "        :url_slug, :category, :lastmod, CURRENT_TIMESTAMP) "
+                        "ON CONFLICT(url) DO UPDATE SET "
+                        "  series_norm = COALESCE(getcomics_urls.series_norm, excluded.series_norm), "
+                        "  series_norm_norm = COALESCE(getcomics_urls.series_norm_norm, excluded.series_norm_norm), "
+                        "  url_slug = COALESCE(getcomics_urls.url_slug, excluded.url_slug), "
+                        "  category = COALESCE(getcomics_urls.category, excluded.category), "
+                        "  lastmod = excluded.lastmod, "
+                        "  indexed_at = CURRENT_TIMESTAMP",
+                        url_entries
+                    )
+                    conn.commit()
                 total_indexed += len(url_entries)
 
             # Update sitemap page tracking metadata
-            conn = get_db_connection()
-            conn.execute(
-                "INSERT OR REPLACE INTO getcomics_sitemap_pages "
-                "(sitemap_url, last_modified, etag, last_checked) "
-                "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (sm_url, last_modified, etag)
-            )
-            conn.commit()
-            conn.close()
+            with db_conn() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO getcomics_sitemap_pages "
+                    "(sitemap_url, last_modified, etag, last_checked) "
+                    "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                    (sm_url, last_modified, etag)
+                )
+                conn.commit()
 
             changed = "refreshed" if url_entries else "no changes"
             logger.info(f"  [200] {sm_url}: {entries_count} new/changed URLs ({changed})")
@@ -3532,6 +3739,7 @@ def scrape_and_score_candidate(
     volume_year: int | None = None,
     publisher_name: str | None = None,
     accept_variants: list | None = None,
+    collected_series: bool | None = None,
 ) -> tuple[dict, int] | None:
     """
     Scrape a GetComics candidate URL and score it against search criteria.
@@ -3595,6 +3803,7 @@ def scrape_and_score_candidate(
                     series_volume=series_volume,
                     volume_year=volume_year,
                     publisher_name=publisher_name,
+                    collected_series=collected_series,
                 )
 
                 if score > best_score:
@@ -3619,6 +3828,7 @@ def scrape_and_score_candidate(
                         series_volume=series_volume,
                         volume_year=volume_year,
                         publisher_name=publisher_name,
+                        collected_series=collected_series,
                     )
                     if score > best_score:
                         best_score = score
@@ -3664,208 +3874,207 @@ def _ensure_urls_table():
                                 year, volume, is_annual, is_bulk_pack, is_multi_series,
                                 format_variants, download_url, lastmod, indexed_at, search_aliases
     """
-    from core.database import get_db_connection
+    from core.database import db_conn
 
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_urls (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT NOT NULL,
-            full_url TEXT NOT NULL,
-            url_slug TEXT,
-            series_norm TEXT,
-            series_norm_norm TEXT,
-            search_aliases TEXT,
-            title TEXT,
-            issue_num TEXT,
-            issue_range TEXT,
-            year INTEGER,
-            volume INTEGER,
-            is_annual INTEGER DEFAULT 0,
-            is_bulk_pack INTEGER DEFAULT 0,
-            is_multi_series INTEGER DEFAULT 0,
-            format_variants TEXT,
-            download_url TEXT,
-            category TEXT,
-            lastmod TEXT,
-            indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
-            scrape_attempts INTEGER DEFAULT 0,
-            last_scrape_attempt TIMESTAMP,
-            url_last_modified TEXT
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
-
-    # Migration: add scrape_status columns to existing getcomics_urls table
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
-
-    # Migration: add 'id' column for auto-increment PK if it doesn't exist.
-    # Old entries have url as PRIMARY KEY without '#' — migrate them to url || '#canonical'
-    # to avoid conflicts with the new multi-entry-per-page scraping.
-    if 'id' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN id INTEGER")
-        # Use a temp table to avoid SQLite self-reference UPDATE issues
-        conn.execute("CREATE TEMP TABLE IF NOT EXISTS _url_id_map AS SELECT url, ROWID as mapped_id FROM getcomics_urls")
+    with db_conn() as conn:
         conn.execute("""
-            UPDATE getcomics_urls SET id = (
-                SELECT mapped_id FROM _url_id_map WHERE _url_id_map.url = getcomics_urls.url
+            CREATE TABLE IF NOT EXISTS getcomics_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                full_url TEXT NOT NULL,
+                url_slug TEXT,
+                series_norm TEXT,
+                series_norm_norm TEXT,
+                search_aliases TEXT,
+                title TEXT,
+                issue_num TEXT,
+                issue_range TEXT,
+                year INTEGER,
+                volume INTEGER,
+                is_annual INTEGER DEFAULT 0,
+                is_bulk_pack INTEGER DEFAULT 0,
+                is_multi_series INTEGER DEFAULT 0,
+                format_variants TEXT,
+                download_url TEXT,
+                category TEXT,
+                lastmod TEXT,
+                indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
+                scrape_attempts INTEGER DEFAULT 0,
+                last_scrape_attempt TIMESTAMP,
+                url_last_modified TEXT
             )
         """)
-        conn.execute("DROP TABLE IF EXISTS _url_id_map")
-        # Mark old-format entries (no '#' in url) with #canonical suffix
-        conn.execute("UPDATE getcomics_urls SET url = url || '#canonical' WHERE url NOT LIKE '%#%'")
-        logger.info("Migrated getcomics_urls: added id column, suffixed old URLs with #canonical")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
 
-    if 'scrape_status' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_status TEXT DEFAULT 'pending'")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_attempts INTEGER DEFAULT 0")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN last_scrape_attempt TIMESTAMP")
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN url_last_modified TEXT")
-        # Backfill: existing rows with download_url are 'success', without are 'empty'
-        conn.execute("UPDATE getcomics_urls SET scrape_status = 'success' WHERE download_url IS NOT NULL AND download_url != ''")
-        conn.execute("UPDATE getcomics_urls SET scrape_status = 'empty' WHERE scrape_status = 'pending'")
-        logger.info("Migrated scrape_status columns for existing getcomics_urls entries")
+        # Migration: add scrape_status columns to existing getcomics_urls table
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
 
-    # Re-read columns after potential ALTER TABLE additions
-    existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
-
-    # Migration: add search_aliases and series_norm_norm columns if missing.
-    # These were added to CREATE TABLE but had no ALTER TABLE migration.
-    if 'search_aliases' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN search_aliases TEXT")
-        logger.info("Migrated getcomics_urls: added search_aliases column")
-
-    if 'series_norm_norm' not in existing_cols:
-        conn.execute("ALTER TABLE getcomics_urls ADD COLUMN series_norm_norm TEXT")
-        # Backfill: pre-compute normalized series_norm for existing rows
-        conn.execute("""
-            UPDATE getcomics_urls
-            SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\\u2013', ' '), '\\u2014', ' '))
-            WHERE series_norm_norm IS NULL AND series_norm IS NOT NULL
-        """)
-        logger.info("Migrated getcomics_urls: added series_norm_norm column")
-
-    # Migration: remove spurious UNIQUE constraint on full_url.
-    # The old CREATE TABLE had "full_url TEXT NOT NULL UNIQUE" which was
-    # incorrect — multiple page entries can share the same full_url (each
-    # entry has a unique entry_url with fragment). We must rebuild the
-    # table without the UNIQUE constraint on full_url.
-    try:
-        # Check if the UNIQUE index on full_url still exists
-        autoindexes = [r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()
-                       if r[1].startswith('sqlite_autoindex')]
-        has_full_url_unique = any(
-            idx for idx in autoindexes
-            if conn.execute(f"PRAGMA index_info({idx})").fetchall()
-               and conn.execute(f"PRAGMA index_info({idx})").fetchall()[0][2] == 'full_url'
-        )
-        if has_full_url_unique:
-            logger.info("Removing UNIQUE constraint on full_url (rebuilding table)...")
-            # Create new table without UNIQUE on full_url
+        # Migration: add 'id' column for auto-increment PK if it doesn't exist.
+        # Old entries have url as PRIMARY KEY without '#' — migrate them to url || '#canonical'
+        # to avoid conflicts with the new multi-entry-per-page scraping.
+        if 'id' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN id INTEGER")
+            # Use a temp table to avoid SQLite self-reference UPDATE issues
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _url_id_map AS SELECT url, ROWID as mapped_id FROM getcomics_urls")
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS _getcomics_urls_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    url TEXT NOT NULL,
-                    full_url TEXT NOT NULL,
-                    url_slug TEXT,
-                    series_norm TEXT,
-                    series_norm_norm TEXT,
-                    search_aliases TEXT,
-                    title TEXT,
-                    issue_num TEXT,
-                    issue_range TEXT,
-                    year INTEGER,
-                    volume INTEGER,
-                    is_annual INTEGER DEFAULT 0,
-                    is_bulk_pack INTEGER DEFAULT 0,
-                    is_multi_series INTEGER DEFAULT 0,
-                    format_variants TEXT,
-                    download_url TEXT,
-                    category TEXT,
-                    lastmod TEXT,
-                    indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
-                    scrape_attempts INTEGER DEFAULT 0,
-                    last_scrape_attempt TIMESTAMP,
-                    url_last_modified TEXT
+                UPDATE getcomics_urls SET id = (
+                    SELECT mapped_id FROM _url_id_map WHERE _url_id_map.url = getcomics_urls.url
                 )
             """)
-            conn.execute(f"""
-                INSERT INTO _getcomics_urls_new
-                SELECT id, url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
-                       title, issue_num, issue_range, year, volume, is_annual, is_bulk_pack,
-                       is_multi_series, format_variants, download_url, category, lastmod, indexed_at,
-                       scrape_status, scrape_attempts, last_scrape_attempt, url_last_modified
-                FROM getcomics_urls
-            """)
-            conn.execute("DROP TABLE getcomics_urls")
-            conn.execute("ALTER TABLE _getcomics_urls_new RENAME TO getcomics_urls")
-            # Recreate indexes (without UNIQUE on full_url)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
-            logger.info("Removed UNIQUE constraint on full_url, rebuilt table")
-    except Exception as e:
-        logger.debug(f"UNIQUE constraint removal (may already be done): {e}")
+            conn.execute("DROP TABLE IF EXISTS _url_id_map")
+            # Mark old-format entries (no '#' in url) with #canonical suffix
+            conn.execute("UPDATE getcomics_urls SET url = url || '#canonical' WHERE url NOT LIKE '%#%'")
+            logger.info("Migrated getcomics_urls: added id column, suffixed old URLs with #canonical")
 
-    # Migration: if old tables exist and new table is empty, populate from them
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM getcomics_urls")
-    existing_count = c.fetchone()[0]
+        if 'scrape_status' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_status TEXT DEFAULT 'pending'")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN scrape_attempts INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN last_scrape_attempt TIMESTAMP")
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN url_last_modified TEXT")
+            # Backfill: existing rows with download_url are 'success', without are 'empty'
+            conn.execute("UPDATE getcomics_urls SET scrape_status = 'success' WHERE download_url IS NOT NULL AND download_url != ''")
+            conn.execute("UPDATE getcomics_urls SET scrape_status = 'empty' WHERE scrape_status = 'pending'")
+            logger.info("Migrated scrape_status columns for existing getcomics_urls entries")
 
-    if existing_count == 0:
-        migrated = _migrate_from_old_tables(conn)
-        logger.info(f"Migrated {migrated} entries from old tables to getcomics_urls")
+        # Re-read columns after potential ALTER TABLE additions
+        existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(getcomics_urls)").fetchall()}
 
-    # Migration: make `url` UNIQUE so `INSERT OR REPLACE INTO getcomics_urls`
-    # actually replaces instead of appending a duplicate row. Older builds had
-    # no unique index on `url` (and the spurious one on full_url was removed
-    # above), so every re-scrape accumulated duplicates. De-dupe first (keep the
-    # newest row per url — matches the go-forward replace semantics), then add
-    # the unique index. Gated on the index's absence so it runs at most once.
-    try:
-        idx_names = {r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()}
-        if 'idx_urls_url' not in idx_names:
+        # Migration: add search_aliases and series_norm_norm columns if missing.
+        # These were added to CREATE TABLE but had no ALTER TABLE migration.
+        if 'search_aliases' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN search_aliases TEXT")
+            logger.info("Migrated getcomics_urls: added search_aliases column")
+
+        if 'series_norm_norm' not in existing_cols:
+            conn.execute("ALTER TABLE getcomics_urls ADD COLUMN series_norm_norm TEXT")
+            # Backfill: pre-compute normalized series_norm for existing rows
             conn.execute("""
-                DELETE FROM getcomics_urls
-                WHERE id NOT IN (SELECT MAX(id) FROM getcomics_urls GROUP BY url)
+                UPDATE getcomics_urls
+                SET series_norm_norm = LOWER(REPLACE(REPLACE(REPLACE(series_norm, '-', ' '), '\\u2013', ' '), '\\u2014', ' '))
+                WHERE series_norm_norm IS NULL AND series_norm IS NOT NULL
             """)
-            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urls_url ON getcomics_urls(url)")
-            logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
-    except Exception as e:
-        logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+            logger.info("Migrated getcomics_urls: added series_norm_norm column")
 
-    # Conditional-fetch metadata, one row per post-sitemap. Recreated here
-    # because _migrate_from_old_tables drops it -- and on a fresh database that
-    # migration always runs (getcomics_urls is empty), so build_sitemap_index
-    # raised "no such table: getcomics_sitemap_pages" on its very first query,
-    # before it fetched anything. The weekly job caught that and reported
-    # "0 URLs -- check network access". It holds nothing but HTTP cache hints,
-    # so losing it to the drop costs one unconditional refetch.
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
-            sitemap_url TEXT PRIMARY KEY,
-            last_modified TEXT,
-            etag TEXT,
-            last_checked TIMESTAMP
-        )
-    """)
+        # Migration: remove spurious UNIQUE constraint on full_url.
+        # The old CREATE TABLE had "full_url TEXT NOT NULL UNIQUE" which was
+        # incorrect — multiple page entries can share the same full_url (each
+        # entry has a unique entry_url with fragment). We must rebuild the
+        # table without the UNIQUE constraint on full_url.
+        try:
+            # Check if the UNIQUE index on full_url still exists
+            autoindexes = [r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()
+                           if r[1].startswith('sqlite_autoindex')]
+            has_full_url_unique = any(
+                idx for idx in autoindexes
+                if conn.execute(f"PRAGMA index_info({idx})").fetchall()
+                   and conn.execute(f"PRAGMA index_info({idx})").fetchall()[0][2] == 'full_url'
+            )
+            if has_full_url_unique:
+                logger.info("Removing UNIQUE constraint on full_url (rebuilding table)...")
+                # Create new table without UNIQUE on full_url
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS _getcomics_urls_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url TEXT NOT NULL,
+                        full_url TEXT NOT NULL,
+                        url_slug TEXT,
+                        series_norm TEXT,
+                        series_norm_norm TEXT,
+                        search_aliases TEXT,
+                        title TEXT,
+                        issue_num TEXT,
+                        issue_range TEXT,
+                        year INTEGER,
+                        volume INTEGER,
+                        is_annual INTEGER DEFAULT 0,
+                        is_bulk_pack INTEGER DEFAULT 0,
+                        is_multi_series INTEGER DEFAULT 0,
+                        format_variants TEXT,
+                        download_url TEXT,
+                        category TEXT,
+                        lastmod TEXT,
+                        indexed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        scrape_status TEXT DEFAULT 'pending' CHECK (scrape_status IN ('pending','success','failed','empty')),
+                        scrape_attempts INTEGER DEFAULT 0,
+                        last_scrape_attempt TIMESTAMP,
+                        url_last_modified TEXT
+                    )
+                """)
+                conn.execute(f"""
+                    INSERT INTO _getcomics_urls_new
+                    SELECT id, url, full_url, url_slug, series_norm, series_norm_norm, search_aliases,
+                           title, issue_num, issue_range, year, volume, is_annual, is_bulk_pack,
+                           is_multi_series, format_variants, download_url, category, lastmod, indexed_at,
+                           scrape_status, scrape_attempts, last_scrape_attempt, url_last_modified
+                    FROM getcomics_urls
+                """)
+                conn.execute("DROP TABLE getcomics_urls")
+                conn.execute("ALTER TABLE _getcomics_urls_new RENAME TO getcomics_urls")
+                # Recreate indexes (without UNIQUE on full_url)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm ON getcomics_urls(series_norm)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_series_norm_norm ON getcomics_urls(series_norm_norm)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_year ON getcomics_urls(year)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_volume ON getcomics_urls(volume)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_issue ON getcomics_urls(issue_num)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_aliases ON getcomics_urls(search_aliases)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_scrape_status ON getcomics_urls(scrape_status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_urls_missing_since ON getcomics_urls(last_scrape_attempt)")
+                logger.info("Removed UNIQUE constraint on full_url, rebuilt table")
+        except Exception as e:
+            logger.debug(f"UNIQUE constraint removal (may already be done): {e}")
 
-    conn.commit()
-    conn.close()
+        # Migration: if old tables exist and new table is empty, populate from them
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM getcomics_urls")
+        existing_count = c.fetchone()[0]
+
+        if existing_count == 0:
+            migrated = _migrate_from_old_tables(conn)
+            logger.info(f"Migrated {migrated} entries from old tables to getcomics_urls")
+
+        # Migration: make `url` UNIQUE so `INSERT OR REPLACE INTO getcomics_urls`
+        # actually replaces instead of appending a duplicate row. Older builds had
+        # no unique index on `url` (and the spurious one on full_url was removed
+        # above), so every re-scrape accumulated duplicates. De-dupe first (keep the
+        # newest row per url — matches the go-forward replace semantics), then add
+        # the unique index. Gated on the index's absence so it runs at most once.
+        try:
+            idx_names = {r[1] for r in conn.execute("PRAGMA index_list(getcomics_urls)").fetchall()}
+            if 'idx_urls_url' not in idx_names:
+                conn.execute("""
+                    DELETE FROM getcomics_urls
+                    WHERE id NOT IN (SELECT MAX(id) FROM getcomics_urls GROUP BY url)
+                """)
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_urls_url ON getcomics_urls(url)")
+                logger.info("Added UNIQUE index on getcomics_urls(url); de-duplicated existing rows")
+        except Exception as e:
+            logger.debug(f"getcomics_urls url-unique migration skipped: {e}")
+
+        # Conditional-fetch metadata, one row per post-sitemap. Recreated here
+        # because _migrate_from_old_tables drops it -- and on a fresh database that
+        # migration always runs (getcomics_urls is empty), so build_sitemap_index
+        # raised "no such table: getcomics_sitemap_pages" on its very first query,
+        # before it fetched anything. The weekly job caught that and reported
+        # "0 URLs -- check network access". It holds nothing but HTTP cache hints,
+        # so losing it to the drop costs one unconditional refetch.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_sitemap_pages (
+                sitemap_url TEXT PRIMARY KEY,
+                last_modified TEXT,
+                etag TEXT,
+                last_checked TIMESTAMP
+            )
+        """)
+
+        conn.commit()
 
 
 def _migrate_from_old_tables(conn) -> int:
@@ -3904,7 +4113,7 @@ def _migrate_from_old_tables(conn) -> int:
                     row.get('url'),  # full_url = url for scrape entries
                     row.get('url_slug'),
                     norm_series,
-                    norm_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if norm_series else None,
+                    _norm_series_key(norm_series),
                     row.get('search_aliases'),
                     row.get('title'),
                     row.get('issue_num'),
@@ -3943,7 +4152,7 @@ def _migrate_from_old_tables(conn) -> int:
                     url,
                     row.get('url_slug'),
                     norm_series,
-                    norm_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower() if norm_series else None,
+                    _norm_series_key(norm_series),
                     row.get('category'),
                     row.get('lastmod'),
                     row.get('indexed_at'),
@@ -3971,8 +4180,12 @@ def _migrate_from_old_tables(conn) -> int:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _normalize_alias(name: str) -> str:
-    """Normalize a series name for alias storage and lookup."""
-    return name.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
+    """Normalize a series name for alias storage and lookup.
+
+    The same key as ``_norm_series_key`` -- the alias table and the URL index
+    are joined on it -- except that an empty name stays "" instead of None.
+    """
+    return _norm_series_key(name) or ''
 
 
 _ALIASES_PURGED = False
@@ -4045,21 +4258,20 @@ def clear_scrape_generated_aliases() -> int:
 
 def _ensure_alias_table():
     """Create the getcomics_series_aliases table if it doesn't exist."""
-    from core.database import get_db_connection
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS getcomics_series_aliases (
-            alias TEXT PRIMARY KEY,
-            alias_norm TEXT NOT NULL,
-            canonical TEXT NOT NULL,
-            canonical_norm TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_alias_norm ON getcomics_series_aliases(alias_norm)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_canonical_norm ON getcomics_series_aliases(canonical_norm)")
-    conn.commit()
-    conn.close()
+    from core.database import db_conn
+    with db_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS getcomics_series_aliases (
+                alias TEXT PRIMARY KEY,
+                alias_norm TEXT NOT NULL,
+                canonical TEXT NOT NULL,
+                canonical_norm TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_alias_norm ON getcomics_series_aliases(alias_norm)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_canonical_norm ON getcomics_series_aliases(canonical_norm)")
+        conn.commit()
 
     # One-time cleanup of junk aliases stored before write-side validation
     # existed. Guarded by an in-process flag (set first to avoid re-entrancy,
@@ -4228,42 +4440,41 @@ def delete_series_alias(alias: str) -> bool:
     """
     _ensure_alias_table()
     _ensure_urls_table()
-    from core.database import get_db_connection
-    conn = get_db_connection()
+    from core.database import db_conn
+    with db_conn() as conn:
 
-    # First look up the canonical series for this alias so we can update search_aliases
-    norm_alias = _normalize_alias(alias)
-    canonical_row = conn.execute(
-        "SELECT canonical FROM getcomics_series_aliases WHERE alias_norm = ?",
-        (norm_alias,)
-    ).fetchone()
-
-    c = conn.execute(
-        "DELETE FROM getcomics_series_aliases WHERE alias_norm = ?",
-        (norm_alias,)
-    )
-    deleted = c.rowcount > 0
-
-    # Also remove from getcomics_urls.search_aliases so both systems stay in sync
-    if deleted and canonical_row:
-        norm_canonical = _normalize_alias(canonical_row[0])
-        existing_row = conn.execute(
-            "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
-            (norm_canonical,)
+        # First look up the canonical series for this alias so we can update search_aliases
+        norm_alias = _normalize_alias(alias)
+        canonical_row = conn.execute(
+            "SELECT canonical FROM getcomics_series_aliases WHERE alias_norm = ?",
+            (norm_alias,)
         ).fetchone()
-        if existing_row and existing_row[0]:
-            existing_list = [a.strip() for a in existing_row[0].split(',') if a.strip()]
-            if norm_alias in existing_list:
-                existing_list.remove(norm_alias)
-                new_aliases = ','.join(existing_list)
-                conn.execute("""
-                    UPDATE getcomics_urls
-                    SET search_aliases = ?
-                    WHERE series_norm_norm = ?
-                """, (new_aliases, norm_canonical))
 
-    conn.commit()
-    conn.close()
+        c = conn.execute(
+            "DELETE FROM getcomics_series_aliases WHERE alias_norm = ?",
+            (norm_alias,)
+        )
+        deleted = c.rowcount > 0
+
+        # Also remove from getcomics_urls.search_aliases so both systems stay in sync
+        if deleted and canonical_row:
+            norm_canonical = _normalize_alias(canonical_row[0])
+            existing_row = conn.execute(
+                "SELECT search_aliases FROM getcomics_urls WHERE series_norm_norm = ? LIMIT 1",
+                (norm_canonical,)
+            ).fetchone()
+            if existing_row and existing_row[0]:
+                existing_list = [a.strip() for a in existing_row[0].split(',') if a.strip()]
+                if norm_alias in existing_list:
+                    existing_list.remove(norm_alias)
+                    new_aliases = ','.join(existing_list)
+                    conn.execute("""
+                        UPDATE getcomics_urls
+                        SET search_aliases = ?
+                        WHERE series_norm_norm = ?
+                    """, (new_aliases, norm_canonical))
+
+        conn.commit()
     return deleted
 
 
@@ -4476,6 +4687,12 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     # here is how the two would silently stop agreeing.
     _slugify = _slugify_entry_title
 
+    # One session per page (the callers run this from a thread pool, and a
+    # requests session is not thread-safe) -- closed in the finally below. A
+    # cloudscraper session that is merely dropped is never reclaimed, even by
+    # gc.collect(): it keeps its socket and about a megabyte for the life of
+    # the process. This function runs once per page, so a sweep leaked
+    # hundreds of each (#842).
     scraper = cloudscraper.create_scraper()
     # Load stored Last-Modified for conditional fetch (skip if page unchanged).
     # Closed before the fetch: no connection is held across network I/O.
@@ -4654,6 +4871,8 @@ def _scrape_url_to_index(url: str, url_slug: str = "", series_norm: str = "", la
     except Exception as e:
         logger.debug(f"Error scraping {url}: {e}")
         return []
+    finally:
+        close_quietly(scraper)
 
 
 def _store_scraped_rows(rows: list) -> None:
@@ -5135,7 +5354,7 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
     Returns:
         Number of entries updated
     """
-    from core.database import get_db_connection
+    from core.database import db_conn
     _ensure_urls_table()
     _ensure_alias_table()
 
@@ -5148,39 +5367,41 @@ def update_series_aliases(series_name: str, aliases: str) -> int:
 
     normalized_aliases = ','.join(alias_list)
 
-    conn = get_db_connection()
-    norm_series, _ = normalize_series_name(series_name)
-    # Match series_norm after normalization
-    norm_series_lower = norm_series.lower().replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ')
+    with db_conn() as conn:
+        norm_series, _ = normalize_series_name(series_name)
+        # The stored key, from its one definition. This was a pasted copy without
+        # the .strip(): "Batman - Vol 3" normalizes to "Batman -", which the copy
+        # keyed as "batman  " while every writer stored "batman", so the UPDATE
+        # below matched no rows and the aliases were never attached.
+        norm_series_lower = _norm_series_key(norm_series) or ''
 
-    updated = conn.execute("""
-        UPDATE getcomics_urls
-        SET search_aliases = ?
-        WHERE series_norm_norm = ?
-    """, (normalized_aliases, norm_series_lower)).rowcount
+        updated = conn.execute("""
+            UPDATE getcomics_urls
+            SET search_aliases = ?
+            WHERE series_norm_norm = ?
+        """, (normalized_aliases, norm_series_lower)).rowcount
 
-    # Sync to getcomics_series_aliases so resolve_series_alias() works
-    # First delete existing alias mappings for this canonical series
-    conn.execute(
-        "DELETE FROM getcomics_series_aliases WHERE canonical_norm = ?",
-        (_normalize_alias(norm_series_lower),)
-    )
-    # Then insert all current aliases
-    for alias_val in alias_list:
-        if alias_val and alias_val != norm_series_lower:
-            conn.execute("""
-                INSERT OR IGNORE INTO getcomics_series_aliases
-                (alias, alias_norm, canonical, canonical_norm)
-                VALUES (?, ?, ?, ?)
-            """, (
-                alias_val,
-                _normalize_alias(alias_val),
-                norm_series_lower,
-                _normalize_alias(norm_series_lower),
-            ))
+        # Sync to getcomics_series_aliases so resolve_series_alias() works
+        # First delete existing alias mappings for this canonical series
+        conn.execute(
+            "DELETE FROM getcomics_series_aliases WHERE canonical_norm = ?",
+            (_normalize_alias(norm_series_lower),)
+        )
+        # Then insert all current aliases
+        for alias_val in alias_list:
+            if alias_val and alias_val != norm_series_lower:
+                conn.execute("""
+                    INSERT OR IGNORE INTO getcomics_series_aliases
+                    (alias, alias_norm, canonical, canonical_norm)
+                    VALUES (?, ?, ?, ?)
+                """, (
+                    alias_val,
+                    _normalize_alias(alias_val),
+                    norm_series_lower,
+                    _normalize_alias(norm_series_lower),
+                ))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     return updated
 
 
@@ -5205,7 +5426,7 @@ def get_series_aliases(series_name: str) -> str:
     _ensure_alias_table()
 
     norm_series, _ = normalize_series_name(series_name)
-    norm_series_lower = norm_series.lower().replace('-', ' ').replace('–', ' ').replace('—', ' ')
+    norm_series_lower = _norm_series_key(norm_series) or ''
 
     conn = get_db_connection()
     try:
@@ -5329,7 +5550,7 @@ def search_scrape_index(criteria: ScrapeSearchCriteria, limit: int = 50) -> list
     # Normalize series_norm to match sitemap convention: hyphens → spaces
     # The sitemap stores 'spider man', 'batman', etc. (spaces, lowercase)
     # The search query might use 'Spider-Man' (hyphens) or 'Spider Man' (spaces)
-    norm_series = resolved_series.replace('-', ' ').replace('\u2013', ' ').replace('\u2014', ' ').strip().lower()
+    norm_series = _norm_series_key(resolved_series) or ''
 
     # Use series_norm_norm (pre-computed, indexed) when available.
     # Falls back to LOWER/REPLACE for existing installs that haven't migrated.
@@ -5455,6 +5676,7 @@ def _best_accepted_row(
     series_year=None,
     search_variants=None,
     series_aliases=None,
+    collected_series=None,
 ) -> tuple[dict | None, int]:
     """Score scrape-index rows with the shared scorer; return the best ACCEPT.
 
@@ -5476,6 +5698,7 @@ def _best_accepted_row(
             series_volume=series_volume,
             volume_year=series_year,
             series_aliases=series_aliases,
+            collected_series=collected_series,
         )
         if accept_result(score, range_contains, series_match) != "ACCEPT":
             continue
@@ -5499,6 +5722,7 @@ def try_scrape_index(
     series_year=None,
     search_variants=None,
     series_aliases=None,
+    collected_series=None,
 ) -> tuple[dict | None, int]:
     """
     Search the scrape index for a matching comic and return the best ACCEPT result.
@@ -5546,6 +5770,7 @@ def try_scrape_index(
     return _best_accepted_row(
         rows, search_name, issue_num, issue_year, series_volume, series_year,
         search_variants, series_aliases,
+        collected_series=collected_series,
     )
 
 
@@ -5558,6 +5783,7 @@ def search_getcomics_for_issue(
     search_variants=None,
     rate_limit=2,
     series_aliases=None,
+    collected_series=None,
 ):
     """
     Search GetComics for a specific issue, combining base and variant searches.
@@ -5617,7 +5843,7 @@ def search_getcomics_for_issue(
                        f"{search_context}")
         scrape_result, scrape_score = try_scrape_index(
             series_name, issue_num, issue_year, series_volume, series_year, search_variants,
-            series_aliases=series_aliases,
+            series_aliases=series_aliases, collected_series=collected_series,
         )
         if scrape_result:
             app_logger.info(f"✅ Scrape index ACCEPT (score={scrape_score}): "
@@ -5643,6 +5869,7 @@ def search_getcomics_for_issue(
                 entry['full_url'], series_name, issue_num, issue_year,
                 series_volume=series_volume, volume_year=series_year,
                 publisher_name=None, accept_variants=search_variants,
+                collected_series=collected_series,
             )
             if result_tuple:
                 result, score = result_tuple
@@ -5662,7 +5889,7 @@ def search_getcomics_for_issue(
         # Try scrape index for comparison
         scrape_result, scrape_score = try_scrape_index(
             series_name, issue_num, issue_year, series_volume, series_year, search_variants,
-            series_aliases=series_aliases,
+            series_aliases=series_aliases, collected_series=collected_series,
         )
 
         # Pick the best result between sitemap and scrape index
@@ -5715,7 +5942,7 @@ def search_getcomics_for_issue(
                            f"trying base name '{base_name}' {search_context}")
             result, score = try_scrape_index(
                 base_name, issue_num, issue_year, series_volume, series_year, search_variants,
-                series_aliases=series_aliases,
+                series_aliases=series_aliases, collected_series=collected_series,
             )
             if result:
                 app_logger.info(f"✅ Scrape index ACCEPT via base name (score={score}): "

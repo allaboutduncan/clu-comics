@@ -1,5 +1,9 @@
 """The rolling library health scan: integrity, duplicates and strays.
 
+Nothing under WATCH or TARGET is part of the library: it is never hashed,
+counted, paired as a duplicate or listed (``helpers.library.staging_matcher``,
+``purge_staging_rows``).
+
 Library Health used to be report-only -- a file appeared because an operation
 tried to read it and failed -- so an empty page meant "nothing has failed", not
 "your library is clean". This module is the opt-in answer: it goes looking.
@@ -23,14 +27,16 @@ Things that look arbitrary and are not:
   file whose problem was never written down.
 - **A mount that goes away mid-run must not flood the ledger.** An unreachable
   library root is excluded from the query up front, and ten consecutive OSErrors
-  abort the batch *without* stamping or recording those ten (the streak is held
-  back and dropped), because "every file failed at once" is a mount, not ten
-  damaged comics. ``helpers.library.is_path_provably_gone`` is the evidence
+  are never recorded (the streak is held back), because "every file failed at
+  once" is a mount, not ten damaged comics. They are *deferred* and the folder
+  they share is left out of the rest of the run, so one place that will not
+  read cannot stop the rest of the library being checked.
+  ``helpers.library.is_path_provably_gone`` is the evidence
   rule: a missing file proves something only while its library root is
   mounted (non-empty), and a file proven gone is forgotten rather than counted
   toward the streak (#693).
-- **Heavy checks are paced separately from the cheap ones.** The series.json,
-  staging-folder and empty-folder walks run at most once a day on a schedule
+- **Heavy checks are paced separately from the cheap ones.** The series.json
+  and empty-folder walks run at most once a day on a schedule
   (``CHEAP_CHECK_INTERVAL``), though the batch runs every time. A manual run does
   both.
 - **Duplicates are derived, never stored.** "Exact" is two ``file_health`` rows
@@ -40,12 +46,13 @@ Things that look arbitrary and are not:
   deletes: ``resolve_group`` is the only mover and it is user-driven.
 - **A dismissed group is keyed on its member set.** A new copy of an issue the
   user already waved through re-opens the group.
-- **The summary never recomputes duplicates.** The home-page badge polls it; the
-  group counts are stored when a scan finishes and the review page computes the
-  live set.
+- **The summary never recomputes duplicates.** The header badge polls it; the
+  group counts and coverage are stored when a scan finishes, and the review page
+  derives the live set (regrouping only when the index rows changed).
 """
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -55,6 +62,7 @@ import time
 import zipfile
 
 from core.app_logging import app_logger
+from core.series_names import ascii_words
 from core.problem_files import (
     CLASS_CBR_BESIDE_CBZ,
     CLASS_EMPTY_FOLDER,
@@ -76,20 +84,38 @@ ZIP_EXTS = (".cbz", ".zip")
 COMIC_EXTS = (".cbz", ".cbr", ".pdf")
 PAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
 
-# A staged comic is "stray" only after this long; a download passing through
-# TARGET is normal and the wanted sweep files it within minutes.
-STRAY_MIN_AGE_SECONDS = 24 * 3600
-# series.json and staging walks are not worth repeating on every batch.
+# series.json and empty-folder walks are not worth repeating on every batch.
 CHEAP_CHECK_INTERVAL = 24 * 3600
 # Ten files failing in a row is a mount, not ten damaged comics.
 MAX_CONSECUTIVE_IO_ERRORS = 10
 DEFAULT_TIME_BUDGET = 900
-MAX_DUPLICATE_GROUPS = 500
+# A ZIP up to this size is read once: hashed and CRC-checked from one buffer.
+# Above it the file is read twice (hash, then the archive check), as it always
+# was. On a network or FUSE mount the second read is not served from a page
+# cache, so for an ordinary comic this halves the I/O.
+SINGLE_READ_MAX_BYTES = 128 * 1024 * 1024
+# file_health stamps are committed in groups: one fsync per file made the
+# database the slow part of a scan on a fast disk.
+COMMIT_EVERY_FILES = 25
+COMMIT_EVERY_SECONDS = 5
+# A file that could not be judged this run (its folder would not read, or its
+# finding could not be written down). No hash, no ledger row, and it goes to
+# the back of the queue to be tried again after DEFERRED_RETRY_SECONDS -- not
+# after library_health_recheck_days, and not at the head of every batch.
+STATUS_DEFERRED = "deferred"
+DEFERRED_RETRY_SECONDS = 6 * 3600
+# How many separate places one batch will route around before giving up.
+MAX_SKIPPED_SCOPES = 20
+COVERAGE_CACHE_SECONDS = 60
+DEFAULT_DUPLICATE_PAGE = 100
+MAX_DUPLICATE_PAGE = 500
 
 STATE_KEY = "library_health_state"
 
 # One scan at a time: they walk the same rows and the same disks.
 _scan_lock = threading.Lock()
+# Set by the page's Stop button; checked between files and between phases.
+_stop_event = threading.Event()
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +124,10 @@ _scan_lock = threading.Lock()
 
 def claim_scan():
     """Take the single-flight claim. False means a scan is already running."""
-    return _scan_lock.acquire(blocking=False)
+    if not _scan_lock.acquire(blocking=False):
+        return False
+    _stop_event.clear()
+    return True
 
 
 def release_scan():
@@ -110,6 +139,98 @@ def release_scan():
 
 def scan_running():
     return _scan_lock.locked()
+
+
+def request_stop():
+    """Ask the running scan to stop after the file it is on. False if none is running.
+
+    What it has checked so far is kept: every result is stamped as it is made,
+    so the next run simply continues.
+    """
+    if not _scan_lock.locked():
+        return False
+    _stop_event.set()
+    return True
+
+
+def stop_requested():
+    return _stop_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# WATCH and TARGET are not the library
+# ---------------------------------------------------------------------------
+
+def _staging_matcher():
+    """``helpers.library.staging_matcher()``, or a matcher that says "no" if it fails."""
+    try:
+        from helpers.library import staging_matcher
+
+        return staging_matcher()
+    except Exception as e:
+        app_logger.debug(f"Library health: staging roots unavailable: {e}")
+        return lambda path, is_dir=False: None
+
+
+def purge_staging_rows():
+    """Drop what earlier versions recorded about files in WATCH and TARGET.
+
+    Neither folder is part of the library, so nothing in them is indexed,
+    hashed, paired as a duplicate or listed -- but several writers used to put
+    them in ``file_index`` (a CBR converted in TARGET was indexed on every
+    download), and a row outside every library root is never pruned by an
+    index sync. This removes those rows from ``file_index`` and
+    ``file_health``, and from the ledger everything except what the folder
+    monitor itself reports about a file in WATCH. Every "left in WATCH"
+    (stray) row goes too: that check no longer exists.
+
+    Never raises. Returns ``{index, health, problems}`` (rows removed).
+    """
+    from core.database import db_conn
+    from core.problem_files import staging_refusal
+
+    out = {"index": 0, "health": 0, "problems": 0}
+    try:
+        match = _staging_matcher()
+        with db_conn() as conn:
+            if not conn:
+                return out
+            index_paths = [
+                path for path, kind in conn.execute(
+                    "SELECT path, type FROM file_index"
+                ).fetchall()
+                if match(path, is_dir=(kind == "directory"))
+            ]
+            health_paths = [
+                path for (path,) in conn.execute("SELECT path FROM file_health").fetchall()
+                if match(path)
+            ]
+            problem_keys = [
+                (path, source) for path, source, klass in conn.execute(
+                    "SELECT path, source, error_class FROM problem_files"
+                ).fetchall()
+                if klass == CLASS_STRAY_STAGING
+                or staging_refusal(path, source, matcher=match) is not None
+            ]
+            if not (index_paths or health_paths or problem_keys):
+                return out
+            conn.executemany("DELETE FROM file_index WHERE path = ?",
+                             [(p,) for p in index_paths])
+            conn.executemany("DELETE FROM file_health WHERE path = ?",
+                             [(p,) for p in health_paths])
+            conn.executemany("DELETE FROM problem_files WHERE path = ? AND source = ?",
+                             problem_keys)
+            conn.commit()
+            out = {"index": len(index_paths), "health": len(health_paths),
+                   "problems": len(problem_keys)}
+        app_logger.info(
+            "Library health: removed WATCH/TARGET entries that are not library "
+            f"files ({out['index']} index, {out['health']} health, "
+            f"{out['problems']} listed)"
+        )
+    except Exception as e:
+        app_logger.error(f"Library health: could not purge staging rows: {e}")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -125,23 +246,27 @@ def hash_file(path):
     return h.hexdigest()
 
 
-def inspect_archive(path):
+def inspect_archive(path, data=None):
     """``(status, error_class, error_message)`` for one archive.
 
     ``status`` is ``"ok"`` or ``"damaged"``. Only ZIP/CBZ is CRC-checked: CLU
     has no CRC check for RAR (the WATCH pipeline converts those anyway) and a
     PDF is not an archive, so those are hashed and passed. The messages are the
     ones ``core.problem_files.classify`` already knows how to explain.
+
+    ``data`` is the file's bytes when the caller has already read them
+    (``check_file``), so the archive is checked without a second read.
     """
     lower = path.lower()
     if not lower.endswith(ZIP_EXTS):
         return "ok", None, None
     try:
-        if os.path.getsize(path) == 0:
+        size = len(data) if data is not None else os.path.getsize(path)
+        if size == 0:
             return "damaged", "EmptyFile", "The file is empty (0 bytes)"
-        if not zipfile.is_zipfile(path):
-            return "damaged", "BadZipFile", "File is not a zip file"
-        with zipfile.ZipFile(path) as zf:
+        # ZipFile raises BadZipFile("File is not a zip file") itself; a separate
+        # is_zipfile() was one more open of the file for the same answer.
+        with zipfile.ZipFile(io.BytesIO(data) if data is not None else path) as zf:
             bad = zf.testzip()
             if bad is not None:
                 return "damaged", "BadCRC", f"Bad CRC-32 for file '{bad}'"
@@ -167,9 +292,22 @@ def inspect_archive(path):
 def check_file(path):
     """Hash and verify one file. Raises OSError when it cannot be read.
 
-    Returns ``(digest, status, error_class, error_message)``. The archive check
-    runs straight after the hash so the file is still in the page cache.
+    Returns ``(digest, status, error_class, error_message)``. A ZIP no larger
+    than ``SINGLE_READ_MAX_BYTES`` is read **once** and both the hash and the
+    archive check run on that buffer; anything else is hashed in chunks and,
+    if it is an archive, opened again.
     """
+    if path.lower().endswith(ZIP_EXTS):
+        try:
+            small = os.path.getsize(path) <= SINGLE_READ_MAX_BYTES
+        except OSError:
+            raise
+        if small:
+            with open(path, "rb") as f:
+                data = f.read()
+            digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+            status, cls, msg = inspect_archive(path, data=data)
+            return digest, status, cls, msg
     digest = hash_file(path)
     status, cls, msg = inspect_archive(path)
     return digest, status, cls, msg
@@ -205,7 +343,12 @@ def _apply_outcome(path, status, cls, msg):
 def recheck_file(path):
     """Re-verify one file now. ``(ok, message)``; records or clears its own row."""
     from core.database import db_conn
+    from core.problem_files import staging_refusal
 
+    if staging_refusal(path, SOURCE_INTEGRITY) is not None:
+        # Not a library file: the scan does not judge it, so neither does this.
+        clear_problem(path, SOURCE_INTEGRITY)
+        return True, "Files in WATCH and TARGET are not checked"
     try:
         digest, status, cls, msg = check_file(path)
     except OSError as e:
@@ -237,58 +380,131 @@ def _ext_clause(column, exts):
 
 
 def _unreachable_roots():
-    """Library roots that are not mounted right now."""
-    from helpers.library import get_library_roots
+    """Library roots that are not mounted right now.
+
+    ``is_root_mounted``, not ``isdir``: an unmounted bind mount is still a
+    directory, just an empty one, and every file under it would be an OSError.
+    """
+    from helpers.library import get_library_roots, is_root_mounted
 
     out = []
     try:
         for root in get_library_roots():
-            if not os.path.isdir(root):
+            if not is_root_mounted(root):
                 out.append(root)
     except Exception as e:
         app_logger.debug(f"Library health: could not list roots: {e}")
     return out
 
 
+def _like_under(folder):
+    """``LIKE`` patterns (for ``ESCAPE '\\'``) for everything under ``folder``.
+
+    One per separator: index rows on Windows are written with either.
+    """
+    base = folder.rstrip("/\\")
+    escaped = base.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return [escaped + "/%", escaped + "\\\\%"]
+
+
 def files_needing_check(limit, recheck_days, exclude_roots=()):
-    """Index rows with no trustworthy ``file_health`` row, stalest first."""
+    """Index rows with no trustworthy ``file_health`` row, stalest first.
+
+    ``exclude_roots`` are folders to leave out entirely (unmounted libraries,
+    and places this batch has already found unreadable). A ``deferred`` row is
+    due again after ``DEFERRED_RETRY_SECONDS``. Nothing under WATCH or TARGET
+    is ever returned.
+    """
     from core.database import db_conn
 
-    cutoff = time.time() - max(1, recheck_days) * 86400
+    now = time.time()
+    cutoff = now - max(1, recheck_days) * 86400
     sql = (
         "SELECT f.path, f.size, f.modified_at FROM file_index f "
         "LEFT JOIN file_health h ON h.path = f.path "
         "WHERE f.type = 'file' AND " + _ext_clause("f.path", HASHED_EXTS) + " "
         "AND (h.path IS NULL OR h.mtime IS NOT f.modified_at "
-        "     OR h.size IS NOT f.size OR h.checked_at < ?) "
+        "     OR h.size IS NOT f.size OR h.checked_at < ? "
+        "     OR (h.status = ? AND h.checked_at < ?)) "
     )
-    params = [cutoff]
+    params = [cutoff, STATUS_DEFERRED, now - DEFERRED_RETRY_SECONDS]
     for root in exclude_roots:
-        sql += "AND f.path NOT LIKE ? "
-        params.append(os.path.join(root, "") + "%")
+        for pattern in _like_under(root):
+            sql += "AND f.path NOT LIKE ? ESCAPE '\\' "
+            params.append(pattern)
     sql += "ORDER BY COALESCE(h.checked_at, 0) ASC LIMIT ?"
     params.append(limit)
     try:
         with db_conn() as conn:
             if not conn:
                 return []
-            return [
-                {"path": r[0], "size": r[1], "mtime": r[2]}
-                for r in conn.execute(sql, params).fetchall()
-            ]
+            rows = conn.execute(sql, params).fetchall()
     except Exception as e:
         app_logger.error(f"Library health: could not list files to check: {e}")
         return []
+    match = _staging_matcher()
+    return [
+        {"path": r[0], "size": r[1], "mtime": r[2]}
+        for r in rows if not match(r[0])
+    ]
+
+
+def _open_integrity_paths():
+    """Paths that have an ``integrity`` row now, or None if that cannot be read.
+
+    Loaded once per batch so a healthy file with no row costs no ledger call at
+    all: clearing "just in case" was a connection and a commit per file.
+    """
+    from core.database import db_conn
+
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return None
+            return {
+                r[0] for r in conn.execute(
+                    "SELECT path FROM problem_files WHERE source = ?", (SOURCE_INTEGRITY,)
+                ).fetchall()
+            }
+    except Exception as e:
+        app_logger.debug(f"Library health: could not read integrity rows: {e}")
+        return None
+
+
+def _streak_scope(paths, roots):
+    """The folder a run of unreadable files has in common, or None.
+
+    One folder when they all sit in it (a permissions problem on a series
+    folder), otherwise the library root they share (a mount that went away).
+    None when they share neither: that is not something to route around.
+    The answer is spelled as the index spells it, because it is matched
+    against index paths.
+    """
+    parents = {os.path.dirname(p) for p in paths}
+    if len(parents) == 1:
+        parent = next(iter(parents))
+        return parent or None
+    for root in sorted(roots, key=len, reverse=True):
+        base = root.rstrip("/\\")
+        if base and all(p.startswith((base + "/", base + "\\")) for p in paths):
+            return root
+    return None
 
 
 def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
-    """Check up to ``limit`` files. Never raises. Returns a stats dict."""
+    """Check up to ``limit`` files. Never raises. Returns a stats dict.
+
+    ``aborted`` means the batch gave up; ``skipped`` lists folders it routed
+    around because nothing in them would read (they are tried again later);
+    ``stopped`` means the user asked it to stop.
+    """
     from core.app_state import update_operation
     from core.database import db_conn
 
     stats = {
         "checked": 0, "damaged": 0, "unreadable": 0, "missing": 0,
-        "aborted": False, "cleared": 0,
+        "deferred": 0, "aborted": False, "stopped": False, "cleared": 0,
+        "skipped": [],
     }
     started = time.monotonic()
     vanished = []
@@ -296,83 +512,184 @@ def run_batch(limit, recheck_days, time_budget=DEFAULT_TIME_BUDGET, op_id=None):
         from helpers.library import get_library_roots, is_path_provably_gone
 
         roots, mounted = get_library_roots(), {}
-        todo = files_needing_check(limit, recheck_days, _unreachable_roots())
-        pending = []  # outcomes held back until the streak is known to be clean
-        streak = 0
-
-        def flush(conn):
-            for item in pending:
-                path, size, mtime, digest, status, cls, msg, exc = item
-                if exc is not None:
-                    record_problem(path, SOURCE_INTEGRITY, exc=exc)
-                    stats["unreadable"] += 1
-                    _store_health(conn, path, None, size, mtime, "unreadable")
-                else:
-                    _apply_outcome(path, status, cls, msg)
-                    if status != "ok":
-                        stats["damaged"] += 1
-                    _store_health(conn, path, digest, size, mtime, status)
-                conn.commit()
-                stats["checked"] += 1
-            pending.clear()
+        exclude = list(_unreachable_roots())
+        open_rows = _open_integrity_paths()
 
         with db_conn() as conn:
             if not conn:
                 return stats
-            for i, item in enumerate(todo):
-                if time.monotonic() - started > time_budget:
-                    break
-                path = item["path"]
-                if op_id and i % 10 == 0:
-                    update_operation(
-                        op_id, detail=f"Checked {stats['checked']} of {len(todo)} files"
-                    )
-                try:
-                    digest, status, cls, msg = check_file(path)
-                except FileNotFoundError:
-                    parent = os.path.dirname(path)
-                    if parent and os.path.isdir(parent):
-                        # Gone from a folder that is there: the index is behind.
-                        # Stamp it so it stops heading the queue; no ledger row
-                        # (listing would prune it at once -- _is_definitely_gone).
-                        _store_health(conn, path, None, item["size"], item["mtime"], "missing")
-                        conn.commit()
-                        stats["missing"] += 1
-                        streak = 0
-                        continue
-                    if is_path_provably_gone(path, roots=roots, mounted=mounted):
-                        # Its whole folder went, in a library that is mounted:
-                        # deleted or moved outside CLU. Not a mount problem, so
-                        # no streak and no integrity row; the index forgets it
-                        # (#693). Counting these as I/O errors aborted every
-                        # batch, because they are never stamped and so head
-                        # the queue for good.
-                        vanished.append(path)
-                        stats["missing"] += 1
-                        streak = 0
-                        continue
-                    streak += 1
-                    pending.append((path, item["size"], item["mtime"], None, None, None, None,
-                                    FileNotFoundError(path)))
-                except OSError as e:
-                    streak += 1
-                    pending.append((path, item["size"], item["mtime"], None, None, None, None, e))
+            pending_commit = {"n": 0, "at": time.monotonic()}
+
+            def commit(force=False):
+                if not pending_commit["n"]:
+                    return
+                if (force or pending_commit["n"] >= COMMIT_EVERY_FILES
+                        or time.monotonic() - pending_commit["at"] >= COMMIT_EVERY_SECONDS):
+                    conn.commit()
+                    pending_commit["n"], pending_commit["at"] = 0, time.monotonic()
+
+            def stamp(path, size, mtime, digest, status):
+                _store_health(conn, path, digest, size, mtime, status)
+                pending_commit["n"] += 1
+                commit()
+
+            def ledger(fn, *args, **kwargs):
+                # The ledger writes on its own connection. Holding this one's
+                # write transaction open across that would make it wait out
+                # busy_timeout, so the stamps so far are committed first.
+                commit(force=True)
+                return fn(*args, **kwargs)
+
+            def defer(path, size, mtime):
+                stamp(path, size, mtime, None, STATUS_DEFERRED)
+                stats["deferred"] += 1
+
+            def settle(item):
+                """Record one finished check, then stamp it -- in that order.
+
+                A finding that could not be written down (the ledger is full,
+                or the write failed) is deferred, never stamped as damaged:
+                the stamp would hide the file from every scan for
+                ``recheck_days`` with its damage recorded nowhere.
+                """
+                path, size, mtime, digest, status, cls, msg, exc = item
+                if exc is not None:
+                    if ledger(record_problem, path, SOURCE_INTEGRITY, exc=exc):
+                        stats["unreadable"] += 1
+                        stamp(path, size, mtime, None, "unreadable")
+                        if open_rows is not None:
+                            open_rows.add(path)
+                    else:
+                        defer(path, size, mtime)
+                elif status == "ok":
+                    if open_rows is None or path in open_rows:
+                        if ledger(clear_problem, path, SOURCE_INTEGRITY):
+                            stats["cleared"] += 1
+                        if open_rows is not None:
+                            open_rows.discard(path)
+                    stamp(path, size, mtime, digest, status)
                 else:
-                    streak = 0
-                    pending.append((path, item["size"], item["mtime"], digest, status, cls, msg, None))
-                    flush(conn)
-                    continue
-                if streak >= MAX_CONSECUTIVE_IO_ERRORS:
-                    app_logger.warning(
-                        f"Library health scan stopped: {streak} files in a row could "
-                        "not be read. This looks like a mount problem, not damaged "
-                        "comics; nothing was recorded for them."
-                    )
-                    pending.clear()
-                    stats["aborted"] = True
-                    break
-            if pending:
-                flush(conn)
+                    if ledger(record_problem, path, SOURCE_INTEGRITY,
+                              error_class=cls, error_message=msg):
+                        stats["damaged"] += 1
+                        stamp(path, size, mtime, digest, status)
+                        if open_rows is not None:
+                            open_rows.add(path)
+                    else:
+                        defer(path, size, mtime)
+                stats["checked"] += 1
+
+            try:
+                remaining = limit
+                seen = 0
+                held = []  # outcomes held back until the streak is known to be clean
+                finished = False
+                while remaining > 0 and not finished:
+                    todo = files_needing_check(remaining, recheck_days, exclude)
+                    if not todo:
+                        break
+                    total = seen + len(todo)
+                    rerouted = False
+                    for item in todo:
+                        if _stop_event.is_set():
+                            stats["stopped"] = True
+                            finished = True
+                            break
+                        if time.monotonic() - started > time_budget:
+                            finished = True
+                            break
+                        path = item["path"]
+                        if op_id:
+                            # Before every file, not every tenth: ten large
+                            # archives on a slow disk outlast STALE_TIMEOUT.
+                            update_operation(
+                                op_id, detail=f"Checked {seen} of {total} files"
+                            )
+                        seen += 1
+                        remaining -= 1
+                        try:
+                            digest, status, cls, msg = check_file(path)
+                        except FileNotFoundError:
+                            parent = os.path.dirname(path)
+                            if parent and os.path.isdir(parent):
+                                # Gone from a folder that is there: the index is behind.
+                                # Stamp it so it stops heading the queue; no ledger row
+                                # (listing would prune it at once -- _is_definitely_gone).
+                                stamp(path, item["size"], item["mtime"], None, "missing")
+                                stats["missing"] += 1
+                                for h in held:
+                                    settle(h)
+                                held.clear()
+                                continue
+                            if is_path_provably_gone(path, roots=roots, mounted=mounted):
+                                # Its whole folder went, in a library that is mounted:
+                                # deleted or moved outside CLU. Not a mount problem, so
+                                # no streak and no integrity row; the index forgets it
+                                # (#693). Counting these as I/O errors aborted every
+                                # batch, because they are never stamped and so head
+                                # the queue for good.
+                                vanished.append(path)
+                                stats["missing"] += 1
+                                for h in held:
+                                    settle(h)
+                                held.clear()
+                                continue
+                            held.append((path, item["size"], item["mtime"], None, None, None, None,
+                                         FileNotFoundError(path)))
+                        except OSError as e:
+                            held.append((path, item["size"], item["mtime"], None, None, None, None, e))
+                        else:
+                            # A file read: the failures before it were their own.
+                            for h in held:
+                                settle(h)
+                            held.clear()
+                            settle((path, item["size"], item["mtime"], digest, status, cls, msg, None))
+                            continue
+                        if len(held) < MAX_CONSECUTIVE_IO_ERRORS:
+                            continue
+                        # Ten in a row is a place that will not read (a mount that
+                        # went away, a folder with the wrong permissions), not ten
+                        # damaged comics. Nothing is recorded for them. They are
+                        # deferred so they stop heading the queue, that place is
+                        # left out, and the rest of the library is still checked.
+                        scope = _streak_scope([h[0] for h in held], roots)
+                        if scope is None or len(stats["skipped"]) >= MAX_SKIPPED_SCOPES:
+                            app_logger.warning(
+                                f"Library health scan stopped: {len(held)} files in a row "
+                                "could not be read. This looks like a mount problem, not "
+                                "damaged comics; nothing was recorded for them."
+                            )
+                            held.clear()
+                            stats["aborted"] = True
+                            finished = True
+                            break
+                        app_logger.warning(
+                            f"Library health scan: {len(held)} files in a row could not be "
+                            f"read under {scope}. This looks like a mount or permissions "
+                            "problem, not damaged comics; nothing was recorded for them and "
+                            "the rest of the library is still being checked."
+                        )
+                        for h in held:
+                            defer(h[0], h[1], h[2])
+                        held.clear()
+                        exclude.append(scope)
+                        stats["skipped"].append(scope)
+                        rerouted = True
+                        break
+                    if not rerouted:
+                        finished = True
+                # A short run of failures at the end of the batch is recorded, as
+                # it always was: fewer than ten is individual files.
+                for h in held:
+                    settle(h)
+                held.clear()
+            finally:
+                # Whatever ends the batch, the results made so far are kept:
+                # each one is a file that does not have to be read again.
+                try:
+                    commit(force=True)
+                except Exception as e:
+                    app_logger.error(f"Library health: could not save batch results: {e}")
     except Exception as e:
         app_logger.error(f"Library health batch failed: {e}")
         stats["aborted"] = True
@@ -453,63 +770,33 @@ def _existing_orphan_rows(klass):
         return set()
 
 
-def _configured_dir(getter):
-    try:
-        return getter() or ""
-    except Exception:
-        return ""
-
-
-def _staging_dirs():
-    """Staging folders worth walking for strays: configured, present, outside a library.
-
-    Only WATCH. TARGET is excluded on purpose: files are expected to sit there
-    until the wanted sweep (or the user) files them, so an old file there is not
-    a problem worth listing.
-
-    A staging folder inside a library is indistinguishable from library
-    structure (see ``helpers.collection.collect_target_candidates``), so it is
-    left alone rather than guessed at.
-    """
-    from core.config import get_watch_dir
-    from helpers.library import library_root_for
-
-    folder = _configured_dir(get_watch_dir)
-    if not folder or not os.path.isdir(folder):
-        return []
-    if library_root_for(folder) is not None:
-        return []
-    return [("watch", folder)]
-
-
-def _under(path, folder):
-    return bool(folder) and path.startswith(os.path.join(folder, ""))
-
-
 def scan_orphans():
-    """Record CBR/CBZ twins and stale staged comics. Never raises.
+    """Record a ``.cbr`` sitting beside its own ``.cbz``. Never raises.
 
-    Returns ``{pairs, strays, cleared}``. Rows are only cleared under places
-    that were actually reachable this run -- an unmounted library looks exactly
-    like "every stray was fixed".
+    Returns ``{pairs, cleared}``. From the index, so no library walk, and so
+    nothing in WATCH or TARGET is ever looked at: comics waiting in a staging
+    folder are not a library problem (the old "left in WATCH for a day" check
+    is gone, and ``purge_staging_rows`` removes the rows it wrote). Rows are
+    only cleared under roots that were reachable this run -- an unmounted
+    library looks exactly like "every pair was fixed".
     """
     from core.database import db_conn
-    from core.download_utils import is_temporary_download_file
-    from helpers import is_hidden
-    from helpers.library import get_library_roots
+    from helpers.library import get_library_roots, is_root_mounted
 
-    stats = {"pairs": 0, "strays": 0, "cleared": 0}
+    stats = {"pairs": 0, "cleared": 0}
     try:
-        # 1. A .cbr beside its own .cbz (from the index; no library walk).
         reachable = tuple(
-            os.path.join(r, "") for r in get_library_roots() if os.path.isdir(r)
+            os.path.join(r, "") for r in get_library_roots() if is_root_mounted(r)
         )
+        match = _staging_matcher()
         seen = set()
         with db_conn() as conn:
             rows = conn.execute(
                 "SELECT path FROM file_index WHERE type = 'file' AND LOWER(path) LIKE '%.cbr'"
             ).fetchall() if conn else []
         for (path,) in rows:
+            if match(path):
+                continue
             parent = os.path.dirname(path)
             if not parent or not os.path.isdir(parent):
                 continue
@@ -525,53 +812,6 @@ def scan_orphans():
             if reachable and path.startswith(reachable):
                 if clear_problem(path, SOURCE_ORPHAN):
                     stats["cleared"] += 1
-
-        # 2. Comics left in WATCH for more than a day. Never TARGET: files are
-        # expected to wait there (see _staging_dirs), including a TARGET nested
-        # inside WATCH.
-        from core.config import get_target_dir, get_watch_dir
-
-        target = _configured_dir(get_target_dir)
-        target = os.path.normpath(target) if target else ""
-        stray_seen = set()
-        walked = []
-        cutoff = time.time() - STRAY_MIN_AGE_SECONDS
-        for kind, folder in _staging_dirs():
-            walked.append(os.path.join(folder, ""))
-            candidates = []
-            for root, dirs, names in os.walk(folder):
-                dirs[:] = [
-                    d for d in dirs
-                    if not is_hidden(os.path.join(root, d))
-                    and os.path.normpath(os.path.join(root, d)) != target
-                ]
-                candidates.extend(os.path.join(root, n) for n in names)
-            for path in candidates:
-                name = os.path.basename(path)
-                if (not name.lower().endswith(COMIC_EXTS)
-                        or name.startswith((".", "_"))
-                        or is_temporary_download_file(name)):
-                    continue
-                try:
-                    if os.path.getmtime(path) > cutoff:
-                        continue
-                except OSError:
-                    continue
-                stray_seen.add(path)
-                stats["strays"] += 1
-                record_problem(
-                    path, SOURCE_ORPHAN, error_class=CLASS_STRAY_STAGING,
-                    error_message=f"Unfiled in {kind.upper()} for over a day",
-                )
-        # Rows under TARGET predate its exclusion; they go whether or not TARGET
-        # is reachable, since nothing there is reported any more. WATCH nested
-        # inside TARGET keeps its rows (the walk above owns those).
-        watch = _configured_dir(get_watch_dir)
-        for path in _existing_orphan_rows(CLASS_STRAY_STAGING) - stray_seen:
-            in_target = _under(path, target) and not _under(path, watch)
-            if in_target or (walked and path.startswith(tuple(walked))):
-                if clear_problem(path, SOURCE_ORPHAN):
-                    stats["cleared"] += 1
     except Exception as e:
         app_logger.error(f"Library health: orphan scan failed: {e}")
     return stats
@@ -583,6 +823,10 @@ def recheck_orphan(path):
     if row is None:
         return True, "No longer listed"
     klass = row.get("error_class")
+    if klass == CLASS_STRAY_STAGING or _staging_matcher()(path):
+        # A row from before WATCH and TARGET stopped being checked.
+        clear_problem(path, SOURCE_ORPHAN)
+        return True, "Files in WATCH and TARGET are not checked"
     if not os.path.exists(path):
         clear_problem(path, SOURCE_ORPHAN)
         return True, "The file is gone"
@@ -592,21 +836,6 @@ def recheck_orphan(path):
             clear_problem(path, SOURCE_ORPHAN)
             return True, "No .cbz beside it any more"
         return False, "A .cbz is still beside it"
-    if klass == CLASS_STRAY_STAGING:
-        from core.config import get_target_dir, get_watch_dir
-
-        target = _configured_dir(get_target_dir)
-        if _under(path, target) and not _under(path, _configured_dir(get_watch_dir)):
-            clear_problem(path, SOURCE_ORPHAN)
-            return True, "TARGET is not checked for stray files"
-        try:
-            young = os.path.getmtime(path) > time.time() - STRAY_MIN_AGE_SECONDS
-        except OSError:
-            return False, "Could not read the file"
-        if young:
-            clear_problem(path, SOURCE_ORPHAN)
-            return True, "Modified recently"
-        return False, "Still unfiled"
     return False, "Unknown entry"
 
 
@@ -772,11 +1001,23 @@ def scan_empty_folders(op_id=None):
     roots that were actually walked: an unmounted library would otherwise look
     like "every empty folder was filled".
     """
-    from core.app_state import update_operation
-    from helpers.library import get_library_roots
+    from core.app_state import operation_keepalive
 
     if not _empty_scan_lock.acquire(blocking=False):
         return None
+    try:
+        # One os.walk per library root reports nothing while it runs.
+        with operation_keepalive(op_id):
+            return _scan_empty_folders(op_id)
+    finally:
+        _empty_scan_lock.release()
+
+
+def _scan_empty_folders(op_id):
+    """The walk itself. The caller holds ``_empty_scan_lock``."""
+    from core.app_state import update_operation
+    from helpers.library import get_library_roots
+
     stats = {"folders": 0, "flagged": 0, "cleared": 0, "capped": 0}
     try:
         protected = _protected_realpaths()
@@ -809,8 +1050,6 @@ def scan_empty_folders(op_id=None):
                     stats["cleared"] += 1
     except Exception as e:
         app_logger.error(f"Library health: empty-folder scan failed: {e}")
-    finally:
-        _empty_scan_lock.release()
     app_logger.info(
         f"Empty-folder scan: {stats['flagged']} listed, {stats['cleared']} cleared"
         + (f", {stats['capped']} more not listed (cap {MAX_EMPTY_FOLDER_ROWS})"
@@ -843,7 +1082,7 @@ _CLAIM_SUFFIX = re.compile(r"_\d{1,3}$")
 
 
 def _norm_text(value):
-    return re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+    return ascii_words(value)
 
 
 def _norm_number(value):
@@ -958,119 +1197,164 @@ def _member(row, health):
     }
 
 
-def find_duplicates(include_dismissed=False, strict=False):
-    """``{exact: [...], likely: [...], total_groups}`` -- derived on every call.
+# One grouping, reused while its input is unchanged. Reading the rows is the
+# cheap part; the grouping runs several regexes per comic, and the review page
+# used to do all of it on every load and again inside every action (three
+# times for one rename). The cache is keyed on a fingerprint of the rows the
+# groups are derived from, so it can never be stale: there is no expiry and no
+# writer has to remember to invalidate it. It holds the groups *without*
+# dismissal state, which is applied on read, so dismissing or restoring a
+# group costs no regrouping.
+_dup_lock = threading.Lock()
+_dup_cache = {"fingerprint": None, "groups": None}
 
-    Never raises; a read failure yields empty lists -- unless ``strict``, for a
-    caller that must tell "this group is gone" from "could not look".
-    """
+
+def invalidate_duplicates():
+    """Drop the cached groups (they are re-derived on the next read)."""
+    with _dup_lock:
+        _dup_cache["fingerprint"] = None
+        _dup_cache["groups"] = None
+
+
+def _derive_duplicates():
+    """Every group, dismissed or not, as ``{exact: [...], likely: [...]}``. Raises."""
     from core.database import db_conn
 
+    with db_conn() as conn:
+        if not conn:
+            raise RuntimeError("Database unavailable")
+        conn.row_factory = sqlite3.Row
+        comics = conn.execute(
+            "SELECT path, size, modified_at, ci_series, ci_number, ci_year, "
+            "ci_publisher, has_comicinfo, ci_provider FROM file_index "
+            "WHERE type = 'file' AND " + _ext_clause("path", COMIC_EXTS)
+        ).fetchall()
+        health = {
+            r["path"]: {"hash": r["content_hash"], "status": r["status"]}
+            for r in conn.execute(
+                "SELECT h.path, h.content_hash, h.status FROM file_health h "
+                "JOIN file_index f ON f.path = h.path "
+                "WHERE h.content_hash IS NOT NULL AND h.status != 'missing' "
+                "AND h.mtime IS f.modified_at AND h.size IS f.size"
+            ).fetchall()
+        }
+    # A download waiting in WATCH or TARGET is not a second copy of the comic
+    # it will replace or be filed as.
+    match = _staging_matcher()
+    comics = [r for r in comics if not match(r["path"])]
+    fingerprint = hash((
+        tuple(tuple(r) for r in comics),
+        tuple(sorted((p, h["hash"], h["status"]) for p, h in health.items())),
+    ))
+    with _dup_lock:
+        if _dup_cache["groups"] is not None and _dup_cache["fingerprint"] == fingerprint:
+            return _dup_cache["groups"]
+    by_path = {r["path"]: r for r in comics}
+    out = {"exact": [], "likely": []}
+    claimed_sets = set()
+
+    def emit(kind, reason, group_key, paths):
+        paths = [p for p in paths if p in by_path]
+        if len(paths) < 2:
+            return
+        members = [_member(by_path[p], health) for p in paths]
+        members.sort(key=lambda m: m["path"])
+        keeper = _suggest_keeper(members)
+        sizes = [m["size"] or 0 for m in members]
+        keep_size = next((m["size"] or 0 for m in members if m["path"] == keeper), 0)
+        out[kind].append({
+            "id": _sha(group_key)[:16],
+            "key": group_key,
+            "kind": kind,
+            "members_sig": _members_sig(paths),
+            "reason": reason,
+            "members": members,
+            "keep_suggestion": keeper,
+            "wasted_bytes": max(0, sum(sizes) - keep_size),
+        })
+
+    # Exact: identical bytes.
+    by_hash = {}
+    for path, h in health.items():
+        if path in by_path and h["hash"]:
+            by_hash.setdefault(h["hash"], []).append(path)
+    exact_sets = set()
+    for digest, paths in by_hash.items():
+        if len(paths) > 1:
+            exact_sets.add(frozenset(paths))
+            emit("exact", "Identical files (same content hash)", f"exact:{digest}", paths)
+    claimed_sets |= exact_sets
+
+    # Likely 1: the same tagged issue. Tags alone are not enough -- an event
+    # whose issues were all matched to the parent series (Future Quest and
+    # its "Aquaman / Jabberjaw Special", "Green Lantern / Space Ghost
+    # Special"...) carries one series, number and year across different
+    # comics. So the year must be known, and the filenames must agree on the
+    # series (issue_stem); a tag that contradicts the filename is a tagging
+    # problem, not a duplicate.
+    tagged = {}
+    for r in comics:
+        series, number = _norm_text(r["ci_series"]), _norm_number(r["ci_number"])
+        year = str(r["ci_year"] or "").strip()
+        if not series or not number or not year:
+            continue
+        stem = issue_stem(r["path"], r["ci_number"])
+        key = (series, number, year, _norm_text(r["ci_publisher"]), stem)
+        tagged.setdefault(key, []).append(r["path"])
+    for key, paths in tagged.items():
+        if len(paths) < 2 or frozenset(paths) in claimed_sets:
+            continue
+        claimed_sets.add(frozenset(paths))
+        emit("likely", "Tagged as the same series, issue and year, with matching file names",
+             "tag:" + _sha("|".join(key)), paths)
+
+    # Likely 2: one folder, names that differ only by a copy marker.
+    named = {}
+    for r in comics:
+        key = (os.path.dirname(r["path"]), name_key(os.path.basename(r["path"])))
+        if key[1]:
+            named.setdefault(key, []).append(r["path"])
+    for key, paths in named.items():
+        if len(paths) < 2 or frozenset(paths) in claimed_sets:
+            continue
+        claimed_sets.add(frozenset(paths))
+        emit("likely", "Same name in one folder, apart from a copy marker",
+             "name:" + _sha("|".join(key)), paths)
+
+    for kind in ("exact", "likely"):
+        # Path as the tie-break, so paging through the list is stable.
+        out[kind].sort(key=lambda g: (-g["wasted_bytes"], g["members"][0]["path"]))
+    with _dup_lock:
+        _dup_cache["fingerprint"], _dup_cache["groups"] = fingerprint, out
+    return out
+
+
+def find_duplicates(include_dismissed=False, strict=False):
+    """``{exact: [...], likely: [...]}`` as the index stands now.
+
+    The rows are read on every call; the grouping is reused while they are
+    unchanged (``_derive_duplicates``). Never raises; a read failure yields
+    empty lists -- unless ``strict``, for a caller that must tell "there are
+    none" from "could not look".
+    """
     out = {"exact": [], "likely": []}
     try:
-        with db_conn() as conn:
-            if not conn:
-                if strict:
-                    raise RuntimeError("Database unavailable")
-                return out
-            conn.row_factory = sqlite3.Row
-            comics = conn.execute(
-                "SELECT path, size, modified_at, ci_series, ci_number, ci_year, "
-                "ci_publisher, has_comicinfo, ci_provider FROM file_index "
-                "WHERE type = 'file' AND " + _ext_clause("path", COMIC_EXTS)
-            ).fetchall()
-            health = {
-                r["path"]: {"hash": r["content_hash"], "status": r["status"]}
-                for r in conn.execute(
-                    "SELECT h.path, h.content_hash, h.status FROM file_health h "
-                    "JOIN file_index f ON f.path = h.path "
-                    "WHERE h.content_hash IS NOT NULL AND h.status != 'missing' "
-                    "AND h.mtime IS f.modified_at AND h.size IS f.size"
-                ).fetchall()
-            }
-        by_path = {r["path"]: r for r in comics}
+        base = _derive_duplicates()
         dismissals = _load_dismissals()
-        claimed_sets = set()
-
-        def emit(kind, reason, group_key, paths):
-            paths = [p for p in paths if p in by_path]
-            if len(paths) < 2:
-                return
-            sig = _members_sig(paths)
-            stored_sig, until_scan = dismissals.get(group_key, (None, False))
-            is_dismissed = stored_sig == sig
-            if is_dismissed and not include_dismissed:
-                return
-            members = [_member(by_path[p], health) for p in paths]
-            members.sort(key=lambda m: m["path"])
-            keeper = _suggest_keeper(members)
-            sizes = [m["size"] or 0 for m in members]
-            keep_size = next((m["size"] or 0 for m in members if m["path"] == keeper), 0)
-            out[kind].append({
-                "id": _sha(group_key)[:16],
-                "key": group_key,
-                "kind": kind,
-                "dismissed": is_dismissed,
-                # "scan": hidden until the next scan; "not_duplicate": for good.
-                "dismiss_mode": (
-                    ("scan" if until_scan else "not_duplicate") if is_dismissed else None
-                ),
-                "reason": reason,
-                "members": members,
-                "keep_suggestion": keeper,
-                "wasted_bytes": max(0, sum(sizes) - keep_size),
-            })
-
-        # Exact: identical bytes.
-        by_hash = {}
-        for path, h in health.items():
-            if path in by_path and h["hash"]:
-                by_hash.setdefault(h["hash"], []).append(path)
-        exact_sets = set()
-        for digest, paths in by_hash.items():
-            if len(paths) > 1:
-                exact_sets.add(frozenset(paths))
-                emit("exact", "Identical files (same content hash)", f"exact:{digest}", paths)
-        claimed_sets |= exact_sets
-
-        # Likely 1: the same tagged issue. Tags alone are not enough -- an event
-        # whose issues were all matched to the parent series (Future Quest and
-        # its "Aquaman / Jabberjaw Special", "Green Lantern / Space Ghost
-        # Special"...) carries one series, number and year across different
-        # comics. So the year must be known, and the filenames must agree on the
-        # series (issue_stem); a tag that contradicts the filename is a tagging
-        # problem, not a duplicate.
-        tagged = {}
-        for r in comics:
-            series, number = _norm_text(r["ci_series"]), _norm_number(r["ci_number"])
-            year = str(r["ci_year"] or "").strip()
-            if not series or not number or not year:
-                continue
-            stem = issue_stem(r["path"], r["ci_number"])
-            key = (series, number, year, _norm_text(r["ci_publisher"]), stem)
-            tagged.setdefault(key, []).append(r["path"])
-        for key, paths in tagged.items():
-            if len(paths) < 2 or frozenset(paths) in claimed_sets:
-                continue
-            claimed_sets.add(frozenset(paths))
-            emit("likely", "Tagged as the same series, issue and year, with matching file names",
-                 "tag:" + _sha("|".join(key)), paths)
-
-        # Likely 2: one folder, names that differ only by a copy marker.
-        named = {}
-        for r in comics:
-            key = (os.path.dirname(r["path"]), name_key(os.path.basename(r["path"])))
-            if key[1]:
-                named.setdefault(key, []).append(r["path"])
-        for key, paths in named.items():
-            if len(paths) < 2 or frozenset(paths) in claimed_sets:
-                continue
-            claimed_sets.add(frozenset(paths))
-            emit("likely", "Same name in one folder, apart from a copy marker",
-                 "name:" + _sha("|".join(key)), paths)
-
         for kind in ("exact", "likely"):
-            out[kind].sort(key=lambda g: g["wasted_bytes"], reverse=True)
+            for g in base[kind]:
+                stored_sig, until_scan = dismissals.get(g["key"], (None, False))
+                is_dismissed = stored_sig == g["members_sig"]
+                if is_dismissed and not include_dismissed:
+                    continue
+                out[kind].append(dict(
+                    g,
+                    dismissed=is_dismissed,
+                    # "scan": hidden until the next scan; "not_duplicate": for good.
+                    dismiss_mode=(
+                        ("scan" if until_scan else "not_duplicate") if is_dismissed else None
+                    ),
+                ))
     except Exception as e:
         app_logger.error(f"Library health: duplicate search failed: {e}")
         if strict:
@@ -1338,7 +1622,9 @@ def coverage():
             out["checked"] = conn.execute(
                 "SELECT COUNT(*) FROM file_index f JOIN file_health h ON h.path = f.path "
                 f"WHERE f.type = 'file' AND {clause} "
-                "AND h.mtime IS f.modified_at AND h.size IS f.size"
+                "AND h.mtime IS f.modified_at AND h.size IS f.size "
+                "AND h.status != ?",
+                (STATUS_DEFERRED,),
             ).fetchone()[0]
     except Exception as e:
         app_logger.error(f"Library health: could not compute coverage: {e}")
@@ -1360,8 +1646,28 @@ def compute_score(integrity_open, exact_groups, likely_groups, orphans_open, oth
     return max(0, 100 - penalty)
 
 
-def get_summary():
-    """Everything the card and the badge show. Cheap: no scanning, no duplicates."""
+_coverage_cache = {"at": 0.0, "value": None}
+
+
+def _live_coverage():
+    """``coverage()``, at most once every ``COVERAGE_CACHE_SECONDS``."""
+    now = time.monotonic()
+    cached = _coverage_cache["value"]
+    if cached is not None and now - _coverage_cache["at"] < COVERAGE_CACHE_SECONDS:
+        return cached
+    value = coverage()
+    _coverage_cache["value"], _coverage_cache["at"] = value, now
+    return value
+
+
+def get_summary(live=False):
+    """Everything the card and the badge show. Cheap: no scanning, no duplicates.
+
+    Coverage is two whole-table counts over ``file_index``, and the badge is
+    polled from every open tab, so the stored figure from the last scan is
+    used. ``live`` (the Library Health page) recounts, but no more often than
+    ``COVERAGE_CACHE_SECONDS``.
+    """
     from core.settings import get_bool, get_int
 
     state = load_state()
@@ -1381,10 +1687,15 @@ def get_summary():
         level = "amber"
     else:
         level = "green"
-    cov = coverage()
+    stored = state.get("coverage")
+    if live or not isinstance(stored, dict):
+        cov = _live_coverage()
+    else:
+        cov = stored
     return {
         "enabled": get_bool("LIBRARY_HEALTH_SCAN_ENABLED"),
         "running": scan_running(),
+        "stopping": scan_running() and stop_requested(),
         "interval_hours": get_int("LIBRARY_HEALTH_INTERVAL_HOURS"),
         "last_run_at": state.get("last_run_at"),
         "cheap_checks_at": state.get("cheap_checks_at"),
@@ -1407,15 +1718,44 @@ def get_summary():
 # ---------------------------------------------------------------------------
 
 def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BUDGET):
-    """One scan. The caller holds the claim (``claim_scan``). Never raises."""
+    """One scan. The caller holds the claim (``claim_scan``). Never raises.
+
+    State is saved after each stage, not only at the end: a scan killed by a
+    restart must not repeat the daily walks at the next heartbeat. A stop
+    request (``request_stop``) ends it after the current file; what was done
+    is kept and the remaining stages are skipped.
+
+    The op is kept alive for the whole scan (``operation_keepalive``): every
+    stage has a step that can be silent for longer than ``STALE_TIMEOUT`` on a
+    big library, and an op marked "stalled" while this still holds the claim
+    cannot be restarted (#841).
+    """
+    from core.app_state import operation_keepalive
+
+    with operation_keepalive(op_id):
+        return _run_scan(op_id, run_cheap, batch, time_budget)
+
+
+def _run_scan(op_id, run_cheap, batch, time_budget):
+    from core.app_state import update_operation
     from core.settings import get_int
 
     state = load_state()
     now = time.time()
     result = {}
+
+    def progress(detail):
+        if op_id:
+            update_operation(op_id, detail=detail)
+
     try:
         limit = batch if batch is not None else max(1, get_int("LIBRARY_HEALTH_BATCH"))
         recheck_days = max(1, get_int("LIBRARY_HEALTH_RECHECK_DAYS"))
+
+        # First of all: nothing under WATCH or TARGET is part of the library,
+        # and rows that older versions wrote for them would otherwise be
+        # hashed, counted and paired below.
+        result["staging_purged"] = purge_staging_rows()
 
         # Before the batch and the duplicate count, both of which read the
         # index: a folder deleted outside CLU otherwise stays in it, and its
@@ -1432,46 +1772,76 @@ def run_scan(op_id=None, run_cheap=True, batch=None, time_budget=DEFAULT_TIME_BU
         stats = run_batch(limit, recheck_days, time_budget=time_budget, op_id=op_id)
         stats["pruned"] = prune_health_rows()
         state["last_batch"] = stats
+        state["coverage"] = coverage()
         result["batch"] = stats
+        save_state(state)
 
-        if run_cheap:
-            from core.app_state import update_operation
+        if run_cheap and not stop_requested():
+            from core import series_json_check
 
-            if op_id:
-                update_operation(op_id, detail="Checking series.json files")
-            from core.series_json_check import scan_library
+            progress("Checking series.json files")
+            # The page's own series.json scan and "Refresh all" rewrite the
+            # same rows; whoever holds the claim owns them.
+            if series_json_check.claim_scan():
+                try:
+                    result["series_json"] = series_json_check.scan_library(op_id=op_id)
+                finally:
+                    series_json_check.release_scan()
+            else:
+                result["series_json"] = {"skipped": "A series.json scan is already running"}
+            if not stop_requested():
+                progress("Looking for a .cbr beside its .cbz")
+                result["orphans"] = scan_orphans()
+            if not stop_requested():
+                progress("Looking for empty folders")
+                found = scan_empty_folders(op_id=op_id)
+                # None: the page's own empty-folder scan holds the lock.
+                result["empty_folders"] = (
+                    found if found is not None
+                    else {"skipped": "An empty-folder scan is already running"}
+                )
+            if not stop_requested():
+                state["comicinfo"] = comicinfo_counts()
+                # Only a complete set of walks counts as today's.
+                state["cheap_checks_at"] = now
+                save_state(state)
 
-            result["series_json"] = scan_library()
-            if op_id:
-                update_operation(op_id, detail="Looking for stray files")
-            result["orphans"] = scan_orphans()
-            if op_id:
-                update_operation(op_id, detail="Looking for empty folders")
-            result["empty_folders"] = scan_empty_folders()
-            state["comicinfo"] = comicinfo_counts()
-            state["cheap_checks_at"] = now
-
-        if op_id:
-            from core.app_state import update_operation
-
-            update_operation(op_id, detail="Looking for duplicates")
+        progress("Looking for duplicates")
         # "Dismiss" promised to hide a group only until this scan: any that
         # still exist are counted and listed again.
         expire_scan_dismissals(now)
         exact, likely = count_duplicates()
         state["dup_exact_groups"] = exact
         state["dup_likely_groups"] = likely
+        state["coverage"] = coverage()
         state["last_run_at"] = now
         save_state(state)
+        _coverage_cache["value"] = None
+        result["stopped"] = bool(stats.get("stopped")) or stop_requested()
         app_logger.info(
             f"Library health scan: {stats['checked']} checked, {stats['damaged']} damaged, "
-            f"{stats['unreadable']} unreadable, {exact} exact / {likely} likely duplicate "
-            f"groups{' (aborted)' if stats['aborted'] else ''}"
+            f"{stats['unreadable']} unreadable, {stats['deferred']} deferred, "
+            f"{exact} exact / {likely} likely duplicate groups"
+            f"{' (aborted)' if stats['aborted'] else ''}"
+            f"{' (stopped)' if result['stopped'] else ''}"
         )
     except Exception as e:
         app_logger.error(f"Library health scan failed: {e}")
         result["error"] = str(e)
     return result
+
+
+# WATCH/TARGET rows are removed even on an install that never enabled the
+# scan: they are in the index, and so on Missing XML and in searches, too.
+_staging_purge_at = {"at": 0.0}
+
+
+def _purge_staging_daily():
+    now = time.time()
+    if now - _staging_purge_at["at"] < CHEAP_CHECK_INTERVAL:
+        return
+    _staging_purge_at["at"] = now
+    purge_staging_rows()
 
 
 def run_scheduled_scan():
@@ -1486,6 +1856,7 @@ def run_scheduled_scan():
     from core.settings import get_bool, get_int
 
     if not get_bool("LIBRARY_HEALTH_SCAN_ENABLED"):
+        _purge_staging_daily()
         return None
     state = load_state()
     interval = max(1, get_int("LIBRARY_HEALTH_INTERVAL_HOURS")) * 3600

@@ -32,6 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadWantToRead();
         loadContinueReadingSwiper();
         loadOnTheStackSwiper();
+        loadNewReleasesSwiper();
         loadRecentlyAddedSwiper();
     }
 
@@ -1400,7 +1401,7 @@ function returnToFolderView() {
  */
 function loadDirectoryView() {
     // If we're already in directory mode and not in a special mode, do nothing
-    if (!isRecentlyAddedMode && !isContinueReadingMode && !isOnTheStackMode) {
+    if (!inUnsyncedView()) {
         return;
     }
 
@@ -1496,6 +1497,18 @@ async function loadRecentlyAdded(preservePage = false) {
         isRecentlyAddedMode = false;
         setLoading(false);
     }
+}
+
+/**
+ * 'YYYY-MM-DD' as a local date. new Date('2026-11-18') is UTC midnight, which
+ * prints as the 17th anywhere west of Greenwich.
+ */
+function formatStoreDate(storeDate) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(storeDate || '');
+    if (!m) return '';
+    return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric'
+    });
 }
 
 /**
@@ -2168,7 +2181,7 @@ function renderGrid(items) {
 
             if (item.hasThumbnail) {
                 // Set placeholder initially, real source in data-src for lazy loading
-                img.src = '/static/images/loading.svg';
+                img.src = CLU.staticUrl('images/loading.svg');
                 img.dataset.src = item.thumbnailUrl;
                 img.dataset.thumbnailPath = item.thumbnailUrl; // loadThumbnail's probe URL
                 img.classList.add('lazy');
@@ -2176,7 +2189,7 @@ function renderGrid(items) {
 
                 // Handle error loading thumbnail
                 img.onerror = function () {
-                    this.src = '/static/images/error.svg';
+                    this.src = CLU.staticUrl('images/error.svg');
                     this.classList.remove('lazy');
                     this.classList.remove('polling'); // Stop polling on error
                 };
@@ -3252,7 +3265,9 @@ function _redirectedTo(response, name) {
  * @param {{reload?: boolean}} [opts] - reload: bypass and overwrite the HTTP cache
  */
 function loadThumbnail(img, opts) {
-    const url = img.dataset.thumbnailPath;
+    // CLU.url: the same URL is fetched and then set as img.src, so it has to
+    // carry a path prefix before either (see clu-url.js).
+    const url = CLU.url(img.dataset.thumbnailPath);
     if (!url || !img.classList.contains('polling')) return;
     const reload = !!(opts && opts.reload) || _refreshedCovers.has(url);
     // one in-flight probe per image, unless this one is a reload
@@ -3291,7 +3306,7 @@ function loadThumbnail(img, opts) {
                 // or a 5xx that outlasted its retries)
                 img.dataset.isPolling = 'false';
                 img.classList.remove('polling', 'lazy');
-                img.src = '/static/images/error.svg';
+                img.src = CLU.staticUrl('images/error.svg');
                 return;
             }
             img.dataset.serverErrors = '0';
@@ -3339,7 +3354,7 @@ function initSwiperThumbnails(container) {
         img.classList.add('polling');
 
         img.onerror = function () {
-            this.src = '/static/images/error.svg';
+            this.src = CLU.staticUrl('images/error.svg');
             this.classList.remove('polling');
         };
         loadThumbnail(img);
@@ -3783,7 +3798,7 @@ function refreshThumbnail(filePath) {
                 // cache: 'reload' bypasses the cached cover and overwrites it,
                 // so the next page view gets the new one too.
                 img.classList.add('polling');
-                img.src = '/static/images/loading.svg';
+                img.src = CLU.staticUrl('images/loading.svg');
                 loadThumbnail(img, { reload: true });
             }
         }
@@ -4705,6 +4720,60 @@ async function loadWantToRead() {
 }
 
 /**
+ * Load new releases into the dashboard swiper
+ */
+async function loadNewReleasesSwiper() {
+    const swiper = document.querySelector('#newReleasesSwiper .swiper-wrapper');
+    if (!swiper) return;
+
+    try {
+        const response = await fetch('/api/new-releases?limit=10');
+        const data = await response.json();
+
+        if (!data.success || !data.items || !data.items.length) {
+            swiper.innerHTML = `
+                <div class="swiper-slide">
+                    <div class="dashboard-card text-center p-4">
+                        <i class="bi bi-calendar-event text-muted" style="font-size: 3rem;"></i>
+                        <p class="text-muted mt-2">No new releases yet. Map a series to see its issues here.</p>
+                    </div>
+                </div>`;
+            return;
+        }
+
+        swiper.innerHTML = data.items.map(item => {
+            const number = (item.issue_number == null ? '' : String(item.issue_number)).trim();
+            const label = number
+                ? `${item.series_name} #${stripIssueZeros(number)}`
+                : item.series_name;
+            const name = CLU.escapeHtml(label);
+            const path = CLU.escapeHtml(item.file_path);
+            const thumbnailUrl = `/api/thumbnail?path=${encodeURIComponent(item.file_path)}`;
+            const released = CLU.escapeHtml(formatStoreDate(item.store_date));
+
+            return `
+            <div class="swiper-slide">
+                <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
+                    <div class="dashboard-card-img-container">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                    </div>
+                    <div class="dashboard-card-body">
+                        <div class="text-truncate item-name" title="${name}">${name}</div>
+                        <small class="text-muted">${released}</small>
+                    </div>
+                </div>
+            </div>
+        `}).join('');
+
+        initSwiperThumbnails(swiper);
+        initNameTooltips(swiper);
+
+    } catch (error) {
+        console.error('Error loading new releases:', error);
+    }
+}
+
+/**
  * Load recently added files into the dashboard swiper
  */
 async function loadRecentlyAddedSwiper() {
@@ -4753,7 +4822,7 @@ async function loadRecentlyAddedSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${name}">${name}</div>
@@ -4819,7 +4888,7 @@ async function loadContinueReadingSwiper() {
             <div class="swiper-slide">
                 <div class="dashboard-card has-thumbnail" data-path="${path}" data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${name}" class="thumbnail">
                         <div class="progress" style="height: 4px; position: absolute; bottom: 0; left: 0; width: 100%; border-radius: 0;">
                             <div class="progress-bar bg-info" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"></div>
                         </div>
@@ -4895,7 +4964,7 @@ async function loadOnTheStackSwiper() {
                 <div class="dashboard-card has-thumbnail" data-path="${CLU.escapeHtml(item.file_path)}"
                      data-dash-action="open-reader">
                     <div class="dashboard-card-img-container">
-                        <img src="/static/images/loading.svg" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
+                        <img src="${CLU.staticUrl('images/loading.svg')}" data-thumbnail="${CLU.escapeHtml(thumbnailUrl)}" alt="${fileName}" class="thumbnail">
                     </div>
                     <div class="dashboard-card-body">
                         <div class="text-truncate item-name" title="${fileName}">${fileName}</div>
@@ -5260,7 +5329,7 @@ function onDashboardClick(event) {
             openReaderForFile(d.path);
             break;
         case 'open-reading-list':
-            window.location.href = '/reading-lists/' + encodeURIComponent(d.readingListId);
+            window.location.href = CLU.url('/reading-lists/' + encodeURIComponent(d.readingListId));
             break;
         case 'remove-favorite':
             removeFavoriteFromDashboard(d.path, d.name, el);

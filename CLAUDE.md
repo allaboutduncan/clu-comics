@@ -19,8 +19,8 @@ Production runs `gunicorn -w 1 --threads 8 --timeout 120 app:app` (see Dockerfil
 
 ### Core Application Flow
 - **`api.py`**: Creates the Flask app instance and handles download queue/remote downloads
-- **`app.py`**: Main application - imports Flask app from `api.py`, registers blueprints, defines all routes and API endpoints
-- **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is only imported once. See `.claude/rules/watch-pipeline.md`.
+- **`app.py`**: Main application - imports Flask app from `api.py`, registers the blueprints, starts the scheduler and background services, and still defines a minority of routes (config, schedules, thumbnails, `/stream`, GCD). Most routes live in the blueprints under `routes/`. **app.py cannot be imported in tests**, so a new route goes in a blueprint
+- **`monitor.py`**: Standalone file watcher for folder monitoring. It runs as a child process of the gunicorn worker while the `monitor_enabled` setting is on, and `core/monitor_supervisor.py` starts and stops it live. The `MONITOR` env var is no longer read. See `.claude/rules/watch-pipeline.md`.
 
 ### API v1 docs
 
@@ -56,8 +56,8 @@ imported in tests.
      It never deletes — or descends into — WATCH, TARGET, TRASH or a library root,
      and refuses to run at all if TARGET resolves inside a library. WATCH nested
      inside TARGET is a supported layout.
-3. SQLite database in `CACHE_DIR` (default `/cache`)
-4. Settings persisted in the `user_preferences` table (`config.ini` is imported once, then retired)
+3. SQLite database and its backups in `CONFIG_DIR` (`/config`); thumbnails and the trash in `CACHE_DIR` (`/cache`)
+4. Settings persisted in the `user_preferences` table (`config.ini` is no longer read)
 
 ### Function-local imports
 
@@ -111,6 +111,32 @@ default for every `send_file` in the app (covers, downloads, page images).
 `tests/unit/test_static_asset_urls.py` is the ratchet. Images under
 `static/images/` stay unversioned.
 
+#### URLs in page scripts — `CLU.url()`, and never a literal `/static/`
+
+CLU runs behind `ProxyFix(x_prefix=1)`, so it can be served at `/clu`. `url_for`
+and `asset()` carry that prefix; a script that writes `fetch('/api/x')` does
+not. `static/js/clu-url.js` is the **first script** in `base.html` and
+`login.html` and reads the prefix from `<meta name="clu-root">`. With a prefix
+it wraps `fetch`, `XMLHttpRequest`, `EventSource`, `sendBeacon` and
+`window.open`, and an observer rewrites `src`/`href`/`action`/`poster` on
+anything added to the document, so existing call sites need no edit. With no
+prefix it installs nothing.
+
+- **A navigation is explicit**: `location.href = CLU.url('/reader?...')`. The
+  browser lets nothing intercept a location change.
+- **An unversioned image is `CLU.staticUrl('images/loading.svg')`** in a
+  script and `url_for('static', filename=...)` in a template.
+- **A hot image path calls `CLU.url` itself** (`loadThumbnail`, the reader's
+  page images): the observer runs one step late, after the browser has started
+  the unprefixed request.
+- **A link built from a server-side constant is prefixed in the template**
+  (`{{ request.script_root }}{{ section.view_all_href }}`).
+- `static/manifest.json` uses relative URLs; a static file cannot know the prefix.
+
+`tests/unit/test_subpath_urls.py` (the ratchets, and the shim run under node)
+and `tests/routes/test_subpath_pages.py` (every parameterless page rendered
+under `/clu`) pin it.
+
 #### Control characters in static assets — always escapes, never raw bytes
 
 Write a control character in JS/CSS/HTML as an escape (`'\0'`), never as a
@@ -127,9 +153,16 @@ on the Library Health page do nothing, with no error anywhere.
 (confirmations, anything needing a decision or input) or a **Toast** (success,
 error, and status messages).
 
-- Confirmations: `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
-  (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`), or a
-  purpose-built modal in the page template.
+- Confirmations: `await CLU.confirm({title, message, detail, confirmText})`
+  (`static/js/clu-confirm.js`, loaded by `base.html`; text only, resolves
+  `true` only on the confirm button). Deleting a file or folder is
+  `CLU.showDeleteConfirmation()` / the `window._cluDelete` contract
+  (`static/js/clu-delete.js` + `partials/modal_delete_confirm.html`). A
+  purpose-built modal is for a confirmation that needs more than text.
+- Recurring fetches: `CLU.startPoll(fn, intervalMs)` (`base.html`), passing its
+  `signal` to `fetch`. Never a bare `setInterval`;
+  `tests/unit/test_pollers_are_guarded.py` allow-lists the timers that fetch
+  nothing.
 - Messages: `CLU.toast(message, type)`, `CLU.showToast(title, message, type)`,
   `CLU.showSuccess()`, `CLU.showError()` from `static/js/clu-toast.js`.
   `base.html` loads it and renders the one container
@@ -138,11 +171,11 @@ error, and status messages).
 - Empty states: `empty_state()` from `partials/empty_state.html`
   (`CLU.emptyState()` in page scripts).
 - `tests/unit/test_feedback.py` is the ratchet: no local toast, no page-built
-  toast container, no `alert()`.
+  toast container, no `alert()`, `confirm()` or `prompt()`.
 
 ## Configuration
 
-**Every setting lives in the `user_preferences` table. `config.ini` is deprecated.**
+**Every setting lives in the `user_preferences` table. `config.ini` is gone.**
 `core/settings.py` is the one table (`SETTINGS_SCHEMA`: legacy key → pref name,
 type, default, category) and the one accessor. Key settings:
 - `WATCH`/`TARGET`: Folder monitoring paths (`get_watch_dir()` / `get_target_dir()`)
@@ -165,30 +198,27 @@ Things that look arbitrary and are not:
 - **Never read a setting into a module constant.** The cbz_ops modules,
   `core/comicinfo.py` and `missing.py` did (`skippedFiles`, `LARGE_FILE_THRESHOLD`,
   `xml_year`...), freezing whatever was stored at import. Ask per call.
-- **`core.config.config` is a deprecated read-only view** over the preferences,
-  kept for one release so nothing outside the repo breaks. No code in the repo
-  reads through it any more: `TestNoNewIniStyleReads` in
-  `tests/unit/test_settings.py` is a ratchet whose table is now empty, and it
-  fails if a `config.get("SETTINGS", ...)` appears. Writes through the view are
-  refused with a warning. Use `core.settings`; `/cache` and `/data` come from
+- **The `core.config.config` view, `CONFIG_FILE` and the `config.ini` import
+  are deleted.** `TestNoNewIniStyleReads` in `tests/unit/test_settings.py`
+  fails if a `config.get("SETTINGS", ...)` or an import of one of those names
+  comes back. Use `core.settings`; `/cache` and `/data` come from
   `core.config.get_cache_dir()` / `get_data_dir()` (functions, so tests patch one
-  name). The next release deletes the view, `CONFIG_FILE` and the import.
+  name).
+- **`core.config.load_config()` only warns.** `api.py` (not to be edited) and
+  `monitor.py` call it at import, so the name stays. Releases 7.0 to 7.3
+  imported a legacy `config.ini` and renamed it `config.ini.migrated`; a
+  `config.ini` still in `/config` means the install skipped them and is running
+  on defaults, and that is logged once per process as a WARNING. The file is
+  never read. The `MONITOR` env var is not read either.
 - **`app.py` re-runs `load_flask_config(app)` right after `init_db()`.**
-  `api.py` fills `app.config` at import, before the database exists, so on the
-  first start after the ini import it would otherwise hold defaults (trash,
-  rename pattern...) until the next settings save. Asserted structurally.
-- **The import runs once** (`migrate_ini_to_user_preferences`, flag
-  `config_ini_migrated_to_prefs`) and renames the file to `config.ini.migrated`.
-  It never overwrites a pref that already has a value — the DB is authoritative
-  for the keys migrated piecemeal earlier — and the flag is set only after every
-  write succeeded. It is removed in the release after it ships.
+  `api.py` fills `app.config` at import, before the database exists, so on a
+  fresh volume it would otherwise hold defaults (trash, rename pattern...)
+  until the next settings save. Asserted structurally.
 - **`/config` and `/cache` are fixed paths, not settings and not env vars.**
   The database and backups live on the `/config` volume and thumbnails/trash on
   `/cache`; users mount volumes onto them (`docker-compose.yaml`).
-  `core.config.CACHE_DIR` is a constant. An ini that named a different
-  `CACHE_DIR` gets a warning at import time and is otherwise ignored.
-  (`CONFIG_DIR` still honours an env override, which tests and non-Docker dev
-  runs rely on.)
+  `core.config.CACHE_DIR` is a constant. (`CONFIG_DIR` still honours an env
+  override, which tests and non-Docker dev runs rely on.)
 - Asserted in `tests/unit/test_settings.py` (schema covers every legacy key, no
   module writes the ini) and `tests/unit/test_config.py`.
 
@@ -288,8 +318,9 @@ WAL write lock** until the cyclic GC happens to run. Every other writer burns
 its 30s `busy_timeout` and fails. One `UNIQUE constraint failed:
 file_index.path` in `update_file_index_entry` produced 93 "database is locked"
 failures in twelve minutes (#723). `tests/unit/test_db_write_connection_leaks.py`
-is a ratchet on writers in `core/database.py` that commit without closing in a
-`finally`/`db_conn()`; lower its `BASELINE` when you convert one.
+is a ratchet on writers that commit without closing in a
+`finally`/`db_conn()`: a `BASELINE` for `core/database.py` (lower it when you
+convert one) and **zero** in every other module.
 
 ## Subsystem notes (`.claude/rules/`)
 
@@ -323,5 +354,8 @@ Detailed design notes for each subsystem live in path-scoped rule files that loa
 
 - Every new route in `routes/` must have a corresponding test in `tests/routes/`.
 - Any modification to `cbz_ops/` or file operations must include a pytest fixture check.
-- **Verification:** Before finishing any task, run `pytest` and ensure 100% pass rate.
+- **Verification:** Before finishing any task, run `pytest -n auto -q` and ensure 100% pass rate.
+  Parallel (`pytest-xdist`) the full suite takes about 2 minutes; serial it takes about 25. While
+  iterating, run only the test files for the area you changed and save the full run for the end.
+  A test that walks the repo must skip `.claude` (agent worktrees are full copies of the repo).
 - **Maintenance:** If a feature is updated, the corresponding test file MUST be updated in the same PR.

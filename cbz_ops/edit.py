@@ -11,6 +11,7 @@ from core.app_logging import app_logger
 from core.thumbnail_cache import regenerate_thumbnail
 from core.settings import get_ext_list
 from helpers import create_thumbnail_streaming, safe_image_open, open_zip_for_write
+from helpers.archive_paths import UnsafeArchiveMember, safe_member_path
 from cbz_ops.salvage import decodes, first_undecodable_page, is_crc_error, is_page, read_entry_lenient
 from cbz_ops.edit_paths import editor_archive_refusal, validate_save_paths
 import gc
@@ -114,7 +115,13 @@ def process_cbz_file(file_path):
                 try:
                     zf.extract(info, folder_name)
                 except Exception as e:
-                    target = os.path.normpath(os.path.join(folder_name, info.filename))
+                    # Never join the raw member name: extract() sanitises it,
+                    # this fallback has to as well (GHSA-6p2x-pmgg-9qjj).
+                    try:
+                        target = safe_member_path(folder_name, info.filename)
+                    except UnsafeArchiveMember as unsafe:
+                        app_logger.warning(f"Skipped {info.filename!r}: {unsafe}")
+                        continue
                     if is_crc_error(e):
                         # Read past the checksum, so the user sees the page and
                         # can decide; it is flagged either way.

@@ -1338,6 +1338,56 @@ def _init_db_locked():
             except sqlite3.OperationalError:
                 pass
 
+        # Third cause (#792): the scan's last tier searched each filename for
+        # the wanted number anywhere, so "Batman 400 - Knightfall Part 1" was
+        # cached as #1 and "Spider-Man 2099 005" as #2099. Those rows say
+        # "owned" for issues nobody has, and a found row is only re-checked
+        # when its file changes, so they never heal on their own.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_issue_position_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_issue_position_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(issue-position fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
+        # Fourth cause (#857): "Series (2019) Volume 01 TPB.cbz" in a
+        # miniseries folder was cached as #1. The scan now skips that file,
+        # but the found row is only re-checked when the file changes.
+        c.execute(
+            "SELECT value FROM user_preferences "
+            "WHERE key = 'collection_status_format_after_year_purge'"
+        )
+        if not c.fetchone():
+            try:
+                c.execute("DELETE FROM collection_status")
+                purged = c.rowcount
+                c.execute("DELETE FROM wanted_issues")
+                c.execute(
+                    "INSERT OR REPLACE INTO user_preferences (key, value, category, updated_at) "
+                    "VALUES ('collection_status_format_after_year_purge', 'true', 'migration', CURRENT_TIMESTAMP)"
+                )
+                if purged:
+                    app_logger.info(
+                        f"Purged {purged} cached collection-status rows "
+                        "(format-after-year fix); series will re-match on next view"
+                    )
+            except sqlite3.OperationalError:
+                pass
+
         # Create issue_manual_status table (for manually marking issues as owned/skipped)
         c.execute("""
             CREATE TABLE IF NOT EXISTS issue_manual_status (
@@ -1562,6 +1612,50 @@ def _init_db_locked():
                 "ALTER TABLE komga_sync_config ADD COLUMN connection_valid INTEGER DEFAULT 0"
             )
 
+        # Kavita reading sync. The server URL is a setting; these hold the
+        # per-library path prefixes, each user's own Kavita auth key, and the
+        # log of what has been imported for whom.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_library_mappings (
+                library_id INTEGER NOT NULL PRIMARY KEY,
+                kavita_path_prefix TEXT NOT NULL DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (library_id) REFERENCES libraries(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_user_links (
+                user_id INTEGER NOT NULL PRIMARY KEY,
+                credentials_encrypted BLOB,
+                credentials_nonce BLOB,
+                kavita_username TEXT,
+                connection_valid INTEGER DEFAULT 1,
+                last_sync TIMESTAMP,
+                last_sync_read_count INTEGER DEFAULT 0,
+                last_sync_progress_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                last_sync_detail TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        c.execute("PRAGMA table_info(kavita_user_links)")
+        if "last_sync_detail" not in [col[1] for col in c.fetchall()]:
+            c.execute("ALTER TABLE kavita_user_links ADD COLUMN last_sync_detail TEXT")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS kavita_sync_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kavita_chapter_id TEXT NOT NULL,
+                kavita_path TEXT NOT NULL,
+                clu_path TEXT,
+                sync_type TEXT NOT NULL,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, kavita_chapter_id, sync_type),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+
         # Create unified schedules table
         c.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -1669,6 +1763,13 @@ def _init_db_locked():
             app_logger.info(
                 "Migrated schedule data from legacy tables to unified schedules table"
             )
+
+        # Schedules added after the legacy-table migration above get their
+        # row here, so an existing install has one too.
+        c.execute(
+            "INSERT OR IGNORE INTO schedules (name, frequency, time, weekday) VALUES (?, ?, ?, ?)",
+            ("kavita", "disabled", "05:30", 0),
+        )
 
         # Migration: Randomize default schedule times to reduce API thundering herd
         for sched_name, default_time in [('sync', '03:00'), ('getcomics', '03:00')]:
@@ -1861,6 +1962,8 @@ def _init_db_locked():
             [
                 "CREATE INDEX IF NOT EXISTS idx_issues_read_path ON issues_read(issue_path)",
                 "CREATE INDEX IF NOT EXISTS idx_issues_read_user ON issues_read(user_id)",
+                # Every reading stat is "this user's reads in a period".
+                "CREATE INDEX IF NOT EXISTS idx_issues_read_user_read_at ON issues_read(user_id, read_at)",
             ],
         )
         _rebuild_add_user_scope(
@@ -1918,6 +2021,44 @@ def _init_db_locked():
                 "CREATE INDEX IF NOT EXISTS idx_to_read_path ON to_read(path)",
                 "CREATE INDEX IF NOT EXISTS idx_to_read_user ON to_read(user_id)",
             ],
+        )
+
+        # Every reading stat is "this user's reads in a period". Created here,
+        # unconditionally: the rebuild above is a no-op once user_id exists, so
+        # an index listed only there never reaches an already-migrated install.
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_issues_read_user_read_at"
+            " ON issues_read(user_id, read_at)"
+        )
+
+        # Reading sessions: one row per sitting (see core/reading_sessions.py).
+        # No foreign key to users, like the other per-user tables here.
+        # comic_path is byte-exact and followed on rename by
+        # move_path_references. Timestamps are server UTC.
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS reading_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL DEFAULT 1,
+                comic_path TEXT NOT NULL,
+                client_session_id TEXT,
+                started_at TIMESTAMP NOT NULL,
+                ended_at TIMESTAMP NOT NULL,
+                active_seconds INTEGER NOT NULL DEFAULT 0,
+                start_page INTEGER,
+                end_page INTEGER,
+                max_page INTEGER,
+                total_pages INTEGER,
+                finished INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'web'
+            )
+        """)
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_sessions_user_started"
+            " ON reading_sessions(user_id, started_at)"
+        )
+        c.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reading_sessions_user_path"
+            " ON reading_sessions(user_id, comic_path, ended_at)"
         )
 
         # Bulk metadata processing tables (used by routes/bulk_metadata.py)
@@ -3958,6 +4099,19 @@ def add_file_index_entry(
     """
     import time
 
+    # The index is the library. A path under WATCH or TARGET is a download in
+    # transit: indexing it puts it in front of the health scan, the duplicate
+    # search and Missing XML, and rows outside every library root are never
+    # pruned by a sync. This is the one choke point for single-row adds (the
+    # CBR->CBZ conversion, combine/split, the file watcher, a moved-in folder).
+    try:
+        from helpers.library import is_staging_path
+
+        if is_staging_path(path, is_dir=(entry_type == "directory")):
+            return False
+    except Exception as e:
+        app_logger.debug(f"Staging check failed for {path}: {e}")
+
     try:
         with db_conn() as conn:
             if not conn:
@@ -4575,13 +4729,19 @@ def find_file_index_paths_by_name(filename, limit=5):
         return []
 
 
-def normalize_issue_number(number):
+def issue_identity_key(number):
     """An issue number in comparable form: lowercase, trimmed, leading zeros
     off the integer part. "001" -> "1", "050.LR" -> "50.lr", "0" -> "0".
 
     Equality on this is the rule for "same issue". SQLite's CAST is not: it
     reads the numeric prefix, so CAST('50.LR' AS REAL) = 50 and a variant
     issue matched the regular one.
+
+    Not interchangeable with ``helpers.collection.issue_match_key``: both were
+    called ``normalize_issue_number`` once and they disagree on purpose (this
+    one lowercases, drops a leading "#" and a trailing ".", and maps empty to
+    ""; that one folds unicode dashes, keeps case and maps empty to "0").
+    ``tests/unit/test_issue_number_keys.py`` tabulates the differences.
     """
     text = str(number or "").strip().lower().lstrip("#").strip()
     # The sign is part of the number: "#-1" is its own issue, never #1.
@@ -4616,7 +4776,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
     The SQL is a coarse filter -- series words in order, numeric-ish issue
     match -- and the issue number is then checked exactly in Python with
-    :func:`normalize_issue_number`. Series identity is left to the caller,
+    :func:`issue_identity_key`. Series identity is left to the caller,
     which already applies ``series_names_compatible``.
 
     ``limit`` is applied AFTER the exact check, never in SQL: the series
@@ -4626,7 +4786,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
     Returns list of dicts with name, path, type, parent, size, and ci_* fields.
     """
     pattern = _series_like_pattern(series)
-    wanted = normalize_issue_number(number)
+    wanted = issue_identity_key(number)
     if not pattern or not wanted:
         return []
     try:
@@ -4658,7 +4818,7 @@ def search_by_comic_metadata(series, number, volume=None, year=None, publisher=N
 
         results = []
         for row in rows:
-            if normalize_issue_number(row["ci_number"]) != wanted:
+            if issue_identity_key(row["ci_number"]) != wanted:
                 continue
             results.append({
                 "name": row["name"],
@@ -7042,13 +7202,15 @@ def get_reading_stats_by_year(year=None, user_id=None):
         c = conn.cursor()
 
         if year:
-            # Filter by year
+            # Filter by the user's local year, like every other reading stat.
+            from core.user_time import localise_read_at_sql
+
             c.execute(
-                """
+                localise_read_at_sql("""
                 SELECT COUNT(*), COALESCE(SUM(page_count), 0), COALESCE(SUM(time_spent), 0)
                 FROM issues_read
                 WHERE user_id = ? AND strftime('%Y', read_at) = ?
-            """,
+            """),
                 (uid, str(year)),
             )
         else:
@@ -7108,7 +7270,12 @@ def get_reading_trends(field_name, year=None, limit=10, user_id=None):
             " AND " + field_name + " != '' AND " + field_name + " IS NOT NULL"
         )
         if year:
-            c.execute(base + " AND strftime('%Y', read_at) = ?", (uid, str(year)))
+            from core.user_time import localise_read_at_sql
+
+            c.execute(
+                localise_read_at_sql(base + " AND strftime('%Y', read_at) = ?"),
+                (uid, str(year)),
+            )
         else:
             c.execute(base, (uid,))
 
@@ -10636,6 +10803,8 @@ _PATH_REFERENCE_COLUMNS = (
     ("file_metadata_tags", "file_path", True),
     ("reading_positions", "comic_path", True),
     ("issues_read", "issue_path", True),
+    # No uniqueness on the path: a comic has one row per sitting.
+    ("reading_sessions", "comic_path", False),
     ("reading_list_entries", "matched_file_path", False),
     ("reading_list_entries", "manual_override_path", False),
     ("reading_lists", "thumbnail_path", False),
@@ -11208,6 +11377,156 @@ def get_on_the_stack_items(limit=10, user_id=None):
     except Exception as e:
         app_logger.error(f"Failed to get on the stack items: {e}")
         return []
+
+
+NEW_RELEASE_SORTS = ("newest", "oldest")
+
+# Owned issues of mapped series that carry a store date. collection_status is a
+# derived cache whose file_path does not follow moves, so the join to
+# file_index is what keeps a stale path out.
+_NEW_RELEASES_FROM = """
+    FROM issues i
+    JOIN collection_status cs
+      ON cs.issue_id = i.id AND cs.series_id = i.series_id
+    JOIN series s ON s.id = i.series_id
+    JOIN file_index fi ON fi.path = cs.file_path AND fi.type = 'file'
+    LEFT JOIN publishers p ON p.id = s.publisher_id
+    WHERE cs.found = 1
+      AND s.mapped_path IS NOT NULL
+      AND i.store_date IS NOT NULL AND i.store_date != ''
+"""
+
+
+def _new_releases_where(allowed_prefixes=None, search=None, publisher_id=None,
+                        year=None):
+    """(extra AND-clauses, params) for the New Releases queries.
+
+    ``_metadata_prefix_clause`` names a bare ``path``, which is ambiguous here
+    (``publishers`` has one too), so it is qualified as file_index's.
+    """
+    clauses, params = [], []
+    prefix_clause, prefix_params = _metadata_prefix_clause(allowed_prefixes)
+    if prefix_clause:
+        clauses.append(prefix_clause.replace("path ", "fi.path "))
+        params.extend(prefix_params)
+    search = (search or "").strip()
+    if search:
+        escaped = (search.replace("\\", "\\\\").replace("%", "\\%")
+                   .replace("_", "\\_"))
+        like = f"%{escaped}%"
+        clauses.append(
+            "(s.name LIKE ? ESCAPE '\\' OR i.name LIKE ? ESCAPE '\\'"
+            " OR fi.name LIKE ? ESCAPE '\\')"
+        )
+        params.extend([like, like, like])
+    if publisher_id is not None:
+        clauses.append("s.publisher_id = ?")
+        params.append(publisher_id)
+    if year:
+        clauses.append("substr(i.store_date, 1, 4) = ?")
+        params.append(str(year))
+    sql = "".join(f" AND {c}" for c in clauses)
+    return sql, params
+
+
+def get_new_releases_page(offset=0, limit=60, allowed_prefixes=None, search=None,
+                          publisher_id=None, year=None, sort="newest"):
+    """
+    One page of owned issues of mapped series, ordered by store date.
+
+    A store date exists only on ``issues`` (series synced from a provider), so
+    a file outside a mapped series cannot appear here.
+
+    allowed_prefixes: per-user folder scope. None => unrestricted;
+        [] => match nothing; else restrict to those subtrees. Applied in SQL
+        so the page and the total count what the user may see.
+    search: matches the series name, the issue title or the file name.
+    sort: 'newest' (default) or 'oldest'.
+
+    Returns ``(items, total)``; ``([], 0)`` on error.
+    """
+    try:
+        limit = max(1, int(limit))
+        offset = max(0, int(offset))
+        direction = "ASC" if sort == "oldest" else "DESC"
+        where_sql, params = _new_releases_where(
+            allowed_prefixes, search, publisher_id, year)
+
+        with db_conn() as conn:
+            if not conn:
+                return [], 0
+            total = conn.execute(
+                f"SELECT COUNT(DISTINCT fi.path) {_NEW_RELEASES_FROM} {where_sql}",
+                params,
+            ).fetchone()[0]
+            # One file can be matched under two series: GROUP BY shows it once,
+            # and SQLite takes the other columns from the MAX(store_date) row.
+            rows = conn.execute(
+                f"""
+                SELECT s.id AS series_id, s.name AS series_name,
+                       p.name AS publisher_name,
+                       cs.issue_number, i.name AS issue_name,
+                       MAX(i.store_date) AS store_date,
+                       fi.path AS file_path, fi.name AS file_name,
+                       fi.size AS file_size
+                {_NEW_RELEASES_FROM} {where_sql}
+                GROUP BY fi.path
+                ORDER BY store_date {direction}, s.name,
+                         CAST(cs.issue_number AS REAL) {direction}, fi.path
+                LIMIT ? OFFSET ?
+                """,
+                params + [limit, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    except Exception as e:
+        app_logger.error(f"Failed to get new releases: {e}")
+        return [], 0
+
+
+def get_new_release_items(limit=10, allowed_prefixes=None):
+    """The newest ``limit`` new releases (the Home carousel)."""
+    return get_new_releases_page(
+        offset=0, limit=limit, allowed_prefixes=allowed_prefixes)[0]
+
+
+def get_new_release_facets(allowed_prefixes=None):
+    """What the New Releases page can be narrowed by, within the user's folder
+    scope: ``{"publishers": [{"id", "name", "count"}], "years": ["2026", ...]}``
+    (publishers A-Z, years newest first). Empty lists on error."""
+    empty = {"publishers": [], "years": []}
+    try:
+        where_sql, params = _new_releases_where(allowed_prefixes)
+        with db_conn() as conn:
+            if not conn:
+                return empty
+            publishers = conn.execute(
+                f"""
+                SELECT p.id AS id, p.name AS name,
+                       COUNT(DISTINCT fi.path) AS count
+                {_NEW_RELEASES_FROM} {where_sql}
+                  AND p.id IS NOT NULL
+                GROUP BY p.id
+                ORDER BY p.name COLLATE NOCASE
+                """,
+                params,
+            ).fetchall()
+            years = conn.execute(
+                f"""
+                SELECT DISTINCT substr(i.store_date, 1, 4) AS year
+                {_NEW_RELEASES_FROM} {where_sql}
+                ORDER BY year DESC
+                """,
+                params,
+            ).fetchall()
+        return {
+            "publishers": [dict(row) for row in publishers],
+            "years": [row["year"] for row in years if row["year"]],
+        }
+
+    except Exception as e:
+        app_logger.error(f"Failed to get new release facets: {e}")
+        return empty
 
 
 def get_reading_list_stack_items(limit=10, user_id=None):
@@ -13546,6 +13865,30 @@ def get_series_mapping(series_id):
     except Exception as e:
         app_logger.error(f"Failed to get series mapping for {series_id}: {e}")
         return None
+
+
+def find_mapped_series_by_cv_id(cv_id, exclude_id=None):
+    """The mapped series rows that name ComicVine volume ``cv_id``, other than
+    ``exclude_id``: ``[{id, name, mapped_path}]``. Empty on no match or error."""
+    if not cv_id:
+        return []
+    try:
+        with db_conn() as conn:
+            if not conn:
+                return []
+            rows = conn.execute(
+                """
+                SELECT id, name, mapped_path FROM series
+                WHERE cv_id = ? AND id != ?
+                  AND mapped_path IS NOT NULL AND mapped_path != ''
+                ORDER BY id
+                """,
+                (cv_id, exclude_id if exclude_id is not None else -1),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        app_logger.error(f"Failed to look up series by ComicVine id {cv_id}: {e}")
+        return []
 
 
 def get_series_by_id(series_id):
@@ -15898,107 +16241,112 @@ def save_komga_config(
     Credentials/paths go to komga_sync_config, schedule fields go to schedules table.
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
+        with db_conn() as conn:
+            if not conn:
+                return False
 
-        # If password is empty, keep existing encrypted credentials
-        credentials_encrypted = None
-        credentials_nonce = None
+            # If password is empty, keep existing encrypted credentials
+            credentials_encrypted = None
+            credentials_nonce = None
 
-        if username or password:
-            # If password is provided (not masked), encrypt new credentials
-            if password and password != "***":
-                try:
-                    from models.providers.crypto import (
-                        encrypt_credentials,
-                        is_crypto_available,
-                    )
-
-                    if is_crypto_available():
-                        creds = {"username": username, "password": password}
-                        credentials_encrypted, credentials_nonce = encrypt_credentials(
-                            creds
-                        )
-                except Exception as e:
-                    app_logger.error(f"Failed to encrypt Komga credentials: {e}")
-                    conn.close()
-                    return False
-            else:
-                # Password is masked ('***'), keep existing credentials but update username
-                c = conn.cursor()
-                c.execute(
-                    "SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1"
-                )
-                row = c.fetchone()
-                if row and row["credentials_encrypted"]:
-                    # Decrypt, update username, re-encrypt
+            if username or password:
+                # If password is provided (not masked), encrypt new credentials
+                if password and password != "***":
                     try:
                         from models.providers.crypto import (
-                            decrypt_credentials,
                             encrypt_credentials,
                             is_crypto_available,
                         )
 
                         if is_crypto_available():
-                            existing_creds = decrypt_credentials(
-                                row["credentials_encrypted"], row["credentials_nonce"]
-                            )
-                            existing_creds["username"] = username
-                            credentials_encrypted, credentials_nonce = (
-                                encrypt_credentials(existing_creds)
+                            creds = {"username": username, "password": password}
+                            credentials_encrypted, credentials_nonce = encrypt_credentials(
+                                creds
                             )
                     except Exception as e:
-                        app_logger.error(f"Failed to update Komga credentials: {e}")
-                        # Keep existing credentials
-                        credentials_encrypted = row["credentials_encrypted"]
-                        credentials_nonce = row["credentials_nonce"]
+                        app_logger.error(f"Failed to encrypt Komga credentials: {e}")
+                        return False
                 else:
-                    # No existing credentials and password is masked - skip
-                    pass
+                    # Password is masked ('***'), keep existing credentials but update username
+                    c = conn.cursor()
+                    c.execute(
+                        "SELECT credentials_encrypted, credentials_nonce FROM komga_sync_config WHERE id = 1"
+                    )
+                    row = c.fetchone()
+                    if row and row["credentials_encrypted"]:
+                        # Decrypt, update username, re-encrypt
+                        try:
+                            from models.providers.crypto import (
+                                decrypt_credentials,
+                                encrypt_credentials,
+                                is_crypto_available,
+                            )
 
-        if credentials_encrypted is not None:
-            conn.execute(
-                """
-                UPDATE komga_sync_config SET
-                    server_url = ?,
-                    credentials_encrypted = ?,
-                    credentials_nonce = ?,
-                    enabled = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """,
-                (
-                    server_url,
-                    credentials_encrypted,
-                    credentials_nonce,
-                    1 if enabled else 0,
-                ),
-            )
-        else:
-            # Update everything except credentials
-            conn.execute(
-                """
-                UPDATE komga_sync_config SET
-                    server_url = ?,
-                    enabled = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = 1
-            """,
-                (server_url, 1 if enabled else 0),
-            )
+                            if is_crypto_available():
+                                existing_creds = decrypt_credentials(
+                                    row["credentials_encrypted"], row["credentials_nonce"]
+                                )
+                                existing_creds["username"] = username
+                                credentials_encrypted, credentials_nonce = (
+                                    encrypt_credentials(existing_creds)
+                                )
+                        except Exception as e:
+                            app_logger.error(f"Failed to update Komga credentials: {e}")
+                            # Keep existing credentials
+                            credentials_encrypted = row["credentials_encrypted"]
+                            credentials_nonce = row["credentials_nonce"]
+                    else:
+                        # No existing credentials and password is masked - skip
+                        pass
 
-        conn.commit()
+            if credentials_encrypted is not None:
+                conn.execute(
+                    """
+                    UPDATE komga_sync_config SET
+                        server_url = ?,
+                        credentials_encrypted = ?,
+                        credentials_nonce = ?,
+                        enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                    (
+                        server_url,
+                        credentials_encrypted,
+                        credentials_nonce,
+                        1 if enabled else 0,
+                    ),
+                )
+            else:
+                # Update everything except credentials
+                conn.execute(
+                    """
+                    UPDATE komga_sync_config SET
+                        server_url = ?,
+                        enabled = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """,
+                    (server_url, 1 if enabled else 0),
+                )
 
-        # Save per-library Komga path mappings
+            conn.commit()
+
+        # Per-library Komga path mappings, on their own connection and only
+        # after this one is closed. A payload they reject (a row with no
+        # library_id) used to raise with its DELETE uncommitted and leak that
+        # connection holding the write lock, so the schedule save below waited
+        # out the 30s busy_timeout and failed -- and this still returned True.
+        mappings_saved = True
         if library_mappings is not None:
-            save_komga_library_mappings(library_mappings)
-
-        conn.close()
+            mappings_saved = save_komga_library_mappings(library_mappings)
 
         # Save schedule fields to unified table
         save_schedule("komga", frequency, time, weekday)
 
+        if not mappings_saved:
+            app_logger.error("Komga config saved, but the library mappings were not")
+            return False
         app_logger.info("Komga config saved successfully")
         return True
     except Exception as e:
@@ -16089,22 +16437,21 @@ def save_komga_library_mappings(mappings):
         mappings: List of dicts with 'library_id' and 'komga_path_prefix'
     """
     try:
-        conn = get_db_connection()
-        if not conn:
-            return False
-        conn.execute("DELETE FROM komga_library_mappings")
-        for m in mappings:
-            prefix = (m.get("komga_path_prefix") or "").strip()
-            if prefix:
-                conn.execute(
-                    """
-                    INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
-                    VALUES (?, ?, CURRENT_TIMESTAMP)
-                """,
-                    (m["library_id"], prefix),
-                )
-        conn.commit()
-        conn.close()
+        with db_conn() as conn:
+            if not conn:
+                return False
+            conn.execute("DELETE FROM komga_library_mappings")
+            for m in mappings:
+                prefix = (m.get("komga_path_prefix") or "").strip()
+                if prefix:
+                    conn.execute(
+                        """
+                        INSERT INTO komga_library_mappings (library_id, komga_path_prefix, updated_at)
+                        VALUES (?, ?, CURRENT_TIMESTAMP)
+                    """,
+                        (m["library_id"], prefix),
+                    )
+            conn.commit()
         return True
     except Exception as e:
         app_logger.error(f"Failed to save Komga library mappings: {e}")

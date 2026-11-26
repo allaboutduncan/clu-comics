@@ -9,7 +9,7 @@
 
 <nav class="navbar navbar-expand-lg bg-primary navbar-dark" data-bs-theme="dark">
   <div class="{{ page_width_chrome(_shell) if _shell is defined else 'container-lg' }}">
-    <a class="navbar-brand d-flex align-items-center" href="/">
+    <a class="navbar-brand d-flex align-items-center" href="{{ request.script_root }}/">
       <img src="{{ url_for('static', filename='images/clu.png') }}" alt="CLU Logo" width="40" class="me-2">
       CLU
     </a>
@@ -50,7 +50,7 @@
           </ul>
         </li>
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle {% if current_page in [url_for('index'), url_for('collection.metadata_browser_page'), url_for('source_wall.source_wall_page')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle {% if current_page in [url_for('index'), url_for('collection.metadata_browser_page'), url_for('collection.new_releases_page'), url_for('source_wall.source_wall_page')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             Home
           </a>
@@ -67,6 +67,12 @@
                 <i class="bi bi-collection me-2"></i>Library
               </a>
             </li>
+            <li>
+              <a href="{{ url_for('collection.new_releases_page') }}"
+                class="dropdown-item {% if current_page == url_for('collection.new_releases_page') %}active{% endif %}">
+                <i class="bi bi-calendar-event me-2"></i>New Releases
+              </a>
+            </li>
             {% if _nav_is_clerk %}
             <li>
               <a href="{{ url_for('source_wall.source_wall_page') }}"
@@ -78,15 +84,46 @@
           </ul>
         </li>
         {% if _nav_is_clerk %}
-        <li class="nav-item">
-          <a href="{{ url_for('collection.files_page') }}"
-            class="nav-link position-relative {% if current_page == url_for('collection.files_page') %}active{% endif %}">
+        <li class="nav-item dropdown" id="file-manager-dropdown">
+          <a class="nav-link dropdown-toggle position-relative {% if current_page in [url_for('collection.files_page'), url_for('problem_files.page'), url_for('library_health.duplicates_page')] %}active{% endif %}"
+            href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             File Manager
+            {% if _nav_is_owner %}
+            {# Library health dot; colour and visibility set by updateHealthBadge in base.html #}
+            <span id="health-dot" class="d-none" aria-hidden="true"></span>
+            {% endif %}
             <span id="file-watch-badge"
               class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-warning d-none">
               0
             </span>
           </a>
+          <ul class="dropdown-menu">
+            <li>
+              <a href="{{ url_for('collection.files_page') }}"
+                class="dropdown-item {% if current_page == url_for('collection.files_page') %}active{% endif %}">
+                <i class="bi bi-folder2-open me-2"></i>File Manager
+              </a>
+            </li>
+            {% if _nav_is_owner %}
+            <li>
+              <hr class="dropdown-divider">
+            </li>
+            <li>
+              <a href="{{ url_for('problem_files.page') }}"
+                class="dropdown-item {% if current_page == url_for('problem_files.page') %}active{% endif %}">
+                <i class="bi bi-exclamation-triangle me-2"></i>Library Health
+                <span id="health-badge" class="badge ms-2 d-none" title="Library health score"></span>
+              </a>
+            </li>
+            <li>
+              <a href="{{ url_for('library_health.duplicates_page') }}"
+                class="dropdown-item {% if current_page == url_for('library_health.duplicates_page') %}active{% endif %}">
+                <i class="bi bi-files me-2"></i>Duplicate Files
+                <span id="duplicates-badge" class="badge bg-secondary ms-2 d-none" title="Duplicate groups to review"></span>
+              </a>
+            </li>
+            {% endif %}
+          </ul>
         </li>
         {% endif %}
         <li class="nav-item">
@@ -153,8 +190,8 @@
         </li>
         {% endif %}
         <li class="nav-item">
-          <a href="{{ url_for('insights_page') }}"
-            class="nav-link {% if current_page == url_for('insights_page') %}active{% endif %}">
+          <a href="{{ url_for('insights.insights_page') }}"
+            class="nav-link {% if current_page == url_for('insights.insights_page') %}active{% endif %}">
             Insights
           </a>
         </li>
@@ -196,14 +233,9 @@
         </li>
         {% endif %}
         <li class="nav-item dropdown">
-          <a class="nav-link dropdown-toggle position-relative {% if current_page in [url_for('config_page'), url_for('schedules_page'), url_for('problem_files.page'), url_for('logs_page')] %}active{% endif %}"
+          <a class="nav-link dropdown-toggle position-relative {% if current_page in [url_for('config_page'), url_for('schedules_page'), url_for('logs.logs_page')] %}active{% endif %}"
             href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
             <i class="bi bi-gear-fill"></i>
-            {% if _nav_is_owner %}
-            {# Library health dot; colour and visibility set by updateHealthBadge in base.html #}
-            <span id="health-dot" class="position-absolute top-0 start-100 translate-middle p-1 rounded-circle d-none"
-              aria-hidden="true"></span>
-            {% endif %}
           </a>
           <ul class="dropdown-menu dropdown-menu-end">
             {% if _nav_is_owner %}
@@ -225,18 +257,11 @@
                 <i class="bi bi-clock-history me-2"></i>Schedules
               </a>
             </li>
-            <li>
-              <a href="{{ url_for('problem_files.page') }}"
-                class="dropdown-item {% if current_page == url_for('problem_files.page') %}active{% endif %}">
-                <i class="bi bi-exclamation-triangle me-2"></i>Library Health
-                <span id="health-badge" class="badge ms-2 d-none" title="Library health score"></span>
-              </a>
-            </li>
             {% endif %}
             {% if _nav_is_clerk %}
             <li>
-              <a href="{{ url_for('logs_page') }}"
-                class="dropdown-item {% if current_page == url_for('logs_page') %}active{% endif %}">
+              <a href="{{ url_for('logs.logs_page') }}"
+                class="dropdown-item {% if current_page == url_for('logs.logs_page') %}active{% endif %}">
                 <i class="bi bi-journal-text me-2"></i>Logs
               </a>
             </li>
@@ -249,7 +274,7 @@
             {% endif %}
             {% if g.get('current_user') and g.current_user.role == 'owner' %}
             <li>
-              <a href="/users"
+              <a href="{{ request.script_root }}/users"
                 class="dropdown-item {% if current_page == '/users' %}active{% endif %}">
                 <i class="bi bi-people me-2"></i>Users
               </a>
@@ -268,7 +293,7 @@
             </li>
             {% endif %}
             <li>
-              <a href="/api/v1/docs"
+              <a href="{{ request.script_root }}/api/v1/docs"
                 class="dropdown-item {% if current_page == '/api/v1/docs' %}active{% endif %}">
                 <i class="bi bi-code-slash me-2"></i>API Docs
               </a>

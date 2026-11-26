@@ -1,6 +1,7 @@
 """Tests for routes/api_v1.py -- the /api/v1/* JSON API for the offline client."""
 import os
 import json
+from unittest.mock import patch
 import pytest
 
 from core.database import (
@@ -470,6 +471,13 @@ class TestProgress:
 # =============================================================================
 
 
+def _session_rows():
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM reading_sessions ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 class TestIssuesRead:
 
     def test_post_marks_issue_read(self, auth_headers, seeded_file, client):
@@ -497,6 +505,59 @@ class TestIssuesRead:
         assert row is not None
         assert row["page_count"] == 4
         assert row["time_spent"] == 300
+
+    def test_post_clears_the_users_stats_cache(self, auth_headers, seeded_file, client):
+        # Insights serves per-user reading stats from stats_cache; a read from
+        # an API client has to invalidate them like the web reader's does.
+        with patch("routes.api_v1.clear_stats_cache_prefix") as clear:
+            resp = client.post(
+                "/api/v1/issues/read",
+                data=json.dumps({"path": seeded_file["path"]}),
+                content_type="application/json",
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        clear.assert_called_once()
+        prefix = clear.call_args.args[0]
+        assert prefix.startswith("u") and prefix.endswith(":")
+
+    def test_importing_a_read_is_not_a_reading_session(self, auth_headers, seeded_file, client):
+        client.post(
+            "/api/v1/issues/read",
+            data=json.dumps({"path": seeded_file["path"], "page_count": 4}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        assert _session_rows() == []
+
+    def test_progress_then_read_is_one_finished_session(self, auth_headers, seeded_file, client):
+        for page in (2, 3):
+            resp = client.put(
+                "/api/v1/progress",
+                data=json.dumps({"path": seeded_file["path"], "page_number": page, "total_pages": 4}),
+                content_type="application/json",
+                headers=auth_headers,
+            )
+            assert resp.status_code == 200
+        client.post(
+            "/api/v1/issues/read",
+            data=json.dumps({"path": seeded_file["path"], "page_count": 4}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        (session,) = _session_rows()
+        assert session["source"] == "api"
+        assert session["finished"] == 1
+        assert (session["start_page"], session["max_page"]) == (2, 4)
+
+    def test_progress_on_page_one_is_not_a_session(self, auth_headers, seeded_file, client):
+        client.put(
+            "/api/v1/progress",
+            data=json.dumps({"path": seeded_file["path"], "page_number": 1}),
+            content_type="application/json",
+            headers=auth_headers,
+        )
+        assert _session_rows() == []
 
     def test_post_missing_path(self, auth_headers, client):
         resp = client.post(

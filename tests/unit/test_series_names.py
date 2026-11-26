@@ -69,6 +69,67 @@ class TestSeriesNameRegex:
         assert series_names.series_name_regex("!!!") == re.escape("!!!")
 
 
+# Every character a series NAME is split on, as it could appear in a filename.
+_SEPARATOR_CHARS = [
+    ch
+    for ch in (
+        [chr(c) for c in range(32, 127)]
+        + [chr(c) for c in range(0x2010, 0x2016)]
+        + ["−"]
+    )
+    if series_names._SEPARATOR_RE.fullmatch(ch)
+]
+
+
+class TestSeparatorsInFilenames:
+    """A separator in the name must be absorbable in the filename (#793).
+
+    The word gap was a hand-written class beside the separator table and had
+    no "," and no ";", so a download carrying CLU's own spelling of
+    "Patsy Walker, A.K.A. Hellcat!" was never filed: it stayed in TARGET, the
+    issue stayed wanted, and it was downloaded again.
+    """
+
+    PATTERN = "{series_name} {issue_number}"
+
+    def _files(self, series, filename):
+        pattern = collection.generate_filename_pattern(
+            self.PATTERN, series, "1", strict_gap=True
+        )
+        return bool(pattern.match(filename))
+
+    def test_the_table_is_not_empty(self):
+        # The ratchet below is vacuous if the comprehension finds nothing.
+        for ch in (",", ";", ":", ".", "-", "_", "+", " "):
+            assert ch in _SEPARATOR_CHARS, repr(ch)
+
+    @pytest.mark.parametrize("ch", _SEPARATOR_CHARS, ids=lambda c: f"U+{ord(c):04X}")
+    def test_every_separator_may_sit_between_two_words(self, ch):
+        name = f"Alpha{ch} Beta"
+        assert self._files(name, f"{name} 001.cbz"), repr(ch)
+        # ...and the same file is the same series spelled without it.
+        assert self._files("Alpha Beta", f"{name} 001.cbz"), repr(ch)
+
+    @pytest.mark.parametrize("series, filename", [
+        ("Patsy Walker, A.K.A. Hellcat!", "Patsy Walker, A.K.A. Hellcat! 001 (2016).cbz"),
+        ("Patsy Walker, A.K.A. Hellcat!", "Patsy Walker, A.k.a. Hellcat! 001 (2016).cbz"),
+        ("Patsy Walker, A.K.A. Hellcat!", "Patsy Walker A.K.A. Hellcat 001 (2016).cbz"),
+        ("Infinity, Inc.", "Infinity, Inc. 001 (1984).cbz"),
+        ("Infinity Inc", "Infinity, Inc. 001 (1984).cbz"),
+        ("Foo; Bar", "Foo; Bar 001.cbz"),
+    ])
+    def test_a_comma_or_semicolon_name_files(self, series, filename):
+        assert self._files(series, filename)
+
+    @pytest.mark.parametrize("series, filename", [
+        # A longer-named series sharing the prefix is still a different series.
+        ("Infinity, Inc.", "Infinity, Inc. Special 001 (1984).cbz"),
+        ("Batman", "Batman, Inc. 001.cbz"),
+    ])
+    def test_the_spin_off_guard_still_holds(self, series, filename):
+        assert not self._files(series, filename)
+
+
 class TestOneTable:
     """helpers.collection re-exports; it must not grow a body of its own."""
 

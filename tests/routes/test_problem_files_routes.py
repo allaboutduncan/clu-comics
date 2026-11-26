@@ -664,3 +664,94 @@ class TestDeleteFolder:
             resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
             assert resp.status_code == 404
             self.trash.assert_not_called()
+
+
+class TestDeleteReleaseFolder:
+    """#844: a release folder in WATCH that would not unwrap is listed under
+    'unpack', and Delete has to work on it although it is a non-empty folder."""
+
+    def _post(self, client, folder, unpack_row):
+        from contextlib import ExitStack
+
+        def get_problem(path, source):
+            return unpack_row if source == "unpack" else None
+
+        with ExitStack() as stack:
+            enter = stack.enter_context
+            enter(patch("core.problem_files.has_problem", return_value=True))
+            enter(patch("core.problem_files.get_problem", side_effect=get_problem))
+            enter(patch("helpers.library.is_critical_path", return_value=False))
+            inspect = enter(patch("core.library_health.inspect_folder"))
+            enter(patch("core.problem_files.clear_problem", return_value=1))
+            enter(patch("core.problem_files.clear_problems_under", return_value=0))
+            trash = enter(patch("helpers.trash.move_to_trash",
+                                return_value={"trashed": True}))
+            resp = client.post("/api/problem-files/delete", json={"path": str(folder)})
+        return resp, trash, inspect
+
+    def test_a_listed_release_folder_is_trashed_with_its_parts(self, client, tmp_path):
+        folder = tmp_path / "Some.Release-GRP"
+        folder.mkdir()
+        (folder / "x.r00").write_bytes(b"part")
+        resp, trash, inspect = self._post(
+            client, folder, {"path": str(folder), "error_class": "ReleaseUnwrapFailed"})
+        assert resp.status_code == 200
+        trash.assert_called_once_with(str(folder))
+        inspect.assert_not_called()
+
+    def test_a_folder_with_another_unpack_class_is_still_refused(self, client, tmp_path):
+        folder = tmp_path / "Other"
+        folder.mkdir()
+        resp, trash, _ = self._post(
+            client, folder, {"path": str(folder), "error_class": "BadZipFile"})
+        assert resp.status_code == 404
+        trash.assert_not_called()
+
+    def test_the_row_gets_no_search_and_its_own_buttons(self, client):
+        row = _row(path="/downloads/temp/Some.Release-GRP", source="unpack",
+                   error_class="ReleaseUnwrapFailed", is_release_folder=True)
+        with patch("core.problem_files.list_problems", return_value=[row]):
+            resp = client.get("/api/problem-files")
+        listed = resp.get_json()["problems"][0]
+        assert "search" not in listed, "a replacement cannot be filed onto a folder"
+
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parents[2] / "static" / "js"
+               / "problem_files.js").read_text(encoding="utf-8")
+        assert "if (row.is_release_folder) {" in src
+
+
+class TestListCost:
+    def test_the_page_asks_for_a_screenful_not_everything(self):
+        """Each listed row costs the server up to two stat calls on what is
+        often a network mount; the page used to take 500 rows on every load
+        and reloads after every action."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        src = (root / "static" / "js" / "problem_files.js").read_text(encoding="utf-8")
+        assert "var LIST_PAGE = 100;" in src
+        assert "params.set('limit', String(listLimit));" in src
+        assert 'id="pf-more"' in (root / "templates" / "problem_files.html").read_text(
+            encoding="utf-8")
+
+    def test_listing_does_not_log_a_line_per_row(self, client, tmp_path, caplog):
+        """The Search context is parsed with the app's filename parser, which
+        logged at INFO on every match: about 500 lines per page load."""
+        import logging
+
+        from core.problem_files import SOURCE_THUMBNAIL, record_problem
+
+        for i in range(5):
+            # On disk: a listed file that is provably gone is pruned on sight.
+            (tmp_path / f"Batman {i:03d} (2016).cbz").write_bytes(b"not a zip")
+            record_problem(str(tmp_path / f"Batman {i:03d} (2016).cbz"), SOURCE_THUMBNAIL,
+                           error_class="BadZipFile", error_message="File is not a zip file")
+        with caplog.at_level(logging.INFO):
+            data = client.get("/api/problem-files").get_json()
+        assert len(data["problems"]) == 5
+        assert data["problems"][0]["search"]["series"]
+        noisy = [r.getMessage() for r in caplog.records
+                 if "Matched " in r.getMessage() or "pattern matched" in r.getMessage()
+                 or " matched: " in r.getMessage()]
+        assert noisy == []

@@ -137,7 +137,7 @@ them with `prefetch_ids(entries)`.
   `ci_series` names a publication type the entry's series does not**
   (`names_other_publication_type`): "Batman (2016)/" holds "Batman Annual
   001", whose `<Number>` is 1 too.
-- **Issue numbers compare through `normalize_issue_number`, never SQL `CAST`.**
+- **Issue numbers compare through `issue_identity_key`, never SQL `CAST`.**
   `CAST('50.LR' AS REAL)` is 50, which is how every `#50.LR` entry matched
   `#050`. The sign is part of the number (`-1` is never `1`). The filename tier
   uses `filename_issue_matches`: the series must start the name

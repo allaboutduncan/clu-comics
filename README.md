@@ -35,7 +35,7 @@ This started as a set of utilities built while moving a 70,000+ issue comic libr
 - **[Folder monitoring](FEATURES.md#folder-monitoring)** — watch a downloads folder and automatically unpack, convert to CBZ, rename and file new comics into your library.
 - **[Insights, Timeline and CLU Wrapped](FEATURES.md#insights-timeline--clu-wrapped)** — collection size and reading stats, a full timeline of what you have read, and shareable year-in-review images.
 - **[Multi-user with per-folder permissions](FEATURES.md#multi-user-accounts--permissions)** — Reader, Clerk and Store Owner roles, per-library and per-folder access grants, and per-user reading history. A single-user install with no password needs no login; once you set an owner password, CLU asks for it.
-- **[API and OPDS](FEATURES.md#api--integrations)** — a token-authenticated `/api/v1` for companion apps, self-documenting at `/api/v1/docs`, plus OPDS feeds for comic reader apps and optional Komga reading sync.
+- **[API and OPDS](FEATURES.md#api--integrations)** — a token-authenticated `/api/v1` for companion apps, self-documenting at `/api/v1/docs`, plus OPDS feeds for comic reader apps and optional Komga and Kavita reading sync.
 
 See **[FEATURES.md](FEATURES.md)** for the complete breakdown.
 
@@ -163,6 +163,7 @@ To have CLU use a standalone FlareSolverr in the same network namespace instead 
 | AniList / MangaDex / MangaUpdates | Manga metadata |
 | Bedetheque | Bandes dessinées (European comics) metadata |
 | [Komga](https://komga.org/) | Optional reading-history sync |
+| [Kavita](https://www.kavitareader.com/) | Optional reading-history sync, per user (Kavita 0.9 or newer) |
 | [Direct Download Source](https://clucomics.org/features/file-downloads/) | Comic download search and grabbing |
 | [SABnzbd / NZBGet](https://clucomics.org/features/usenet/setup/) | Usenet download clients |
 | [Newznab indexers](https://clucomics.org/features/usenet/indexers/) | Usenet search |
@@ -177,7 +178,7 @@ CLU is not a replacement for a comic server — it is the layer underneath one.
 
 | Tool | What it is for | With CLU |
 | --- | --- | --- |
-| **Komga / Kavita** | Serving and reading your library | CLU maintains the files and metadata they read; CLU can also sync reading history from Komga |
+| **Komga / Kavita** | Serving and reading your library | CLU maintains the files and metadata they read; CLU can also sync reading history from Komga and Kavita |
 | **Mylar3** | Comic downloading and series tracking | Overlapping — CLU covers pull list, wanted issues and downloads, plus file and metadata tools Mylar does not have |
 | **ComicTagger** | Tagging individual comic files | CLU does bulk tagging across a whole library, with review and revert |
 | **CLU** | Bulk file operations, CBZ editing, metadata, downloads, browsing and reading | — |
@@ -215,7 +216,7 @@ Yes — CLU is a full comic metadata editor. It reads and writes ComicInfo.xml, 
 
 ### Does CLU work with Komga or Kavita?
 
-Yes. CLU operates directly on the files on disk, so anything you fix or tag in CLU shows up in Komga or Kavita after a scan. CLU can also sync reading history from Komga.
+Yes. CLU operates directly on the files on disk, so anything you fix or tag in CLU shows up in Komga or Kavita after a scan. CLU can also sync reading history from Komga, and from Kavita for each CLU user who links their own Kavita auth key under My Account.
 
 ### Can multiple people use one CLU install?
 

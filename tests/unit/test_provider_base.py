@@ -175,6 +175,17 @@ class TestExtractIssueNumber:
         ("Comic-013A.cbz", "13A"),
         # An explicit #N still wins over an ordinal token in the title
         ("Batman 100th Anniversary Special #5.cbz", "5"),
+        # #778: the sign is part of the number. Dropping it looked up issue #1
+        # and could write #1's metadata into the #-1 archive.
+        ("Spider-Man -1 (1990).cbz", "-1"),
+        ("What If... -001 (1997).cbz", "-1"),
+        ("X-Force (1991) Issue -1.cbz", "-1"),
+        ("Black Cat - 001 (2025).cbz", "1"),
+        # #778: a year in the issue title is not the issue number
+        ("Detective Comics 156 (1937) - Batmobile of 1950.cbz", "156"),
+        # #778: collected-edition naming, where the only bare number is a year
+        ("Absolute Flash V01 - Of Two Worlds 2025.cbz", "1"),
+        ("Absolute Superman V02 - Son of the Demon 2026.cbz", "2"),
     ])
     def test_extraction(self, filename, expected):
         assert extract_issue_number(filename) == expected

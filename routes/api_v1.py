@@ -20,6 +20,7 @@ from flask import Blueprint, jsonify, request, Response
 
 from core.app_logging import app_logger
 from core.database import (
+    clear_stats_cache_prefix,
     compute_volumes_for_paths,
     current_user_id,
     filesystem_browse_issues,
@@ -39,6 +40,7 @@ from core.database import (
     save_reading_position,
 )
 from core.path_access import grant_level_filter, resolve_served_path
+from core.reading_sessions import note_reading_activity
 from core.version import __version__
 from helpers import create_thumbnail_streaming, serve_comic_file
 
@@ -1000,6 +1002,10 @@ def put_progress():
     )
     if not ok:
         return jsonify({"error": "save_failed"}), 500
+    # Progress from an API client is a sitting too. It sends no session id, so
+    # saves on one comic within the session gap are one session.
+    if page_number > 1:
+        note_reading_activity(path, page_number, total_pages, source="api")
 
     return jsonify(get_reading_position(path))
 
@@ -1040,4 +1046,12 @@ def post_issue_read():
     )
     if not ok:
         return jsonify({"error": "save_failed"}), 500
+    # Same invalidation as the web reader's mark-read: without it a read from
+    # an API client left Insights on its cached counts.
+    clear_stats_cache_prefix(f"u{current_user_id()}:")
+    # Closes a session this client already has open on the comic. It never
+    # opens one: this route is also how a client imports read history.
+    note_reading_activity(
+        path, page_count or None, page_count or None, finished=True, source="api"
+    )
     return jsonify({"ok": True})

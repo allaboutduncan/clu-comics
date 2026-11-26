@@ -138,9 +138,16 @@ def db_connection(db_path):
         # the thread would outlive the get_db_path patch above, writing to
         # whatever DB the next test is using). Wait for quiet first.
         wait_for_background_analyze()
+        # core.settings caches one snapshot of every setting for 5s. This is a
+        # new database, so a snapshot taken from the previous test's is stale:
+        # without this a setting saved by one test reads back in the next.
+        from core import settings as _settings
+
+        _settings.invalidate()
         conn = get_db_connection()
         yield conn
         conn.close()
+        _settings.invalidate()
 
 
 # ---------------------------------------------------------------------------
@@ -335,3 +342,19 @@ def _folder_art_in_tmp(tmp_path, monkeypatch):
     folder_art.reset_state()
     yield
     folder_art.reset_state()
+
+
+@pytest.fixture(autouse=True)
+def _wrapped_slides_in_tmp(tmp_path, monkeypatch):
+    """Keep core.wrapped_slides' PNG cache inside the test's tmp dir.
+
+    Like folder art, its root is the fixed /cache volume, and any test that
+    asks a Wrapped route for a slide writes one.
+    """
+    try:
+        from core import wrapped_slides
+    except ImportError:
+        yield
+        return
+    monkeypatch.setattr(wrapped_slides, "get_cache_dir", lambda: str(tmp_path / "cache"))
+    yield

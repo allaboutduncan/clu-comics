@@ -17,9 +17,10 @@ paths:
 
 Whether `monitor.py` runs is the `monitor_enabled` setting (`MONITOR_ENABLED`
 in `SETTINGS_SCHEMA`, default **off**), not the `MONITOR` env var. The env var
-is imported once by `core.config.seed_monitor_from_env` (flag
-`monitor_env_migrated`, never overwrites a stored value) and only logged as
-deprecated after that. `core.download_utils.monitor_enabled()` reads the same
+is no longer read: releases 7.0 to 7.3 imported `MONITOR=yes` into the setting
+once, and that import is gone. The debug package still reports the raw value,
+for the "I set MONITOR=yes and nothing happens" report.
+`core.download_utils.monitor_enabled()` reads the same
 setting, so api.py's DEFER/FULL decision and the running process cannot
 disagree for longer than the 5s settings cache.
 
@@ -56,15 +57,15 @@ Things that look arbitrary and are not:
 Saving Metron credentials returns `suggest_enable_monitor` when monitoring is
 off, and the settings page offers to turn it on with a modal. Tests:
 `tests/unit/test_monitor_supervisor.py`, `test_monitor_lifecycle.py`,
-`test_monitor_env_seed.py`, `test_monitor_supervisor_wiring.py` (AST over
+`test_monitor_supervisor_wiring.py` (AST over
 app.py) and `tests/routes/test_folder_monitor_routes.py`.
 
 # WATCH pipeline: archives, name claims, orphan sweep, moves, conversion
 
 ### Archives in WATCH
 
-Unpacking is **unconditional** — the old `AUTO_UNPACK` setting is gone, and
-`core/config.py`'s `REMOVED_SETTINGS` strips it from an upgraded `config.ini`.
+Unpacking is **unconditional** — the old `AUTO_UNPACK` setting is gone (it is
+named only in `core.settings.NON_SCHEMA_INI_KEYS`, the record of legacy keys).
 Two consequences that are easy to undo by accident:
 
 - **`.zip` and `.rar` bypass `IGNORED_EXTENSIONS`.** They ship *on* that list
@@ -84,6 +85,29 @@ Two consequences that are easy to undo by accident:
 
 Multipart/hybrid release **folders** still go to `unwrap_release` first, and
 `_process_archive` re-checks that before touching a part.
+
+#### A release folder is offered to the unwrapper by every file in it (#844)
+
+`.r00`, `.nfo` and `file_id.diz` are not in `ARCHIVE_EXTS`, so their own file
+events never reached `_process_archive`'s folder check and each part was
+renamed and moved to TARGET by itself. The reconcile sweep offers folders
+first, which is why this only showed where file events arrive (not on NFS).
+`_process_file` therefore offers the parent of **any** file in a WATCH
+subfolder to `_maybe_unwrap_release_folder` before the plain path.
+
+- **A folder in `_in_flight_dirs` is skipped there.** The unwrapper's own
+  staged output comes back through `_process_file` while the claim is held;
+  without the skip it would be answered "claimed" and never moved.
+- **A failed unwrap is `_report_unwrap_failure`**: a `SOURCE_UNPACK` row on the
+  *folder* (`CLASS_RELEASE_UNWRAP_FAILED` / `_PARTIAL`, the only directory that
+  source lists), cleared by a later full success, and an exponential backoff
+  capped at `ORPHAN_MIN_AGE_SECONDS`. It was a fixed 5-minute cooldown with a
+  WARNING per attempt and nothing on any page. The WARNING is first-failure
+  only now.
+- **`_failed_unwraps` is `(fingerprint, failures, retry_at)`**, the fingerprint
+  being the archive *parts* only. A missing volume arriving retries at once; a
+  comic staged by a partial unwrap leaving the folder must not, or the 24h
+  partial hold would re-hand-off the same comics on the next sweep.
 
 #### A damaged archive must be opened once, not once per sweep
 
@@ -329,6 +353,40 @@ Retry for that source points at **Rebuild**, which is
 `CLU.executeStreamingOp('single_file', path)` — literally `convert_to_cbz`, and
 already streamed; re-running it inside the request would outlive gunicorn's
 timeout on a 500MB pack.
+
+#### A PDF is converted in WATCH, by every route, or it stays there
+
+PDF→CBZ used to live only in `_handoff_unwrapped`, so only a PDF that came out
+of a multipart release *folder* was converted. One extracted from a pack by
+`_unrar_file`, or dropped loose, was renamed and moved to TARGET as a `.pdf`.
+And when that one conversion failed it logged "produced no CBZ" and returned:
+the parts were already cleaned up, the folder classified as `NORMAL`, and the
+next sweep moved the raw PDF (#834).
+
+- **The step is in `_process_file`** (`_pdf_to_comic`, gated on AUTOCONVERT),
+  ahead of the rename, so the route does not matter. `_handoff_unwrapped` only
+  claims the staged file and calls `_process_file`, and backs a False off
+  itself, because it does not come through `_handle_file_if_complete`.
+- **It converts before the move, where a `.cbr` converts after it.** A PDF that
+  will not convert must not reach TARGET, where the wanted sweep would file it
+  into the library. Failure is `SOURCE_CONVERT` + `CLASS_PDF_FAILED` on the
+  WATCH path, a False from `_process_file` and therefore a `_failed_files`
+  backoff; success clears the row.
+- **`process_pdf_file` returns a bool and is all or nothing**, the same
+  contract as `convert_to_cbz`: True only when every page rendered and saved,
+  the CBZ was written and the PDF was removed. It returned `None` and swallowed
+  everything, so a failed CBZ write was followed by deleting the PDF, and a page
+  that failed to save was just absent from the CBZ. Do not test
+  `os.path.exists(<base>.cbz)` instead.
+- **Its scratch folder is `.temp_<name>`** (`cbz_ops.pdf.scratch_dir_for`), which
+  `is_scratch_dir` matches. It was a bare `<name>/` beside the PDF, which in
+  WATCH is an ordinary sub-folder of loose page images.
+- **A `.cbz` of the same name is never overwritten.** `process_pdf_file` refuses,
+  and `_pdf_to_comic` returns before opening the PDF and records no problem: the
+  backoff retries once that comic has moved on.
+
+Tests: the `pdf_handler` tests in `tests/unit/test_monitor.py`,
+`TestProcessPdfFileOutcome` in `tests/mocked/test_pdf.py`.
 
 #### A RAR or 7z named `.cbz` is recognised by its bytes
 

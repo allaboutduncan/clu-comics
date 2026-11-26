@@ -130,6 +130,15 @@ class TestTimelineWrappedIsolation:
         with patch.object(wrapped, "current_user_id", return_value=B):
             assert wrapped.get_yearly_total_read(2024) == 1
 
+    def test_reading_years_per_user(self, db_connection):
+        # The Timeline year dropdown listed years from every user's history.
+        mark_issue_read("/data/a.cbz", read_at="2024-06-01T10:00:00", user_id=A)
+        mark_issue_read("/data/c.cbz", read_at="2021-06-03T10:00:00", user_id=B)
+        with patch.object(wrapped, "current_user_id", return_value=A):
+            assert wrapped.get_years_with_reading_data() == [2024]
+        with patch.object(wrapped, "current_user_id", return_value=B):
+            assert wrapped.get_years_with_reading_data() == [2021]
+
 
 # ---------------------------------------------------------------------------
 # Reading lists

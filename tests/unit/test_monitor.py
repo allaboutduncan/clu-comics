@@ -239,6 +239,116 @@ def test_maybe_unwrap_failure_keeps_source(handler, tmp_path, monkeypatch):
     assert not os.path.exists(str(work)), "work dir removed even on failure"
 
 
+def _failing_release(handler, tmp_path, monkeypatch, partial=False):
+    """A release whose unwrap yields nothing (or, partial, one comic). Returns
+    (handler, folder, unwrap call list, recorded rows, cleared rows)."""
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    h, watch, target = handler
+    rel = _make_release(watch, "Broken.Release")
+    calls, recorded, cleared = [], [], []
+
+    def fake_unwrap(folder, root, **k):
+        calls.append(folder)
+        work = tmp_path / f"work{len(calls)}"
+        work.mkdir()
+        comics = []
+        if partial:
+            comic = work / "x.cbz"
+            _write(str(comic))
+            comics = [str(comic)]
+        return UnwrapResult(comics, bool(partial), None if partial else "no_comics",
+                            partial, str(work))
+
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release", fake_unwrap)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda path, source, **k: recorded.append(
+                            (path, source, k.get("error_class"))))
+    monkeypatch.setattr(monitor, "clear_problem",
+                        lambda path, source=None: cleared.append((path, source)))
+    return h, rel, calls, recorded, cleared
+
+
+def test_failed_unwrap_is_listed_on_library_health(handler, tmp_path, monkeypatch):
+    """#844: a release that cannot be extracted only logged a warning."""
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(handler, tmp_path, monkeypatch)
+
+    assert h._maybe_unwrap_release_folder(rel) is True
+    assert recorded == [(os.path.abspath(rel), monitor.SOURCE_UNPACK,
+                         monitor.CLASS_RELEASE_UNWRAP_FAILED)]
+
+
+def test_failed_unwrap_backs_off_and_is_not_re_extracted(handler, tmp_path, monkeypatch):
+    """Unchanged parts are not extracted again inside the cooldown, and the
+    cooldown grows with each failure instead of repeating every sweep."""
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(handler, tmp_path, monkeypatch)
+    key = os.path.abspath(rel)
+
+    h._maybe_unwrap_release_folder(rel)
+    assert h._maybe_unwrap_release_folder(rel) is True, "still claimed while cooling down"
+    assert len(calls) == 1 and len(recorded) == 1
+
+    # Cooldown over, same parts: one more attempt, and a longer wait.
+    fp, failures, _ = h._failed_unwraps[key]
+    h._failed_unwraps[key] = (fp, failures, 0)
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 2
+    fp, failures, retry_at = h._failed_unwraps[key]
+    assert failures == 2
+    base = max(h.reconcile_interval_minutes, 5) * 60
+    assert retry_at - time.time() > base * 1.5
+    assert retry_at - time.time() <= monitor.ORPHAN_MIN_AGE_SECONDS + 1
+
+
+def test_failed_unwrap_retries_at_once_when_a_part_arrives(handler, tmp_path, monkeypatch):
+    """The missing first volume turning up must not wait out the cooldown."""
+    h, rel, calls, _, _ = _failing_release(handler, tmp_path, monkeypatch)
+
+    h._maybe_unwrap_release_folder(rel)
+    _write(os.path.join(rel, "--bbyvt3ga.z01"))
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 2
+
+
+def test_partial_unwrap_is_listed_and_not_re_handed_off(handler, tmp_path, monkeypatch):
+    import monitor
+    h, rel, calls, recorded, _ = _failing_release(
+        handler, tmp_path, monkeypatch, partial=True)
+
+    h._maybe_unwrap_release_folder(rel)
+    h._maybe_unwrap_release_folder(rel)
+    assert len(calls) == 1, "the staged comic leaving must not read as a changed release"
+    assert [r[2] for r in recorded] == [monitor.CLASS_RELEASE_UNWRAP_PARTIAL]
+    assert os.path.exists(os.path.join(rel, "--bbyvt3ga.zip")), "parts kept"
+
+
+def test_successful_unwrap_clears_the_library_health_row(handler, tmp_path, monkeypatch):
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    h, watch, target = handler
+    rel = _make_release(watch, "Fixed.Release")
+    work = tmp_path / "work"
+    work.mkdir()
+    comic = work / "x.cbz"
+    _write(str(comic))
+    cleared = []
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(monitor, "unwrap_release",
+                        lambda folder, root, **k: UnwrapResult([str(comic)], True, None, False, str(work)))
+    monkeypatch.setattr(monitor, "clear_problem",
+                        lambda path, source=None: cleared.append((path, source)))
+
+    h._maybe_unwrap_release_folder(rel)
+    assert (os.path.abspath(rel), monitor.SOURCE_UNPACK) in cleared
+
+
 def test_maybe_unwrap_real_zip_end_to_end(handler, monkeypatch):
     """End-to-end with real zip extraction (no RAR binary needed): a release of
     obfuscated zip parts carrying a .cbz is unwrapped, renamed, and moved to
@@ -490,6 +600,42 @@ def test_rar_in_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch):
     h._process_file(rpath)
 
     assert os.path.exists(rpath), "the part is left for the unwrapper"
+
+
+@pytest.mark.parametrize("name", ["f23734c.r00", "f23734c.r01", "f23734c.nfo", "file_id.diz"])
+def test_any_file_of_a_release_folder_defers_to_the_unwrapper(handler, monkeypatch, name):
+    """A scene release with old-style volumes (.r00-.r02, no .rar) plus cruft:
+    the event for any one of its files hands the folder to the unwrapper.
+    Before, these were not archives to _process_file and each was moved raw."""
+    import monitor
+    h, watch, target = handler
+    rel = os.path.join(watch, "Marvel.-.FF.2011.No.12.2012.HYBRID.COMIC.eBook-21A1")
+    os.makedirs(rel)
+    for part in ("f23734c.r00", "f23734c.r01", "f23734c.r02", "f23734c.nfo", "file_id.diz"):
+        _write(os.path.join(rel, part))
+    assert monitor.classify_release_folder(rel) == monitor.MULTIPART_ARCHIVE
+
+    offered = []
+    monkeypatch.setattr(h, "_maybe_unwrap_release_folder", lambda p: offered.append(p) or True)
+    monkeypatch.setattr(h, "_move_file", lambda p: pytest.fail(f"moved a release part alone: {p}"))
+
+    assert h._process_file(os.path.join(rel, name)) is True
+    assert offered == [os.path.abspath(rel)]
+    assert os.listdir(target) == []
+
+
+def test_a_file_in_an_ordinary_subfolder_is_still_moved(handler, monkeypatch):
+    import monitor
+    h, watch, target = handler
+    sub = os.path.join(watch, "Batman")
+    os.makedirs(sub)
+    path = os.path.join(sub, "notes.txt")
+    _write(path)
+    moved = []
+    monkeypatch.setattr(h, "_move_file", lambda p: moved.append(p) or True)
+    monkeypatch.setattr(h, "_rename_file", lambda p: None)
+    h._process_file(path)
+    assert moved == [path]
 
 
 def test_strip_comic_extension():
@@ -1459,3 +1605,229 @@ def test_a_rewritten_archive_gets_a_fresh_attempt(handler, monkeypatch):
 
     h._handle_file_if_complete(zip_path)
     assert not os.path.exists(zip_path), "the good copy must be unpacked immediately"
+
+
+# ---------------------------------------------------------------------------
+# PDF -> CBZ (#834). Only the multipart unwrap hand-off converted a PDF, so one
+# that reached WATCH any other way was moved to TARGET as a .pdf, and a failed
+# conversion on the unwrap route left the PDF for the next sweep to move raw.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def pdf_handler(handler, monkeypatch):
+    """handler with autoconvert on and cbz_ops.pdf.process_pdf_file faked.
+
+    ``outcome["ok"]`` decides what the fake does. On success it performs the
+    real observable effect (write <base>.cbz, remove the PDF); on failure it
+    leaves the PDF alone, which is the contract. Returns
+    (handler, watch, target, calls, outcome, recorded, cleared).
+    """
+    import cbz_ops.pdf
+    import monitor
+
+    h, watch, target = handler
+    h.autoconvert = True
+    calls, recorded, cleared = [], [], []
+    outcome = {"ok": True}
+
+    def fake_process(path):
+        calls.append(path)
+        if not outcome["ok"]:
+            return False
+        _write(os.path.splitext(path)[0] + ".cbz", b"converted")
+        os.remove(path)
+        return True
+
+    monkeypatch.setattr(cbz_ops.pdf, "process_pdf_file", fake_process)
+    monkeypatch.setattr(monitor, "record_problem",
+                        lambda *a, **k: recorded.append((a, k.get("error_class"))))
+    monkeypatch.setattr(monitor, "clear_problem", lambda *a, **k: cleared.append(a))
+    return h, watch, target, calls, outcome, recorded, cleared
+
+
+def test_loose_pdf_is_converted_then_moved(pdf_handler):
+    """A PDF dropped straight into WATCH reaches TARGET as a .cbz."""
+    import monitor
+
+    h, watch, target, calls, _outcome, recorded, cleared = pdf_handler
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    assert h._process_file(pdf) is True
+
+    assert calls == [pdf]
+    assert os.path.exists(_moved_path(target, "Series 001 (2011).cbz"))
+    assert not os.path.exists(_moved_path(target, "Series 001 (2011).pdf"))
+    assert os.listdir(watch) == []
+    assert recorded == []
+    assert cleared == [(pdf, monitor.SOURCE_CONVERT)], \
+        "a success must clear the row an earlier failure left"
+    assert h._in_flight == set(), "the claim on the new .cbz is released"
+
+
+def test_failed_pdf_conversion_stays_in_watch_and_is_reported(pdf_handler):
+    """A PDF that will not convert is never moved to TARGET as it is."""
+    import monitor
+
+    h, watch, target, calls, outcome, recorded, _cleared = pdf_handler
+    outcome["ok"] = False
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    assert h._process_file(pdf) is False
+
+    assert os.listdir(watch) == ["Series 001 (2011).pdf"]
+    assert os.listdir(target) == [], "nothing reaches TARGET"
+    assert recorded == [((pdf, monitor.SOURCE_CONVERT), monitor.CLASS_PDF_FAILED)]
+
+
+def test_failed_pdf_conversion_backs_off(pdf_handler):
+    """The 5-minute sweep must not re-render the same broken PDF every pass."""
+    h, watch, _target, calls, outcome, _recorded, _cleared = pdf_handler
+    outcome["ok"] = False
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    h._handle_file_if_complete(pdf)
+    assert os.path.abspath(pdf) in h._failed_files
+
+    h._handle_file_if_complete(pdf)
+    assert calls == [pdf], "the backoff is checked before the PDF is opened again"
+
+
+def test_pdf_conversion_that_raises_is_a_failure(pdf_handler, monkeypatch):
+    import cbz_ops.pdf
+
+    h, watch, target, _calls, _outcome, recorded, _cleared = pdf_handler
+
+    def boom(path):
+        raise RuntimeError("poppler is not installed")
+    monkeypatch.setattr(cbz_ops.pdf, "process_pdf_file", boom)
+
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    assert h._process_file(pdf) is False
+    assert os.path.exists(pdf)
+    assert os.listdir(target) == []
+    assert len(recorded) == 1
+
+
+def test_pdf_success_is_the_return_value_not_a_cbz_on_disk(pdf_handler, monkeypatch):
+    """Same trap as convert_to_cbz: exists(<base>.cbz) is a different question."""
+    import cbz_ops.pdf
+
+    h, watch, target, _calls, _outcome, recorded, _cleared = pdf_handler
+
+    def writes_then_fails(path):
+        _write(os.path.splitext(path)[0] + ".cbz", b"incomplete")
+        return False
+    monkeypatch.setattr(cbz_ops.pdf, "process_pdf_file", writes_then_fails)
+
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    assert h._process_file(pdf) is False
+    assert os.listdir(target) == [], "the leftover .cbz must not be handed on"
+    assert len(recorded) == 1
+
+
+def test_pdf_waits_while_a_cbz_of_the_same_name_is_in_watch(pdf_handler):
+    """The conversion writes <base>.cbz, so it must not land on another comic."""
+    h, watch, target, calls, _outcome, recorded, _cleared = pdf_handler
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    cbz = os.path.join(watch, "Series 001 (2011).cbz")
+    _write(pdf, b"%PDF-1.4")
+    _write(cbz, b"a different comic")
+
+    assert h._process_file(pdf) is False
+
+    assert calls == [], "the PDF is not opened"
+    assert recorded == [], "a taken name is not a damaged PDF"
+    with open(cbz, "rb") as f:
+        assert f.read() == b"a different comic"
+
+
+def test_pdf_is_moved_as_is_when_autoconvert_is_off(pdf_handler):
+    h, watch, target, calls, _outcome, _recorded, _cleared = pdf_handler
+    h.autoconvert = False
+    pdf = os.path.join(watch, "Series 001 (2011).pdf")
+    _write(pdf, b"%PDF-1.4")
+
+    assert h._process_file(pdf) is True
+
+    assert calls == []
+    assert os.path.exists(_moved_path(target, "Series 001 (2011).pdf"))
+
+
+def _unwrap_to_pdf(monkeypatch, tmp_path):
+    """Make the unwrapper emit one PDF from an isolated work dir."""
+    import monitor
+    from helpers.unwrap import UnwrapResult
+
+    work = tmp_path / "work"
+    work.mkdir()
+    emerged = work / "obfuscated.pdf"
+    _write(str(emerged), b"%PDF-1.4")
+    monkeypatch.setattr(monitor, "classify_release_folder",
+                        lambda p: monitor.MULTIPART_ARCHIVE)
+    monkeypatch.setattr(
+        monitor, "unwrap_release",
+        lambda folder, root, **k: UnwrapResult([str(emerged)], True, None, False, str(work)))
+
+
+def test_unwrapped_pdf_is_converted_through_the_shared_step(pdf_handler, tmp_path, monkeypatch):
+    from cbz_ops.rename import clean_directory_name
+
+    h, watch, target, calls, _outcome, _recorded, _cleared = pdf_handler
+    rel = _make_release(watch, "Some.Release (2011)")
+    _unwrap_to_pdf(monkeypatch, tmp_path)
+
+    assert h._maybe_unwrap_release_folder(rel) is True
+
+    base = clean_directory_name("Some.Release (2011)")
+    assert calls == [os.path.join(rel, base + ".pdf")]
+    assert os.path.exists(_moved_path(target, base + ".cbz"))
+    assert h._in_flight == set()
+
+
+def test_unwrapped_pdf_that_fails_is_not_moved_raw_by_the_next_sweep(
+        pdf_handler, tmp_path, monkeypatch):
+    """The #834 report: "produced no CBZ", then the next sweep moved the PDF.
+
+    Once the parts are cleaned up the folder holds only the PDF, so it stops
+    classifying as a multipart release and the per-file sweep takes it. That
+    sweep must find the failure on record, not a fresh file to move.
+    """
+    import monitor
+    from cbz_ops.rename import clean_directory_name
+
+    h, watch, target, calls, outcome, recorded, _cleared = pdf_handler
+    outcome["ok"] = False
+    rel = _make_release(watch, "Some.Release (2011)")
+    _unwrap_to_pdf(monkeypatch, tmp_path)
+
+    assert h._maybe_unwrap_release_folder(rel) is True
+
+    staged = os.path.join(rel, clean_directory_name("Some.Release (2011)") + ".pdf")
+    assert os.path.exists(staged), "the PDF is kept"
+    assert os.path.abspath(staged) in h._failed_files
+    assert [r[1] for r in recorded] == [monitor.CLASS_PDF_FAILED]
+
+    # The next sweep: the folder is an ordinary one now.
+    monkeypatch.setattr(monitor, "classify_release_folder", lambda p: "normal")
+    h._handle_file_if_complete(staged)
+
+    assert calls == [staged], "not converted again inside the backoff"
+    assert os.path.exists(staged)
+    assert os.listdir(target) == [], "and never moved to TARGET unconverted"
+
+
+def test_pdf_scratch_folder_is_one_the_monitor_ignores():
+    """process_pdf_file renders its pages beside the PDF, inside WATCH."""
+    import monitor
+    from cbz_ops.pdf import scratch_dir_for
+
+    scratch = scratch_dir_for(os.path.join("watch", "Series 001 (2011).pdf"))
+    assert os.path.dirname(scratch) == "watch"
+    assert monitor.is_scratch_dir(scratch)

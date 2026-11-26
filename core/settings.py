@@ -1,8 +1,7 @@
 """Typed access to the settings that used to live in config.ini.
 
 ``user_preferences`` is the only store. ``SETTINGS_SCHEMA`` is the one table
-mapping a legacy ini key to its preference key, type and default; the one-time
-import (``core.config.migrate_ini_to_user_preferences``), the save routes and
+mapping a legacy ini key to its preference key, type and default; the save routes and
 every reader all go through it, so they cannot disagree about a name or a
 default.
 
@@ -38,7 +37,7 @@ def _s(pref, typ, default, category):
 SETTINGS_SCHEMA = {
     # file processing
     # Whether monitor.py runs and owns WATCH. Was the MONITOR env var, which
-    # core.config.seed_monitor_from_env imports once (default off).
+    # no longer read (default off).
     "MONITOR_ENABLED": _s("monitor_enabled", _B, False, "file_processing"),
     "AUTOCONVERT": _s("autoconvert", _B, False, "file_processing"),
     "READ_SUBDIRECTORIES": _s("read_subdirectories", _B, False, "file_processing"),
@@ -77,6 +76,8 @@ SETTINGS_SCHEMA = {
     "DOWNLOAD_PROVIDER_PRIORITY": _s("download_provider_priority", _S, "pixeldrain,download_now,mega", "downloads"),
     "PIXELDRAIN_API_KEY": _s("pixeldrain_api_key", _S, "", "downloads"),
     "HEADERS": _s("custom_headers", _S, "", "downloads"),
+    # Kavita reading sync: the server every user's own auth key is used against.
+    "KAVITA_SERVER_URL": _s("kavita_server_url", _S, "", "downloads"),
     # Owner opt-out for core.url_guard's address check (LAN download hosts,
     # fake-ip / split-horizon DNS). Off by default. Never in an ini.
     "DOWNLOAD_ALLOW_PRIVATE_HOSTS": _s("download_allow_private_hosts", _B, False, "downloads"),
@@ -112,6 +113,10 @@ SETTINGS_SCHEMA = {
     "LIBRARY_HEALTH_RECHECK_DAYS": _s("library_health_recheck_days", _I, 90, "system"),
     # appearance
     "BOOTSTRAP_THEME": _s("bootstrap_theme", _S, "default", "personalization"),
+    # Site-default Wrapped style (core/wrapped_styles.py); users pick their
+    # own in the Wrapped viewer. Blank = each recap's own default. Never in
+    # an ini.
+    "WRAPPED_STYLE": _s("wrapped_style", _S, "", "personalization"),
     # Site-default page width (core/page_width.py); users override it on
     # /account. Never in an ini.
     "PAGE_WIDTH": _s("page_width", _S, "auto", "personalization"),
@@ -128,8 +133,9 @@ SETTINGS_SCHEMA = {
     "MYLAR_IMPORT_LAST_RUN": _s("mylar_import_last_run", _S, "", "onboarding"),
 }
 
-# ini keys that are *not* plain preferences, or that stay out of the schema on
-# purpose. The import handles each of these itself (or deliberately skips it).
+# Legacy ini keys that are *not* plain preferences, or that stay out of the
+# schema on purpose. The config.ini import is gone; the list remains as the
+# record of where each key went.
 #   CACHE_DIR      a fixed path (core.config.CACHE_DIR), not a setting
 #   WATCH/TARGET   already migrated, see core.config.get_watch_dir
 #   TIMEZONE       migrated by init_db

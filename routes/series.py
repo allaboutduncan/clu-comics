@@ -1582,6 +1582,47 @@ def update_series_search_aliases(series_id):
     })
 
 
+def _existing_home_conflict(series, path):
+    """The 409 body when `series` already has a folder other than `path`.
+
+    The folder is named only to a user who could map a series to it; anyone
+    else learns that one exists, not where.
+    """
+    from core.path_access import grant_refusal
+    from core.series_home import find_existing_series_home
+
+    home = find_existing_series_home(series, path)
+    if not home:
+        return None
+
+    existing = home["path"]
+    visible = grant_refusal(existing) is None
+    where = existing if visible else "a folder you do not have access to"
+    if home["reason"] == "mapped":
+        error = f"This series is already mapped to {where}"
+    elif home["reason"] == "cv_mapped":
+        other = home.get("series_name") or f"series {home.get('series_id')}"
+        error = (f"The same ComicVine volume is already mapped to {where} "
+                 f"(as {other})")
+    else:
+        error = f"This series already has a folder: {where}"
+
+    app_logger.info(
+        f"Subscribe for series {series.get('id')} to {path} stopped: "
+        f"{home['reason']} -> {existing}"
+    )
+    return {
+        "success": False,
+        "conflict": True,
+        "reason": home["reason"],
+        "error": error,
+        "existing_path": existing if visible else None,
+        # Mapping this series onto a folder another series row owns would
+        # leave two rows filing into one folder.
+        "can_reuse": visible and home["reason"] == "cvinfo",
+    }
+
+
 @series_bp.route("/api/series/<int:series_id>/subscribe", methods=["POST"])
 def subscribe_series(series_id):
     """Create folder, map series, and create cvinfo file."""
@@ -1597,12 +1638,16 @@ def subscribe_series(series_id):
     # is handed straight to os.makedirs. Sanitize each segment (never the '/'
     # separators) so filesystem-hostile characters can't reach disk. Mirrors the
     # client-side sanitizePathSegment() in templates/series.html.
+    # A folder that already exists is taken as it is named: "Use existing
+    # folder" (#796) sends back a path from disk, and rewriting it would make
+    # the very second folder that answer is meant to avoid.
     from helpers import sanitize_path_segment
 
-    leading_slash = path.startswith("/")
-    segments = [sanitize_path_segment(seg) for seg in path.split("/")]
-    segments = [seg for seg in segments if seg]
-    path = ("/" if leading_slash else "") + "/".join(segments)
+    if not os.path.isdir(path):
+        leading_slash = path.startswith("/")
+        segments = [sanitize_path_segment(seg) for seg in path.split("/")]
+        segments = [seg for seg in segments if seg]
+        path = ("/" if leading_slash else "") + "/".join(segments)
 
     if not path or path == "/":
         return jsonify({"success": False, "error": "Path required"}), 400
@@ -1618,6 +1663,14 @@ def subscribe_series(series_id):
         series = get_series_by_id(series_id)
         if not series:
             return jsonify({"success": False, "error": "Series not found"}), 404
+
+        # A series already in the library under another folder name must not
+        # get a second, empty folder (#796). `force` is the user's answer to
+        # the 409, not a default.
+        if not data.get("force"):
+            conflict = _existing_home_conflict(series, path)
+            if conflict:
+                return jsonify(conflict), 409
 
         os.makedirs(path, exist_ok=True)
         app_logger.info(f"Created folder for subscription: {path}")
@@ -2327,38 +2380,30 @@ def api_add_library():
             def rebuild_index_for_new_library():
                 # The scan reports no progress of its own, and a big library
                 # outlasts STALE_TIMEOUT; keep the op from reading "stalled".
-                done = threading.Event()
-
-                def keepalive():
-                    while not done.wait(60):
-                        app_state.update_operation(op_id)
-
-                threading.Thread(target=keepalive, daemon=True).start()
-                try:
-                    app_logger.info(
-                        f"Rebuilding file index after adding library: {name}"
-                    )
-                    app_state.update_operation(op_id, detail="Scanning folders...")
-                    walked_roots = []
-                    filesystem_entries = scan_filesystem_for_sync(
-                        walked_roots=walked_roots
-                    )
-                    app_state.update_operation(
-                        op_id,
-                        detail=f"Updating the index ({len(filesystem_entries)} entries)...",
-                    )
-                    sync_file_index_incremental(
-                        filesystem_entries, walked_roots=walked_roots
-                    )
-                    app_logger.info(
-                        f"File index rebuilt successfully for new library: {name}"
-                    )
-                    app_state.complete_operation(op_id)
-                except Exception as e:
-                    app_logger.error(f"Error rebuilding index for new library: {e}")
-                    app_state.complete_operation(op_id, error=True)
-                finally:
-                    done.set()
+                with app_state.operation_keepalive(op_id):
+                    try:
+                        app_logger.info(
+                            f"Rebuilding file index after adding library: {name}"
+                        )
+                        app_state.update_operation(op_id, detail="Scanning folders...")
+                        walked_roots = []
+                        filesystem_entries = scan_filesystem_for_sync(
+                            walked_roots=walked_roots
+                        )
+                        app_state.update_operation(
+                            op_id,
+                            detail=f"Updating the index ({len(filesystem_entries)} entries)...",
+                        )
+                        sync_file_index_incremental(
+                            filesystem_entries, walked_roots=walked_roots
+                        )
+                        app_logger.info(
+                            f"File index rebuilt successfully for new library: {name}"
+                        )
+                        app_state.complete_operation(op_id)
+                    except Exception as e:
+                        app_logger.error(f"Error rebuilding index for new library: {e}")
+                        app_state.complete_operation(op_id, error=True)
 
             thread = threading.Thread(target=rebuild_index_for_new_library, daemon=True)
             thread.start()
@@ -2508,7 +2553,7 @@ def api_delete_publisher(publisher_id):
 @series_bp.route("/api/publishers/<signed:publisher_id>", methods=["PUT", "PATCH"])
 def api_update_publisher(publisher_id):
     """Update a publisher."""
-    from core.database import get_db_connection
+    from core.database import db_conn
 
     data = request.get_json() or {}
     name = data.get("name")
@@ -2516,51 +2561,47 @@ def api_update_publisher(publisher_id):
     logo = data.get("logo")
 
     try:
-        conn = get_db_connection()
-        if not conn:
-            return jsonify(
-                {"success": False, "error": "Database connection failed"}
-            ), 500
+        with db_conn() as conn:
+            if not conn:
+                return jsonify(
+                    {"success": False, "error": "Database connection failed"}
+                ), 500
 
-        c = conn.cursor()
+            c = conn.cursor()
 
-        ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
-        updates = []
-        params = []
+            ALLOWED_COLUMNS = {"name", "path", "logo", "brand_keywords"}
+            updates = []
+            params = []
 
-        if name is not None:
-            updates.append("name")
-            params.append(name)
-        if path is not None:
-            updates.append("path")
-            params.append(path if path else None)
-        if logo is not None:
-            updates.append("logo")
-            params.append(logo if logo else None)
-        if "brand_keywords" in data:
-            updates.append("brand_keywords")
-            params.append(data["brand_keywords"] if data["brand_keywords"] else None)
+            if name is not None:
+                updates.append("name")
+                params.append(name)
+            if path is not None:
+                updates.append("path")
+                params.append(path if path else None)
+            if logo is not None:
+                updates.append("logo")
+                params.append(logo if logo else None)
+            if "brand_keywords" in data:
+                updates.append("brand_keywords")
+                params.append(data["brand_keywords"] if data["brand_keywords"] else None)
 
-        if not updates:
-            conn.close()
-            return jsonify({"success": False, "error": "No fields to update"}), 400
+            if not updates:
+                return jsonify({"success": False, "error": "No fields to update"}), 400
 
-        if not all(col in ALLOWED_COLUMNS for col in updates):
-            conn.close()
-            return jsonify({"success": False, "error": "Invalid field"}), 400
+            if not all(col in ALLOWED_COLUMNS for col in updates):
+                return jsonify({"success": False, "error": "Invalid field"}), 400
 
-        set_clause = ", ".join(col + " = ?" for col in updates)
-        params.append(publisher_id)
-        c.execute("UPDATE publishers SET " + set_clause + " WHERE id = ?", params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
-        conn.commit()
+            set_clause = ", ".join(col + " = ?" for col in updates)
+            params.append(publisher_id)
+            c.execute("UPDATE publishers SET " + set_clause + " WHERE id = ?", params)  # nosec B608 - columns validated against ALLOWED_COLUMNS
+            conn.commit()
 
-        if c.rowcount > 0:
-            conn.close()
-            app_logger.info(f"Updated publisher ID: {publisher_id}")
-            return jsonify({"success": True})
-        else:
-            conn.close()
-            return jsonify({"success": False, "error": "Publisher not found"}), 404
+            if c.rowcount > 0:
+                app_logger.info(f"Updated publisher ID: {publisher_id}")
+                return jsonify({"success": True})
+            else:
+                return jsonify({"success": False, "error": "Publisher not found"}), 404
 
     except Exception as e:
         app_logger.error(f"Error updating publisher: {e}")

@@ -245,7 +245,7 @@ class TestOneMillionException:
         ("Action Comics 1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
         ("Superman 1000000 (1998).cbz", "Superman 1000000 (1998).cbz"),
         ("Action Comics #1000000 (1998).cbz", "Action Comics 1000000 (1998).cbz"),
-        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998)"),
+        ("Action Comics (1998) #1000000.cbz", "Action Comics 1000000 (1998).cbz"),
         ("Superman 1000000 (1998) (digital) (Son of Ultron).cbz",
          "Superman 1000000 (1998).cbz"),
     ])
@@ -1028,6 +1028,75 @@ class TestGetRenamedFilename:
         assert get_renamed_filename("Avengers 001.1 (2017).cbz") == "Avengers 001.1 (2017).cbz"
         assert get_renamed_filename("Avengers 1.MU (2017).cbz") == "Avengers 001.MU (2017).cbz"
 
+    @pytest.mark.parametrize("filename,expected", [
+        # A leading "#NN" is a weekly-pack index, not the issue number.
+        ("#06-Glory - Angela - Angels In Hell #1 [OTK].cbz", "Glory - Angela - Angels In Hell 001.cbz"),
+        ("#06-Glory - Angela - Angels In Hell #1 (2014) [OTK].cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+    ])
+    def test_leading_pack_index_is_not_the_issue(self, filename, expected):
+        """Regression: the lazy hash match took the index, leaving no title ("006.cbz")."""
+        from cbz_ops.rename import get_renamed_filename
+        assert get_renamed_filename(filename) == expected
+
+    def test_hash_match_never_yields_a_bare_number(self):
+        """With nothing after the index to match, leave the name alone (None) rather than "012.cbz"."""
+        from cbz_ops.rename import get_renamed_filename
+        assert get_renamed_filename("#12 Spawn.cbz") is None
+
+    @pytest.mark.parametrize("filename,expected", [
+        # Year last, no bracket tag: rule70 in the rule engine has the same
+        # lazy "<series>#<issue>" shape and runs before ISSUE_HASH_PATTERN.
+        ("#06-Glory - Angela - Angels In Hell #1 (2014).cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+        ("#06-Glory - Angela - Angels In Hell #1 (2014) (digital) (OTK).cbz", "Glory - Angela - Angels In Hell 001 (2014).cbz"),
+        ("#3 Injustice 2 #1 (2018).cbz", "Injustice 2 001 (2018).cbz"),
+        # The real issue number carries no "#": ISSUE_PATTERN and the rule
+        # engine must not see the index either.
+        ("#12 Spawn 005 (1992).cbz", "Spawn 005 (1992).cbz"),
+        ("#12 Spawn 005.cbz", "Spawn 005.cbz"),
+        ("#06-Glory - Angela - Angels In Hell 001 [OTK].cbz", "Glory - Angela - Angels In Hell 001.cbz"),
+        # The whole index goes, decimal part and separator included.
+        ("#1.5 Deadpool #2.cbz", "Deadpool 002.cbz"),
+        ("#07: Saga #3.cbz", "Saga 003.cbz"),
+        ("#06 - Glory #1 (2014).cbz", "Glory 001 (2014).cbz"),
+        # A title that starts with a number keeps it.
+        ("#06-100 Bullets #5.cbz", "100 Bullets 005.cbz"),
+    ])
+    def test_leading_pack_index_is_stripped_on_every_path(self, filename, expected):
+        """The index is removed before the rule engine, the pre-clean and every pattern."""
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")):
+            assert get_renamed_filename(filename) == expected
+
+    def test_leading_pack_index_with_year_before_issue(self):
+        """"Title (YYYY) #N" is taken by rule40, ahead of the hash pattern."""
+        from cbz_ops.rename import get_renamed_filename
+        with patch("cbz_ops.rename.load_custom_rename_config", return_value=(False, "")):
+            result = get_renamed_filename("#06-Glory - Angela (2014) #1.cbz")
+        # Prefix only: whether rule40 keeps the extension is #843's business.
+        assert result.startswith("Glory - Angela 001 (2014)")
+
+    def test_leading_pack_index_not_in_custom_pattern_series(self):
+        """The custom-pattern path builds its name from extract_comic_values."""
+        from cbz_ops.rename import extract_comic_values, get_renamed_filename
+        name = "#06-Glory - Angela - Angels In Hell #1 (2014) [OTK].cbz"
+        values = extract_comic_values(name)
+        assert values["series_name"] == "Glory - Angela - Angels In Hell"
+        assert values["issue_number"] == "001"
+        assert values["year"] == "2014"
+        with patch("cbz_ops.rename.load_custom_rename_config",
+                   return_value=(True, "{series_name} {issue_number}")):
+            assert get_renamed_filename(name) == "Glory - Angela - Angels In Hell 001.cbz"
+
+    @pytest.mark.parametrize("filename", [
+        "#1 (2018).cbz",                # the number is the only issue the name has
+        "#1.cbz",
+        "Injustice 2 #1 (2018).cbz",    # no leading index at all
+        "noextension",
+    ])
+    def test_strip_leading_pack_index_leaves_other_names_alone(self, filename):
+        from cbz_ops.rename import strip_leading_pack_index
+        assert strip_leading_pack_index(filename) == filename
+
     def test_fallback_pattern(self):
         from cbz_ops.rename import get_renamed_filename
         result = get_renamed_filename("Comic Name (2018) some extra.cbz")
@@ -1270,6 +1339,67 @@ class TestTryRuleEngine:
         )
         result = try_rule_engine("batman 5.cbz", str(cfg))
         assert result == "Batman 005.cbz"
+
+    # #843: five shipped rules ended in a greedy ".*(?P<ext>\.\w+)?$". The ".*"
+    # took the extension, the optional group matched empty, and the file was
+    # renamed on disk with no extension at all.
+    @pytest.mark.parametrize("filename,expected", [
+        # rule40
+        ("Spider-Man 2099 (1992) #44 (digital) (Colecionadores.GO).cbz",
+         "Spider-Man 2099 044 (1992).cbz"),
+        ("Spider-Man 2099 (1992) #44.cbr", "Spider-Man 2099 044 (1992).cbr"),
+        # rule85_yearmonth
+        ("Hokum & Hex v1 001 (199309) (digital).cbz", "Hokum & Hex v1 001 (1993).cbz"),
+        # rule55
+        ("199309 Hokum & Hex 001 ( ) (digital).cbz", "Hokum & Hex 001 (1993).cbz"),
+        # rule201_one_million
+        ("Action Comics (1998) #1000000 (digital).cbz",
+         "Action Comics 1000000 (1998).cbz"),
+    ])
+    def test_shipped_rules_keep_the_extension(self, filename, expected):
+        from cbz_ops.rename import try_rule_engine
+        assert try_rule_engine(filename, "config/rename_rules.ini", width=3) == expected
+
+    def test_rule30_keeps_the_extension(self, tmp_path):
+        # rule60 outranks rule30 for every name it can match, so the shipped
+        # pattern is exercised on its own.
+        import configparser
+        from cbz_ops.rename import try_rule_engine
+        cp = configparser.ConfigParser()
+        cp.read("config/rename_rules.ini")
+        cfg = tmp_path / "rules.ini"
+        cfg.write_text(
+            "[RENAME]\n"
+            f"rule30.pattern = {cp['RENAME']['rule30.pattern']}\n"
+            f"rule30.output = {cp['RENAME']['rule30.output']}\n"
+        )
+        assert try_rule_engine(
+            "Mighty Comics 1985-03 ( 12) (1985) (digital).cbz", str(cfg), width=3
+        ) == "Mighty Comics 012 (1985).cbz"
+
+    def test_no_shipped_rule_has_a_greedy_tail_before_an_optional_ext(self):
+        import configparser
+        import re
+        cp = configparser.ConfigParser()
+        cp.read("config/rename_rules.ini")
+        greedy = [k for k, v in cp["RENAME"].items()
+                  if k.endswith(".pattern") and re.search(r"\.\*\(\?P<ext>[^)]*\)\?\$$", v)]
+        assert greedy == []
+
+    def test_engine_restores_an_extension_the_rule_did_not_capture(self, tmp_path):
+        # The engine itself must not depend on every rule being written
+        # carefully: an optional ext group that did not participate is None.
+        from cbz_ops.rename import try_rule_engine
+        cfg = tmp_path / "rules.ini"
+        cfg.write_text(
+            "[RENAME]\n"
+            "r.pattern = ^(?P<series>.*?)\\s*\\((?P<year>\\d{4})\\)\\s*#(?P<issue>\\d{1,4}).*(?P<ext>\\.\\w+)?$\n"
+            "r.output = {series|title} {issue|pad} ({year}){ext}\n"
+            "r.priority = 100\n"
+        )
+        assert try_rule_engine("Batman (1990) #5 (digital).cbz", str(cfg)) == "Batman 005 (1990).cbz"
+        # No extension to restore: nothing is invented.
+        assert try_rule_engine("Batman (1990) #5", str(cfg)) == "Batman 005 (1990)"
 
 
 # ===== parentheses_replacer =====

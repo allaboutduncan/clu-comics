@@ -1,4 +1,4 @@
-"""Tests for core.config -- the preference-backed compatibility view and Flask config."""
+"""Tests for core.config -- the leftover config.ini warning and Flask config."""
 import os
 from unittest.mock import patch
 
@@ -18,57 +18,51 @@ def db(tmp_path):
         cs.invalidate()
 
 
-class TestCompatibilityView:
-    """api.py and a long tail of callers still read config.get("SETTINGS", KEY)."""
+class TestLeftoverIni:
+    """config.ini is not read any more; one left behind is reported, once."""
 
-    def test_load_config_never_creates_an_ini(self, tmp_path, db):
-        config_file = str(tmp_path / "config.ini")
-        with patch("core.config.CONFIG_FILE", config_file):
-            from core.config import load_config
-            load_config()
-        assert not os.path.exists(config_file)
+    @pytest.fixture(autouse=True)
+    def _fresh(self, tmp_path, monkeypatch):
+        import core.config as cc
+        monkeypatch.setattr(cc, "CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(cc, "_leftover_ini_reported", False)
+        self.cc = cc
+        self.dir = tmp_path
 
-    def test_section_exists(self, db):
-        from core.config import config
-        assert config.has_section("SETTINGS")
-        assert "SETTINGS" in config
+    def test_no_file_no_warning_and_none_created(self):
+        with patch.object(self.cc.app_logger, "warning") as warn:
+            self.cc.load_config()
+        warn.assert_not_called()
+        assert not (self.dir / "config.ini").exists()
 
-    def test_defaults_come_from_the_schema(self, db):
-        from core.config import config
-        assert config.get("SETTINGS", "AUTOCONVERT") == "False"
-        assert config.getboolean("SETTINGS", "AUTO_RENAME_MONITOR") is True
-        assert config.getint("SETTINGS", "TRASH_MAX_SIZE_MB") == 1024
-        assert config.get("SETTINGS", "CACHE_DIR") == "/cache"
+    def test_unimported_ini_is_reported_once(self):
+        ini = self.dir / "config.ini"
+        ini.write_text("[SETTINGS]\nAUTOCONVERT = True\n")
+        with patch.object(self.cc.app_logger, "warning") as warn:
+            self.cc.load_config()
+            self.cc.load_config()
+        assert warn.call_count == 1
+        message = warn.call_args[0][0]
+        assert str(ini) in message and "7.3" in message
 
-    def test_reads_stored_values(self, db):
-        from core.config import config
-        cs.set_setting("AUTOCONVERT", True)
-        cs.set_setting("IGNORED_EXTENSIONS", ".a,.b")
-        assert config.getboolean("SETTINGS", "AUTOCONVERT") is True
-        assert config.get("SETTINGS", "IGNORED_EXTENSIONS") == ".a,.b"
-        assert config["SETTINGS"]["IGNORED_EXTENSIONS"] == ".a,.b"
-        assert config["SETTINGS"].get("NOT_A_SETTING", "x") == "x"
+    def test_the_file_is_neither_read_nor_touched(self, db):
+        ini = self.dir / "config.ini"
+        body = "[SETTINGS]\nAUTOCONVERT = True\n"
+        ini.write_text(body)
+        self.cc.load_config()
+        assert ini.read_text() == body
+        assert cs.get_bool("AUTOCONVERT") is False
 
-    def test_unknown_key_uses_fallback(self, db):
-        from core.config import config
-        assert config.get("SETTINGS", "NOPE", fallback="z") == "z"
-        assert config.getboolean("SETTINGS", "NOPE", fallback=True) is True
-        assert config.getint("SETTINGS", "NOPE", fallback=7) == 7
-        assert not config.has_option("SETTINGS", "NOPE")
+    def test_an_imported_ini_is_silent(self):
+        (self.dir / "config.ini.migrated").write_text("[SETTINGS]\n")
+        with patch.object(self.cc.app_logger, "warning") as warn:
+            self.cc.load_config()
+        warn.assert_not_called()
 
-    def test_watch_and_target_come_from_prefs(self, db):
-        from core.config import config
-        from core.database import set_user_preference
-        set_user_preference("watch", "/w")
-        assert config.get("SETTINGS", "WATCH") == "/w"
-        assert config.get("SETTINGS", "TARGET") == "/downloads/processed"
-
-    def test_writes_are_refused(self, db):
-        """The view is read-only: a stray write must not silently diverge."""
-        from core.config import config
-        config.set("SETTINGS", "AUTOCONVERT", "True")
-        config["SETTINGS"]["AUTOCONVERT"] = "True"
-        assert config.getboolean("SETTINGS", "AUTOCONVERT") is False
+    def test_the_view_and_the_importer_are_gone(self):
+        for name in ("config", "CONFIG_FILE", "migrate_ini_to_user_preferences",
+                     "seed_monitor_from_env"):
+            assert not hasattr(self.cc, name), name
 
 
 class TestLoadFlaskConfig:

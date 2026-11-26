@@ -266,6 +266,8 @@ Ranges are handled differently based on whether they're same-series or different
 | Different-series range containing target (e.g., "Court of Owls #1-5" searching for #3) | REJECT | -100 |
 | Same-series range with annuals added on (e.g., "Batman #1-50 + Annuals" searching for #50) | FALLBACK | 20 |
 | Annual-series range containing target (e.g., "Batman Annual #1-5" searching regular #2) | REJECT | -100 |
+| Range naming another volume (e.g., "Wolverine Vol. 2 #1-189" searching Vol. 3 #2) | REJECT | -100 |
+| Range dated outside the wanted run (e.g., "30 Days of Night #1-6 (2017-2018)" for the 2012 series) | REJECT | -100 |
 
 Same-series ranges get FALLBACK because the issues ARE the main series issues. Arc/different-series ranges get REJECT because arcs have their own internal issue numbering separate from the main series — and so do annuals and quarterlies. A publication type joined to an issue run by `+`/`&` is an add-on to that run, not a sub-series (`_is_publication_addon`).
 
@@ -282,6 +284,74 @@ Same-series ranges get FALLBACK because the issues ARE the main series issues. A
 > `try_download_for_issue` (`models/usenet.py`, `models/dcpp.py`). A skipped
 > pack reports `status: "pack_skipped"` and records no range. Manual grabs are
 > never gated: the search window marks packs, so picking one is a choice.
+
+### Wrong Results the Gate Rejects (#730)
+
+All of these are in `score_comic`, for the same reason as the issue-evidence
+cap: there is no shared call site. Tests:
+`tests/mocked/test_getcomics_wrong_result_gates.py`.
+
+- **A penalised pack is not a fallback.** `FALLBACK_MIN` is 0, so the -40
+  volume mismatch was cancelled by name + range points and landed on exactly
+  0: one wanted Wolverine Vol. 3 issue queued the 189-issue Vol. 2 pack. A
+  range that names another volume, or whose date fits neither the issue nor
+  the volume (`_score_year`'s `year_mismatch`), is -100. A single issue keeps
+  the plain penalty.
+- **A pack's `(2001-2008)` span matches any issue year inside it**
+  (`_year_in_title_span`), not only its two ends. Without that the rule above
+  would reject every long run for a mid-run issue on the reading-list path,
+  which has no volume year. With no volume year a pack dated one year off is
+  penalised but kept (cover date against store date).
+- **The best FALLBACK wins** (`better_fallback`, used by the sweep, the
+  simulation, Usenet and DC++). All four kept the first one, so a pack that
+  barely qualified beat a clean one later in the list.
+- **An undated title is capped below ACCEPT for a back-catalogue issue**
+  (`_is_undated_back_issue`: wanted year older than last year). "Amazing
+  Fantasy #15" scored 75 for the 2004 series and was the 2012 reprint. Undated
+  posts are listing entries for new releases, so a current issue still
+  downloads; an issue with no known year is never held back. The year is read
+  from the text after the series name, so "Spider-Man 2099" is not a date.
+- **A number between the name and the issue marker is part of the name**
+  (`_NAME_NUMBER` in `_score_remaining`): "Spider-Man 2099 #1" is not
+  Spider-Man. It runs before the pure-range test, which reads "2099 #1
+  (2015)" as nothing but numbers. A leading number equal to the wanted issue's
+  or volume's year is a date ("Flash Gordon 2024 #1").
+- **A `:` subtitle is an arc, like a dash** (`_classify_remaining`). "Empyre –
+  Captain America #1 – 3" was already -100 and "Empyre: Avengers #1 – 3" was a
+  fallback. A series whose own name holds the colon matches whole first.
+- **Fan-made, unofficial and bootleg editions are -100** (`_UNOFFICIAL_MARKER`),
+  read from the text after the series name.
+- Not covered: a limit on pack size.
+
+### A Collected Series Needs a Collected Title (#730)
+
+A trade/hardcover series has "issues" that are volumes. "Laura Kinney –
+Wolverine #2 (2025)", the single, scored 95 for volume 2 of the trade series,
+and the real volume ("… Vol. 2 – My So-Called Perfect Life (TPB)") scored -40,
+so the series could only ever download the wrong thing.
+
+- **`collected_series` is asked of the series, never guessed from the title**:
+  `helpers.collection.is_collected_series(series_name, issues)`, the filer's
+  own test, computed once per series by the sweep and the simulation and
+  passed down to `score_getcomics_result`, `search_getcomics_for_issue` (the
+  scrape-index and sitemap tiers answer *instead of* a live search, so they
+  must reject the single too), Usenet and DC++. `None` means not known and
+  scores as single issues: reading-list items and the manual search.
+- **`score_comic` dispatches.** `_score_collected_title` reads a title with a
+  collected marker ("Vol. N", "vN", "Book N", or a format word); everything
+  else goes to `_score_issue_title`, and for a collected series a result that
+  matched an issue number or a range there is -100. The unnumbered one-shot
+  rule is the only way through without a marker.
+- **The volume number is the issue number**, and a format word with no number
+  is only ever #1, with the wanted year. Text between the series name and the
+  marker is another book; the subtitle after it is ignored. A run of volumes
+  ("Vol. 1 – 9") is refused: nothing downstream can split it.
+- **`is_collected_series` also counts an issue named only for its format**
+  ("TPB", "TPB/HC"), which is how ComicVine names a one-volume trade's only
+  issue. The filer shares the function, so such a series now reads a `v01`
+  filename marker as the number too. That only adds matches.
+- DC++'s `_normalize_hub_title` drops the `vN` token before scoring, so a
+  collected series finds nothing there rather than the single. Not fixed.
 
 ### Variant Keywords
 

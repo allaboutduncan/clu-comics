@@ -79,7 +79,7 @@ SOURCE_LABELS = {
     SOURCE_THUMBNAIL: "Thumbnail",
     SOURCE_REBUILD: "Rebuild",
     SOURCE_METADATA_WRITE: "Metadata write",
-    SOURCE_CONVERT: "CBR conversion",
+    SOURCE_CONVERT: "Conversion",
     SOURCE_UNPACK: "Unpack",
     SOURCE_SERIES_JSON: "series.json",
     SOURCE_INTEGRITY: "Integrity scan",
@@ -97,6 +97,16 @@ CLASS_RAR_FAILED = "RarConversionFailed"
 # CLASS_RAR_FAILED because the advice differs: the same .cbr has extracted 39
 # pages on one run and 80 on the next, so a retry is worth offering first.
 CLASS_RAR_PARTIAL = "RarExtractIncomplete"
+# A PDF the folder monitor could not turn into a CBZ. The row's path is the
+# PDF in WATCH: it is held there, never moved to TARGET unconverted.
+CLASS_PDF_FAILED = "PdfConversionFailed"
+# A multipart/scene release *folder* in WATCH that the monitor could not
+# unwrap (a missing or damaged volume). The row's path is the folder, the one
+# directory SOURCE_UNPACK lists; nothing was moved to TARGET (FAILED), or only
+# what did extract was (PARTIAL), and the parts are kept either way.
+CLASS_RELEASE_UNWRAP_FAILED = "ReleaseUnwrapFailed"
+CLASS_RELEASE_UNWRAP_PARTIAL = "ReleaseUnwrapPartial"
+RELEASE_FOLDER_CLASSES = (CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL)
 CLASS_SERIES_JSON_BLANK = "SeriesJsonBlankFields"
 CLASS_SERIES_JSON_INVALID = "SeriesJsonInvalid"
 CLASS_CBR_BESIDE_CBZ = "CbrBesideCbz"
@@ -120,6 +130,37 @@ def _file_mtime(path):
         return None
 
 
+# The only sources that may list a file sitting in WATCH: the folder monitor's
+# own reports (an archive that will not unpack, a PDF or CBR that will not
+# convert). Nothing else reports it, and the file never reaches a library.
+WATCH_REPORT_SOURCES = (SOURCE_UNPACK, SOURCE_CONVERT)
+
+
+def staging_refusal(path, source, matcher=None):
+    """Why ``path`` may not be listed under ``source``, or None if it may.
+
+    Library Health is about the library. A file under TARGET is a download
+    waiting to be filed and is never listed, whoever reports it. A file under
+    WATCH is listed only by the folder monitor's own sources
+    (``WATCH_REPORT_SOURCES``). ``matcher`` is a
+    ``helpers.library.staging_matcher()`` for a caller checking many paths.
+    """
+    try:
+        if matcher is None:
+            from helpers.library import staging_matcher
+
+            matcher = staging_matcher()
+        kind = matcher(path) or matcher(path, is_dir=True)
+    except Exception as e:
+        app_logger.debug(f"Staging check failed for {path}: {e}")
+        return None
+    if kind is None:
+        return None
+    if kind == "watch" and source in WATCH_REPORT_SOURCES:
+        return None
+    return kind
+
+
 def record_problem(path, source, exc=None, error_class=None, error_message=None):
     """Record — or re-record — that ``path`` failed under ``source``.
 
@@ -127,10 +168,15 @@ def record_problem(path, source, exc=None, error_class=None, error_message=None)
     from it; pass ``error_class``/``error_message`` directly for failures that
     are not exceptions. Returns True if the row was written.
 
+    A path under TARGET, or under WATCH from anything but the folder monitor's
+    own sources, is refused (``staging_refusal``): False, nothing written.
+
     Never raises.
     """
     global _cap_warned
     try:
+        if staging_refusal(path, source) is not None:
+            return False
         if exc is not None:
             from helpers import archive_error_detail
 
@@ -456,6 +502,13 @@ def list_problems(
                 row["source_label"] = SOURCE_LABELS.get(row["source"], row["source"])
                 row["dismissed"] = bool(row.get("dismissed_at"))
                 row["reachable"] = os.path.exists(row["path"])
+                # A release folder the monitor could not unwrap. Told by the
+                # recorded class, not a stat: the page needs to know what the
+                # row *is* even while the folder cannot be reached.
+                row["is_release_folder"] = (
+                    row["source"] == SOURCE_UNPACK
+                    and row.get("error_class") in RELEASE_FOLDER_CLASSES
+                )
                 row["can_retry"] = row["source"] in (
                     SOURCE_THUMBNAIL, SOURCE_SERIES_JSON,
                     SOURCE_INTEGRITY, SOURCE_ORPHAN, SOURCE_EMPTY_FOLDER,
@@ -603,6 +656,37 @@ _RULES = (
     ),
     (
         (),
+        (CLASS_PDF_FAILED.lower(),),
+        "This PDF could not be converted to a CBZ, so it was left in the "
+        "download folder instead of being filed. The PDF is damaged, "
+        "password-protected, or a page in it would not render.",
+        "Replace the file. Rebuild cannot repair a PDF; the folder monitor "
+        "tries the conversion again on its own.",
+        ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_RELEASE_UNWRAP_FAILED.lower(),),
+        "This release folder in the download folder could not be unpacked: a "
+        "volume of its multi-part archive is missing or damaged. Nothing was "
+        "filed and the folder was left as it is.",
+        "Download the release again, add the missing part to the folder, or "
+        "delete the folder. The folder monitor tries again on its own, at "
+        "once when a part changes.",
+        ACTION_REPLACE, False, False,
+    ),
+    (
+        (),
+        (CLASS_RELEASE_UNWRAP_PARTIAL.lower(),),
+        "Only some of this release folder's archive parts could be unpacked. "
+        "What came out was processed; the parts were kept in the download "
+        "folder.",
+        "Check what arrived. Delete the folder once you have what you need, "
+        "or download the release again.",
+        ACTION_INSPECT, False, False,
+    ),
+    (
+        (),
         (CLASS_RAR_PARTIAL.lower(),),
         "Only part of this RAR archive could be extracted, so it was not "
         "converted. Nothing was written and the original is untouched.",
@@ -744,6 +828,12 @@ def retry_problem(path, source):
         # Retrying a rebuild *is* a rebuild. The page offers that action
         # instead; two ways to do one thing is how they drift apart.
         return False, "Use Rebuild for this entry"
+
+    if source == SOURCE_CONVERT and path.lower().endswith(".pdf"):
+        # Written by monitor.py for a PDF held in WATCH. Same reasoning as
+        # SOURCE_UNPACK below: the monitor owns that folder and retries on its
+        # own backoff, and Rebuild (convert_to_cbz) does not read PDFs.
+        return False, "The folder monitor retries this on its own"
 
     if source == SOURCE_CONVERT:
         # Rebuild already re-runs the conversion: the page's Rebuild button is

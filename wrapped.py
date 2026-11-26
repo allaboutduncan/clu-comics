@@ -12,6 +12,10 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageChops, ImageEnhance
 from core.database import get_db_connection, current_user_id
 from core.app_logging import app_logger
+from core.user_time import localise_read_at_sql
+from core import wrapped_styles
+import contextlib
+import contextvars
 from core.thumbnail_cache import thumbnail_cache_path, thumbnails_root
 from tools.build_catppuccin_themes import PALETTE as CATPPUCCIN_PALETTE, year_in_review_colours
 import math
@@ -57,8 +61,29 @@ THEME_COLORS.update({
 })
 
 
+# The style the slide being drawn is in (core/wrapped_styles.py). A context
+# variable rather than a parameter: the three functions below are the only
+# places a slide gets its colours, fonts and background, so setting it once
+# around a generator restyles every slide without threading an argument
+# through every helper -- and a new slide follows styles by default.
+_active_style = contextvars.ContextVar("wrapped_style", default=None)
+
+
+@contextlib.contextmanager
+def use_style(style_id):
+    """Draw whatever runs inside the block in *style_id* (None = theme)."""
+    token = _active_style.set(wrapped_styles.get_style(style_id) if style_id else None)
+    try:
+        yield
+    finally:
+        _active_style.reset(token)
+
+
 def get_theme_colors(theme_name: str) -> dict:
-    """Return color palette for the given theme."""
+    """The palette to draw in: the active style's, else the theme's."""
+    style = _active_style.get()
+    if style is not None and style.palette:
+        return style.palette
     return THEME_COLORS.get(theme_name.lower(), THEME_COLORS['default'])
 
 
@@ -142,11 +167,22 @@ def create_gradient(width: int, height: int, color1: str, color2: str, vertical:
 # Data Query Functions (Same as before)
 # ==========================================
 
+def _run(executor, sql, params=()):
+    """Execute *sql* with its read_at buckets shifted to the user's local time.
+
+    Every Wrapped query filters or groups on ``strftime(..., read_at)`` or
+    ``date(read_at)``. Raw, those are UTC: a comic read on the evening of 31
+    December in UTC-5 belonged to next year's Wrapped, and the busiest day
+    could be a day off. Insights' reading chart already used the offset.
+    """
+    return executor.execute(localise_read_at_sql(sql), params)
+
+
 def get_years_with_reading_data() -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT DISTINCT strftime('%Y', read_at) as year FROM issues_read WHERE user_id = ? AND read_at IS NOT NULL AND hide = 0 ORDER BY year DESC", (uid,))
+        cursor = _run(conn, "SELECT DISTINCT strftime('%Y', read_at) as year FROM issues_read WHERE user_id = ? AND read_at IS NOT NULL AND hide = 0 ORDER BY year DESC", (uid,))
         years = [int(row[0]) for row in cursor.fetchall() if row[0]]
         conn.close()
         return years
@@ -157,7 +193,7 @@ def get_yearly_total_read(year: int) -> int:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT COUNT(*) FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0", (uid, str(year)))
+        cursor = _run(conn, "SELECT COUNT(*) FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0", (uid, str(year)))
         result = cursor.fetchone()[0]
         conn.close()
         return result or 0
@@ -170,7 +206,7 @@ def get_most_read_series(year: int, limit: int = 1) -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0", (uid, str(year)))
+        cursor = _run(conn, "SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0", (uid, str(year)))
         rows = cursor.fetchall()
         conn.close()
         series_counter = Counter()
@@ -192,7 +228,7 @@ def get_busiest_day(year: int) -> dict:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT date(read_at) as read_date, COUNT(*) as count FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 GROUP BY read_date ORDER BY count DESC LIMIT 1", (uid, str(year)))
+        cursor = _run(conn, "SELECT date(read_at) as read_date, COUNT(*) as count FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 GROUP BY read_date ORDER BY count DESC LIMIT 1", (uid, str(year)))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
@@ -206,7 +242,7 @@ def get_busiest_month(year: int) -> dict:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT strftime('%m', read_at) as month_num, COUNT(*) as count FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 GROUP BY month_num ORDER BY count DESC LIMIT 1", (uid, str(year)))
+        cursor = _run(conn, "SELECT strftime('%m', read_at) as month_num, COUNT(*) as count FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 GROUP BY month_num ORDER BY count DESC LIMIT 1", (uid, str(year)))
         row = cursor.fetchone()
         conn.close()
         if row and row[0]:
@@ -223,7 +259,7 @@ def get_top_series_with_thumbnails(year: int, limit: int = 6) -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 ORDER BY issue_path", (uid, str(year)))
+        cursor = _run(conn, "SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 ORDER BY issue_path", (uid, str(year)))
         rows = cursor.fetchall()
         conn.close()
         series_counter = Counter()
@@ -250,7 +286,7 @@ def get_read_issues(year: int) -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute("SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 ORDER BY read_at ASC", (uid, str(year)))
+        cursor = _run(conn, "SELECT issue_path FROM issues_read WHERE user_id = ? AND strftime('%Y', read_at) = ? AND hide = 0 ORDER BY read_at ASC", (uid, str(year)))
         rows = cursor.fetchall()
         conn.close()
         return [row[0] for row in rows]
@@ -272,15 +308,49 @@ def get_all_wrapped_stats(year: int) -> dict:
 # Image Generation Functions
 # ==========================================
 
+# Candidate files per family, regular then bold. The Docker image ships
+# fonts-liberation and fonts-dejavu-core (see the Dockerfile: they are not
+# optional); the Windows entries are for local development.
+_FONT_FILES = {
+    'sans': (
+        ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+         '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+         '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+         'C:/Windows/Fonts/arial.ttf'],
+        ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+         '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+         '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf',
+         'C:/Windows/Fonts/arialbd.ttf'],
+    ),
+    'serif': (
+        ['/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf',
+         'C:/Windows/Fonts/georgia.ttf', 'C:/Windows/Fonts/times.ttf'],
+        ['/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+         'C:/Windows/Fonts/georgiab.ttf', 'C:/Windows/Fonts/timesbd.ttf'],
+    ),
+    'mono': (
+        ['/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',
+         'C:/Windows/Fonts/consola.ttf'],
+        ['/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf',
+         '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf',
+         'C:/Windows/Fonts/consolab.ttf'],
+    ),
+}
+
+
 def get_font(size: int, bold: bool = False):
-    font_candidates = [
-        '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-        '/usr/share/fonts/truetype/freefont/FreeSansBold.ttf' if bold else '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
-        'C:/Windows/Fonts/arialbd.ttf' if bold else 'C:/Windows/Fonts/arial.ttf',
-        'C:/Windows/Fonts/segoeui.ttf',
-    ]
-    for font_path in font_candidates:
+    """A font at *size* in the active style's family, falling back to sans
+    and then to Pillow's built-in face."""
+    style = _active_style.get()
+    family = style.font_family if style is not None else 'sans'
+    candidates = list(_FONT_FILES.get(family, _FONT_FILES['sans'])[1 if bold else 0])
+    if family != 'sans':
+        candidates += _FONT_FILES['sans'][1 if bold else 0]
+    candidates.append('C:/Windows/Fonts/segoeui.ttf')
+    for font_path in candidates:
         try:
             return ImageFont.truetype(font_path, size)
         except (IOError, OSError):
@@ -289,6 +359,7 @@ def get_font(size: int, bold: bool = False):
         return ImageFont.load_default(size=size)
     except TypeError:
         return ImageFont.load_default()
+
 
 def draw_centered_text(draw: ImageDraw, text: str, y: int, font: ImageFont, fill: tuple,
                        max_width: int = None, image_width: int = IMAGE_WIDTH, shadow: bool = False, img_obj: Image.Image = None):
@@ -346,6 +417,10 @@ def draw_centered_text(draw: ImageDraw, text: str, y: int, font: ImageFont, fill
     return end_y
 
 def create_base_image(theme_colors: dict, bg_image_path: str = None) -> Image.Image:
+    # A designed style paints its own background, and does not sit on a cover.
+    style = _active_style.get()
+    if style is not None and style.paint is not None:
+        return style.paint(IMAGE_WIDTH, IMAGE_HEIGHT, theme_colors).convert('RGB')
     if bg_image_path and os.path.exists(bg_image_path):
         try:
             bg = Image.open(bg_image_path).convert('RGB')
@@ -373,6 +448,12 @@ def create_base_image(theme_colors: dict, bg_image_path: str = None) -> Image.Im
         img = create_gradient(IMAGE_WIDTH, IMAGE_HEIGHT, theme_colors['bg'], light_primary)
     return img
 
+# The CLU mark on the yearly slides that carry it. Slide content starts at
+# y=230 at the earliest, so the mark has to end above that.
+BRAND_LOGO_WIDTH = 110
+BRAND_LOGO_TOP = 60
+
+
 def add_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, year: int):
     primary_color = hex_to_rgb(theme_colors['primary'])
     
@@ -381,13 +462,15 @@ def add_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, year: in
     if os.path.exists(logo_path):
         try:
             logo = Image.open(logo_path).convert('RGBA')
-            # Maintain aspect ratio, max width 400
-            ratio = 400 / logo.width
+            # A small mark at the top, not a banner: at 400px it ran from 80
+            # to 480 and sat on top of whatever the slide put there (the big
+            # number on the summary, the heading on the most-read slide).
+            ratio = BRAND_LOGO_WIDTH / logo.width
             new_h = int(logo.height * ratio)
-            logo = logo.resize((400, new_h), Image.Resampling.LANCZOS)
-            
-            x_pos = (IMAGE_WIDTH - 400) // 2
-            img.paste(logo, (x_pos, 80), logo)
+            logo = logo.resize((BRAND_LOGO_WIDTH, new_h), Image.Resampling.LANCZOS)
+
+            x_pos = (IMAGE_WIDTH - BRAND_LOGO_WIDTH) // 2
+            img.paste(logo, (x_pos, BRAND_LOGO_TOP), logo)
         except Exception:
              # Fallback text
             text_color = hex_to_rgb(theme_colors['text'])
@@ -678,8 +761,14 @@ def generate_books_grid_slide(year: int, theme: str) -> bytes:
         
         theme_colors = get_theme_colors(theme)
         
-        # Create Background (Custom gradient for variable height)
-        if theme_colors['is_dark']:
+        # Create Background (Custom gradient for variable height). A designed
+        # style paints its own, at this slide's height: this slide does not go
+        # through create_base_image, so without this it was the one slide that
+        # ignored the style's background.
+        style = _active_style.get()
+        if style is not None and style.paint is not None:
+            img = style.paint(IMAGE_WIDTH, final_h, theme_colors).convert('RGB')
+        elif theme_colors['is_dark']:
             img = create_gradient(IMAGE_WIDTH, final_h, theme_colors['bg'], theme_colors['bg_secondary'])
         else:
             primary_rgb = hex_to_rgb(theme_colors['primary'])
@@ -751,12 +840,20 @@ def generate_all_wrapped_images(year: int, theme: str) -> list:
         ('03_series_highlights.png', generate_series_highlights_slide(year, theme)),
         ('04_books_grid.png', generate_books_grid_slide(year, theme)),
     ]
-    return slides
+    # A generator returns None when it has nothing to draw (the books grid in a
+    # year with no reads). Writing None into the ZIP raised and the download
+    # answered 500, so a slide that was not rendered is left out.
+    return [(name, data) for name, data in slides if data]
 
 
 # ==========================================
 # Monthly Wrapped - Data Query Functions
 # ==========================================
+
+# Clear space between a monthly slide's cover grids and the left and right
+# edges. It was 10px (30 for the spotlight cards), which put covers against
+# the edge of the image and under the frame the designed styles draw.
+MONTHLY_EDGE_MARGIN = 44
 
 MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
                'July', 'August', 'September', 'October', 'November', 'December']
@@ -774,19 +871,19 @@ def get_monthly_stats(year: int, month: int) -> dict:
         c = conn.cursor()
 
         # Total issues read
-        c.execute("""SELECT COUNT(*) FROM issues_read
+        _run(c, """SELECT COUNT(*) FROM issues_read
                      WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (uid, year_str, month_str))
         total_read = c.fetchone()[0] or 0
 
         # Total pages
-        c.execute("""SELECT COALESCE(SUM(page_count), 0) FROM issues_read
+        _run(c, """SELECT COALESCE(SUM(page_count), 0) FROM issues_read
                      WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (uid, year_str, month_str))
         total_pages = c.fetchone()[0] or 0
 
         # Total series (count distinct series by parent path)
-        c.execute("""SELECT issue_path FROM issues_read
+        _run(c, """SELECT issue_path FROM issues_read
                      WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
                   (uid, year_str, month_str))
         rows = c.fetchall()
@@ -798,7 +895,7 @@ def get_monthly_stats(year: int, month: int) -> dict:
         total_series = len(series_set)
 
         # Top publisher
-        c.execute("""SELECT publisher, COUNT(*) as cnt FROM issues_read
+        _run(c, """SELECT publisher, COUNT(*) as cnt FROM issues_read
                      WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ?
                      AND publisher != '' AND publisher IS NOT NULL AND hide = 0
                      GROUP BY publisher ORDER BY cnt DESC LIMIT 1""",
@@ -807,7 +904,7 @@ def get_monthly_stats(year: int, month: int) -> dict:
         top_publisher = row[0] if row else 'Unknown'
 
         # Busiest day
-        c.execute("""SELECT date(read_at) as read_date, COUNT(*) as cnt FROM issues_read
+        _run(c, """SELECT date(read_at) as read_date, COUNT(*) as cnt FROM issues_read
                      WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                      GROUP BY read_date ORDER BY cnt DESC LIMIT 1""",
                   (uid, year_str, month_str))
@@ -843,7 +940,7 @@ def get_monthly_most_read_series(year: int, month: int, limit: int = 1) -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute(
+        cursor = _run(conn, 
             """SELECT issue_path FROM issues_read
                WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0""",
             (uid, year_str, month_str))
@@ -874,7 +971,7 @@ def get_monthly_top_series_with_thumbnails(year: int, month: int, limit: int = 9
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute(
+        cursor = _run(conn, 
             """SELECT issue_path FROM issues_read
                WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY issue_path""",
@@ -912,7 +1009,7 @@ def get_monthly_series_issue_paths(year: int, month: int, series_path: str, limi
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute(
+        cursor = _run(conn, 
             """SELECT issue_path FROM issues_read
                WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY read_at ASC""",
@@ -941,7 +1038,7 @@ def get_monthly_read_issues(year: int, month: int) -> list:
     try:
         uid = current_user_id()
         conn = get_db_connection()
-        cursor = conn.execute(
+        cursor = _run(conn, 
             """SELECT issue_path FROM issues_read
                WHERE user_id = ? AND strftime('%Y', read_at) = ? AND strftime('%m', read_at) = ? AND hide = 0
                ORDER BY read_at ASC""",
@@ -990,30 +1087,20 @@ def add_monthly_branding(img: Image.Image, draw: ImageDraw, theme_colors: dict, 
                        IMAGE_HEIGHT - 100, font_footer, muted_color, shadow=True, img_obj=img)
 
 
-def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
-    """Generate a single combined monthly recap slide (1080x1920) with all reading data.
+def _monthly_canvas(theme: str):
+    """Background and colours for a monthly slide.
 
-    Uses a fixed dark color palette inspired by the CLU design system:
-      --clu-bg-dark: #1e252e      --clu-text-white: #ffffff
-      --clu-text-light-grey: #b0c4de   --clu-accent-gold: #ffd700
+    Returns ``(img, bg, text, muted, accent)``. In the classic style (and with
+    no style at all, as the generators were always called) that is the comic
+    panel artwork, whose title is part of the image, with its fixed palette.
+    In any other style the slide is drawn in that style's palette on its
+    background, and the title is drawn here in the same place.
     """
-    try:
-        # ── Fixed color palette (CSS variables) ──
-        CLU_BG = (30, 37, 46)            # #1e252e
-        CLU_WHITE = (255, 255, 255)       # #ffffff
-        CLU_GREY = (176, 196, 222)        # #b0c4de
-        CLU_GOLD = (255, 215, 0)          # #ffd700
-
-        # ── Gather data ──
-        stats = get_monthly_stats(year, month)
-        most_read = get_monthly_most_read_series(year, month, limit=1)
-        top_series = get_monthly_top_series_with_thumbnails(year, month, limit=9)
-        all_issues = get_monthly_read_issues(year, month)
-        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
-
-        # ── Build background: use recap-bg.png directly (already styled) ──
+    style = _active_style.get()
+    if style is None or style.classic_artwork:
+        bg_color = (30, 37, 46)            # #1e252e
+        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), bg_color)
         bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
-        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
         if os.path.exists(bg_path):
             try:
                 bg = Image.open(bg_path).convert('RGB')
@@ -1025,6 +1112,35 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
                 img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
             except Exception:
                 pass
+        return img, bg_color, (255, 255, 255), (176, 196, 222), (255, 215, 0)
+
+    colors = get_theme_colors(theme)
+    img = create_base_image(colors).convert('RGB')
+    draw = ImageDraw.Draw(img)
+    draw_centered_text(draw, "READING RECAP", 70, get_font(84, bold=True),
+                       hex_to_rgb(colors['primary']))
+    return (img, hex_to_rgb(colors['bg']), hex_to_rgb(colors['text']),
+            hex_to_rgb(colors['text_muted']), hex_to_rgb(colors['primary']))
+
+
+def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
+    """Generate a single combined monthly recap slide (1080x1920) with all reading data.
+
+    Background and colours come from ``_monthly_canvas``: the comic-panel
+    artwork in the classic style, the active style's palette otherwise. The
+    ``CLU_*`` names below are that palette's background, text, muted and
+    accent colours.
+    """
+    try:
+        img, CLU_BG, CLU_WHITE, CLU_GREY, CLU_GOLD = _monthly_canvas(theme)
+
+        # ── Gather data ──
+        stats = get_monthly_stats(year, month)
+        most_read = get_monthly_most_read_series(year, month, limit=1)
+        top_series = get_monthly_top_series_with_thumbnails(year, month, limit=9)
+        all_issues = get_monthly_read_issues(year, month)
+        month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
+
         draw = ImageDraw.Draw(img)
 
         # ── Helper: draw a separator line ──
@@ -1138,7 +1254,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
             s_row_gap = 18       # gap between rows
 
             # Each card = cover + gap + text area
-            s_card_w = (IMAGE_WIDTH - 60 - (s_cols - 1) * s_col_gap) // s_cols
+            s_card_w = (IMAGE_WIDTH - 2 * MONTHLY_EDGE_MARGIN - (s_cols - 1) * s_col_gap) // s_cols
             s_start_x = (IMAGE_WIDTH - (s_cols * s_card_w + (s_cols - 1) * s_col_gap)) // 2
 
             font_s_count_num = get_font(52, bold=True)
@@ -1209,7 +1325,7 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
 
             # Dynamic thumbnail sizing to fill remaining space (compact)
             footer_h = 200
-            margin_x = 10
+            margin_x = MONTHLY_EDGE_MARGIN
             spacing = 3
             available_w = IMAGE_WIDTH - 2 * margin_x
             available_h = IMAGE_HEIGHT - current_y - footer_h
@@ -1288,34 +1404,17 @@ def generate_monthly_recap_slide(year: int, month: int, theme: str) -> bytes:
 def generate_monthly_all_issues_slide(year: int, month: int, theme: str) -> bytes:
     """Generate a slide showing all issues read in the month as a grid of thumbnails."""
     try:
-        # ── Fixed color palette (same as recap slide) ──
-        CLU_BG = (30, 37, 46)
-        CLU_WHITE = (255, 255, 255)
-        CLU_GREY = (176, 196, 222)
+        img, CLU_BG, CLU_WHITE, CLU_GREY, _accent = _monthly_canvas(theme)
 
         all_issues = get_monthly_read_issues(year, month)
         month_name = MONTH_NAMES[month - 1] if 1 <= month <= 12 else 'Unknown'
 
-        # ── Background: same recap-bg.png ──
-        bg_path = os.path.join(os.getcwd(), 'static', 'images', 'recap-bg.png')
-        img = Image.new('RGB', (IMAGE_WIDTH, IMAGE_HEIGHT), CLU_BG)
-        if os.path.exists(bg_path):
-            try:
-                bg = Image.open(bg_path).convert('RGB')
-                ratio = max(IMAGE_WIDTH / bg.width, IMAGE_HEIGHT / bg.height)
-                bg = bg.resize((int(bg.width * ratio), int(bg.height * ratio)),
-                               Image.Resampling.LANCZOS)
-                left = (bg.width - IMAGE_WIDTH) // 2
-                top = (bg.height - IMAGE_HEIGHT) // 2
-                img = bg.crop((left, top, left + IMAGE_WIDTH, top + IMAGE_HEIGHT))
-            except Exception:
-                pass
         draw = ImageDraw.Draw(img)
 
         # ── Layout: same spacing as recap slide ──
         header_h = 200   # space for bg title
         footer_h = 200   # same footer reserve
-        margin_x = 10
+        margin_x = MONTHLY_EDGE_MARGIN
         spacing = 3
         available_w = IMAGE_WIDTH - 2 * margin_x
         available_h = IMAGE_HEIGHT - header_h - footer_h

@@ -1266,6 +1266,84 @@
                     </div>
                 </div>
 
+                <!-- Kavita Reading Sync -->
+                <div class="clu-settings-panel mb-4">
+                    <div class="mb-3">
+                        <h2 class="h4"><i class="bi bi-book-half me-2"></i>Kavita Reading Sync</h2>
+                        <p class="text-muted mb-0">Import reading history and progress from your Kavita server to CLU.
+                            Kavita keeps progress per user, so each person links their own Kavita account under
+                            <a href="{{ url_for('auth.account') }}#kavita">My Account</a>. Requires Kavita 0.9 or newer.
+                        </p>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label for="kavitaServerUrl" class="form-label">Server URL</label>
+                            <input type="text" class="form-control" id="kavitaServerUrl" placeholder="http://kavita:5000"
+                                autocomplete="url">
+                            <small class="form-text text-muted">
+                                Full URL to your Kavita server (e.g., http://192.168.1.100:5000)
+                            </small>
+                        </div>
+                    </div>
+
+                    <hr class="my-3">
+                    <h3 class="h6">Library Path Mapping</h3>
+                    <p class="text-muted small">Map each CLU library to the folder Kavita sees it at.
+                        A file with no mapping is matched by its filename instead.</p>
+                    <div id="kavitaLibraryMappings">
+                        <p class="text-muted small fst-italic">Loading libraries...</p>
+                    </div>
+
+                    <hr class="my-3">
+                    <h3 class="h6">Sync Schedule</h3>
+                    <div class="row">
+                        <div class="col-md-3">
+                            <label for="kavitaSyncFrequency" class="form-label">Frequency</label>
+                            <select class="form-select" id="kavitaSyncFrequency">
+                                <option value="disabled">Disabled</option>
+                                <option value="daily">Daily</option>
+                                <option value="weekly">Weekly</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="kavitaSyncTime" class="form-label">Time</label>
+                            <input type="time" class="form-control" id="kavitaSyncTime" value="05:30">
+                            <small class="form-text text-muted">
+                                In {{ timezone_label }}; stored and triggered as UTC.
+                            </small>
+                        </div>
+                        <div class="col-md-3" id="kavitaWeekdayGroup" style="display:none;">
+                            <label for="kavitaSyncWeekday" class="form-label">Day</label>
+                            <select class="form-select" id="kavitaSyncWeekday">
+                                <option value="0">Monday</option>
+                                <option value="1">Tuesday</option>
+                                <option value="2">Wednesday</option>
+                                <option value="3">Thursday</option>
+                                <option value="4">Friday</option>
+                                <option value="5">Saturday</option>
+                                <option value="6">Sunday</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <span class="form-label d-block">Next run</span>
+                            <span id="kavitaNextRun" class="text-muted">Not scheduled</span>
+                        </div>
+                    </div>
+
+                    <hr class="my-3">
+                    <h3 class="h6">Linked Accounts</h3>
+                    <div id="kavitaUsers">
+                        <p class="text-muted small fst-italic">Loading...</p>
+                    </div>
+
+                    <div class="mt-3 d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="kavitaSyncBtn">
+                            <i class="bi bi-arrow-repeat me-1"></i>Sync Everyone Now
+                        </button>
+                    </div>
+                </div>
+
                 {{ settings_save_bar('saveDownloadApiBtn', 'saveDownloadApiSettings') }}
 
             </div>
@@ -1565,7 +1643,7 @@
                                 <label class="form-check-label" for="enableDebugLogging">{% if enableDebugLogging
                                     %}Disable{% else %}Enable{% endif %} Debug Logging</label>
                                 <small class="form-text text-muted">
-                                    <br />When enabled, detailed debug messages will appear in the <a href="/app-logs"
+                                    <br />When enabled, detailed debug messages will appear in the <a href="{{ request.script_root }}/app-logs"
                                         target="_blank">App Logs</a>. This can help with troubleshooting but may
                                     increase log file size. Changes take effect after saving.
                                 </small>
@@ -2235,6 +2313,7 @@
 <script src="{{ asset('js/clu-streaming.js') }}"></script>
 <script src="{{ asset('js/clu-personalization.js') }}"></script>
 <script src="{{ asset('js/database_panel.js') }}"></script>
+<script src="{{ asset('js/kavita.js') }}"></script>
 <script>
     // The Komga schedule time is stored as UTC, like every other schedule time.
     // data-utc is the source of truth so the field can be re-rendered whenever
@@ -2622,7 +2701,8 @@
 
         await runTabSave('saveDownloadApiBtn', [
             ['Download and API', () => postSettings('/api/config/download-api', data)],
-            ['Komga', saveKomgaConfig]
+            ['Komga', saveKomgaConfig],
+            ['Kavita', CLU.kavita.saveConfig]
         ], 'Download and API settings saved');
     }
 
@@ -2856,6 +2936,7 @@
 
         // Load Komga config on page load
         loadKomgaConfig();
+        CLU.kavita.initConfig();
 
         // Load Client API token state on page load
         loadApiToken();
@@ -3297,14 +3378,11 @@
 
                 // Poll until last_sync changes (sync completed)
                 let attempts = 0;
-                let busy = false;  // skip a tick if the previous poll is still in-flight
                 const maxAttempts = 20;
-                const pollInterval = setInterval(async () => {
-                    if (busy) return;
-                    busy = true;
+                const pollInterval = CLU.startPoll(async (signal) => {
                     attempts++;
                     try {
-                        const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' } });
+                        const statusResp = await fetch('/api/komga/sync/status', { headers: { 'Cache-Control': 'no-cache' }, signal });
                         const statusData = await statusResp.json();
 
                         if (statusData.success && statusData.last_sync !== previousLastSync) {
@@ -3323,10 +3401,8 @@
                         }
                     } catch (e) {
                         // Keep polling on transient errors
-                    } finally {
-                        busy = false;
                     }
-                }, 3000);
+                }, 3000, { immediate: false });
             } else {
                 CLU.toast('Error: ' + (data.error || 'Failed to start sync'), 'error');
                 btn.innerHTML = originalHtml;
@@ -3751,9 +3827,13 @@
     }
 
     async function deleteLibrary(id, name) {
-        if (!confirm(`Are you sure you want to delete the library "${name}"?\n\nThis will not delete any files, only the library configuration.`)) {
-            return;
-        }
+        const ok = await CLU.confirm({
+            title: 'Delete library',
+            message: `Delete the library "${name}"?`,
+            detail: 'This will not delete any files, only the library configuration.',
+            confirmText: 'Delete library'
+        });
+        if (!ok) return;
 
         try {
             const response = await fetch(`/api/libraries/${id}`, {
@@ -4670,9 +4750,12 @@
     }
 
     async function deleteProviderCredentials(providerType) {
-        if (!confirm('Are you sure you want to delete credentials for this provider?')) {
-            return;
-        }
+        const ok = await CLU.confirm({
+            title: 'Delete credentials',
+            message: 'Delete the stored credentials for this provider?',
+            confirmText: 'Delete credentials'
+        });
+        if (!ok) return;
 
         try {
             const response = await fetch(`/api/providers/${providerType}/credentials`, {
@@ -4947,7 +5030,12 @@
     }
 
     async function deleteDownloadClientConfig(clientType) {
-        if (!confirm('Delete the configuration for this download client?')) return;
+        const ok = await CLU.confirm({
+            title: 'Delete download client',
+            message: 'Delete the configuration for this download client?',
+            confirmText: 'Delete'
+        });
+        if (!ok) return;
         try {
             const response = await fetch(`/api/download-clients/${clientType}/config`, { method: 'DELETE' });
             const data = await readJsonResponse(response);
@@ -5105,7 +5193,12 @@
     }
 
     async function deleteIndexer(indexerId) {
-        if (!confirm('Delete this indexer?')) return;
+        const ok = await CLU.confirm({
+            title: 'Delete indexer',
+            message: 'Delete this indexer?',
+            confirmText: 'Delete'
+        });
+        if (!ok) return;
         try {
             const response = await fetch(`/api/indexers/${indexerId}`, { method: 'DELETE' });
             const data = await readJsonResponse(response);

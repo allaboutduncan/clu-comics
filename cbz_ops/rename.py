@@ -61,6 +61,29 @@ TITLE_YEAR_PATTERN = re.compile(
 ISSUE_HASH_PATTERN = re.compile(
     r"^(.*?)\s*#\s*(\d{1,4}(?:\.\w+)?)\b(.*)(\.\w+)$", re.IGNORECASE
 )
+# A weekly-pack index in front of the title: "#06-Glory - Angela #1". It
+# consumes everything ISSUE_HASH_PATTERN would have taken as the issue (a
+# decimal part included) plus the separator, so no residue is left on the title.
+LEADING_HASH_INDEX = re.compile(r"^\s*#\s*\d{1,4}(?:\.\d+)?[-_.:)\s]*")
+
+
+def strip_leading_pack_index(filename):
+    """Drop a leading ``#NN`` pack index, when a title is left after it.
+
+    ``#06-Glory - Angela #1 (2014).cbz`` -> ``Glory - Angela #1 (2014).cbz``.
+    A name that is nothing but the number (``#1 (2018).cbz``) is returned
+    unchanged: there the number is the only issue the name has.
+
+    Called from ``normalize_release_name``, so the rule engine, the pre-clean,
+    every pattern and ``extract_comic_values`` all see the name without it.
+    """
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        return filename
+    rest = LEADING_HASH_INDEX.sub("", stem, count=1)
+    if rest == stem or not rest[:1].isalnum():
+        return filename
+    return rest + "." + ext
 
 # -------------------------------------------------------------------
 # Original ISSUE_PATTERN:
@@ -429,11 +452,14 @@ def try_rule_engine(filename: str, cfg_path="/config/rename_rules.ini", width: i
         m = rx.match(filename) or rx.match(base)
         if not m:
             continue
-        app_logger.info(f"Rule {name} (priority {prio}) matched: {filename}")
+        app_logger.debug(f"Rule {name} (priority {prio}) matched: {filename}")
         g = m.groupdict()
 
-        # ensure ext available
-        g.setdefault("ext", g.get("extension", ext))
+        # ensure ext available. An optional (?P<ext>...)? group that did not
+        # participate is None, which setdefault() leaves alone, so a rule whose
+        # greedy tail swallowed the extension renamed the file without one (#843).
+        if not g.get("ext"):
+            g["ext"] = g.get("extension") or ext
 
         # normalize common fields
         if "series" in g:
@@ -1095,10 +1121,12 @@ _BARE_YEAR_TAIL = re.compile(
 def normalize_release_name(filename):
     """Reshape a scene-style filename into the ordinary ``Series NN (YYYY)``.
 
-    Returns *filename* unchanged unless it has underscores for spaces or a
-    bare ``NN of MM`` count. The year/tail rewrite runs only when one of those
+    Returns *filename* unchanged unless it has a leading ``#NN`` pack index
+    (see ``strip_leading_pack_index``), underscores for spaces or a bare
+    ``NN of MM`` count. The year/tail rewrite runs only when one of those
     fired, so an ordinary name that merely contains a year is never touched.
     """
+    filename = strip_leading_pack_index(filename)
     stem, dot, ext = filename.rpartition(".")
     if not dot:
         return filename
@@ -1162,7 +1190,7 @@ def extract_comic_values(filename, width=3):
         series_name = re.sub(r"[#\-\s]+$", "", series_name.replace("_", " ").strip())
         values["series_name"] = smart_title_case(series_name.strip())
         values["issue_number"] = "1000000"
-        app_logger.info(
+        app_logger.debug(
             f"Matched One Million exception: series={values['series_name']}, year={values['year']}"
         )
         return values
@@ -1173,7 +1201,7 @@ def extract_comic_values(filename, width=3):
     negative_parts = _negative_issue_parts(filename, width)
     if negative_parts:
         values["series_name"], values["issue_number"], values["year"] = negative_parts
-        app_logger.info(
+        app_logger.debug(
             f"Matched negative issue exception: series={values['series_name']}, "
             f"issue={values['issue_number']}, year={values['year']}"
         )
@@ -1196,7 +1224,7 @@ def extract_comic_values(filename, width=3):
         values["volume_number"] = f"v{int(volume_num):02d}"
         values["issue_number"] = _pad_issue_number(issue_num, width)
         values["year"] = year
-        app_logger.info(
+        app_logger.debug(
             f"Matched Volume/Issue keyword pattern: series={values['series_name']}, volume={values['volume_number']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
@@ -1217,7 +1245,7 @@ def extract_comic_values(filename, width=3):
         values["series_name"] = smart_title_case(series_name.strip())
         values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".BEY"
         values["year"] = year
-        app_logger.info(
+        app_logger.debug(
             f"Matched Issue keyword pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
@@ -1240,7 +1268,7 @@ def extract_comic_values(filename, width=3):
         values["series_name"] = smart_title_case(series_name)
         values["issue_number"] = _pad_issue_number(series_year_hash_issue_match.group("issue"), width)
         values["year"] = series_year_hash_issue_match.group("year")
-        app_logger.info(
+        app_logger.debug(
             f"Matched series/year/#issue pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
@@ -1262,7 +1290,7 @@ def extract_comic_values(filename, width=3):
         values["series_name"] = smart_title_case(clean_series.strip())
         values["issue_number"] = _pad_issue_number(issue_num, width)  # width from config; preserves suffix
         values["year"] = year
-        app_logger.info(
+        app_logger.debug(
             f"Matched underscore pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
@@ -1456,7 +1484,7 @@ def extract_comic_values(filename, width=3):
             series_issue_bare_year_match.group("issue"), width
         )  # preserves ".1"/".MU"
         values["year"] = series_issue_bare_year_match.group("year")
-        app_logger.info(
+        app_logger.debug(
             f"Matched series/issue/bare-year pattern: series={values['series_name']}, "
             f"issue={values['issue_number']}, year={values['year']}"
         )
@@ -1483,7 +1511,7 @@ def extract_comic_values(filename, width=3):
         series_name = re.sub(r"[#\-\s]+$", "", series_name).strip()
         values["series_name"] = smart_title_case(series_name)
         values["issue_number"] = _pad_issue_number(issue_num, width)  # preserves ".1"/".MU"
-        app_logger.info(
+        app_logger.debug(
             f"Matched series/issue (no year) pattern: series={values['series_name']}, issue={values['issue_number']}"
         )
         return values
@@ -1503,7 +1531,7 @@ def extract_comic_values(filename, width=3):
         values["series_name"] = smart_title_case(series_name)
         values["issue_number"] = _pad_issue_number(series_issue_year_match.group("issue"), width)
         values["year"] = series_issue_year_match.group("year")
-        app_logger.info(
+        app_logger.debug(
             f"Matched series/issue/year pattern: series={values['series_name']}, issue={values['issue_number']}, year={values['year']}"
         )
         return values
@@ -1521,7 +1549,7 @@ def extract_comic_values(filename, width=3):
     dated_layout = _extract_dated_layout(filename, date_groups, width)
     if dated_layout:
         values.update(dated_layout)
-        app_logger.info(
+        app_logger.debug(
             f"Matched dated-layout pattern: series={values['series_name']}, "
             f"issue={values['issue_number']}, year={values['year']}"
         )
@@ -2143,7 +2171,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     negative_parts = _negative_issue_parts(filename, pad_width)
     if negative_parts:
-        app_logger.info(f"Matched NEGATIVE_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched NEGATIVE_ISSUE_PATTERN for: {filename}")
         clean_title, final_issue, found_year = negative_parts
         last_dot = filename.rfind(".")
         extension = filename[last_dot:] if last_dot != -1 else ""
@@ -2162,7 +2190,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     one_million_match = ONE_MILLION_ISSUE_PATTERN.match(filename)
     if one_million_match:
-        app_logger.info(f"Matched ONE_MILLION_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched ONE_MILLION_ISSUE_PATTERN for: {filename}")
         raw_title = one_million_match.group("series")
         extension = one_million_match.group("ext") or ""
         # Year may sit after the issue or before it; scan the whole name and
@@ -2185,7 +2213,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     issue_year_paren_match = ISSUE_YEAR_PARENTHESES_PATTERN.match(filename)
     if issue_year_paren_match:
-        app_logger.info(f"Matched ISSUE_YEAR_PARENTHESES_PATTERN for: {filename}")
+        app_logger.debug(f"Matched ISSUE_YEAR_PARENTHESES_PATTERN for: {filename}")
         raw_title, issue_num, year, extra, extension = issue_year_paren_match.groups()
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
         final_issue = norm_issue(issue_num, pad_width)
@@ -2199,7 +2227,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     title_comma_year_issue_match = TITLE_COMMA_YEAR_ISSUE_PATTERN.match(filename)
     if title_comma_year_issue_match:
-        app_logger.info(f"Matched TITLE_COMMA_YEAR_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched TITLE_COMMA_YEAR_ISSUE_PATTERN for: {filename}")
         raw_title, year, issue_num, extra, extension = (
             title_comma_year_issue_match.groups()
         )
@@ -2225,7 +2253,7 @@ def get_renamed_filename(filename, file_path=None):
         filename
     )
     if title_comma_year_hash_issue_match:
-        app_logger.info(f"Matched TITLE_COMMA_YEAR_HASH_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched TITLE_COMMA_YEAR_HASH_ISSUE_PATTERN for: {filename}")
         raw_title, year, hash_issue_num, extra, extension = (
             title_comma_year_hash_issue_match.groups()
         )
@@ -2245,7 +2273,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     issue_after_year_match = ISSUE_AFTER_YEAR_PATTERN.match(filename)
     if issue_after_year_match:
-        app_logger.info(f"Matched ISSUE_AFTER_YEAR_PATTERN for: {filename}")
+        app_logger.debug(f"Matched ISSUE_AFTER_YEAR_PATTERN for: {filename}")
         raw_title, year, issue, extra, extension = issue_after_year_match.groups()
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
         # Remove the # from the issue number and zero-pad
@@ -2262,7 +2290,7 @@ def get_renamed_filename(filename, file_path=None):
         filename
     )
     if year_month_series_volume_issue_match:
-        app_logger.info(
+        app_logger.debug(
             f"Matched YEAR_MONTH_SERIES_VOLUME_ISSUE_PATTERN for: {filename}"
         )
         year_month, series_name, volume, issue_num, extension = (
@@ -2292,7 +2320,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     series_year_month_issue_match = SERIES_YEAR_MONTH_ISSUE_PATTERN.match(filename)
     if series_year_month_issue_match:
-        app_logger.info(f"Matched SERIES_YEAR_MONTH_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched SERIES_YEAR_MONTH_ISSUE_PATTERN for: {filename}")
         series_name, year, issue_num, extra, extension = (
             series_year_month_issue_match.groups()
         )
@@ -2314,7 +2342,7 @@ def get_renamed_filename(filename, file_path=None):
         filename
     )
     if series_year_month_day_issue_match:
-        app_logger.info(f"Matched SERIES_YEAR_MONTH_DAY_ISSUE_PATTERN for: {filename}")
+        app_logger.debug(f"Matched SERIES_YEAR_MONTH_DAY_ISSUE_PATTERN for: {filename}")
         series_name, year, issue_num, extra, extension = (
             series_year_month_day_issue_match.groups()
         )
@@ -2336,7 +2364,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     vol_issue_match = VOLUME_ISSUE_PATTERN.match(cleaned_filename)
     if vol_issue_match:
-        app_logger.info(f"Matched VOLUME_ISSUE_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched VOLUME_ISSUE_PATTERN for: {cleaned_filename}")
         raw_title, volume_part, issue_part, middle, extension = vol_issue_match.groups()
 
         # Clean the title: underscores -> spaces, then strip, then title case
@@ -2375,8 +2403,13 @@ def get_renamed_filename(filename, file_path=None):
     #    e.g. "Injustice 2 #1 (2018).cbz"
     # ==========================================================
     hash_match = ISSUE_HASH_PATTERN.match(cleaned_filename)
+    if hash_match and not hash_match.group(1).strip():
+        # Never build a name with no title ("006.cbz"). A leading pack index
+        # was already removed by normalize_release_name; what reaches here is
+        # a name whose title did not survive the pre-clean.
+        hash_match = None
     if hash_match:
-        app_logger.info(f"Matched ISSUE_HASH_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched ISSUE_HASH_PATTERN for: {cleaned_filename}")
         raw_title, issue_num, middle, extension = hash_match.groups()
 
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
@@ -2401,7 +2434,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     vol_subtitle_match = VOLUME_SUBTITLE_PATTERN.match(cleaned_filename)
     if vol_subtitle_match:
-        app_logger.info(f"Matched VOLUME_SUBTITLE_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched VOLUME_SUBTITLE_PATTERN for: {cleaned_filename}")
         raw_title, volume_part, subtitle_part, extension = vol_subtitle_match.groups()
 
         # Clean the title: underscores -> spaces, then strip, then title case
@@ -2436,7 +2469,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     series_match = SERIES_ISSUE_PATTERN.match(cleaned_filename)
     if series_match:
-        app_logger.info(f"Matched SERIES_ISSUE_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched SERIES_ISSUE_PATTERN for: {cleaned_filename}")
         raw_title, series_num, issue_num, middle, extension = series_match.groups()
 
         # Keep the series number in the title, apply title case
@@ -2464,7 +2497,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     issue_match = ISSUE_PATTERN.match(cleaned_filename)
     if issue_match:
-        app_logger.info(f"Matched ISSUE_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched ISSUE_PATTERN for: {cleaned_filename}")
         raw_title, issue_part, middle, extension = issue_match.groups()
 
         # Clean the title: underscores -> spaces, then strip, then title case
@@ -2499,7 +2532,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     title_year_match = TITLE_YEAR_PATTERN.match(cleaned_filename)
     if title_year_match:
-        app_logger.info(f"Matched TITLE_YEAR_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched TITLE_YEAR_PATTERN for: {cleaned_filename}")
         raw_title, found_year, _, extension = title_year_match.groups()
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
         # Remove any trailing opening parenthesis that might have been captured
@@ -2512,7 +2545,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     fallback_match = FALLBACK_PATTERN.match(cleaned_filename)
     if fallback_match:
-        app_logger.info(f"Matched FALLBACK_PATTERN for: {cleaned_filename}")
+        app_logger.debug(f"Matched FALLBACK_PATTERN for: {cleaned_filename}")
         raw_title, found_year, _, extension = fallback_match.groups()
         clean_title = smart_title_case(raw_title.replace("_", " ").strip())
         new_filename = f"{clean_title} ({found_year}){extension}"
@@ -2521,7 +2554,7 @@ def get_renamed_filename(filename, file_path=None):
     # ==========================================================
     # 12) No match => return None
     # ==========================================================
-    app_logger.info(f"No pattern matched for: {filename}")
+    app_logger.debug(f"No pattern matched for: {filename}")
     return None
 
 

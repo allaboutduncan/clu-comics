@@ -76,6 +76,31 @@ def test_no_native_alert():
     assert offenders == [], "CLAUDE.md: messages are toasts (CLU.toast), never alert()"
 
 
+def test_no_native_confirm_or_prompt():
+    """Eleven confirm() calls outlived the alert() ban because only alert()
+    was tested. CLU.confirm (clu-confirm.js) is the generic modal, and
+    CLU.showDeleteConfirmation the one for files."""
+    offenders = [f"{p.relative_to(ROOT)}:{n}" for p, t in _sources()
+                 for n, line in _code_lines(t)
+                 if re.search(r"(?<![\w.$])(confirm|prompt)\(", line)
+                 or re.search(r"\bwindow\.(confirm|prompt)\(", line)]
+    assert offenders == [], "CLAUDE.md: confirmations are modals (CLU.confirm), never confirm()/prompt()"
+
+
+def test_every_page_has_the_confirm_modal():
+    base = (ROOT / "templates" / "base.html").read_text(encoding="utf-8")
+    assert "asset('js/clu-confirm.js')" in base
+    assert base.index("bootstrap.bundle.min.js") < base.index("js/clu-confirm.js")
+
+
+def test_confirm_never_renders_caller_text_as_html():
+    """Messages carry file, user and publisher names typed by users."""
+    src = (JS / "clu-confirm.js").read_text(encoding="utf-8")
+    assert src.count("innerHTML") == 1, "only the static modal skeleton may be HTML"
+    for field in ("opts.title", "opts.message", "opts.detail", "opts.confirmText", "opts.cancelText"):
+        assert re.search(r"textContent = " + re.escape(field), src), field
+
+
 def test_toast_never_renders_html():
     src = (JS / "clu-toast.js").read_text(encoding="utf-8")
     assert "innerHTML" not in src and "insertAdjacentHTML" not in src

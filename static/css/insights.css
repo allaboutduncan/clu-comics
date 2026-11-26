@@ -50,6 +50,11 @@
     color: var(--bs-warning);
 }
 
+.stat-card .stat-icon.danger {
+    background: rgba(var(--bs-danger-rgb), 0.15);
+    color: var(--bs-danger);
+}
+
 .stat-card .stat-value {
     font-size: 2rem;
     font-weight: 700;
@@ -279,40 +284,6 @@
     color: var(--bs-body-color) !important;
 }
 
-/* Wrapped Carousel Controls */
-#wrappedCarousel .carousel-control-prev-icon,
-#wrappedCarousel .carousel-control-next-icon {
-    background-color: var(--bs-primary);
-    /* Use theme primary color */
-    border-radius: 50%;
-    width: 3rem;
-    height: 3rem;
-    background-size: 50%;
-    /* Make the chevron slightly smaller inside the circle */
-    background-position: center;
-    background-repeat: no-repeat;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    /* Drop shadow for visibility */
-}
-
-#wrappedCarousel .carousel-indicators {
-    margin-bottom: 0rem;
-}
-
-#wrappedCarousel .carousel-indicators button {
-    background-color: var(--bs-primary);
-    opacity: 0.3;
-    height: 6px;
-    width: 20px;
-    border-radius: 4px;
-    border: 1px solid rgba(0, 0, 0, 0.1);
-}
-
-#wrappedCarousel .carousel-indicators button.active {
-    opacity: 1;
-    width: 30px;
-}
-
 /* Reading Trends Section */
 .trends-list {
     display: flex;
@@ -387,4 +358,245 @@ a.trend-item {
 
 .trends-list::-webkit-scrollbar-thumb:hover {
     background: var(--bs-secondary-color);
+}
+
+/* Goal dial: an SVG ring whose arc is set from insights.js. */
+.goal-dial {
+    width: 100%;
+    max-width: 200px;
+}
+
+.goal-dial-track,
+.goal-dial-progress {
+    fill: none;
+    stroke-width: 9;
+}
+
+.goal-dial-track {
+    stroke: var(--bs-border-color);
+}
+
+.goal-dial-progress {
+    stroke: var(--bs-primary);
+    stroke-linecap: round;
+    /* Hidden until the first summary arrives (the circumference is ~327). */
+    stroke-dasharray: 327;
+    stroke-dashoffset: 327;
+    transition: stroke-dashoffset 0.6s ease;
+}
+
+.goal-dial-progress.reached {
+    stroke: var(--bs-success);
+}
+
+.goal-dial-value {
+    fill: var(--bs-emphasis-color, var(--bs-body-color));
+    font-size: 26px;
+    font-weight: 700;
+}
+
+.goal-dial-caption {
+    fill: var(--bs-secondary-color);
+    font-size: 9px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .goal-dial-progress {
+        transition: none;
+    }
+}
+
+.stat-card .stat-note {
+    font-size: 0.75rem;
+    color: var(--bs-secondary-color);
+    margin-top: 0.25rem;
+    min-height: 1rem;
+}
+
+/* This week against last week */
+.week-count {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: var(--bs-emphasis-color, var(--bs-body-color));
+}
+
+.week-count-muted {
+    color: var(--bs-secondary-color);
+}
+
+.chart-container.week-chart {
+    height: 210px;
+}
+
+/* The streak tiles share a column: no fixed height, so they split it. */
+.stat-card.flex-fill {
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.stat-card.flex-fill .stat-icon {
+    margin-bottom: 0.5rem;
+}
+
+/* Open-now shelf: covers with a progress bar under each. */
+.open-now-grid {
+    grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+}
+
+.shelf-progress {
+    height: 4px;
+    margin-top: 0.375rem;
+}
+
+/* Day view: a 24-hour ruler with a block per sitting. Positions are inline
+   percentages of the day, set from insights.js. */
+.day-ruler {
+    margin-bottom: 0.5rem;
+}
+
+.day-ruler-track {
+    position: relative;
+    height: 2.25rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--bs-border-color);
+    /* A line every six hours. */
+    background:
+        repeating-linear-gradient(to right,
+            transparent 0, transparent calc(25% - 1px),
+            var(--bs-border-color) calc(25% - 1px), var(--bs-border-color) 25%),
+        var(--bs-tertiary-bg, var(--bs-secondary-bg));
+    overflow: hidden;
+}
+
+.day-ruler-block {
+    position: absolute;
+    top: 0.25rem;
+    bottom: 0.25rem;
+    border-radius: 0.25rem;
+    min-width: 3px;
+}
+
+.day-ruler-block.session,
+.day-ruler-key.session {
+    background: var(--bs-primary);
+}
+
+/* Not a recorded sitting: laid back from the finish time, so drawn lighter. */
+.day-ruler-block.estimate,
+.day-ruler-key.estimate {
+    background: repeating-linear-gradient(135deg,
+        var(--bs-info) 0, var(--bs-info) 4px,
+        rgba(var(--bs-info-rgb), 0.35) 4px, rgba(var(--bs-info-rgb), 0.35) 8px);
+}
+
+.day-ruler-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.6875rem;
+    color: var(--bs-secondary-color);
+    margin-top: 0.25rem;
+}
+
+.day-ruler-key {
+    display: inline-block;
+    width: 0.875rem;
+    height: 0.625rem;
+    border-radius: 2px;
+    margin-right: 0.375rem;
+    vertical-align: baseline;
+}
+
+.day-thumb {
+    width: 2.5rem;
+    aspect-ratio: 2/3;
+    object-fit: cover;
+    border-radius: 0.25rem;
+    background: var(--bs-tertiary-bg, var(--bs-secondary-bg));
+    flex-shrink: 0;
+}
+
+/* Constellation: an SVG drawn by clu-constellation.js from server positions. */
+.constellation-canvas {
+    min-height: 12rem;
+}
+
+.constellation {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+.constellation-edges line {
+    stroke: var(--bs-secondary-color);
+    transition: stroke-opacity 0.15s ease;
+}
+
+.constellation-node {
+    cursor: pointer;
+    outline: none;
+    /* It is an <a>: no link underline on the label. */
+    text-decoration: none;
+}
+
+.constellation-node circle {
+    fill: var(--bs-primary);
+    fill-opacity: 0.85;
+    stroke: var(--bs-body-bg);
+    stroke-width: 1.5;
+    transition: fill-opacity 0.15s ease;
+}
+
+.constellation-node text {
+    fill: var(--bs-body-color);
+    font-size: 13px;
+    /* A halo in the page colour keeps a label readable over lines. */
+    paint-order: stroke;
+    stroke: var(--bs-body-bg);
+    stroke-width: 3px;
+    stroke-linejoin: round;
+    display: none;
+    pointer-events: none;
+}
+
+.constellation-node.labelled text,
+.constellation-node.lit text {
+    display: block;
+}
+
+/* Something is hovered or focused: its ties stay, the rest recede. */
+.constellation.focused .constellation-node:not(.lit) circle {
+    fill-opacity: 0.2;
+}
+
+.constellation.focused .constellation-node:not(.lit) text {
+    display: none;
+}
+
+.constellation.focused .constellation-edges line:not(.lit) {
+    stroke-opacity: 0.06;
+}
+
+.constellation-edges line.lit {
+    stroke: var(--bs-primary);
+    stroke-opacity: 0.9;
+}
+
+.constellation-node.current circle,
+.constellation-node:focus-visible circle {
+    fill: var(--bs-warning);
+    fill-opacity: 1;
+}
+
+.constellation-node.current text {
+    font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .constellation-edges line,
+    .constellation-node circle {
+        transition: none;
+    }
 }

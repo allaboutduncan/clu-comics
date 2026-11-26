@@ -537,7 +537,8 @@ def purge_arc_issues_cache(arc_id, api=None) -> int:
     )
 
 
-# mokkari 5 Session's read methods, plus ``collection_scrobble`` -- the one
+# mokkari 5 Session's read methods (through 5.2, which added
+# ``issues_by_cover_hash``), plus ``collection_scrobble`` -- the one
 # write CLU sends. Every other write (``*_post``, ``*_patch``,
 # ``collection_add``...) is deliberately absent, so it cannot be called.
 _MOKKARI_READS = frozenset({
@@ -545,7 +546,7 @@ _MOKKARI_READS = frozenset({
     "characters_list", "collection", "collection_missing_issues",
     "collection_missing_series", "collection_scrobble", "collection_stats",
     "collections_list", "creator", "creators_list", "imprint", "imprints_list",
-    "issue", "issues_list", "publisher", "publishers_list", "pull_list",
+    "issue", "issues_by_cover_hash", "issues_list", "publisher", "publishers_list", "pull_list",
     "pull_list_issues", "pull_list_series", "reading_list", "reading_list_items",
     "reading_lists_list", "role_list", "series", "series_issues_list",
     "series_list", "series_type_list", "team", "team_issues_list", "teams_list",
@@ -1540,19 +1541,51 @@ def list_issues_modified_since(api, since_date: str, context: str = "") -> Dict[
     return changed
 
 
+def _rank_series_candidates(series_list, series_name, year=None, file_count=None):
+    """Order name-search results best first.
+
+    Metron's ``name`` filter is a substring match, so "Crimson" also returns
+    "Batman: Crimson Mist". A title that *is* the name comes before one that
+    merely contains it; then the nearest start year; then a series with room
+    for the folder's files (a one-issue series is a poor fit for 24 files).
+    The issue count only ranks, it never rejects: folders hold variants. Ties
+    keep Metron's order.
+    """
+    from core.series_names import ascii_words
+
+    want = ascii_words(series_name)
+
+    def key(s):
+        name = getattr(s, "name", "") or getattr(s, "display_name", "")
+        inexact = 0 if (want and ascii_words(name) == want) else 1
+        s_year = getattr(s, "year_began", None)
+        if year:
+            distance = abs(s_year - year) if s_year is not None else 9999
+        else:
+            distance = 0
+        count = getattr(s, "issue_count", None)
+        too_small = 1 if (file_count and isinstance(count, int) and count < file_count) else 0
+        return (inexact, distance, too_small)
+
+    return sorted(series_list, key=key)
+
+
 def search_series_by_name(
-    api, series_name: str, year: Optional[int] = None
+    api, series_name: str, year: Optional[int] = None,
+    file_count: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Search Metron for a series by name, optionally filtering by year.
+    Search Metron for a series by name and return the best match.
 
     Args:
         api: Mokkari API client
         series_name: Series name to search for
-        year: Optional year to filter/rank results by year_began
+        year: Optional year to rank results by year_began
+        file_count: Optional number of files the series has to hold
 
     Returns:
-        Dict with id, name, cv_id, publisher_name, year_began, or None if not found
+        Dict with id, name, cv_id, publisher_name, year_began, issue_count,
+        or None if not found
     """
     if not api or not series_name:
         return None
@@ -1570,13 +1603,8 @@ def search_series_by_name(
     series_list = list(results)
     app_logger.info(f"Found {len(series_list)} Metron series matches")
 
-    if year and len(series_list) > 1:
-
-        def year_distance(s):
-            s_year = getattr(s, "year_began", None)
-            return abs(s_year - year) if s_year is not None else 9999
-
-        series_list = sorted(series_list, key=year_distance)
+    if len(series_list) > 1:
+        series_list = _rank_series_candidates(series_list, series_name, year, file_count)
 
     series = series_list[0]
     publisher = getattr(series, "publisher", None)
@@ -1588,6 +1616,7 @@ def search_series_by_name(
         "cv_id": getattr(series, "cv_id", None),
         "publisher_name": publisher_name,
         "year_began": getattr(series, "year_began", None),
+        "issue_count": getattr(series, "issue_count", None),
     }
     app_logger.info(
         f"Best Metron match: {result['name']} ({result['year_began']}) - cv_id: {result['cv_id']}"
@@ -1705,6 +1734,12 @@ def search_series_list(
 # Metron's own default for ``cover_hash_near``: on digital files the right issue
 # is within 10 bits 98.6% of the time and is the only result 92% of the time.
 COVER_MATCH_DISTANCE = 10
+# How close a cover must be when the filename does not name the candidate's
+# series. Unrelated covers come within 8 bits, and "issue #1 from about that
+# year" describes hundreds of comics: "Simon Dark 001 (2007)", a series Metron
+# does not have, was taken for "Marvel Adventures The Avengers" (2006) #1 at 10
+# bits. Only a near-identical cover carries a differently named series.
+COVER_MATCH_UNNAMED_DISTANCE = 4
 # The retry for print-vs-digital trade dress (no price box or barcode on the
 # digital cover), which lands 12-18 bits off. Only ever sent with a cover year:
 # unfiltered, every query at 16 also returns unrelated covers.
@@ -1790,8 +1825,10 @@ def _cover_candidate_corroborated(
     bits, and a collected edition often carries an issue's cover exactly (a
     trade at 0 bits, ahead of the issue itself). So the filename has to agree
     on two of series, number and year, and a number it does give must not
-    contradict. A wide search returns more strangers, so it needs the series
-    and the number.
+    contradict. Number and year without the series are common to too many
+    comics to mean much, so that pair counts only when the cover is within
+    ``COVER_MATCH_UNNAMED_DISTANCE`` bits. A wide search returns more
+    strangers, so it needs the series and the number.
     """
     want_number = _norm_issue_number(issue_number)
     number_ok = bool(want_number) and want_number == _norm_issue_number(candidate["number"])
@@ -1812,7 +1849,12 @@ def _cover_candidate_corroborated(
         year_ok = (
             cover_year is not None and abs(cover_year - year) <= 1
         ) or candidate.get("series_year") == year
-    return (number_ok + series_ok + year_ok) >= 2
+    if not series_ok:
+        return (
+            number_ok and year_ok
+            and candidate["distance"] <= COVER_MATCH_UNNAMED_DISTANCE
+        )
+    return number_ok or year_ok
 
 
 def match_issue_by_cover(
@@ -1870,6 +1912,46 @@ def match_issue_by_cover(
             f"bits, {len(agreed)} agree with the filename -- matching by name"
         )
         return None
+    return None
+
+
+# Files of one folder that may be hashed to find the folder's series.
+COVER_SERIES_MAX_FILES = 3
+
+
+def resolve_series_by_cover(api, samples) -> Optional[Dict[str, Any]]:
+    """Identify a folder's Metron series from the covers of its first files.
+
+    ``samples`` is ``[(file_path, series_name, issue_number, year), ...]`` in
+    issue order, each parsed from that file's own name. A substring name search
+    cannot tell "Crimson" from "Batman: Crimson Mist"; a cover names the issue,
+    and the issue names its series. The first of up to
+    ``COVER_SERIES_MAX_FILES`` files that ``match_issue_by_cover`` accepts
+    decides -- there is no second acceptance rule here. Returns ``None`` when
+    none does, and the caller searches by name as before.
+    """
+    from core.settings import get_bool
+
+    if not api or not samples or not get_bool("METRON_COVER_MATCH"):
+        return None
+    for file_path, series_name, issue_number, year in list(samples)[:COVER_SERIES_MAX_FILES]:
+        hit = match_issue_by_cover(api, file_path, series_name, issue_number, year)
+        if hit and hit.get("series_id"):
+            app_logger.info(
+                f"Metron series from cover: {hit['series_name']} "
+                f"({hit['series_year']}), series_id={hit['series_id']}, "
+                f"read from {os.path.basename(file_path)}"
+            )
+            return {
+                "series_id": hit["series_id"],
+                "series_name": hit["series_name"],
+                "series_year": hit["series_year"],
+                "issue_number": hit["number"],
+                "file": file_path,
+            }
+        if paused_reason():
+            # Metron stopped answering; the next file would fail the same way.
+            return None
     return None
 
 

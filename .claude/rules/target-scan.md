@@ -142,13 +142,127 @@ with it.
 > how the incident came to compare against the one-shot's title. With the
 > identity rule tightened this now causes *under*-matching rather than a wrong
 > move, which is the safe direction, but picking the most common derived name
-> rather than the first would be the real fix.
+> rather than the first would be the real fix. (#790 fixed how *one* file is
+> read — an issue title after the year no longer ends up in the name — and left
+> the choice of file alone.)
 
 `tests/unit/test_wanted_scan_target_guard.py` asserts the app.py half
 structurally; the behaviour itself is in
 `tests/unit/test_target_candidate_collection.py`,
 `tests/unit/test_target_sweep_claim.py` and
 `tests/unit/test_watch_target_verdict.py`.
+
+### A cover pack is not the issue (#794)
+
+A variant-cover pack, or a 1-3 page "covers" release, is named like the issue
+it belongs to. One sweep filed eight of them as Nova (2013) issues; each issue
+then read as owned and the real comic was never downloaded.
+`helpers.archive_content.cover_only_reason` is asked before a file may claim a
+wanted issue. It holds a file back when the archive has no page images, when
+every page is cover-named, or when it has 3 pages or fewer and cover wording in
+the archive, wrapper-folder or page names.
+
+- **It is asked in `match_wanted_issues_to_files`' assignment loop, not after
+  matching.** There a refusal leaves the issue open for the next candidate.
+  Checked in `app.py` instead, the pack would win the issue on every pass and
+  the real comic beside it in TARGET would never be filed. It also means one
+  listing per file about to be filed, not one per candidate, and it covers
+  `core/problem_replacements.py` for free.
+- **Names only, and memoised on `(path, mtime, size)`.** A zip costs one read
+  of its central directory. A held file is matched again on every pass (a pass
+  runs per completed download), so the memo makes the repeat one `stat`.
+- **"Cannot tell" files the download.** A missing file, a non-archive and a
+  failed listing all return `None`, and a failed listing is not memoised. A RAR
+  is recognised by its magic bytes before any tool is spawned.
+- **There is no page-count rule by itself.** A short one-shot is a real comic;
+  the small-archive rule needs cover wording as well.
+- **The cover word must stand alone** (`_COVER_WORD`: no letter on either
+  side), so "Discovery" and "Undiscovered Country" are not covers while
+  `Nova_001_cover_B` and `001cvr` are.
+- The refusal is announced through `app_state.first_filing_refusal`: WARNING
+  once per file, DEBUG after. No Library Health row, because `record_problem`
+  refuses TARGET paths.
+- Not covered: packs already filed in a library, and the sweep fetching the
+  same pack again after `QUEUE_COOLDOWN_DAYS` (that is a scorer change).
+
+Tests: `tests/unit/test_cover_only_archive.py`, `TestCoverOnlyArchives` in
+`tests/unit/test_match_wanted_to_files.py`.
+
+### A page count is not the issue, and the tagger follows the filer (#807)
+
+`Green Lantern V3 - 80 Page Giant 001 (1998).cbz` was filed as Green Lantern
+#80, then tagged and renamed as #1, and the real #1 in the same pack stayed in
+TARGET. Two fixes, either of which would have stopped it.
+
+- **`_PAGE_COUNT_AHEAD` is a lookahead on the issue number, added only with
+  `strict_gap`.** A format name that starts with digits gets past `_STRICT_GAP`
+  (no letters before the number), and the tail after the number is a wildcard.
+  A number followed by "Page Giant" or "Page (Super) Spectacular" is refused.
+- **It is not a `PUBLICATION_TYPES` keyword, on purpose.**
+  `names_other_publication_type` reads everything before the first `(` with no
+  idea where the number is, and `Superman 183 - 80 Page Giant (1966)` is
+  Superman #183. The setting also feeds the GetComics scorer.
+- **The loose matcher is untouched**, so no `collection_status` purge shipped. A
+  Giant already sitting in a series folder is still painted as #80 there.
+- **`filename_contradicts_issue` gates the auto-fetch in
+  `process_incoming_wanted_issues`.** The fetchers read the number from the
+  filename again; when it is not the issue just filed, the fetch is skipped
+  with one WARNING. Only positive disagreement counts: a name with no readable
+  number (a ComicInfo-tier match) is still tagged. The fetchers do not take the
+  matched issue as an argument yet.
+- **A volume marker's number is the issue only when no other number comes
+  straight after it.** `_STRICT_GAP` used to take the `V` and leave its digit,
+  so `Green Lantern V3 045` matched #3 as well as #45. The gap now has two
+  volume alternatives: the marker with its number consumed (`Batman v2 012` is
+  #12), and the marker alone with a lookahead. `Saga v07 (2015)`,
+  `Saga v07 2015` and `Series V02 - Title 2026` are still the volume (a
+  following year or title text is not an issue number). Strict only.
+
+Tests: `TestPageCountIsNotTheIssue`, `TestVolumeNumberIsNotTheIssue` and `TestFilenameContradictsIssue` in
+`tests/unit/test_filename_pattern.py`, `TestPageCountGiant` in
+`tests/unit/test_match_wanted_to_files.py`,
+`TestAutoMetadataFollowsTheFiledIssue` in
+`tests/unit/test_wanted_scan_target_guard.py`.
+
+### The matcher must accept what the renamer writes (#861)
+
+`{volume_number}` compiled to a required bare number. The renamer writes `v01`
+or `v2` when it knows the volume and nothing when it does not, so with that
+token in the pattern no renamed download matched: it stayed in TARGET, the
+issue stayed wanted, and the sweep fetched it again after `QUEUE_COOLDOWN_DAYS`.
+
+- **The token is optional in `generate_filename_pattern`** (`_VOLUME_OPTIONAL`),
+  together with its leading space and a literal `V` the pattern writes before
+  it. It is not a `strip_*_token` at the call sites, because three callers
+  build a pattern (`app.py`, `core/problem_replacements.py`, tier 4a) and a
+  strip would have to be pasted into each.
+- **It cannot take a volume marker without its number**, so the #807 rule
+  holds under these patterns too: `Green Lantern V3 045` is not #3.
+- **Only adds matches**, so no `collection_status` purge shipped.
+- `TestRenamerOutputRoundTrips` runs `apply_custom_pattern`'s output through
+  the matcher for each pattern shape. A new rename token gets a row there.
+
+### A copy suffix is not the issue (#859)
+
+`Marvel Adventures Spider-Man 058 (2010) (1).cbz`, a second copy saved by a
+browser, was filed as #1. `_STRICT_GAP`'s last class was `[^A-Za-z]`, which
+takes a lone `(`: the gap ran over the file's own `058`, over `(2010)`, and
+stopped inside the suffix.
+
+- **The gap crosses a bracket only as a whole balanced group.** The class now
+  excludes `()[]`, which is what its comment always claimed. The same edit
+  stops `Batman 012 (2010)` matching #2010.
+- **A pattern that brackets the number keeps that bracket as a literal**
+  (`{series_name} ({issue_number})`), because the gap can no longer absorb it.
+  Strict only. Under such a pattern a `(1)` suffix is still read as #1; the
+  pattern itself says a bracketed number is the issue.
+- **The loose matcher is untouched**, so no `collection_status` purge shipped.
+- Not done: comparing against `fallback_issue_numbers` before the move (the
+  issue's other suggestion). A misread there would strand a correct download
+  in TARGET, and the regex fix needs no second parser.
+
+Tests: `TestCopySuffixIsNotTheIssue` in `tests/unit/test_filename_pattern.py`,
+`TestCopySuffix` in `tests/unit/test_match_wanted_to_files.py`.
 
 ### Never reuse `VARIANT_TYPES` for filename matching
 

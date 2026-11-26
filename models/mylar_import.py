@@ -1180,7 +1180,7 @@ def seed_from_mylar(series_id, row, mylar_series):
 def apply_issue_statuses(series_id, mylar_issues):
     """Copy Mylar's Skipped/Ignored/Archived marks onto issues with no CLU mark.
 
-    Issue numbers are compared through ``normalize_issue_number`` (leading
+    Issue numbers are compared through ``issue_match_key`` (leading
     zeros, sign) and case-folded (Mylar may write ``1.mu`` for Metron's
     ``1.MU``); the mark is stored under CLU's own spelling of the number.
     """
@@ -1189,10 +1189,10 @@ def apply_issue_statuses(series_id, mylar_issues):
         get_issues_for_series,
         get_manual_status_for_series,
     )
-    from helpers.collection import normalize_issue_number
+    from helpers.collection import issue_match_key
 
     def key(number):
-        return normalize_issue_number(number).lower()
+        return issue_match_key(number).lower()
 
     wanted = {}
     for issue in mylar_issues:

@@ -32,11 +32,12 @@
     var pending = null;         // row awaiting a modal confirmation
     var sourceSearch = null;    // lazily built CLU.createSourceSearch instance
 
-    function postJson(url, body) {
+    function postJson(url, body, signal) {
         return fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body || {})
+            body: JSON.stringify(body || {}),
+            signal: signal
         }).then(function (res) {
             return res.json().catch(function () { return {}; }).then(function (data) {
                 return { ok: res.ok, status: res.status, data: data };
@@ -117,6 +118,23 @@
                        title: 'Look in this folder again' });
             out.push({ act: 'delete', label: 'Delete', icon: 'trash', cls: 'btn-outline-danger',
                        title: 'Move the folder and its leftover files to the trash' });
+            out.push(row.dismissed
+                ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
+                    title: 'Show this entry again' }
+                : { act: 'dismiss', label: 'Dismiss', icon: 'eye-slash', cls: 'btn-outline-secondary',
+                    title: 'Hide this entry until the folder changes' });
+            out.push({ act: 'remove', label: 'Remove', icon: 'x-lg', cls: 'btn-outline-secondary',
+                       title: 'Remove from this list (leaves the folder alone)' });
+            return out;
+        }
+
+        if (row.is_release_folder) {
+            // A multi-part release folder in WATCH that would not unpack. It
+            // is a folder of archive parts, so Rebuild, Edit and Search (which
+            // files a replacement onto the row's path) do not apply. The
+            // folder monitor retries by itself.
+            out.push({ act: 'delete', label: 'Delete', icon: 'trash', cls: 'btn-outline-danger',
+                       title: 'Move the release folder and its parts to the trash' });
             out.push(row.dismissed
                 ? { act: 'undismiss', label: 'Restore', icon: 'eye', cls: 'btn-outline-secondary',
                     title: 'Show this entry again' }
@@ -334,11 +352,30 @@
         refresh();
     }
 
+    // Rows per request. The server checks each listed file on disk (up to two
+    // stat calls a row, on what is often a network mount), so the page asks for
+    // a screenful and "Show more" raises the limit, rather than 500 up front.
+    var LIST_PAGE = 100;
+    var listLimit = LIST_PAGE;
+    var listKey = null;
+
+    function showMore() {
+        listLimit += LIST_PAGE;
+        refresh();
+    }
+
     function refresh() {
         var params = new URLSearchParams();
         if (state.source) params.set('source', state.source);
         if (state.query) params.set('q', state.query);
         if (state.includeDismissed) params.set('include_dismissed', '1');
+        // A different filter is a different list: back to the first screenful.
+        var key = params.toString();
+        if (key !== listKey) {
+            listKey = key;
+            listLimit = LIST_PAGE;
+        }
+        params.set('limit', String(listLimit));
 
         return fetch('/api/problem-files?' + params.toString())
             .then(function (r) { return r.json(); })
@@ -346,6 +383,9 @@
                 if (!data.success) throw new Error(data.error || 'Request failed');
 
                 state.rows = data.problems || [];
+                var more = document.getElementById('pf-more');
+                // A full page may have more behind it; a short one is the end.
+                if (more) more.classList.toggle('d-none', state.rows.length < listLimit);
                 state.counts = data.counts || {};
                 state.replacements = data.replacements || [];
                 render();
@@ -418,8 +458,11 @@
         if (replacementPoll) return;
         // The pass also runs server-side from the download pipeline; this is
         // what makes the page react promptly while it is open.
-        replacementPoll = setInterval(function () {
-            postJson('/api/problem-files/replacements/apply').then(function (res) {
+        // Not immediate: the claim was made a moment ago and nothing has
+        // landed yet. The pass moves files, so it gets a long timeout; a
+        // second request while one is running would only stand down.
+        replacementPoll = CLU.startPoll(function (signal) {
+            return postJson('/api/problem-files/replacements/apply', null, signal).then(function (res) {
                 if (!res.ok || !res.data.success) return;
                 state.replacements = res.data.replacements || [];
                 renderReplacements();
@@ -434,7 +477,7 @@
                 if (res.data.changed && res.data.changed.length) refresh();
                 if (!hasPendingReplacement()) stopReplacementPoll();
             });
-        }, 10000);
+        }, 10000, { immediate: false, timeout: 60000 });
     }
 
     function stopReplacementPoll() {
@@ -1118,7 +1161,7 @@
             parts.push(fmtNumber(h.integrity_open) + ' damaged');
             parts.push(fmtNumber(dups.exact) + ' exact / ' + fmtNumber(dups.likely) +
                        ' likely duplicate groups');
-            parts.push(fmtNumber(h.orphans_open) + ' stray files');
+            parts.push(fmtNumber(h.orphans_open) + ' .cbr beside a .cbz');
             parts.push(fmtNumber(h.empty_folders_open) + ' empty folders');
             if (h.comicinfo && h.comicinfo.total) {
                 parts.push(fmtNumber(h.comicinfo.missing) + ' of ' + fmtNumber(h.comicinfo.total) +
@@ -1153,6 +1196,105 @@
         if (interval && h.interval_hours) interval.value = String(h.interval_hours);
         var scanBtn = document.getElementById('pf-health-scan');
         if (scanBtn) scanBtn.disabled = !!h.running;
+        var stopBtn = document.getElementById('pf-health-stop');
+        if (stopBtn) {
+            stopBtn.classList.toggle('d-none', !h.running);
+            stopBtn.disabled = !!h.stopping;
+        }
+        healthState.lastRunAt = h.last_run_at || null;
+        if (h.running) {
+            if (!healthPoll) followHealthScan(null);
+        } else if (!healthPoll) {
+            setHealthProgress('');
+        }
+    }
+
+    // What the last summary said, so the end of a scan can be told from a
+    // scan that died: last_run_at only moves when a scan finishes.
+    var healthState = { lastRunAt: null };
+
+    function setHealthProgress(text) {
+        var el = document.getElementById('pf-health-progress');
+        if (!el) return;
+        el.textContent = text || '';
+        el.classList.toggle('d-none', !text);
+    }
+
+    function stopHealthPoll() {
+        if (healthPoll) clearInterval(healthPoll);
+        healthPoll = null;
+    }
+
+    // Follow a running scan to its end. opId is the operation to read progress
+    // from, or null for a scan this page did not start (the schedule, another
+    // tab), which is followed through the summary alone.
+    //
+    // The operations registry is in memory, so after a restart the operation
+    // is simply gone. That used to fall into the success branch: a scan the
+    // restart killed was announced as "complete". Now a missing operation is
+    // settled by the summary, whose last_run_at moves only when a scan really
+    // finishes.
+    function followHealthScan(opId) {
+        stopHealthPoll();
+        var before = healthState.lastRunAt;
+        setHealthProgress('Scanning\u2026');
+
+        function finish(op) {
+            stopHealthPoll();
+            setHealthProgress('');
+            return fetch('/api/problem-files/health/summary')
+                .then(function (r) { return r.json(); })
+                .then(function (h) {
+                    if (h.success) renderHealth(h);
+                    var finished = h.success && h.last_run_at && h.last_run_at !== before;
+                    if (op && op.status === 'error') {
+                        CLU.showError('Library health scan failed');
+                    } else if (!finished) {
+                        CLU.showError('The library health scan was interrupted before it finished. ' +
+                            'What it had checked is kept; run it again to continue.');
+                    } else if (h.last_batch && h.last_batch.stopped) {
+                        CLU.showToast('Library health', 'Scan stopped. Results so far are kept.', 'info');
+                    } else {
+                        CLU.showSuccess('Library health scan complete');
+                    }
+                    return refresh();
+                });
+        }
+
+        healthPoll = CLU.startPoll(function (signal) {
+            if (!opId) {
+                return fetch('/api/problem-files/health/summary', { signal: signal })
+                    .then(function (r) { return r.json(); })
+                    .then(function (h) {
+                        if (h.success && h.running) return;
+                        return finish(null);
+                    });
+            }
+            // /api/operation/<id>, never /api/operations (see base.html).
+            return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    var op = data.operation || null;
+                    if (op && (op.status === 'running' || op.status === 'queued')) {
+                        setHealthProgress(op.detail || 'Scanning\u2026');
+                        return;
+                    }
+                    return finish(op);
+                });
+        }, 2000);
+    }
+
+    function stopHealthScan() {
+        var btn = document.getElementById('pf-health-stop');
+        if (btn) btn.disabled = true;
+        postJson('/api/problem-files/health/scan/stop').then(function (res) {
+            if (!res.ok || !res.data.success) {
+                if (btn) btn.disabled = false;
+                CLU.showError((res.data && res.data.error) || 'Could not stop the scan');
+                return;
+            }
+            setHealthProgress('Stopping after the current file\u2026');
+        });
     }
 
     function loadHealth() {
@@ -1204,26 +1346,12 @@
                 CLU.showError((res.data && res.data.error) || 'Could not start the scan');
                 return;
             }
-            CLU.showToast('Library health', 'Scanning your library…', 'info');
-            var opId = res.data.op_id;
-            if (healthPoll) clearInterval(healthPoll);
-            // /api/operation/<id>, never /api/operations (see base.html).
-            healthPoll = CLU.startPoll(function (signal) {
-                return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
-                    .then(function (r) { return r.json(); })
-                    .then(function (data) {
-                        var op = data.operation || null;
-                        if (op && (op.status === 'running' || op.status === 'queued')) return;
-                        clearInterval(healthPoll);
-                        healthPoll = null;
-                        if (op && op.status === 'error') {
-                            CLU.showError('Library health scan failed');
-                        } else {
-                            CLU.showSuccess('Library health scan complete');
-                        }
-                        return Promise.all([loadHealth(), refresh()]);
-                    });
-            }, 2000);
+            var stopBtn = document.getElementById('pf-health-stop');
+            if (stopBtn) {
+                stopBtn.classList.remove('d-none');
+                stopBtn.disabled = false;
+            }
+            followHealthScan(res.data.op_id);
         });
     }
 
@@ -1231,16 +1359,34 @@
         var btn = document.getElementById('pf-index-rebuild');
         if (btn) btn.disabled = true;
         CLU.showToast('File index', 'Re-reading your library folders…', 'info');
+        // Off-request on the server (the walk outlasts the request timeout on a
+        // big library), so this follows the operation it started.
         postJson('/api/rebuild-file-index').then(function (res) {
-            if (btn) btn.disabled = false;
             if (!res.ok || !res.data.success) {
+                if (btn) btn.disabled = false;
                 CLU.showError((res.data && (res.data.error || res.data.message)) ||
                     'Could not rebuild the file index');
                 return;
             }
-            CLU.showSuccess('File index rebuilt: ' + res.data.added + ' added, ' +
-                res.data.removed + ' removed');
-            return Promise.all([loadHealth(), refresh()]);
+            var opId = res.data.op_id;
+            var poll = CLU.startPoll(function (signal) {
+                return fetch('/api/operation/' + encodeURIComponent(opId), { signal: signal })
+                    .then(function (r) { return r.json(); })
+                    .then(function (data) {
+                        var op = data.operation || null;
+                        if (op && (op.status === 'running' || op.status === 'queued')) return;
+                        clearInterval(poll);
+                        if (btn) btn.disabled = false;
+                        if (!op) {
+                            CLU.showError('The file index rebuild was interrupted before it finished');
+                        } else if (op.status === 'error') {
+                            CLU.showError('Could not rebuild the file index');
+                        } else {
+                            CLU.showSuccess('File index rebuilt' + (op.detail ? ': ' + op.detail : ''));
+                        }
+                        return Promise.all([loadHealth(), refresh()]);
+                    });
+            }, 2000);
         }).catch(function () {
             if (btn) btn.disabled = false;
             CLU.showError('Could not rebuild the file index');
@@ -1250,6 +1396,10 @@
     function bindHealth() {
         var scanBtn = document.getElementById('pf-health-scan');
         if (scanBtn) scanBtn.addEventListener('click', runHealthScan);
+        var moreBtn = document.getElementById('pf-more');
+        if (moreBtn) moreBtn.addEventListener('click', showMore);
+        var stopBtn = document.getElementById('pf-health-stop');
+        if (stopBtn) stopBtn.addEventListener('click', stopHealthScan);
         var rebuildBtn = document.getElementById('pf-index-rebuild');
         if (rebuildBtn) rebuildBtn.addEventListener('click', rebuildFileIndex);
         var enabled = document.getElementById('pf-health-enabled');

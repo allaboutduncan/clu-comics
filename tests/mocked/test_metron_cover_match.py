@@ -12,6 +12,8 @@ from mokkari.exceptions import ApiError
 HASH = "c585eb18bf1e5423"
 ONE_OFF = "c585eb18bf1e5422"
 FOUR_OFF = "c585eb18bf1e542c"
+FIVE_OFF = "c585eb18bf1e546c"
+TEN_OFF = "c585eb18bf1e57dc"
 TWELVE_OFF = "c585eb18bf1eabdc"
 FAR = "3a7a14e740e1abdc"
 
@@ -136,6 +138,27 @@ class TestMatchIssueByCover:
             [[_row(7, "1", HASH, series="Detective Comics", year_began=1937)]])
         assert hit["id"] == 7
 
+    def test_number_and_year_do_not_carry_a_stranger_at_the_edge(self):
+        # "Simon Dark" is not on Metron. An unrelated #1 from the year before,
+        # 10 bits off, was accepted and its series written to the cvinfo.
+        hit, library = self._match(
+            [[_row(7, "1", TEN_OFF, series="Marvel Adventures The Avengers",
+                   year_began=2006, cover_date=(2006, 7, 1))]],
+            series="Simon Dark", number="001", year=2007)
+        assert hit is None
+        assert library.issues_list.call_count == 1
+
+    def test_a_differently_named_series_needs_a_near_identical_cover(self):
+        def other(cover_hash):
+            return [[_row(7, "1", cover_hash, series="Detective Comics", year_began=1937)]]
+
+        assert self._match(other(FOUR_OFF))[0]["id"] == 7
+        assert self._match(other(FIVE_OFF))[0] is None
+
+    def test_a_named_series_is_accepted_out_to_the_search_distance(self):
+        hit, _ = self._match([[_row(7, "1", TEN_OFF)]])
+        assert hit["id"] == 7
+
     def test_series_start_year_counts_as_the_year(self):
         hit, _ = self._match(
             [[_row(7, "1", HASH, series="Zzz", year_began=2020, cover_date=(2023, 1, 1))]])
@@ -203,3 +226,63 @@ class TestMatchIssueByCover:
         assert hit is None and library.issues_list.call_count == 0
         hit, library = self._match([[_row(7, "1", HASH)]], enabled=False)
         assert hit is None and library.issues_list.call_count == 0
+
+
+class TestResolveSeriesByCover:
+    """A folder's series, read from the covers of its first files."""
+
+    HIT = {"id": 7, "number": "1", "series_id": 55, "series_name": "Crimson",
+           "series_year": 1998, "cover_year": 1998, "cover_hash": HASH, "distance": 1}
+
+    SAMPLES = [
+        ("/data/Crimson/Crimson 001 (1998).cbz", "Crimson", "1", 1998),
+        ("/data/Crimson/Crimson 002 (1998).cbz", "Crimson", "2", 1998),
+        ("/data/Crimson/Crimson 003 (1998).cbz", "Crimson", "3", 1998),
+        ("/data/Crimson/Crimson 004 (1998).cbz", "Crimson", "4", 1998),
+    ]
+
+    def _resolve(self, answers, enabled=True, paused=None, samples=None):
+        from models import metron
+
+        with patch("models.metron.match_issue_by_cover", side_effect=list(answers)) as match, \
+             patch("models.metron.paused_reason", return_value=paused), \
+             patch("core.settings.get_bool", return_value=enabled):
+            found = metron.resolve_series_by_cover(
+                MagicMock(), self.SAMPLES if samples is None else samples)
+        return found, match
+
+    def test_the_first_file_decides(self):
+        found, match = self._resolve([self.HIT])
+        assert found == {
+            "series_id": 55, "series_name": "Crimson", "series_year": 1998,
+            "issue_number": "1", "file": self.SAMPLES[0][0],
+        }
+        assert match.call_count == 1
+        assert match.call_args.args[1:] == self.SAMPLES[0]
+
+    def test_a_miss_moves_on_to_the_next_file(self):
+        found, match = self._resolve([None, self.HIT])
+        assert found["series_id"] == 55
+        assert found["file"] == self.SAMPLES[1][0]
+        assert match.call_count == 2
+
+    def test_never_more_than_three_files(self):
+        found, match = self._resolve([None, None, None, self.HIT])
+        assert found is None
+        assert match.call_count == 3
+
+    def test_a_paused_metron_stops_after_one_file(self):
+        found, match = self._resolve([None, self.HIT], paused="Metron's daily limit is spent")
+        assert found is None
+        assert match.call_count == 1
+
+    def test_switched_off_or_nothing_to_hash_asks_nothing(self):
+        found, match = self._resolve([self.HIT], enabled=False)
+        assert found is None and match.call_count == 0
+        found, match = self._resolve([self.HIT], samples=[])
+        assert found is None and match.call_count == 0
+
+    def test_no_client_is_none(self):
+        from models import metron
+
+        assert metron.resolve_series_by_cover(None, self.SAMPLES) is None

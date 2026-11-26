@@ -25,6 +25,13 @@ from flask import (Blueprint, request, jsonify, Response,
 import core.app_state as app_state
 from core.app_logging import app_logger
 from core.auth import require_role
+from core.series_names import ascii_words
+from core.filename_parse import (
+    SIGN_CLASS,
+    TRAILING_ISSUE,
+    ends_with_issue_number,
+    prefix_before_first_group,
+)
 from helpers.library import is_valid_library_path, resolve_provider_library_id
 from models import gcd, inducks, metron, comicvine, comicvine_sqlite
 from models.gcd import STOPWORDS
@@ -123,6 +130,21 @@ def _volume_year_of(metadata, fallback=None):
     return year_of(fallback)
 
 
+def comicvine_search_term(series_name):
+    """A series name as ComicVine's volume search wants it: the punctuation
+    that splits or breaks a query becomes a space. The single-file route, the
+    cascade and the local-dump lookup each pasted this."""
+    term = re.sub(r'[:\-\u2013\u2014\'\"\.\,\!\?]', ' ', series_name or '')
+    return re.sub(r'\s+', ' ', term).strip()
+
+
+def _same_title(a, b):
+    """Exact title equality for "is this the one result we may take without
+    asking": case and outer whitespace only. Deliberately strict -- a looser
+    comparison here auto-selects a series the user never saw."""
+    return (a or '').lower().strip() == (b or '').lower().strip()
+
+
 def extract_series_name_from_folder(folder_name):
     """Strip year/volume/'- complete' suffixes from a folder name to get the series."""
     if not folder_name:
@@ -135,15 +157,75 @@ def extract_series_name_from_folder(folder_name):
 
 
 def extract_series_name_from_filename(filename):
-    """Best-effort series name extraction from a CBZ filename."""
+    """Best-effort series name extraction from a CBZ filename.
+
+    The one copy for the metadata-lookup paths (single-file, batch and bulk),
+    built on the anchor rule in core/filename_parse.py: in
+    "Series 001 (2014) - Title" the name ends where the issue number starts,
+    and the title after the year is not part of it.
+    """
     if not filename:
         return ""
     s = os.path.splitext(filename)[0]
-    s = re.sub(r'\s*\(\d{4}\)', '', s)
-    s = re.sub(r'\s*#?\d{1,4}\s*$', '', s)
-    s = re.sub(r'\s*-\s*\d{1,4}\s*$', '', s)
-    s = re.sub(r'\s+Issue\s+\d+', '', s, flags=re.IGNORECASE)
-    return s.strip()
+    prefix, has_group = prefix_before_first_group(s)
+    if has_group and ends_with_issue_number(prefix):
+        s = prefix
+    else:
+        s = re.sub(r'\s*\(\d{4}\)', '', s)
+    # "Issue 3" / "Issue -1" first: the trailing-number strip below would take
+    # the digits and leave the word.
+    s = re.sub(rf'\s+Issue\s+{SIGN_CLASS}?\d+(?:\.\w+)?', '', s, flags=re.IGNORECASE)
+    # An explicit "#NNN" marks the issue wherever it sits; what follows it is
+    # an issue title ("Nightwing #117 - Absolute Power").
+    s = re.sub(rf'\s*#{SIGN_CLASS}?\d.*$', '', s)
+    # Exactly ONE trailing number is the issue. A signed or point issue
+    # ("-001", "001.5", "001 of 5") goes as one token; a second strip would
+    # take the "2099" out of "Spider-Man 2099 001". The glued form
+    # ("Comic-001") is tried only when the spaced one found nothing.
+    stripped, found = TRAILING_ISSUE.subn('', s)
+    if not found:
+        stripped = re.sub(r'\d{1,4}\s*$', '', s)
+    # Drop the separator a "Series - 003" style leaves behind. A name that is
+    # nothing but a number ("300 (1998)") keeps it.
+    stripped = re.sub(r'[\s\-_:;,]+$', '', stripped)
+    return (stripped or s).strip()
+
+
+def cover_series_samples(files):
+    """The first files of a folder, parsed for ``metron.resolve_series_by_cover``.
+
+    ``[(path, series, issue, year), ...]`` in name order, which is issue order
+    for a series folder. The issue is left as ``None`` when the name has none:
+    defaulting it to "1" would let the cover check agree on a number the
+    filename never gave.
+    """
+    samples = []
+    for path in sorted(files, key=lambda p: os.path.basename(p).lower()):
+        name = os.path.basename(path)
+        samples.append((
+            path,
+            extract_series_name_from_filename(name),
+            comicvine.extract_issue_number(name),
+            extract_year_from_name(name),
+        ))
+        if len(samples) >= metron.COVER_SERIES_MAX_FILES:
+            break
+    return samples
+
+
+def series_issue_year_from_filename(filename):
+    """``(series, issue, year)`` for a provider lookup, from a filename alone.
+
+    Never returns an empty series or issue: a name with no issue number is a
+    one-shot or graphic novel and is looked up as issue "1", and a name that
+    strips to nothing is searched as it stands. ``year`` is the first
+    "(YYYY)" group, or None.
+    """
+    stem = os.path.splitext(filename or "")[0]
+    series = extract_series_name_from_filename(filename) or stem.strip()
+    issue = comicvine.extract_issue_number(filename or "") or "1"
+    year_match = re.search(r'\((\d{4})\)', stem)
+    return series, issue, int(year_match.group(1)) if year_match else None
 
 
 def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
@@ -160,7 +242,9 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
     every re-tag. Pass merge_existing=False for a true replace.
     """
     from cbz_ops.single_file import convert_single_rar_file
+    from cbz_ops.salvage import read_entry_lenient
     from core.comicinfo import merge_comicinfo_bytes
+    from helpers.archive_paths import safe_member_path
 
     # Safety: ensure bytes
     if isinstance(comicinfo_xml_bytes, str):
@@ -203,26 +287,18 @@ def add_comicinfo_to_cbz(file_path, comicinfo_xml_bytes, merge_existing=True):
                     app_logger.warning(f"Corrupted file in archive (bad CRC): {filename} - attempting raw copy")
                     corrupted_files.append(filename)
                     try:
-                        # Try to copy the file data without CRC verification
-                        # Get the ZipInfo object
-                        info = src.getinfo(filename)
-                        # Create the target path
-                        target_path = os.path.join(temp_extract_dir, filename)
+                        # Never join the raw member name onto the folder:
+                        # extract() sanitises it and this fallback did not, so
+                        # a "../" entry with a wrong CRC was written outside
+                        # the extraction folder (GHSA-6p2x-pmgg-9qjj).
+                        target_path = safe_member_path(temp_extract_dir, filename)
+                        # Only the checksum is waived, so the whole entry is
+                        # kept. The old chunked read lost the final chunk when
+                        # the CRC check fired, leaving the page short or empty.
+                        data, _crc_ok = read_entry_lenient(src, src.getinfo(filename))
                         os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                        # Read raw data (may be corrupted but we'll preserve what we can)
-                        with src.open(filename) as zf:
-                            # Read in chunks to handle large files
-                            with open(target_path, 'wb') as out:
-                                while True:
-                                    try:
-                                        chunk = zf.read(8192)
-                                        if not chunk:
-                                            break
-                                        out.write(chunk)
-                                    except zipfile.BadZipFile:
-                                        # Write what we have and stop
-                                        app_logger.warning(f"Partial extraction for corrupted file: {filename}")
-                                        break
+                        with open(target_path, 'wb') as out:
+                            out.write(data)
                     except Exception as copy_error:
                         app_logger.error(f"Failed to copy corrupted file {filename}: {copy_error}")
                         # Skip this file entirely
@@ -1555,6 +1631,50 @@ def validate_gcd_issue():
 # Batch Metadata
 # =============================================================================
 
+def _metron_series_for_folder(metron_api, directory, comic_files, series_name, file_year):
+    """Which Metron series a folder with no cvinfo holds.
+
+    Strongest evidence first: an id the folder's series.json already records,
+    then the covers of its first files, then the name search. The name search
+    used to run alone and took the first substring hit, so a "Crimson" folder
+    of 24 issues became the one-issue "Batman: Crimson Mist". Returns the dict
+    ``search_series_by_name`` returns, or None.
+    """
+    def from_id(series_id, fallback_name="", fallback_year=None):
+        details = metron.get_series_details(metron_api, series_id) or {}
+        return {
+            "id": series_id,
+            "name": fallback_name,
+            "cv_id": details.get("cv_id"),
+            "publisher_name": details.get("publisher_name"),
+            "year_began": details.get("year_began") or fallback_year,
+        }
+
+    try:
+        from core.series_json_builder import folder_ids
+        recorded = folder_ids(directory)
+    except Exception as e:
+        app_logger.debug(f"Could not read series.json ids in {directory}: {e}")
+        recorded = {}
+    if recorded.get("metron_id"):
+        app_logger.info(f"Using Metron series_id {recorded['metron_id']} from series.json")
+        return from_id(recorded["metron_id"])
+    if recorded.get("cv_id"):
+        series_id = metron.get_series_id_by_comicvine_id(metron_api, recorded["cv_id"])
+        if series_id:
+            app_logger.info(f"Using ComicVine id {recorded['cv_id']} from series.json")
+            return from_id(series_id)
+
+    hit = metron.resolve_series_by_cover(metron_api, cover_series_samples(comic_files))
+    if hit:
+        return from_id(hit["series_id"], hit["series_name"], hit["series_year"])
+
+    # The folder's year is the series' start year; a file's is its issue's.
+    series_year = extract_year_from_name(os.path.basename(directory)) or file_year
+    return metron.search_series_by_name(
+        metron_api, series_name, series_year, file_count=len(comic_files))
+
+
 @metadata_bp.route('/api/batch-metadata', methods=['POST'])
 def batch_metadata():
     """
@@ -1726,24 +1846,13 @@ def batch_metadata():
             app_logger.info("Batch metadata: one-shot folder — skipping folder-level cvinfo (per-file matching)")
         elif not os.path.exists(cvinfo_path):
             # Extract series name from folder first
-            series_name = os.path.basename(directory)
-            series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)  # Remove (1994) and everything after
-            series_name = re.sub(r'\s*v\d+.*$', '', series_name)  # Remove v1, v2 etc
-            series_name = re.sub(r'\s*-\s*complete.*$', '', series_name, flags=re.IGNORECASE)
-            series_name = series_name.strip()
+            series_name = extract_series_name_from_folder(os.path.basename(directory))
 
             # If folder name didn't yield a series name, try extracting from first filename
             if not series_name and comic_files:
-                filename = os.path.basename(comic_files[0])
-                # Remove extension
-                series_name = os.path.splitext(filename)[0]
-                # Remove year in parentheses: "(2005)"
-                series_name = re.sub(r'\s*\(\d{4}\)', '', series_name)
-                # Remove issue number patterns: "003", "#3", "Issue 3"
-                series_name = re.sub(r'\s*#?\d{1,4}\s*$', '', series_name)  # Trailing numbers
-                series_name = re.sub(r'\s*-\s*\d{1,4}\s*$', '', series_name)  # "- 003"
-                series_name = re.sub(r'\s+Issue\s+\d+', '', series_name, flags=re.IGNORECASE)
-                series_name = series_name.strip()
+                series_name = extract_series_name_from_filename(
+                    os.path.basename(comic_files[0])
+                )
                 app_logger.info(f"Extracted series name from filename: '{series_name}'")
 
             app_logger.info(f"No cvinfo found, searching for series: '{series_name}' (year: {extracted_year})")
@@ -1752,7 +1861,8 @@ def batch_metadata():
             if metron_api and not skip_comic_cvinfo:
                 app_logger.info("Trying Metron first for cvinfo creation...")
                 try:
-                    metron_series = metron.search_series_by_name(metron_api, series_name, extracted_year)
+                    metron_series = _metron_series_for_folder(
+                        metron_api, directory, comic_files, series_name, extracted_year)
                     if metron_series:
                         # Create cvinfo with all Metron data
                         metron.create_cvinfo_file(
@@ -2012,10 +2122,7 @@ def batch_metadata():
                             return False
                         try:
                             # Get series name from directory
-                            gcd_series_name = os.path.basename(directory)
-                            # Clean up series name
-                            gcd_series_name = re.sub(r'\s*\(\d{4}\).*$', '', gcd_series_name)
-                            gcd_series_name = re.sub(r'\s*v\d+.*$', '', gcd_series_name)
+                            gcd_series_name = extract_series_name_from_folder(os.path.basename(directory))
 
                             # Use gcd_year (from filename/folder or cvinfo)
                             gcd_series = gcd.search_series(gcd_series_name, gcd_year)
@@ -2120,9 +2227,7 @@ def batch_metadata():
                             anilist = AniListProvider()
 
                             # Get series name from directory
-                            series_name = os.path.basename(directory)
-                            series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
-                            series_name = re.sub(r'\s*v\d+.*$', '', series_name)
+                            series_name = extract_series_name_from_folder(os.path.basename(directory))
 
                             # Search for the manga
                             results = anilist.search_series(series_name, gcd_year)
@@ -2163,18 +2268,15 @@ def batch_metadata():
                                 return False
 
                             # Get series name from directory
-                            series_name = os.path.basename(directory)
-                            series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
-                            series_name = re.sub(r'\s*v\d+.*$', '', series_name)
+                            series_name = extract_series_name_from_folder(os.path.basename(directory))
 
                             # Search for the manga
                             results = mangadex.search_series(series_name, gcd_year)
                             if results:
                                 # Prefer exact title match
-                                search_lower = series_name.lower().strip()
                                 match = None
                                 for r in results:
-                                    if r.title.lower().strip() == search_lower:
+                                    if _same_title(r.title, series_name):
                                         match = r
                                         break
                                 if not match and len(results) == 1:
@@ -2224,16 +2326,13 @@ def batch_metadata():
                                     return True
                                 return False
 
-                            series_name = os.path.basename(directory)
-                            series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
-                            series_name = re.sub(r'\s*v\d+.*$', '', series_name)
+                            series_name = extract_series_name_from_folder(os.path.basename(directory))
                             results = mu.search_series(series_name, gcd_year)
                             if results:
                                 # Prefer exact title match
-                                search_lower = series_name.lower().strip()
                                 match = None
                                 for r in results:
-                                    if r.title.lower().strip() == search_lower:
+                                    if _same_title(r.title, series_name):
                                         match = r
                                         break
                                 if not match and len(results) == 1:
@@ -2268,16 +2367,12 @@ def batch_metadata():
                             if not gcd_api_client:
                                 return False
 
-                            gcd_api_series_name = os.path.basename(directory)
-                            gcd_api_series_name = re.sub(r'\s*\(\d{4}\).*$', '', gcd_api_series_name)
-                            gcd_api_series_name = re.sub(r'\s*v\d+.*$', '', gcd_api_series_name).strip()
+                            gcd_api_series_name = extract_series_name_from_folder(os.path.basename(directory))
 
                             # If directory name was just "v2004", series name is empty — use parent
                             if not gcd_api_series_name:
                                 parent_dir = os.path.dirname(directory)
-                                gcd_api_series_name = os.path.basename(parent_dir)
-                                gcd_api_series_name = re.sub(r'\s*\(\d{4}\).*$', '', gcd_api_series_name)
-                                gcd_api_series_name = re.sub(r'\s*v\d+.*$', '', gcd_api_series_name).strip()
+                                gcd_api_series_name = extract_series_name_from_folder(os.path.basename(parent_dir))
 
                             if not gcd_api_series_name:
                                 return False
@@ -2295,8 +2390,7 @@ def batch_metadata():
                                 return False
 
                             # For batch, require a single exact title match
-                            search_lower = gcd_api_series_name.lower().strip()
-                            exact = [r for r in results if r.title.lower().strip() == search_lower]
+                            exact = [r for r in results if _same_title(r.title, gcd_api_series_name)]
                             if len(exact) == 1:
                                 match = exact[0]
                             elif len(results) == 1:
@@ -2655,24 +2749,18 @@ def search_gcd_metadata():
                 file_name_without_ext = file_name_without_ext.replace(ext, '')
             app_logger.debug(f"DEBUG: Parsing issue number from first file: {file_name_without_ext}")
 
-            # Try multiple patterns to extract issue number from the first file
-            issue_patterns = [
-                r'(?:^|\s)(\d{1,4})(?:\s*\(|\s*$|\s*\.)',     # Standard: "Series 123 (year)" or "Series 123.cbz"
-                r'(?:^|\s)#(\d{1,4})(?:\s|$)',                 # Hash prefix: "Series #123"
-                r'(?:issue\s*)(\d{1,4})',                      # Issue prefix: "Series Issue 123"
-                r'(?:no\.?\s*)(\d{1,4})',                      # No. prefix: "Series No. 123"
-                r'(?:vol\.\s*\d+\s+)(\d{1,4})',                # Volume and issue: "Series Vol. 1 123"
-            ]
-
-            for pattern in issue_patterns:
-                match = re.search(pattern, file_name_without_ext, re.IGNORECASE)
-                if match:
-                    issue_number = int(match.group(1))  # Handles '0', '00', '000' -> 0
-                    if issue_number == 0:
-                        app_logger.debug(f"DEBUG: Extracted issue number {issue_number} (zero/variant issue) from filename using pattern: {pattern}")
-                    else:
-                        app_logger.debug(f"DEBUG: Extracted issue number {issue_number} from filename using pattern: {pattern}")
-                    break
+            # The shared parser, so a directory search reads the same number
+            # as every other lookup path: this branch carried five patterns
+            # of its own and int()'d the result, which turned "001.5" into 1
+            # and could not see a negative issue at all. A string is fine
+            # below -- the query str()s it -- and "000" still comes back "0".
+            issue_number = comicvine.extract_issue_number(file_name)
+            if issue_number is None:
+                # "Series No. 123" is the one shape only this branch knew.
+                no_match = re.search(r'\bno\.?\s*(\d{1,4})\b', file_name_without_ext, re.IGNORECASE)
+                if no_match:
+                    issue_number = str(int(no_match.group(1)))
+            app_logger.debug(f"DEBUG: Extracted issue number {issue_number} from first file")
 
             if issue_number is None:
                 issue_number = 1  # Ultimate fallback
@@ -4063,10 +4151,13 @@ def _try_metron_single(cvinfo_path, series_name, issue_number, year, near_misses
             if not candidates:
                 return None, None, None
 
-            search_words = metron._norm_series_words(series_name)
+            # The words IN ORDER. This compared word sets, so "Superman/Batman"
+            # was a confident match for "Batman/Superman" and was tagged
+            # without asking -- two different series.
+            search_words = ascii_words(series_name)
             confident = next(
                 (c for c in candidates
-                 if metron._norm_series_words(c.get('name') or '') == search_words),
+                 if ascii_words(c.get('name')) == search_words),
                 None
             )
             if confident:
@@ -4197,8 +4288,7 @@ def _try_comicvine_single_impl(cvinfo_path, series_name, issue_number, year, nea
             return None, None, None, None
 
         # Normalize series name for searching
-        normalized_series = re.sub(r'[:\-\u2013\u2014\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         volumes = comicvine.search_volumes(api_key, normalized_series, year)
         if not volumes:
@@ -4269,8 +4359,7 @@ def _try_comicvine_sqlite_single(cvinfo_path, series_name, issue_number, year, n
         if not series_name:
             return None, None, None, None
 
-        normalized_series = re.sub(r'[:\-–—\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         volumes = comicvine_sqlite.search_volumes(normalized_series, year)
         if not volumes:
@@ -4498,8 +4587,7 @@ def _try_gcd_api_single(series_name, issue_number, year, file_path=None, user_st
         # ONE exact title match with start_year known (from folder/user).
         # Without a year, multiple series may share the same name across
         # different years (e.g. "Sherlock Holmes" 1955 vs 1976).
-        search_lower = series_name.lower().strip()
-        exact_matches = [r for r in raw_results if (r.get('name', '') or '').lower().strip() == search_lower]
+        exact_matches = [r for r in raw_results if _same_title(r.get('name'), series_name)]
 
         if len(exact_matches) == 1 and start_year:
             match_id = _extract_id_from_url(exact_matches[0].get('api_url'))
@@ -5515,8 +5603,7 @@ def search_metadata():
 
             elif provider_type in ('anilist', 'mangadex', 'mangaupdates'):
                 # Manga providers: clean series name and search
-                manga_series_name = re.sub(r'\s*\(\d{4}\).*$', '', series_name)
-                manga_series_name = re.sub(r'\s*v\d+.*$', '', manga_series_name).strip()
+                manga_series_name = extract_series_name_from_folder(series_name)
                 # Use volume number if available (vNN pattern)
                 vol_match = re.search(r'\bv(\d+)', file_name, re.IGNORECASE)
                 manga_issue = vol_match.group(1).lstrip('0') or '1' if vol_match else issue_number
@@ -5535,10 +5622,9 @@ def search_metadata():
                     results = prov.search_series(manga_series_name, year)
                     if results:
                         # Check for confident match: exact (case-insensitive) title match
-                        search_lower = manga_series_name.lower().strip()
                         confident_match = None
                         for r in results:
-                            if r.title.lower().strip() == search_lower:
+                            if _same_title(r.title, manga_series_name):
                                 confident_match = r
                                 break
 
@@ -5826,49 +5912,12 @@ def search_comicvine_metadata():
         issue_number = None
         year = None
 
-        # Issue groups accept a decimal/alpha suffix (".1"/".MU"); name_without_ext
-        # has already had the file extension stripped, so widening is safe here.
-        patterns = [
-            r'^(.+?)\s+(\d{3,4}(?:\.\w+)?)\s+\((\d{4})\)',  # "Series 001 (2020)"
-            r'^(.+?)\s+#?(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)', # "Series #1 (2020)" or "Series 1 (2020)"
-            r'^(.+?)\s+v\d+\s+(\d{1,4}(?:\.\w+)?)\s*\((\d{4})\)', # "Series v1 001 (2020)"
-            r'^(.+?)\s+(\d{1,4}(?:\.\w+)?)\s+\(of\s+\d+\)\s+\((\d{4})\)', # "Series 05 (of 12) (2020)"
-            r'^(.+?)\s+#?(\d{1,4}(?:\.\w+)?)$',  # "Series 169" or "Series #169" (no year)
-        ]
-
-        def _strip_issue_leading_zeros(num):
-            # "001" -> "1", "007.1" -> "7.1", "001.MU" -> "1.MU"; keep the suffix.
-            head, dot, tail = num.partition(".")
-            try:
-                head = str(int(head))
-            except ValueError:
-                return num
-            return head + dot + tail
-
-        for pattern in patterns:
-            match = re.match(pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                issue_number = _strip_issue_leading_zeros(match.group(2))
-                year = int(match.group(3)) if len(match.groups()) >= 3 else None
-                app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
-                break
-
-        # If no pattern matched, try to parse as single-issue/graphic novel with just year
-        if not series_name:
-            single_issue_pattern = r'^(.+?)\s*\((\d{4})\)$'
-            match = re.match(single_issue_pattern, name_without_ext, re.IGNORECASE)
-            if match:
-                series_name = match.group(1).strip()
-                year = int(match.group(2))
-                issue_number = "1"
-                app_logger.debug(f"DEBUG: Single-issue/graphic novel parsed - series_name={series_name}, year={year}, issue_number={issue_number}")
-
-        # Ultimate fallback: use entire filename as series name
-        if not series_name:
-            series_name = name_without_ext.strip()
-            issue_number = "1"
-            app_logger.debug(f"DEBUG: Fallback parsing - using entire filename as series_name={series_name}, issue_number={issue_number}")
+        # The same two functions the batch and bulk paths use, so one file
+        # gets one answer whichever route asks. This route carried five
+        # patterns of its own, which read "Spider-Man -1 (1990)" as issue 1
+        # of a series called "Spider-Man -1".
+        series_name, issue_number, year = series_issue_year_from_filename(file_name)
+        app_logger.debug(f"DEBUG: File parsed - series_name={series_name}, issue_number={issue_number}, year={year}")
 
         if not series_name or not issue_number:
             return jsonify({
@@ -5877,8 +5926,7 @@ def search_comicvine_metadata():
             }), 400
 
         # Normalize series name for searching - remove special characters
-        normalized_series = re.sub(r'[:\-–—\'\"\.\,\!\?]', ' ', series_name)
-        normalized_series = re.sub(r'\s+', ' ', normalized_series).strip()
+        normalized_series = comicvine_search_term(series_name)
 
         # Search ComicVine for volumes using normalized name
         app_logger.info(f"Searching ComicVine for '{normalized_series}' (original: '{series_name}') issue #{issue_number}")

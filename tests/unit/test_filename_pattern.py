@@ -15,8 +15,10 @@ from helpers.collection import (
     strip_month_token,
     strip_empty_groups,
     build_series_match_names,
+    names_other_format_after_year,
     names_other_publication_type,
-    normalize_issue_number,
+    filename_contradicts_issue,
+    issue_match_key,
 )
 
 
@@ -557,7 +559,7 @@ class TestNegativeIssueNumbers:
 
 
 class TestNormalizeIssueNumber:
-    """normalize_issue_number is the shared equality form (ComicInfo compares)."""
+    """issue_match_key is the shared equality form (ComicInfo compares)."""
 
     @pytest.mark.parametrize("value,expected", [
         ("1", "1"),
@@ -577,13 +579,13 @@ class TestNormalizeIssueNumber:
         (" -1 ", "-1"),
     ])
     def test_normalizes(self, value, expected):
-        assert normalize_issue_number(value) == expected
+        assert issue_match_key(value) == expected
 
     def test_padded_and_unpadded_negatives_compare_equal(self):
-        assert normalize_issue_number("-01") == normalize_issue_number("-1")
+        assert issue_match_key("-01") == issue_match_key("-1")
 
     def test_negative_never_equals_its_positive(self):
-        assert normalize_issue_number("-1") != normalize_issue_number("1")
+        assert issue_match_key("-1") != issue_match_key("1")
 
 
 class TestNamesOtherPublicationType:
@@ -621,6 +623,15 @@ class TestNamesOtherPublicationType:
             "Nightwing TPB Vol 01 (2017).cbz", "Nightwing"
         )
 
+    def test_epic_collection_is_other_publication(self):
+        # #792: "Alpha Flight Epic Collection 003" was Alpha Flight #3.
+        assert names_other_publication_type(
+            "Alpha Flight Epic Collection 003 (2020).cbz", "Alpha Flight"
+        )
+        assert not names_other_publication_type(
+            "Alpha Flight Epic Collection 003 (2020).cbz", "Alpha Flight Epic Collection"
+        )
+
     def test_plural_form_is_detected(self):
         assert names_other_publication_type(
             "Nightwing Annuals 001 (2023).cbz", "Nightwing"
@@ -639,6 +650,46 @@ class TestNamesOtherPublicationType:
         assert not names_other_publication_type(
             "Nightwing Annualized 001 (2023).cbz", "Nightwing"
         )
+
+
+class TestFormatAfterYear:
+    """helpers.collection.names_other_format_after_year (#857).
+
+    "Series (2019) Volume 01 TPB" is another manager's name for a trade. The
+    format word follows the first group, where names_other_publication_type
+    does not look. It counts only when no issue number precedes the group:
+    after a number, the same text is the issue's title.
+    """
+
+    @pytest.mark.parametrize("filename,series", [
+        ("Symbiote Spider-Man (2019) Volume 01 TPB.cbz", "Symbiote Spider-Man"),
+        ("What If - Age of Ultron (2014) Volume 01 TPB.cbr", "What If? Age of Ultron"),
+        ("Venom - First Host (2018) Volume 01 TPB.cbz", "Venom: First Host"),
+        ("Batman (2016) Annual 001.cbz", "Batman"),
+        # The number in the series name is not an issue number.
+        ("Spider-Man 2099 (1992) Volume 01 TPB.cbz", "Spider-Man 2099"),
+        ("Symbiote Spider-Man [2019] TPB (Digital).cbz", "Symbiote Spider-Man"),
+    ])
+    def test_format_label_after_the_year(self, filename, series):
+        assert names_other_format_after_year(filename, series)
+
+    @pytest.mark.parametrize("filename,series", [
+        # Title text after the issue number and year.
+        ("Nightwing 001 (2016) - Annual Checkup.cbz", "Nightwing"),
+        ("Batman 050 (2018) Wedding Annual tie-in.cbz", "Batman"),
+        # Release tags live in groups and are never read.
+        ("Nightwing 001 (2016) (Digital) (TPB-Empire).cbz", "Nightwing"),
+        ("Nightwing (2016) (TPB-Empire).cbz", "Nightwing"),
+        # No format word.
+        ("Nightwing (2016) Volume 001.cbz", "Nightwing"),
+        # No group: names_other_publication_type's ground.
+        ("Nightwing TPB Vol 01.cbz", "Nightwing"),
+        # The series is the format.
+        ("Batman TPB (2019) Volume 01 TPB.cbz", "Batman TPB"),
+        ("Batman (2016) Annualized 001.cbz", "Batman"),
+    ])
+    def test_not_a_format_label(self, filename, series):
+        assert not names_other_format_after_year(filename, series)
 
 
 class TestStrictGap:
@@ -679,6 +730,211 @@ class TestStrictGap:
             self.PATTERN, self.SERIES, "3", strict_gap=True
         )
         assert not regex.match(self.SERIES + " " + "- x " * 60 + ".cbz")
+
+
+class TestPageCountIsNotTheIssue:
+    """#807: "Green Lantern V3 - 80 Page Giant 001" was filed as #80.
+
+    A format name that starts with a number gets past the letter-free gap, and
+    the tail after the number is a wildcard. The number of a "<n> Page Giant"
+    is a page count.
+    """
+
+    PATTERN = "{series_name} {issue_number}"
+    SERIES = "Green Lantern"
+
+    def _strict(self, series, number):
+        return generate_filename_pattern(self.PATTERN, series, number, strict_gap=True)
+
+    @pytest.mark.parametrize("filename", [
+        "Green Lantern V3 - 80 Page Giant 001 (1998).cbz",
+        "Green Lantern 80-Page Giant 002 (1999).cbz",
+        "Green Lantern 80 Page Giant 003.cbz",
+        "Green Lantern - 80_Page_Giant 001.cbz",
+    ])
+    def test_the_page_count_is_not_issue_80(self, filename):
+        assert not self._strict(self.SERIES, "80").match(filename)
+
+    def test_the_giant_is_not_its_own_number_either(self):
+        # Letters sit between the series name and "001", so the gap refuses it.
+        for number in ("1", "2", "3"):
+            assert not self._strict(self.SERIES, number).match(
+                f"Green Lantern V3 - 80 Page Giant 00{number} (1998).cbz"
+            )
+
+    def test_super_spectacular_is_a_page_count_too(self):
+        assert not self._strict("Batman", "100").match(
+            "Batman 100 Page Super Spectacular 001 (1971).cbz"
+        )
+
+    def test_the_real_issue_80_still_matches(self):
+        regex = self._strict(self.SERIES, "80")
+        assert regex.match("Green Lantern 080 (1997).cbz")
+        assert regex.match("Green Lantern V3 080 (1997).cbz")
+        assert regex.match("Green Lantern 080 - Page One (1997).cbz")
+
+    def test_a_giant_that_is_a_regular_issue_still_matches(self):
+        # Superman #183 IS an 80 Page Giant; the marker follows the number.
+        assert self._strict("Superman", "183").match(
+            "Superman 183 - 80 Page Giant (1966).cbz"
+        )
+
+    def test_the_giant_series_keeps_its_own_files(self):
+        assert self._strict("Green Lantern 80-Page Giant", "1").match(
+            "Green Lantern 80-Page Giant 001 (1998).cbz"
+        )
+
+    def test_the_loose_matcher_is_unchanged(self):
+        # Collection status stays as it was, so no cached match is purged.
+        regex = generate_filename_pattern(self.PATTERN, self.SERIES, "80")
+        assert regex.match("Green Lantern V3 - 80 Page Giant 001 (1998).cbz")
+
+
+class TestVolumeNumberIsNotTheIssue:
+    """#807: "Green Lantern V3 045" matched #3 as well as #45, because the gap
+    took the "V" and left its digit to be read as the issue number."""
+
+    PATTERN = "{series_name} {issue_number}"
+
+    def _strict(self, series, number):
+        return generate_filename_pattern(self.PATTERN, series, number, strict_gap=True)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "3", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "2", "Batman v2 012.cbz"),
+        ("Batman", "3", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "3", "Batman Volume 3 #50.cbz"),
+        ("X-Men", "2", "X-Men v2_012 (1992).cbz"),
+    ])
+    def test_the_volume_is_not_the_issue_when_an_issue_follows(
+        self, series, number, filename
+    ):
+        assert not self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "45", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "12", "Batman v2 012.cbz"),
+        ("Batman", "50", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "50", "Batman Volume 3 #50.cbz"),
+        ("Batman", "3", "Batman v3 003 (2016).cbz"),
+        ("Batman", "5", "Batman No. 5.cbz"),
+    ])
+    def test_the_issue_after_the_volume_still_matches(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Saga", "7", "Saga v07 (2015).cbz"),
+        ("Saga", "7", "Saga v07 2015.cbz"),
+        ("Saga", "7", "Saga v07.cbz"),
+        ("Absolute Flash", "2", "Absolute Flash V02 - Of Two Worlds 2025.cbz"),
+        ("Saga", "3", "Saga Vol. 3 (2014) (Digital).cbz"),
+    ])
+    def test_a_collected_volume_is_still_the_number(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    def test_the_loose_matcher_is_unchanged(self):
+        regex = generate_filename_pattern(self.PATTERN, "Batman", "2")
+        assert regex.match("Batman v2 012.cbz")
+
+
+class TestCopySuffixIsNotTheIssue:
+    """#859: a second copy saved as "Series 058 (2010) (1).cbz" was filed as
+    #1. The gap took a lone "(", ran over the file's own number and stopped
+    inside the suffix."""
+
+    PATTERN = "{series_name} {issue_number}"
+    MASM = "Marvel Adventures Spider-Man"
+
+    def _strict(self, series, number, pattern=None):
+        return generate_filename_pattern(
+            pattern or self.PATTERN, series, number, strict_gap=True
+        )
+
+    @pytest.mark.parametrize("series, number, filename", [
+        (MASM, "1", "Marvel Adventures Spider-Man 058 (2010) (1).cbz"),
+        (MASM, "1", "Marvel Adventures Spider-Man 058 (1).cbz"),
+        ("Batman", "2", "Batman 012 (2010) (2).cbz"),
+        ("Batman", "2", "Batman 012 [2].cbz"),
+        ("Batman", "3", "Batman #012 (2010) (Digital) (3).cbz"),
+        # The same hole, without a copy: the year group is not the issue.
+        ("Batman", "2010", "Batman 012 (2010).cbz"),
+        ("Batman", "2", "Batman 012 (2 covers).cbz"),
+    ])
+    def test_a_number_inside_a_later_group_is_not_the_issue(
+        self, series, number, filename
+    ):
+        assert not self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        (MASM, "58", "Marvel Adventures Spider-Man 058 (2010) (1).cbz"),
+        (MASM, "58", "Marvel Adventures Spider-Man 058 (1).cbz"),
+        ("Batman", "12", "Batman 012 (2010) (2).cbz"),
+        ("Batman", "1", "Batman 001 (2016) (1).cbz"),
+        # A whole group before the number is still crossed.
+        ("Batman", "12", "Batman (2016) 012.cbz"),
+        ("Batman", "12", "Batman [2016] (Digital) #012.cbz"),
+    ])
+    def test_the_files_own_number_still_matches(self, series, number, filename):
+        assert self._strict(series, number).match(filename)
+
+    @pytest.mark.parametrize("pattern", [
+        "{series_name} ({issue_number})",
+        "{series_name} (#{issue_number}) ({volume_year})",
+    ])
+    def test_a_pattern_that_brackets_the_number_still_matches(self, pattern):
+        pattern = pattern.replace(" ({volume_year})", "")
+        assert self._strict("Batman", "12", pattern).match("Batman (012).cbz")
+        assert self._strict("Batman", "12", pattern).match("Batman (#012) (2016).cbz")
+        assert not self._strict("Batman", "13", pattern).match("Batman (012).cbz")
+
+    def test_the_loose_matcher_is_unchanged(self):
+        regex = generate_filename_pattern(self.PATTERN, "Batman", "2")
+        assert regex.match("Batman 012 (2010) (2).cbz")
+        loose = generate_filename_pattern("{series_name} ({issue_number})", "Batman", "12")
+        assert loose.match("Batman 012).cbz")
+
+
+class TestFilenameContradictsIssue:
+    """helpers.collection.filename_contradicts_issue (#807)."""
+
+    def test_the_giant_filed_as_80_contradicts(self):
+        assert filename_contradicts_issue(
+            "Green Lantern V3 - 80 Page Giant 001 (1998).cbz", "80", ["Green Lantern"]
+        )
+
+    def test_the_matching_issue_does_not(self):
+        assert not filename_contradicts_issue(
+            "Green Lantern 080 (1997).cbz", "80", ["Green Lantern"]
+        )
+
+    def test_padding_is_not_a_disagreement(self):
+        assert not filename_contradicts_issue("Batman 005.cbz", "5", ["Batman"])
+
+    def test_a_name_with_no_number_is_not_a_contradiction(self):
+        assert not filename_contradicts_issue("scan.cbz", "5", ["Batman"])
+
+    def test_a_number_inside_the_series_name_is_not_the_issue(self):
+        assert not filename_contradicts_issue(
+            "Spider-Man 2099 005 (1993).cbz", "5", ["Spider-Man 2099"]
+        )
+
+    def test_a_collected_volume_marker_counts_as_the_number(self):
+        assert not filename_contradicts_issue(
+            "Absolute Flash V02 - Of Two Worlds 2025.cbz", "2", ["Absolute Flash"]
+        )
+
+    def test_the_sign_is_part_of_the_number(self):
+        assert filename_contradicts_issue(
+            "Spider-Man -1 (1997).cbz", "1", ["Spider-Man"]
+        )
+        assert not filename_contradicts_issue(
+            "Spider-Man -1 (1997).cbz", "-1", ["Spider-Man"]
+        )
+
+    def test_a_suffixed_issue_agrees_with_itself(self):
+        assert not filename_contradicts_issue(
+            "Amazing Spider-Man 078.BEY (2022).cbz", "78.BEY", ["Amazing Spider-Man"]
+        )
 
 
 class TestLiteralSeparatorBetweenSeriesAndIssue:
@@ -800,3 +1056,139 @@ class TestDownloadNamedAfterTheHost:
         regex = self._regex("!!!", "1")
         assert not regex.match("Batman 001.cbz")
         assert regex.match("!!! 001.cbz")
+
+
+def _match_pattern(pattern):
+    """The pattern as process_incoming_wanted_issues hands it to the matcher."""
+    return strip_empty_groups(
+        strip_month_token(strip_title_token(strip_year_token(pattern)))
+    )
+
+
+VOLUME_PATTERNS = [
+    "{series_name} {volume_number} #{issue_number} ({volume_year})",
+    "{series_name} {volume_number} {issue_number} ({volume_year})",
+    "{series_name} #{issue_number} V{volume_number} ({volume_year})",
+    "{series_name} {issue_number} ({volume_number}) ({volume_year})",
+    "{series_name} - {volume_number} - {issue_number}",
+]
+
+
+class TestVolumeTokenIsOptional:
+    """#861: {volume_number} compiled to a required bare number, a form the
+    renamer never writes ("v01", or nothing when the volume is unknown), so
+    every download renamed under such a pattern stayed in TARGET and was
+    downloaded again."""
+
+    PATTERN = "{series_name} {volume_number} #{issue_number}"
+
+    @pytest.mark.parametrize("strict", [True, False])
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #010 (2025).cbz",       # renamer, volume unknown
+        "Hello Darkness v01 #010 (2025).cbz",   # renamer, volume known
+        "Hello Darkness 1 #010 (2025).cbz",
+        "Hello Darkness Vol. 1 #010 (2025).cbz",
+        "Hello Darkness 010 (2025).cbz",
+    ])
+    def test_the_reported_names_match(self, filename, strict):
+        regex = generate_filename_pattern(
+            self.PATTERN, "Hello Darkness", "10", strict_gap=strict
+        )
+        assert regex.match(filename)
+        assert _no_placeholder_leak(regex)
+
+    @pytest.mark.parametrize("pattern", VOLUME_PATTERNS)
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #011 (2025).cbz",
+        "Hello Darkness v01 #011 (2025).cbz",
+        "Hello Darkness v10 #011 (2025).cbz",
+        "Goodbye Darkness v01 #010 (2025).cbz",
+    ])
+    def test_another_issue_or_series_is_refused(self, pattern, filename):
+        regex = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "10", strict_gap=True
+        )
+        assert not regex.match(filename)
+
+    def test_a_spin_off_is_still_refused(self):
+        regex = generate_filename_pattern(
+            self.PATTERN, "TMNT", "3", strict_gap=True
+        )
+        assert not regex.match("TMNT v01 - Nightwatcher 003 (2024).cbz")
+
+    # The #807 tables again, under a pattern that carries the token.
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "3", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "2", "Batman v2 012.cbz"),
+        ("Batman", "3", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "3", "Batman Volume 3 #50.cbz"),
+        ("X-Men", "2", "X-Men v2_012 (1992).cbz"),
+    ])
+    def test_the_volume_is_still_not_the_issue(self, series, number, filename):
+        regex = generate_filename_pattern(
+            self.PATTERN, series, number, strict_gap=True
+        )
+        assert not regex.match(filename)
+
+    @pytest.mark.parametrize("series, number, filename", [
+        ("Green Lantern", "45", "Green Lantern V3 045 (1993).cbz"),
+        ("Batman", "12", "Batman v2 012.cbz"),
+        ("Batman", "50", "Batman Vol. 3 - 050 (2018).cbz"),
+        ("Batman", "50", "Batman Volume 3 #50.cbz"),
+        ("Batman", "3", "Batman v3 003 (2016).cbz"),
+        ("Saga", "7", "Saga v07 (2015).cbz"),
+        ("Saga", "7", "Saga v07.cbz"),
+        ("Absolute Flash", "2", "Absolute Flash V02 - Of Two Worlds 2025.cbz"),
+    ])
+    def test_the_issue_and_the_collected_volume_still_match(
+        self, series, number, filename
+    ):
+        regex = generate_filename_pattern(
+            self.PATTERN, series, number, strict_gap=True
+        )
+        assert regex.match(filename)
+
+
+class TestRenamerOutputRoundTrips:
+    """Whatever the renamer writes for a pattern, the filing matcher built
+    from that same pattern must accept. A token the two read differently
+    strands every download (#861, and the separator fix before it)."""
+
+    PATTERNS = VOLUME_PATTERNS + [
+        "{series_name} {issue_number} ({volume_year})",
+        "{series_name} #{issue_number} ({volume_year})",
+        "{series_name} - {issue_number} ({issue_month_M}, {issue_year})",
+        "{series_name} #{issue_number} [{issue_month_m}-{issue_year}]",
+        "{series_name} {issue_number} - {issue_title} ({volume_year})",
+        "{series_name} {volume_number} #{issue_number} - {issue_title} ({issue_year})",
+    ]
+
+    VALUES = [
+        {},
+        {"volume_number": "v01"},
+        {"volume_number": "v2"},
+        {"issue_title": "The Dawn"},
+        {"volume_number": "v01", "issue_title": "The Dawn",
+         "issue_month_M": "July", "issue_month_m": "07", "issue_year": "2025"},
+    ]
+
+    @pytest.mark.parametrize("pattern", PATTERNS)
+    @pytest.mark.parametrize("extra", VALUES)
+    def test_the_matcher_accepts_the_renamers_name(self, pattern, extra):
+        from cbz_ops.rename import apply_custom_pattern
+
+        values = {"series_name": "Hello Darkness", "issue_number": "010",
+                  "year": "2025"}
+        values.update(extra)
+        name = apply_custom_pattern(values, pattern)
+        assert name, "the renamer produced nothing for this pattern"
+
+        regex = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "10", strict_gap=True
+        )
+        assert regex.match(name + ".cbz"), (name, regex.pattern)
+
+        other = generate_filename_pattern(
+            _match_pattern(pattern), "Hello Darkness", "11", strict_gap=True
+        )
+        assert not other.match(name + ".cbz"), (name, other.pattern)

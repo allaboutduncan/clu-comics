@@ -93,7 +93,7 @@
         <button type="button" class="btn btn-primary" id="saveEditBtn" onclick="CLU.saveEditedCBZ()">
           <i class="bi bi-floppy2-fill"></i> Save
         </button>
-        <form action="/save" method="post" id="editInlineSaveForm" style="display: none;">
+        <form action="{{ request.script_root }}/save" method="post" id="editInlineSaveForm" style="display: none;">
           <input type="hidden" name="folder_name" id="editInlineFolderName">
           <input type="hidden" name="zip_file_path" id="editInlineZipFilePath">
           <input type="hidden" name="original_file_path" id="editInlineOriginalFilePath">

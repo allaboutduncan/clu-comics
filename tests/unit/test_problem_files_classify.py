@@ -125,6 +125,39 @@ class TestRarConversion:
         assert "untouched" in result["cause"]
         assert "replace" in result["advice"].lower()
 
+    def test_failed_pdf_conversion_says_replace_and_never_rebuild(self):
+        """Rebuild is convert_to_cbz, which does not read PDFs (#834)."""
+        from core.problem_files import CLASS_PDF_FAILED
+
+        result = classify(CLASS_PDF_FAILED, "The PDF could not be converted to CBZ")
+        assert result["action"] == ACTION_REPLACE
+        assert result["repairable"] is False
+        assert result["healthy_file"] is False
+
+    def test_a_pdf_convert_row_is_retried_by_the_monitor_not_by_rebuild(self, tmp_path):
+        from core.problem_files import SOURCE_CONVERT, retry_problem
+
+        pdf = tmp_path / "Series 001 (2011).PDF"
+        pdf.write_bytes(b"%PDF-1.4")
+        ok, message = retry_problem(str(pdf), SOURCE_CONVERT)
+        assert ok is False
+        assert "folder monitor" in message.lower()
+        assert "rebuild" not in message.lower()
+
+    def test_a_release_folder_that_would_not_unwrap(self):
+        """#844. Rebuild cannot help a folder of archive parts."""
+        from core.problem_files import (
+            CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL,
+        )
+
+        failed = classify(CLASS_RELEASE_UNWRAP_FAILED, "No comic could be extracted")
+        assert failed["action"] == ACTION_REPLACE
+        assert failed["repairable"] is False and failed["healthy_file"] is False
+        assert "rebuild" not in failed["advice"].lower()
+        partial = classify(CLASS_RELEASE_UNWRAP_PARTIAL, "Some archive parts")
+        assert partial["cause"] != failed["cause"]
+        assert partial["repairable"] is False
+
     def test_nothing_extracted_still_says_replace(self):
         result = classify(CLASS_RAR_FAILED, "Nothing could be extracted from x.cbr")
         assert result["action"] == ACTION_REPLACE

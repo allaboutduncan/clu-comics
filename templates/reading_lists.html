@@ -338,7 +338,7 @@ owner, so everything shows exactly as before. #}
                         </div>
                         <div id="metronNotConfigured" class="alert alert-warning mt-3 d-none">
                             <i class="bi bi-exclamation-triangle me-2"></i>
-                            Metron credentials not configured. <a href="/settings">Go to Settings</a> to add your Metron
+                            Metron credentials not configured. <a href="{{ request.script_root }}/settings">Go to Settings</a> to add your Metron
                             username and password.
                         </div>
                     </div>
@@ -375,7 +375,7 @@ owner, so everything shows exactly as before. #}
                         <div class="text-muted small text-center py-1 d-none" id="metronArcPageInfo"></div>
                         <div id="metronArcNotConfigured" class="alert alert-warning mt-3 d-none">
                             <i class="bi bi-exclamation-triangle me-2"></i>
-                            Metron credentials not configured. <a href="/settings">Go to Settings</a> to add your Metron
+                            Metron credentials not configured. <a href="{{ request.script_root }}/settings">Go to Settings</a> to add your Metron
                             username and password.
                         </div>
                     </div>
@@ -436,7 +436,7 @@ owner, so everything shows exactly as before. #}
                 </div>
                 <div id="cvArcNotConfigured" class="alert alert-warning mt-3 d-none">
                     <i class="bi bi-exclamation-triangle me-2"></i>
-                    ComicVine API key not configured. <a href="/settings">Go to Settings</a> to add your API key.
+                    ComicVine API key not configured. <a href="{{ request.script_root }}/settings">Go to Settings</a> to add your API key.
                 </div>
             </div>
             <div class="modal-footer bg-light">

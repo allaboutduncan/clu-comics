@@ -13,7 +13,7 @@ paths:
 
 ### Path References
 
-Six columns hold an absolute comic path as a bare string, with no foreign key to
+Seven columns hold an absolute comic path as a bare string, with no foreign key to
 `file_index`, so every one of them is orphaned independently when a file moves:
 
 | Table | Column(s) |
@@ -21,6 +21,7 @@ Six columns hold an absolute comic path as a bare string, with no foreign key to
 | `file_metadata_tags` | `file_path` |
 | `reading_positions` | `comic_path` |
 | `issues_read` | `issue_path` |
+| `reading_sessions` | `comic_path` |
 | `reading_list_entries` | `matched_file_path`, `manual_override_path` |
 | `reading_lists` | `thumbnail_path` |
 
@@ -60,7 +61,7 @@ Things that look arbitrary and are not:
   and the prefix sweep both run unconditionally, and the `LIKE` arm is a free
   no-op for a file. `delete_file_index_entry` uses the same shape for the same
   reason.
-- **A delete does NOT clear `reading_positions` or `issues_read`.** "I read
+- **A delete does NOT clear `reading_positions`, `issues_read` or `reading_sessions`.** "I read
   this" is a fact about the user, not about the file, and a trashed comic can be
   restored.
 - **`idx_rle_matched_path` / `idx_rle_override_path` serve the `= ?` arms only.**

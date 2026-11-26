@@ -1,6 +1,7 @@
 ---
 paths:
   - "core/series_names.py"
+  - "core/filename_parse.py"
   - "helpers/collection.py"
   - "models/cbl.py"
   - "models/getcomics.py"
@@ -40,7 +41,8 @@ filing relaxation is one edit in `core/series_names.py`, never at a call site.**
 | `:` vs ` - ` vs space, `/`, `_`, `,`, `;`, Unicode dashes | All one separator. |
 | `!` and anything in `FILENAME_ILLEGAL_CHARS` | Never required (`NEVER_REQUIRED`). Derived from the sanitizer's list, so a character CLU strips from names can never be demanded of one. |
 | Apostrophes | Optional both ways, and may have a space in front (`Marvel 's`, a GetComics quirk). The space is allowed only *with* the apostrophe. |
-| `&` | Removed from the name; absorbed if the file has it. |
+| `&` | The word "and". The regex then makes it optional (`OPTIONAL_WORDS`) and absorbs the character; the name comparison treats `&` and `and` as equal but never drops the word. The scorer accepts "Batman and Robin #5" for "Batman & Robin", and filing used to refuse that file. |
+| `+` | A separator, like `/`. The scorer reads `/`, `+` and `&` as one crossover separator. |
 | `and`, `the`, `of`, `or`, `vs`, `versus` mid-name | Optional in the regex only (`OPTIONAL_WORDS`). Do not use it for the name comparison: there the leftover is the whole question. |
 | `(...)` and `[...]` | Kept. `_BENIGN_SERIES_EXTRA` reads them. |
 
@@ -49,6 +51,53 @@ Things that look arbitrary and are not:
 - **A name made only of punctuation stays a literal** (`!!!`). Flattened, it
   compiles to an empty series pattern that claims every file with the right
   issue number.
+- **A name made only of optional words stays a literal too** (`&`, `And`).
+  Every word optional is the same empty pattern by another route.
+- **`match_issues_to_collection`'s ComicInfo tier is a raw substring test, and
+  tightening it changes nothing.** Its last tier (4c) has no series check at
+  all, so whatever 4b refused 4c would take. That matcher is loose *about the
+  series* by design; the one that moves files is `match_wanted_issues_to_files`.
+- **4c is not loose about the number (#792, #795).** It used to search each
+  filename for the wanted number anywhere, so `Batman 400 - Knightfall Part 1`
+  was also #1 and `Spider-Man 2099 005` was also #2099; those issues read as
+  owned and were never searched. It now reads each file once
+  (`fallback_issue_numbers` → `filename_parse.issue_numbers`) and compares.
+  The series name is skipped when the file starts with it, which is what
+  keeps `2099`, `X-23` and `New 52` out. The tiers run as **passes** (every
+  issue through 4a, then 4b, then 4c), so a precise claim anywhere beats a
+  loose one. 4c never claims, and skips a claimed file unless it names a range
+  (`001-006`). A ComicInfo `<Number>` for this series that names another issue
+  refuses the filename.
+- **A volume marker is the number only for a collected series**
+  (`is_collected_series`: a format word in the name, or half the issue names
+  start "Vol. N"). `Series V02 - Title 2026` is volume 2 there; `Batman v2 012`
+  is #12 and `Batman v2 (2011)` is nothing. A spelled-out `Volume 003` is read
+  on any series, but only when the name carries no other number.
+- **A format word after the year disqualifies a file only when no number
+  comes before the year (#857).** `Symbiote Spider-Man (2019) Volume 01 TPB`
+  in the five-issue series' folder was #1: `names_other_publication_type`
+  stops at the first `(`, and the spelled-out `Volume 01` was read.
+  `names_other_format_after_year` reads the unbracketed text after the first
+  group, and only when the text before it names no issue. Testing the whole
+  name instead would refuse `Nightwing 001 (2016) - Annual Checkup`, an owned
+  issue that would then be downloaded again. The scan asks it before any tier
+  (the trade is tagged `<Number>1` too) and **never of a collected series**:
+  ComicVine's one-book `All-New Doop` trade volume is correctly
+  `All-New Doop (2014) Volume 01 TPB`. Scan only; the filing and reading-list
+  matchers already refuse these names. Shipped a purge
+  (`collection_status_format_after_year_purge`).
+- **4a's gap is a wildcard, so it refuses a number that follows "of"**
+  (`X 012 of 6` is not #6). That check is in the scan, not in
+  `generate_filename_pattern`, which the filing matcher shares.
+- **#792 shipped a purge** (`collection_status_issue_position_purge`): it
+  removes matches.
+- **The word gap is derived from `_SEPARATOR_BODY`, never listed by hand.**
+  `_WORD_GAP` (what may sit between two words of the name in a *filename*) was
+  a second hand-written class with no `,` and no `;`. Both split the name into
+  words, so a file carrying the name's own punctuation could not match it:
+  `Patsy Walker, A.K.A. Hellcat! 001` was never filed (#793). A separator added
+  to the table is now absorbable in filenames without a second edit, and
+  `TestSeparatorsInFilenames` checks every one.
 - **Making "The" optional both ways lets `Flash` and `The Flash` claim one
   file.** That was already true in the other direction. The year ranking in
   `match_wanted_issues_to_files` (`wanted_year_fit`) decides; do not add a
@@ -59,6 +108,81 @@ Things that look arbitrary and are not:
   matches and the affected files were in TARGET, not in series folders. A
   matcher change that *removes* matches still needs the purge marker and forced
   re-match.
+
+### Reading a name or number out of a filename: the first group is the anchor
+
+`core/filename_parse.py` holds the one rule the filename parsers share. In
+`Series NNN (YYYY) - Title` the issue number is the last token before the
+**first** `(...)`/`[...]` group and everything after it is title text. Parsers
+used to strip the groups and then guess by position, which read `1950` as the
+issue of `Detective Comics 156 (1937) - Batmobile of 1950` (#778) and kept
+`497 - Knightfall, Part` in a series name (#790).
+
+- **Never cut at "the first number followed by a dash".** That was #790's
+  suggested regex. It turns `Spider-Man 2099 - Dark Genesis 001` into
+  `Spider-Man`, and a too-short derived name claims more files.
+- **A sign counts only when glued to the digits and preceded by whitespace,
+  `#` or `Issue `** (`SIGN_CLASS`, aliased by `helpers/collection.py`).
+  `Black Cat - 001` is issue 1.
+- On it so far: `models.providers.base.extract_issue_number`,
+  `helpers.collection.get_series_name_from_files`,
+  `routes.metadata.extract_series_name_from_filename` and the library scan's
+  last tier (`filename_parse.issue_numbers`, its own table `NAMED` in the
+  corpus test because it also takes the series name).
+  `tests/unit/test_filename_corpus.py` is one table of filenames with a column
+  per parser; a parser moved onto the module gets a column.
+- **A metadata lookup with no cvinfo reads the name through
+  `routes.metadata.series_issue_year_from_filename`** (series from
+  `extract_series_name_from_filename`, issue from `extract_issue_number`).
+  The ComicVine search route and the GCD directory search carried a pattern
+  list each, and eight sites pasted `extract_series_name_from_folder`'s
+  regexes. Single-file, batch and bulk now share the functions; do not add a
+  pattern list to a route.
+- **Strip exactly one trailing number.** A second strip takes the `2099` out
+  of `Spider-Man 2099 001`.
+- **Not candidates:** `extract_comic_values` and `get_renamed_filename`
+  (`cbz_ops/rename.py`) decide filenames on disk, so a change re-renames
+  libraries. The module is import-free so `monitor.py` can reach it.
+
+### Normalisations with one definition
+
+These are not filing rules; each is an expression that had been pasted.
+
+- **`core.series_names.ascii_words`** — lower-case, every run of non-`a-z0-9`
+  as one space. `library_health._norm_text`, `bulk_metadata._normalize_series`
+  (after its year strip), `gcd.normalize_title` and
+  `collection._normalize_for_keywords` call it. It drops accents, so Inducks
+  is not on it, and it flattens brackets, so the filing comparison
+  (`norm_series_text`) is not either.
+- **`getcomics._norm_series_key`** is the stored key; `_normalize_alias` is the
+  same key with `""` for an empty name. Two pasted copies skipped `.strip()`,
+  so aliases never attached to a series whose normalized name ends in a dash
+  (`Batman - Vol 3`). The alias-CSV writer in `update_series_aliases` still
+  has its own expression: it normalises what the user typed and is stored.
+- **`routes.metadata.comicvine_search_term` and `_same_title`.** `_same_title`
+  is case and outer whitespace only, on purpose: every caller uses it to take
+  a result without asking the user.
+
+`tests/mocked/test_series_normaliser_dedupe.py` asserts the callers agree and
+that the expressions are not pasted again.
+
+### Issue numbers: seven functions, none interchangeable
+
+Two of these were both called `normalize_issue_number` and gave different
+answers, so a caller importing the wrong one compared values that could never
+be equal. They are renamed, not merged: a merge changes which files an issue
+claims. `tests/unit/test_issue_number_keys.py` tabulates where the two keys
+differ.
+
+| Function | Answers | Notes |
+|----------|---------|-------|
+| `core.database.issue_identity_key` | "Same issue?" for the reading-list matcher | Lowercases, drops a leading `#` and a trailing `.`, empty → `""` |
+| `helpers.collection.issue_match_key` | "Same issue?" for the collection and TARGET matchers | Folds unicode dashes to `-`, keeps case (callers lowercase), empty → `"0"` |
+| `models.providers.base._normalize_issue_number` | The number a filename names, for a provider lookup | Keeps `13A` and `80.BEY`; output of `extract_issue_number` |
+| `models.inducks._normalize_issue_number` | INDUCKS' own padding (`0007` vs `3200`) | Private to that provider |
+| `core.download_utils.issue_number_to_int` | Is this issue inside a downloaded range pack? | `None` for anything that is not a whole number; never use it to de-duplicate |
+| `cbz_ops.rename._pad_issue_number` | The number as written into a filename | Formatting, not comparison; width from `load_issue_pad_width()` |
+| `routes.metadata._issue_sort_key`, and the local one in `routes/series.py` | Display order | Sorting only |
 
 ### What is deliberately not shared
 
@@ -73,7 +197,13 @@ Things that look arbitrary and are not:
   either side changes.
 - **The reading-list matcher has no folder to anchor it** and searches the
   whole `file_index`, so it needs a year and its own first-issue-token rule. It
-  shares `_LEADING_ARTICLE` and `series_names_compatible` and nothing else.
+  shares `_LEADING_ARTICLE`, `_APOS_CLASS` and `series_names_compatible` and
+  nothing else. Its filename tier reads an apostrophe two ways, as a word break
+  and as nothing: the first matches GetComics' `Marvel 's`, the second matches
+  `Worlds Finest` for `World's Finest`. Keep both.
+- **Metron's "confident match" compares words in order** (`ascii_words`), not
+  as a set: it picks a series without asking, and `Superman/Batman` is not
+  `Batman/Superman`.
 
 ### Why a download is matched by name at all
 

@@ -65,6 +65,9 @@ class TestTablesExist:
         "komga_sync_config",
         "komga_sync_log",
         "komga_library_mappings",
+        "kavita_library_mappings",
+        "kavita_user_links",
+        "kavita_sync_log",
         "schedules",
         "download_clients",
         "indexers",
@@ -264,6 +267,7 @@ class TestDefaultData:
         assert "getcomics" in names
         assert "weekly_packs" in names
         assert "komga" in names
+        assert "kavita" in names
 
 
 class TestForeignKeys:
@@ -518,3 +522,148 @@ class TestDownloadClientGroupMigration:
         # The pre-existing Usenet client keeps working and lands in the right group.
         assert row["client_group"] == "usenet"
         assert row["is_active"] == 1
+
+
+class TestCollectionStatusIssuePositionPurge:
+    """Third one-time purge, for #792.
+
+    The scan's last tier searched a filename for the wanted number anywhere,
+    so "Batman 400 - Knightfall Part 1.cbz" was cached as Batman #1. A found
+    row is only re-checked when its file changes, so those rows outlive the
+    fix and init_db drops the derived caches once more.
+    """
+
+    MARKER = "collection_status_issue_position_purge"
+
+    def _seed(self, conn):
+        from tests.factories.db_factories import create_series, create_issue
+
+        series_id = create_series(name="Batman", mapped_path="/data/Batman")
+        issue_id = create_issue(series_id=series_id, number="1")
+        conn.execute(
+            "INSERT INTO collection_status "
+            "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+            "VALUES (?, ?, '1', 1, '/data/Batman/Batman 400 - Knightfall Part 1.cbz', 'filename')",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+            "VALUES (?, ?, '2')",
+            (series_id, issue_id),
+        )
+        conn.execute("DELETE FROM user_preferences WHERE key = ?", (self.MARKER,))
+        conn.commit()
+        return series_id, issue_id
+
+    def _counts(self, conn):
+        cs = conn.execute("SELECT COUNT(*) FROM collection_status").fetchone()[0]
+        wi = conn.execute("SELECT COUNT(*) FROM wanted_issues").fetchone()[0]
+        return cs, wi
+
+    def test_purges_stale_rows_and_sets_marker(self, db_connection, db_path):
+        self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            assert init_db() is True
+
+        assert self._counts(db_connection) == (0, 0)
+        assert db_connection.execute(
+            "SELECT value FROM user_preferences WHERE key=?", (self.MARKER,)
+        ).fetchone() is not None
+
+    def test_does_not_repurge_once_marked(self, db_connection, db_path):
+        series_id, issue_id = self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            init_db()
+
+            db_connection.execute(
+                "INSERT INTO collection_status "
+                "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+                "VALUES (?, ?, '1', 1, '/data/Batman/Batman 001 (2016).cbz', 'pattern')",
+                (series_id, issue_id),
+            )
+            db_connection.execute(
+                "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+                "VALUES (?, ?, '2')",
+                (series_id, issue_id),
+            )
+            db_connection.commit()
+
+            init_db()
+
+        assert self._counts(db_connection) == (1, 1)
+
+
+class TestCollectionStatusFormatAfterYearPurge:
+    """Fourth one-time purge, for #857.
+
+    "Series (2019) Volume 01 TPB.cbz" in a miniseries folder was cached as
+    #1. The scan now skips the file, but a found row is only re-checked when
+    its file changes.
+    """
+
+    MARKER = "collection_status_format_after_year_purge"
+
+    def _seed(self, conn):
+        from tests.factories.db_factories import create_series, create_issue
+
+        series_id = create_series(name="Batman", mapped_path="/data/Batman")
+        issue_id = create_issue(series_id=series_id, number="1")
+        conn.execute(
+            "INSERT INTO collection_status "
+            "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+            "VALUES (?, ?, '1', 1, '/data/Batman/Batman (2016) Volume 01 TPB.cbz', 'filename')",
+            (series_id, issue_id),
+        )
+        conn.execute(
+            "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+            "VALUES (?, ?, '2')",
+            (series_id, issue_id),
+        )
+        conn.execute("DELETE FROM user_preferences WHERE key = ?", (self.MARKER,))
+        conn.commit()
+        return series_id, issue_id
+
+    def _counts(self, conn):
+        cs = conn.execute("SELECT COUNT(*) FROM collection_status").fetchone()[0]
+        wi = conn.execute("SELECT COUNT(*) FROM wanted_issues").fetchone()[0]
+        return cs, wi
+
+    def test_purges_stale_rows_and_sets_marker(self, db_connection, db_path):
+        self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            assert init_db() is True
+
+        assert self._counts(db_connection) == (0, 0)
+        assert db_connection.execute(
+            "SELECT value FROM user_preferences WHERE key=?", (self.MARKER,)
+        ).fetchone() is not None
+
+    def test_does_not_repurge_once_marked(self, db_connection, db_path):
+        series_id, issue_id = self._seed(db_connection)
+
+        with patch("core.database.get_db_path", return_value=db_path):
+            from core.database import init_db
+            init_db()
+
+            db_connection.execute(
+                "INSERT INTO collection_status "
+                "(series_id, issue_id, issue_number, found, file_path, matched_via) "
+                "VALUES (?, ?, '1', 1, '/data/Batman/Batman 001 (2016).cbz', 'pattern')",
+                (series_id, issue_id),
+            )
+            db_connection.execute(
+                "INSERT INTO wanted_issues (series_id, issue_id, issue_number) "
+                "VALUES (?, ?, '2')",
+                (series_id, issue_id),
+            )
+            db_connection.commit()
+
+            init_db()
+
+        assert self._counts(db_connection) == (1, 1)

@@ -12,9 +12,14 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Comic Library">
   <meta name="theme-color" content="#212529">
-  <link rel="manifest" href="/manifest.json">
-  <link rel="icon" type="image/png" href="/static/images/clu.png">
-  <link rel="apple-touch-icon" href="/static/images/clu.png">
+  {# The path prefix CLU is served under (ProxyFix x_prefix), for clu-url.js,
+     which must stay the first script on the page: it is what makes every
+     later fetch('/api/...') and src="/..." keep the prefix. #}
+  <meta name="clu-root" content="{{ request.script_root }}">
+  <script src="{{ asset('js/clu-url.js') }}"></script>
+  <link rel="manifest" href="{{ request.script_root }}/manifest.json">
+  <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/clu.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='images/clu.png') }}">
 
   <title>{% block title %}Comic Library Utilities{% endblock %}</title>
   {% include 'partials/theme_css.html' %}
@@ -155,6 +160,7 @@
   <!-- Bootstrap JS (Required for Modal functionality) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
   <script src="{{ asset('js/clu-toast.js') }}"></script>
+  <script src="{{ asset('js/clu-confirm.js') }}"></script>
   <script src="{{ asset('js/clu-page.js') }}"></script>
 
   <!-- Environment-based console logging -->
@@ -401,7 +407,8 @@
         .catch(err => console.error("Failed to check for updates:", err));
     }
 
-    // Library health: a dot on the gear and a score beside "Library Health".
+    // Library health: a dot on the File Manager menu, a score beside "Library
+    // Health" and a group count beside "Duplicate Files".
     // Owner-only (the elements are only rendered for the owner, and the
     // endpoint is owner-gated); hidden until a scan has ever completed.
     function updateHealthBadge(signal) {
@@ -411,14 +418,21 @@
       return fetch('/api/problem-files/health/badge', { signal })
         .then(res => res.ok ? res.json() : null)
         .then(data => {
+          const dups = document.getElementById('duplicates-badge');
           if (!data || !data.success || !data.visible) {
             if (dot) dot.classList.add('d-none');
             if (badge) badge.classList.add('d-none');
+            if (dups) dups.classList.add('d-none');
             return;
+          }
+          if (dups) {
+            const groups = data.duplicate_groups || 0;
+            dups.textContent = groups;
+            dups.classList.toggle('d-none', groups === 0);
           }
           const colour = { green: 'success', amber: 'warning', red: 'danger' }[data.level] || 'secondary';
           if (dot) {
-            dot.className = 'position-absolute top-0 start-100 translate-middle p-1 rounded-circle bg-' + colour;
+            dot.className = 'd-inline-block align-middle ms-1 p-1 rounded-circle bg-' + colour;
             dot.title = 'Library health: ' + data.score + '/100';
           }
           if (badge) {

@@ -23,6 +23,52 @@ def _threshold_from_env(name, default):
     return value if value > 0 else default
 
 
+def _swapped_bytes():
+    """Bytes of this process that the kernel has moved to swap (Linux only).
+
+    RSS alone is not the process's size on a host that swaps: one reported
+    worker held 0.3 GB resident and 3.99 GB in swap, so a monitor that read
+    only RSS never saw its 1000 MB threshold crossed while the host ran out of
+    swap (#842). ``VmSwap`` is one line of ``/proc/self/status``; psutil's
+    equivalent walks ``smaps``, which is far too heavy for a 60s poll.
+    Anywhere the file or the field is missing, this is 0.
+    """
+    try:
+        with open("/proc/self/status", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("VmSwap:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+_libc = None
+
+
+def release_free_heap():
+    """Hand freed heap back to the OS (glibc ``malloc_trim``). True if it ran.
+
+    ``gc.collect()`` frees Python objects; it does not shrink the process.
+    glibc keeps freed chunks in its arenas and only returns the top of the
+    main heap by itself, so a threaded worker that decodes large images keeps
+    whatever its high-water mark was. ``malloc_trim(0)`` releases the free
+    pages in every arena. A no-op off glibc (musl, macOS, Windows).
+    """
+    global _libc
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        if _libc is None:
+            import ctypes
+
+            _libc = ctypes.CDLL("libc.so.6")
+        _libc.malloc_trim(0)
+        return True
+    except Exception:
+        return False
+
+
 class MemoryMonitor:
     """
     Memory monitoring and management utility.
@@ -69,11 +115,13 @@ class MemoryMonitor:
         
     def get_memory_usage(self):
         """
-        Get current memory usage in MB.
+        Get current memory usage in MB: resident memory plus what has been
+        swapped out. The thresholds are about how big the process is, and on a
+        host that swaps most of a large process is not resident.
         """
         try:
             memory_info = self.process.memory_info()
-            return memory_info.rss / 1024 / 1024  # Convert to MB
+            return (memory_info.rss + _swapped_bytes()) / 1024 / 1024  # Convert to MB
         except Exception as e:
             app_logger.error(f"Error getting memory usage: {e}")
             return 0
@@ -121,6 +169,9 @@ class MemoryMonitor:
             if hasattr(gc, 'collect_generations'):
                 gc.collect_generations()
 
+            # The collection frees objects; this is what shrinks the process.
+            release_free_heap()
+
             memory_after = self.get_memory_usage()
             freed_mb = memory_before - memory_after
 
@@ -144,7 +195,8 @@ class MemoryMonitor:
                     app_logger.warning(
                         f"{self._ineffective_cleanups} consecutive garbage "
                         f"collections freed nothing, so the memory in use is "
-                        f"not collectable garbage. Pausing automatic cleanup; "
+                        f"neither collectable garbage nor free heap. Pausing "
+                        f"automatic cleanup; "
                         f"it resumes if usage drops below "
                         f"{self.threshold_mb}MB."
                     )

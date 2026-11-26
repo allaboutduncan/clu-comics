@@ -122,6 +122,77 @@ class TestFilenameMatching:
         assert matches[0]["src"] == target
 
 
+class TestPageCountGiant:
+    """#807: a "<Series> - 80 Page Giant 001" in a pack was filed as #80, and
+    the real #1 beside it was left in TARGET."""
+
+    def test_only_the_real_issues_are_filed(self, tmp_path):
+        series_dir = tmp_path / "Green Lantern"
+        series_dir.mkdir()
+        names = [
+            "Green Lantern V3 - 80 Page Giant 001 (1998).cbz",
+            "Green Lantern V3 001 (1990).cbz",
+            "Green Lantern V3 080 (1996).cbz",
+        ]
+        files = []
+        for name in names:
+            path = str(tmp_path / name)
+            _touch(path)
+            files.append((name, path))
+
+        wanted = [
+            _wanted("Green Lantern", "1", str(series_dir)),
+            _wanted("Green Lantern", "80", str(series_dir)),
+        ]
+        matches = match_wanted_issues_to_files(
+            wanted, files, PATTERN, alias_lookup=_no_aliases
+        )
+        filed = {m["issue"]["number"]: m["filename"] for m in matches}
+        assert filed == {"1": names[1], "80": names[2]}
+
+    def test_the_giant_alone_is_left_in_target(self, tmp_path):
+        series_dir = tmp_path / "Green Lantern"
+        series_dir.mkdir()
+        name = "Green Lantern V3 - 80 Page Giant 001 (1998).cbz"
+        path = str(tmp_path / name)
+        _touch(path)
+
+        wanted = [
+            _wanted("Green Lantern", "1", str(series_dir)),
+            _wanted("Green Lantern", "80", str(series_dir)),
+        ]
+        assert match_wanted_issues_to_files(
+            wanted, [(name, path)], PATTERN, alias_lookup=_no_aliases
+        ) == []
+
+
+class TestCopySuffix:
+    """#859: "Series 058 (2010) (1).cbz", a browser's second copy of #58, was
+    filed as #1."""
+
+    NAME = "Marvel Adventures Spider-Man 058 (2010) (1).cbz"
+
+    def _run(self, tmp_path, numbers):
+        series_dir = tmp_path / "Marvel Adventures Spider-Man"
+        series_dir.mkdir()
+        path = str(tmp_path / self.NAME)
+        _touch(path)
+        wanted = [
+            _wanted("Marvel Adventures Spider-Man", n, str(series_dir))
+            for n in numbers
+        ]
+        return match_wanted_issues_to_files(
+            wanted, [(self.NAME, path)], PATTERN, alias_lookup=_no_aliases
+        )
+
+    def test_the_copy_is_not_filed_as_issue_one(self, tmp_path):
+        assert self._run(tmp_path, ["1"]) == []
+
+    def test_the_copy_is_still_its_own_issue(self, tmp_path):
+        matches = self._run(tmp_path, ["1", "58"])
+        assert [m["issue"]["number"] for m in matches] == ["58"]
+
+
 # ---- alias matching -----------------------------------------------------
 
 class TestAliasMatching:
@@ -796,3 +867,89 @@ class TestDownloadNamedAfterTheHost:
             wanted, [(src.name, str(src))], PATTERN, alias_lookup=_no_aliases
         )
         assert [m["issue"]["series_id"] for m in matches] == [2]
+
+
+def _zip_of(path, names):
+    with zipfile.ZipFile(path, "w") as zf:
+        for n in names:
+            zf.writestr(n, b"\xff\xd8\xff")
+
+
+class TestCoverOnlyArchives:
+    """#794: a variant-cover pack named like the issue is not the issue."""
+
+    @pytest.fixture
+    def nova(self, tmp_path):
+        series = tmp_path / "Nova (2013)"
+        incoming = tmp_path / "incoming"
+        series.mkdir()
+        incoming.mkdir()
+        return series, incoming
+
+    def _match(self, series, files):
+        return match_wanted_issues_to_files(
+            [_wanted("Nova", "1", str(series))],
+            [(f.name, str(f)) for f in files],
+            PATTERN,
+            alias_lookup=_no_aliases,
+        )
+
+    def test_pack_alone_leaves_the_issue_wanted(self, nova):
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["Nova 001 cover A.jpg", "Nova 001 variant B.jpg"])
+
+        assert self._match(series, [pack]) == []
+
+    def test_real_issue_beside_the_pack_is_the_one_filed(self, nova):
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["cover A.jpg", "cover B.jpg"])
+        real = incoming / "Nova 001 (2013) (Digital).cbz"
+        _zip_of(real, [f"{n:03d}.jpg" for n in range(22)])
+
+        # The pack is first in the pool, so it would have won the issue.
+        matches = self._match(series, [pack, real])
+        assert [m["src"] for m in matches] == [str(real)]
+
+    def test_refusal_is_a_warning_once_then_debug(self, nova, caplog, monkeypatch):
+        from core import app_state
+
+        monkeypatch.setattr(app_state, "_filing_refusals", set())
+        series, incoming = nova
+        pack = incoming / "Nova 001 (2013).cbz"
+        _zip_of(pack, ["cover.jpg"])
+
+        with caplog.at_level("DEBUG", logger="app_logger"):
+            self._match(series, [pack])
+            self._match(series, [pack])
+        lines = [r for r in caplog.records if "Not filing" in r.getMessage()]
+        assert [r.levelname for r in lines] == ["WARNING", "DEBUG"]
+
+
+class TestVolumeTokenPattern:
+    """#861: a rename pattern with {volume_number} must still file the names
+    the renamer writes for it, with and without a volume."""
+
+    MATCH_PATTERN = "{series_name} {volume_number} #{issue_number}"
+
+    @pytest.mark.parametrize("filename", [
+        "Hello Darkness #010 (2025).cbz",
+        "Hello Darkness v01 #010 (2025).cbz",
+    ])
+    def test_the_renamed_download_is_filed(self, tmp_path, filename):
+        series_dir = tmp_path / "Hello Darkness"
+        series_dir.mkdir()
+        incoming = tmp_path / "incoming"
+        incoming.mkdir()
+        f = str(incoming / filename)
+        _touch(f)
+
+        matches = match_wanted_issues_to_files(
+            [_wanted("Hello Darkness", "10", str(series_dir)),
+             _wanted("Hello Darkness", "1", str(series_dir))],
+            [(filename, f)],
+            self.MATCH_PATTERN,
+            alias_lookup=_no_aliases,
+        )
+        assert [(m["issue"]["number"], m["src"]) for m in matches] == [("10", f)]

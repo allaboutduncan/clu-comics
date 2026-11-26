@@ -152,9 +152,11 @@ class TestAnnualSeries:
     def test_annual_series_search_takes_either_spelling(self, title):
         from models.getcomics import score_getcomics_result
         assert _decide(title, "Batman Annual", "2", 1962, None, 1961) == "FALLBACK"
-        # No stray "s" left over to read as a different series.
+        # No stray "s" left over to read as a different series. 1962 lies inside
+        # the pack's 1961-1965 span, so the year counts as a match (#730) and
+        # the score sits at the range cap.
         score, _, _ = score_getcomics_result(title, "Batman Annual", "2", 1962, volume_year=1961)
-        assert score == 30
+        assert score == 39
 
     def test_single_annual_for_the_annual_series(self):
         assert _decide("Batman Annual #2 (2020)", "Batman Annual", "2", 2020, None, 2017) == "ACCEPT"

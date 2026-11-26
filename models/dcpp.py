@@ -149,6 +149,7 @@ def search_dcpp_for_issue(
     publisher_name=None,
     search_variants=None,
     series_aliases=None,
+    collected_series=None,
 ):
     """Search the active client's hubs for an issue and score the results.
 
@@ -156,7 +157,7 @@ def search_dcpp_for_issue(
     ``chosen`` ((result, score) or None), ``tier``, ``best_accept``,
     ``best_fallback``, ``all_results`` (scored dicts) and ``errors``.
     """
-    from models.getcomics import score_getcomics_result, accept_result
+    from models.getcomics import score_getcomics_result, accept_result, better_fallback
 
     empty = {
         "chosen": None, "tier": None, "best_accept": None,
@@ -255,6 +256,7 @@ def search_dcpp_for_issue(
             publisher_name=publisher_name,
             series_aliases=series_aliases,
             return_issue_matched=True,
+            collected_series=collected_series,
         )
         decision = accept_result(
             score, is_range, series_match, single_issue_found=single_found
@@ -280,8 +282,8 @@ def search_dcpp_for_issue(
             if best_accept is None or score > best_accept[1]:
                 best_accept = (entry, score)
             single_found = True
-        elif decision == "FALLBACK" and best_fallback is None:
-            best_fallback = (entry, score)
+        elif decision == "FALLBACK":
+            best_fallback = better_fallback(best_fallback, entry, score)
 
     chosen = best_accept or best_fallback
     return {
@@ -370,6 +372,7 @@ def try_download_for_issue(
     search_variants=None,
     series_aliases=None,
     dry_run=False,
+    collected_series=None,
 ):
     """Search DC++ for an issue and (unless dry_run) queue the best match.
 
@@ -385,6 +388,7 @@ def try_download_for_issue(
         publisher_name=publisher_name,
         search_variants=search_variants,
         series_aliases=series_aliases,
+        collected_series=collected_series,
     )
     out = {
         "source": "dcpp",

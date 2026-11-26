@@ -28,15 +28,15 @@ from core.database import init_db
 # monitor.py is a separate process, but it shares the one SQLite file, so the
 # worklist is a plain import -- a download that will not unpack is exactly the
 # kind of damaged file /library-health exists to surface.
-from core.problem_files import record_problem, clear_problem, SOURCE_UNPACK
+from core.problem_files import (
+    record_problem, clear_problem, SOURCE_UNPACK, SOURCE_CONVERT, CLASS_PDF_FAILED,
+    CLASS_RELEASE_UNWRAP_FAILED, CLASS_RELEASE_UNWRAP_PARTIAL,
+)
 
 load_config()
 
 # Initialize database
 init_db()
-
-# Re-run load_config so the WATCH/TARGET migration (which needs the DB) can finish.
-load_config()
 
 # No setting is read into a module constant here. They used to be, and the main
 # loop's cleanup/reconcile schedule was built from them once, so changing the
@@ -111,9 +111,10 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         # the per-file loop from moving the obfuscated archive parts of a release
         # while its folder-level unwrap is mid-flight. Same lock as _in_flight.
         self._in_flight_dirs = set()
-        # Multipart release folders to skip until a timestamp: failed unwraps get
-        # a short retry cooldown; partial ones a long skip. In-memory (cleared on
-        # restart) so a release the user later fixes is eventually retried.
+        # Multipart release folders on cooldown, as (parts fingerprint, failures,
+        # retry_at); see _report_unwrap_failure. Failed unwraps back off; partial
+        # ones get a long skip. In-memory (cleared on restart), and a changed
+        # part set lifts the cooldown, so a release the user fixes is retried.
         self._failed_unwraps = {}
 
         # Files whose processing failed, as abspath -> (fingerprint, failures,
@@ -280,26 +281,27 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
 
     def _handoff_unwrapped(self, staged_path):
-        """Convert a staged PDF to CBZ if needed, then feed the comic into the
-        normal per-file pipeline (rename, CBR->CBZ, move to TARGET)."""
-        ext = os.path.splitext(staged_path)[1].lower()
-        if ext == ".pdf":
-            monitor_logger.info(f"Converting unwrapped PDF to CBZ: {staged_path}")
-            try:
-                from cbz_ops.pdf import process_pdf_file
-                process_pdf_file(staged_path)  # writes a sibling .cbz, deletes the PDF
-            except Exception as e:
-                monitor_logger.error(f"PDF conversion failed for {staged_path}: {e}")
-                return
-            cbz_path = os.path.splitext(staged_path)[0] + ".cbz"
-            if not os.path.exists(cbz_path):
-                monitor_logger.error(f"PDF conversion produced no CBZ for {staged_path}")
-                return
-            from helpers import match_parent_permissions
-            match_parent_permissions(cbz_path)
-            staged_path = cbz_path
+        """Feed a comic staged by the unwrapper into the normal per-file
+        pipeline (PDF/CBR -> CBZ, rename, move to TARGET).
 
-        self._process_file(staged_path)
+        It used to convert a PDF itself, which made this the only route on
+        which a PDF was converted at all, and its failure path recorded
+        nothing: the PDF stayed in the folder and the next sweep moved it to
+        TARGET raw (#834). The conversion lives in ``_process_file`` now, and
+        a failure is backed off here exactly as ``_handle_file_if_complete``
+        backs one off.
+        """
+        key = os.path.abspath(staged_path)
+        with self._processing_lock:
+            if key in self._in_flight:
+                return
+            self._in_flight.add(key)
+        try:
+            if self._process_file(staged_path) is False:
+                self._record_processing_failure(key, staged_path)
+        finally:
+            with self._processing_lock:
+                self._in_flight.discard(key)
 
 
     def _maybe_unwrap_release_folder(self, folder_path):
@@ -321,8 +323,7 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
         # Cooldown: a folder that recently failed/partially unwrapped is left
         # pruned (claimed) but not retried until its skip window elapses.
-        skip_until = self._failed_unwraps.get(folder_abs)
-        if skip_until and time.time() < skip_until:
+        if self._unwrap_backoff_active(folder_abs):
             monitor_logger.debug(f"Unwrap on cooldown, skipping: {folder_abs}")
             return True
 
@@ -342,11 +343,12 @@ class DownloadCompleteHandler(FileSystemEventHandler):
 
             try:
                 if not result.comics:
-                    # Nothing emerged — keep the source intact, retry after a cooldown.
-                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
-                    self._failed_unwraps[folder_abs] = time.time() + cooldown
-                    monitor_logger.warning(
-                        f"Unwrap produced no comic ({result.reason}); keeping source: {folder_abs}"
+                    # Nothing emerged — keep the source intact, back off, and
+                    # put the folder on the Library Health page (#844).
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                        f"No comic could be extracted from this release "
+                        f"({result.reason}). A volume may be missing or damaged.",
                     )
                     return True
 
@@ -369,20 +371,27 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                         monitor_logger.error(f"Failed to stage unwrapped comic {comic}: {e}")
 
                 if not staged:
-                    cooldown = max(self.reconcile_interval_minutes, 5) * 60
-                    self._failed_unwraps[folder_abs] = time.time() + cooldown
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                        "The release was extracted, but its comic could not be "
+                        "moved out of the scratch folder.",
+                    )
                     return True
 
                 if result.partial:
                     # Some parts failed to extract: hand off what we got but keep
                     # the source parts for manual recovery, and don't re-hand-off.
-                    monitor_logger.warning(
-                        f"Partial unwrap for {folder_abs}; keeping source parts for recovery"
+                    self._report_unwrap_failure(
+                        folder_abs, CLASS_RELEASE_UNWRAP_PARTIAL,
+                        "Some archive parts of this release could not be "
+                        "extracted. What did come out was processed; the "
+                        "parts were kept.",
+                        delay=24 * 3600,
                     )
-                    self._failed_unwraps[folder_abs] = time.time() + 24 * 3600
                 else:
                     self._cleanup_release_cruft(folder_abs)
                     self._failed_unwraps.pop(folder_abs, None)
+                    clear_problem(folder_abs, SOURCE_UNPACK)
 
                 for s in staged:
                     self._handoff_unwrapped(s)
@@ -393,10 +402,78 @@ class DownloadCompleteHandler(FileSystemEventHandler):
                     shutil.rmtree(result.work_dir, ignore_errors=True)
         except Exception as e:
             monitor_logger.error(f"Error unwrapping release {folder_abs}: {e}")
+            self._report_unwrap_failure(
+                folder_abs, CLASS_RELEASE_UNWRAP_FAILED,
+                f"The release could not be unwrapped: {e}",
+            )
             return True
         finally:
             with self._processing_lock:
                 self._in_flight_dirs.discard(folder_abs)
+
+
+    @staticmethod
+    def _release_fingerprint(folder_path):
+        """(name, size, mtime) of every archive part in a release folder.
+
+        Parts only: a comic staged by a partial unwrap comes and goes, and must
+        not read as "the release changed". A missing volume arriving does.
+        """
+        from helpers.unwrap import is_archive_part
+        parts = []
+        try:
+            for entry in os.listdir(folder_path):
+                if not is_archive_part(entry):
+                    continue
+                try:
+                    st = os.stat(os.path.join(folder_path, entry))
+                except OSError:
+                    continue
+                parts.append((entry, st.st_size, st.st_mtime))
+        except OSError:
+            return None
+        return tuple(sorted(parts))
+
+    def _unwrap_backoff_active(self, folder_abs):
+        """True when this release last failed, is unchanged, and is cooling down."""
+        entry = self._failed_unwraps.get(folder_abs)
+        if not entry:
+            return False
+        fingerprint, _failures, retry_at = entry
+        if self._release_fingerprint(folder_abs) != fingerprint:
+            # A part arrived or was replaced: new content, new attempt.
+            del self._failed_unwraps[folder_abs]
+            return False
+        return time.time() < retry_at
+
+    def _report_unwrap_failure(self, folder_abs, error_class, message, delay=None):
+        """Back a failed release off and list it on Library Health.
+
+        A release that cannot be extracted (a missing first volume, say) cannot
+        fix itself, and the orphan sweep never removes it. It used to be
+        re-extracted every cooldown for as long as it sat in WATCH, with one
+        WARNING per attempt and nothing on any page (#844). Now the retry backs
+        off, a changed part set earns a fresh attempt at once, the WARNING is
+        logged on the first failure only, and the folder gets a
+        ``SOURCE_UNPACK`` row, which a later success clears.
+        """
+        previous = self._failed_unwraps.get(folder_abs)
+        failures = (previous[1] + 1) if previous else 1
+        if delay is None:
+            base = max(self.reconcile_interval_minutes, 5) * 60
+            delay = min(base * (2 ** (failures - 1)), ORPHAN_MIN_AGE_SECONDS)
+        self._failed_unwraps[folder_abs] = (
+            self._release_fingerprint(folder_abs), failures, time.time() + delay
+        )
+        log = monitor_logger.warning if failures == 1 else monitor_logger.debug
+        log(
+            f"Release not unwrapped ({error_class}): {message} Keeping the "
+            f"source and retrying in {delay // 60:.0f}m; see the Library "
+            f"Health page: {folder_abs}"
+        )
+        record_problem(
+            folder_abs, SOURCE_UNPACK, error_class=error_class, error_message=message
+        )
 
 
     def on_created(self, event):
@@ -805,6 +882,52 @@ class DownloadCompleteHandler(FileSystemEventHandler):
         return None
 
 
+    def _pdf_to_comic(self, filepath):
+        """Convert a PDF in WATCH to a sibling ``.cbz``. Returns the new path,
+        or None when the conversion failed and the PDF is still there.
+
+        Done here, before the move, rather than in TARGET as for a ``.cbr``:
+        a PDF that will not convert must stay out of TARGET, where the wanted
+        sweep would file it into the library as it is.
+        """
+        cbz_path = os.path.splitext(filepath)[0] + ".cbz"
+        if os.path.exists(cbz_path):
+            # Its own comic, on its way to TARGET. Not a damaged PDF, so no
+            # Library Health row: the backoff retries once the name is free.
+            monitor_logger.warning(
+                f"'{cbz_path}' already exists; converting '{filepath}' later"
+            )
+            return None
+
+        monitor_logger.info(f"Converting PDF to CBZ: {filepath}")
+        try:
+            from cbz_ops.pdf import process_pdf_file
+            converted = process_pdf_file(filepath)
+            error = None
+        except Exception as e:
+            converted, error = False, e
+        # The return value, not os.path.exists(cbz_path) -- see _archive_to_comic.
+        if not converted:
+            monitor_logger.error(
+                f"PDF conversion failed for '{filepath}'"
+                f"{f': {error}' if error else ''}; leaving it in WATCH. "
+                f"See the Library Health page."
+            )
+            record_problem(
+                filepath, SOURCE_CONVERT,
+                error_class=CLASS_PDF_FAILED,
+                error_message=(
+                    f"The PDF could not be converted to CBZ: {error}" if error
+                    else "The PDF could not be converted to CBZ"
+                ),
+            )
+            return None
+        clear_problem(filepath, SOURCE_CONVERT)
+        match_parent_permissions(cbz_path)
+        monitor_logger.info(f"PDF converted to comic: {cbz_path}")
+        return cbz_path
+
+
     def _unrar_file(self, filepath):
         """Extract a ``.rar`` beside itself, deleting it only once that worked.
 
@@ -876,8 +999,40 @@ class DownloadCompleteHandler(FileSystemEventHandler):
             monitor_logger.info(f"Processing file: {filepath}")
 
             # Archives are always opened; how depends on what is inside them.
-            if os.path.splitext(filepath)[1].lower() in ARCHIVE_EXTS:
+            extension = os.path.splitext(filepath)[1].lower()
+            if extension in ARCHIVE_EXTS:
                 return self._process_archive(filepath)
+
+            # Old-style volumes (".r00") and release cruft (".nfo") are not in
+            # ARCHIVE_EXTS, but their own file event must still hand the folder
+            # to the unwrapper, or each part is moved to TARGET on its own. A
+            # folder already being unwrapped is skipped: its output comes here.
+            parent = os.path.dirname(os.path.abspath(filepath))
+            if (parent != os.path.abspath(self.directory)
+                    and parent not in self._in_flight_dirs
+                    and self._maybe_unwrap_release_folder(parent)):
+                return True
+
+            # A PDF is converted whichever way it got here: dropped loose,
+            # extracted from a pack, or staged by the unwrapper. Only that
+            # last route converted one before, so every other PDF was renamed
+            # and moved to TARGET as a .pdf (#834).
+            if extension == ".pdf" and self.autoconvert:
+                comic = self._pdf_to_comic(filepath)
+                if not comic:
+                    return False
+                # A brand-new path in WATCH: claim it, as the archive branch
+                # does, before its own create event drives a second thread.
+                key = os.path.abspath(comic)
+                with self._processing_lock:
+                    if key in self._in_flight:
+                        return True
+                    self._in_flight.add(key)
+                try:
+                    return self._process_file(comic)
+                finally:
+                    with self._processing_lock:
+                        self._in_flight.discard(key)
 
             if self.auto_rename_monitor:
                 renamed_filepath = self._rename_file(filepath)
