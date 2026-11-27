@@ -282,7 +282,7 @@ class TestStartupScanEnumeratesWhatTheIndexHolds:
     def test_prunes_hidden_directories(self, scan_tree):
         src = _scan_src(scan_tree, "iter_candidate_dirs")
         assert "dirs[:]" in src, "hidden directories are descended into again"
-        assert "is_hidden" in src
+        assert "is_hidden" in src or "is_library_hidden" in src
 
     def test_skips_hidden_files_before_testing_the_extension(self, scan_tree):
         """An AppleDouble sidecar carries a comic extension, so an

@@ -134,13 +134,13 @@ def _root_for(path, roots):
 
 
 def _list_subdirectories(path):
-    from helpers import is_hidden
+    from helpers import is_hidden, is_library_hidden
 
     dirs = []
     with os.scandir(path) as it:
         for entry in it:
             try:
-                if entry.is_dir() and not is_hidden(entry.path):
+                if entry.is_dir() and not is_library_hidden(entry.path):
                     dirs.append(entry.name)
             except OSError:
                 continue

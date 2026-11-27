@@ -108,7 +108,8 @@ class TestDataMount:
         result = pf.check_data_mount(libraries=[])
         assert result["status"] == "ok"
         names = [os.path.basename(p) for p in result["details"]["subfolders"]]
-        assert names == ["DC", "Marvel"]
+        # Underscore folders are library folders now; only dot-names are hidden.
+        assert set(names) == {"DC", "Marvel", "_trash"}
 
     def test_missing_data_with_library_elsewhere_is_ok(self, dirs, monkeypatch, tmp_path):
         monkeypatch.setattr("core.config.get_data_dir", lambda: str(tmp_path / "nodata"))

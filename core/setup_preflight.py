@@ -291,12 +291,12 @@ def check_data_mount(libraries=None):
             fix=fix, docs=DOCS_SETUP, details=details,
         )
 
-    from helpers import is_hidden
+    from helpers import is_hidden, is_library_hidden
 
     subfolders = []
     for entry in sorted(os.scandir(data_dir), key=lambda e: e.name.lower()):
         try:
-            if entry.is_dir() and not is_hidden(entry.path):
+            if entry.is_dir() and not is_library_hidden(entry.path):
                 subfolders.append(entry.path)
         except OSError:
             continue

@@ -5,7 +5,7 @@ import calendar
 import configparser
 import datetime
 from core.app_logging import app_logger
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 from helpers.no_clobber import rename_no_clobber
 # The hostile set and the per-character map are shared with folder names
 # (helpers.sanitize_path_segment). FILENAME_ILLEGAL_CHARS is re-exported.
@@ -2588,7 +2588,7 @@ def rename_files(directory):
 
     for subdir, dirs, files in os.walk(directory):
         # Skip hidden directories.
-        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(subdir, d))]
+        dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(subdir, d))]
         # app_logger.info(f"Processing subdirectory: {subdir} with {len(files)} files")
 
         # List all files in this subdirectory

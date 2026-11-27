@@ -172,7 +172,8 @@ class TestEnumeratesWhatTheIndexHolds:
         library = tmp_path / "lib"
         keep = _comic(library / "Series", "Series 001.cbz")
         _comic(library / ".hidden", "Hidden 001.cbz")
-        _comic(library / "_staging", "Staged 001.cbz")
+        # Underscore folders are library folders: their comics are scanned.
+        staged = _comic(library / "_staging", "Staged 001.cbz")
         _comic(library / "Series", "._Series 001.cbz")
         _comic(library / "Series", "_Series 002.cbz")
         (library / "Series" / "notes.txt").write_text("x")
@@ -180,9 +181,9 @@ class TestEnumeratesWhatTheIndexHolds:
         submitter = _Submitter()
         _scan(library, submitter)
 
-        assert submitter.paths == [keep]
+        assert set(submitter.paths) == {keep, staged}
         rows = {r[0] for r in db_connection.execute("SELECT path FROM thumbnail_jobs")}
-        assert rows == {keep}
+        assert rows == {keep, staged}
 
     def test_rows_the_old_walk_left_are_pruned(self, db_connection, tmp_path):
         library = tmp_path / "lib"
