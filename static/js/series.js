@@ -463,10 +463,16 @@ function refreshCollectionStatus() {
                                             </button>
                                             <div class="dropdown d-inline-block">
                                                 <button aria-label="More options" class="btn btn-sm btn-outline-secondary" type="button"
-                                                    data-bs-toggle="dropdown" aria-expanded="false" title="More options">
+                                                    data-bs-toggle="dropdown" aria-expanded="false" title="More options"
+                                                    data-bs-popper-config='{"strategy":"fixed"}'>
                                                     <i class="bi bi-three-dots-vertical"></i>
                                                 </button>
                                                 <ul class="dropdown-menu dropdown-menu-end shadow">
+                                                    <li><a class="dropdown-item" href="#"
+                                                            onclick="fetchIssueMetadata(this.closest('[data-issue-path]').dataset.issuePath); return false;">
+                                                            <i class="bi bi-cloud-download me-2"></i>Fetch Metadata
+                                                        </a></li>
+                                                    <li><hr class="dropdown-divider"></li>
                                                     <li><a class="dropdown-item" href="#"
                                                             onclick="executeIssueScript('crop', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                             <i class="bi bi-crop me-2"></i>Crop Cover
@@ -522,7 +528,8 @@ function refreshCollectionStatus() {
                                                 <i class="bi bi-search"></i>
                                             </button>
                                             <button class="btn btn-sm btn-outline-secondary dropdown-toggle dropdown-toggle-split"
-                                                data-bs-toggle="dropdown" aria-expanded="false" title="Mark issue">
+                                                data-bs-toggle="dropdown" aria-expanded="false" title="Mark issue"
+                                                data-bs-popper-config='{"strategy":"fixed"}'>
                                                 <span class="visually-hidden">Toggle Dropdown</span>
                                             </button>
                                             <ul class="dropdown-menu dropdown-menu-end shadow">
@@ -616,6 +623,32 @@ function viewIssueFile(filePath, issueNumber) {
  */
 function editIssueFile(filePath) {
     openEditModal(filePath);
+}
+
+/**
+ * Fetch metadata for an issue file from the configured providers (the same
+ * cascade as the File Manager's cloud button), then reload so the row picks
+ * up the refreshed ComicInfo and any rename.
+ * @param {string} filePath - Full path to the file
+ */
+function fetchIssueMetadata(filePath) {
+    const fileName = filePath.split('/').pop();
+    window._cluMetadata = {
+        getLibraryId: function () { return null; },
+        onMetadataFound: function (fp, data) {
+            const reload = function () { setTimeout(function () { window.location.reload(); }, 1500); };
+            // Mirror maybeRenameAfterMetadata's gates: it calls back only when
+            // it actually renames (buildRenamedName is null for an unchanged name).
+            const rc = data && data.rename_config;
+            const willRename = !!(data && data.metadata && rc && rc.enabled && rc.auto_rename &&
+                CLU.buildRenamedName(data.metadata, rc, fileName));
+            // The rename is client-driven; wait for it so the reload sees the new path.
+            CLU.maybeRenameAfterMetadata(fp, fileName, data, reload);
+            if (!willRename) reload();
+        },
+        onBatchComplete: function () {}
+    };
+    CLU.searchMetadata(filePath, fileName);
 }
 
 /**

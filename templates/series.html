@@ -369,10 +369,16 @@
                                     </button>
                                     <div class="dropdown d-inline-block">
                                         <button aria-label="More options" class="btn btn-sm btn-outline-secondary" type="button"
-                                            data-bs-toggle="dropdown" aria-expanded="false" title="More options">
+                                            data-bs-toggle="dropdown" aria-expanded="false" title="More options"
+                                            data-bs-popper-config='{"strategy":"fixed"}'>
                                             <i class="bi bi-three-dots-vertical"></i>
                                         </button>
                                         <ul class="dropdown-menu dropdown-menu-end shadow">
+                                            <li><a class="dropdown-item" href="#"
+                                                    onclick="fetchIssueMetadata(this.closest('[data-issue-path]').dataset.issuePath); return false;">
+                                                    <i class="bi bi-cloud-download me-2"></i>Fetch Metadata
+                                                </a></li>
+                                            <li><hr class="dropdown-divider"></li>
                                             <li><a class="dropdown-item" href="#"
                                                     onclick="executeIssueScript('crop', this.closest('[data-issue-path]').dataset.issuePath); return false;">
                                                     <i class="bi bi-crop me-2"></i>Crop Cover
@@ -423,7 +429,8 @@
                                     </button>
                                     {% if mapped_path %}
                                     <button class="btn btn-sm btn-outline-primary dropdown-toggle dropdown-toggle-split"
-                                        data-bs-toggle="dropdown" aria-expanded="false" title="Mark issue">
+                                        data-bs-toggle="dropdown" aria-expanded="false" title="Mark issue"
+                                        data-bs-popper-config='{"strategy":"fixed"}'>
                                         <span class="visually-hidden">Toggle Dropdown</span>
                                     </button>
                                     <ul class="dropdown-menu dropdown-menu-end shadow">
@@ -555,82 +562,8 @@
 </div>
 <!-- End of Mark Issue Modal -->
 
-<!-- GCD Series Selection Modal -->
-<div class="modal fade" id="gcdSeriesModal" tabindex="-1" aria-labelledby="gcdSeriesModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="gcdSeriesModalLabel">Select Correct Series</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <p><strong>Parsed from filename:</strong></p>
-                    <ul class="list-unstyled">
-                        <li><strong>Series:</strong> <span id="gcdParsedSeries"></span></li>
-                        <li><strong>Issue:</strong> <span id="gcdParsedIssue"></span></li>
-                        <li><strong>Year:</strong> <span id="gcdParsedYear"></span></li>
-                    </ul>
-                </div>
-                <div class="mb-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <p class="mb-0"><strong>Please select the correct series from the GCD database:</strong></p>
-                        <div class="btn-group" role="group" aria-label="Sort options">
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="sortBySeries"
-                                data-value="series" aria-pressed="false" onclick="sortGCDSeries('series')">
-                                <i class="bi bi-sort-alpha-down me-1" aria-hidden="true"></i>Series
-                            </button>
-                            <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByYear"
-                                data-value="year" aria-pressed="false" onclick="sortGCDSeries('year')">
-                                <i class="bi bi-sort-numeric-down me-1" aria-hidden="true"></i>Year
-                            </button>
-                        </div>
-                    </div>
-                    <div id="gcdSeriesList" class="list-group" style="max-height: 400px; overflow-y: auto;">
-                        <!-- Series options will be populated here -->
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- End of GCD Series Selection Modal -->
-
-<!-- ComicVine Volume Selection Modal -->
-<div class="modal fade" id="comicVineVolumeModal" tabindex="-1" aria-labelledby="comicVineVolumeModalLabel"
-    aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="comicVineVolumeModalLabel">Select Correct Volume</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div class="mb-3">
-                    <p><strong>Parsed from filename:</strong></p>
-                    <ul class="list-unstyled">
-                        <li><strong>Series:</strong> <span id="cvParsedSeries"></span></li>
-                        <li><strong>Issue:</strong> <span id="cvParsedIssue"></span></li>
-                        <li><strong>Year:</strong> <span id="cvParsedYear"></span></li>
-                    </ul>
-                </div>
-                <div class="mb-3">
-                    <p class="mb-2"><strong>Please select the correct volume from ComicVine:</strong></p>
-                    <div id="cvVolumeList" class="list-group" style="max-height: 400px; overflow-y: auto;">
-                        <!-- Volume options will be populated here -->
-                    </div>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            </div>
-        </div>
-    </div>
-</div>
-<!-- End of ComicVine Volume Selection Modal -->
+<!-- Metadata provider selection modals (shared partial – driven by clu-metadata.js) -->
+{% include 'partials/modal_metadata_select.html' %}
 
 <!-- Edit CBZ Modal (shared partial – driven by clu-cbz-edit.js) -->
 {% include 'partials/modal_cbz_edit.html' %}
@@ -1503,6 +1436,7 @@
 </script>
 <script src="{{ asset('js/clu-source-search.js') }}"></script>
 <script src="{{ asset('js/clu-streaming.js') }}"></script>
+<script src="{{ asset('js/clu-metadata.js') }}"></script>
 <script src="{{ asset('js/clu-cbz-crop.js') }}"></script>
 <script src="{{ asset('js/clu-cbz-edit.js') }}"></script>
 <script src="{{ asset('js/clu-cbz-info.js') }}"></script>

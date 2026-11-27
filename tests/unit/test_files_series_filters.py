@@ -50,10 +50,11 @@ def test_gcd_sort_is_defined_once_and_marks_active():
     assert src.count("function renderSeriesList(") == 1
     assert "btn-secondary" not in _function(src, "markGCDSort")
     assert "aria-pressed" in _function(src, "markGCDSort")
-    for path in ["templates/partials/modal_metadata_select.html", "templates/series.html"]:
-        tpl = _read(path)
-        assert 'data-value="series" aria-pressed="false"' in tpl, path
-        assert 'data-value="year" aria-pressed="false"' in tpl, path
+    tpl = _read("templates/partials/modal_metadata_select.html")
+    assert 'data-value="series" aria-pressed="false"' in tpl
+    assert 'data-value="year" aria-pressed="false"' in tpl
+    # series.html gets the same buttons from the partial, not an inline copy.
+    assert "partials/modal_metadata_select.html" in _read("templates/series.html")
 
 
 def test_comicvine_sort_marks_active_not_btn_secondary():
