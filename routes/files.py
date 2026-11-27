@@ -25,7 +25,7 @@ from core.auth import file_op_refusal
 from helpers.library import (is_critical_path, get_critical_path_error_message, is_valid_library_path,
                              get_default_library_root, is_within_roots)
 from helpers.trash import move_to_trash, is_trash_path, get_trash_dir, get_trash_size, get_trash_max_size_bytes, get_trash_contents, empty_trash as do_empty_trash, permanently_delete_from_trash, restore_from_trash, get_trash_manifest
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 from cbz_ops.edit import cropCenter, cropLeft, cropRight, cropFreeForm, get_image_data_url, modal_body_template
 from core import folder_art
 from core.database import add_file_index_entry
@@ -2212,7 +2212,7 @@ def cleanup_orphan_files():
         # Walk through watch directory and clean up orphan files
         for root, dirs, files in os.walk(watch_directory):
             # Skip hidden directories
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
 
             for file in files:
                 file_path = os.path.join(root, file)

@@ -6,7 +6,7 @@ import shutil
 import time
 from core.app_logging import app_logger
 from core.settings import get_bool, get_int
-from helpers import is_hidden, extract_rar_with_unar, open_zip_for_write
+from helpers import is_hidden, is_library_hidden, extract_rar_with_unar, open_zip_for_write
 from cbz_ops.single_file import (
     _clear_convert_problem,
     _flatten_single_wrapper_dir,
@@ -59,7 +59,7 @@ def count_convertable_files(directory, force_recursive=False):
         # Recursively traverse the directory tree.
         for root, dirs, files in os.walk(directory):
             # Skip hidden directories.
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 if is_hidden(file_path):
@@ -205,7 +205,7 @@ def convert_rar_directory(directory, force_recursive=False):
         # Recursively traverse the directory tree.
         for root, dirs, files in os.walk(directory):
             # Skip hidden directories.
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
             for file_name in files:
                 file_path = os.path.join(root, file_name)
                 if is_hidden(file_path):

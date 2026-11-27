@@ -6,7 +6,7 @@ import shutil
 import time
 from core.app_logging import app_logger
 from core.settings import get_int
-from helpers import (is_hidden, extract_rar_with_unar, open_zip_for_write,
+from helpers import (is_hidden, is_library_hidden, extract_rar_with_unar, open_zip_for_write,
                      describe_archive_error)
 from core.thumbnail_cache import regenerate_thumbnail
 
@@ -98,7 +98,7 @@ def convert_single_rar_file(rar_path, zip_path, temp_extraction_dir):
         # Step 2: Count extracted files for progress tracking
         extracted_files = []
         for root, dirs, files in os.walk(temp_extraction_dir):
-            dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
             for file in files:
                 file_path = os.path.join(root, file)
                 if not is_hidden(file_path):

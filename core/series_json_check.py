@@ -167,7 +167,7 @@ def scan_library(op_id=None):
 def _scan_library(op_id):
     from core.app_state import update_operation
     from core.config import is_oneshot_folder
-    from helpers import is_hidden
+    from helpers import is_hidden, is_library_hidden
     from helpers.library import get_library_roots, staging_matcher
     from models.series_json import SERIES_JSON_FILENAME
 
@@ -197,7 +197,7 @@ def _scan_library(op_id):
                 # the Windows hidden attribute, which needs a real path.
                 dirnames[:] = [
                     d for d in dirnames
-                    if not is_hidden(os.path.join(dirpath, d))
+                    if not is_library_hidden(os.path.join(dirpath, d))
                     and not staging(os.path.join(dirpath, d), is_dir=True)
                 ]
                 stats["folders"] += 1

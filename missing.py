@@ -3,7 +3,7 @@ import os
 import re
 from core.app_logging import app_logger
 from core.settings import get_list
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 
 def check_missing_issues(root_directory):
     """
@@ -38,7 +38,7 @@ def check_missing_issues(root_directory):
 
     for dirpath, dirnames, filenames in os.walk(root_directory):
         # Skip hidden directories.
-        dirnames[:] = [d for d in dirnames if not is_hidden(os.path.join(dirpath, d))]
+        dirnames[:] = [d for d in dirnames if not is_library_hidden(os.path.join(dirpath, d))]
         for fname in filenames:
             full_path = os.path.join(dirpath, fname)
             # Skip hidden files.

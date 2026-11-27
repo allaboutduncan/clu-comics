@@ -5,7 +5,7 @@ from pdf2image import convert_from_path, pdfinfo_from_path
 from core.app_logging import app_logger
 from core.database import get_user_preference
 from PIL import Image
-from helpers import is_hidden, open_zip_for_write
+from helpers import is_hidden, is_library_hidden, open_zip_for_write
 import gc
 import tempfile
 import shutil
@@ -26,7 +26,7 @@ def scan_and_convert(directory):
 
     for root, dirs, files in os.walk(directory):
         # Skip hidden directories.
-        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+        dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
         for file in files:
             file_path = os.path.join(root, file)
             # Skip hidden files.

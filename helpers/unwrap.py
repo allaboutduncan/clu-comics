@@ -32,6 +32,7 @@ from helpers import (
     archive_extract_timeout,
     extract_rar_with_unar,
     is_hidden,
+    is_library_hidden,
     match_parent_permissions,
     run_archive_tool,
 )
@@ -261,7 +262,7 @@ def _find_comics(dirpath):
     """Return full paths of comic files anywhere under ``dirpath`` (sorted)."""
     found = []
     for root, dirs, files in os.walk(dirpath):
-        dirs[:] = [d for d in dirs if not is_hidden(os.path.join(root, d))]
+        dirs[:] = [d for d in dirs if not is_library_hidden(os.path.join(root, d))]
         for f in files:
             if is_hidden(os.path.join(root, f)):
                 continue

@@ -31,7 +31,7 @@ from core.app_logging import MONITOR_LOG
 from core.notifications import (
     EVENT_DOWNLOAD_COMPLETE, EVENT_DOWNLOAD_FAILED, notify_async,
 )
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 from core.config import load_config, load_flask_config, get_watch_dir, get_target_dir
 from core.settings import get_bool, get_int, get_list, get_setting
 from core.download_utils import download_notification_body
@@ -633,7 +633,7 @@ def process_download(task):
                             # in-flight .temp_* extraction (and .clu_unwrap)
                             # read as "WATCH still busy" for the whole conversion.
                             dirs[:] = [d for d in dirs
-                                       if not is_hidden(os.path.join(root, d))]
+                                       if not is_library_hidden(os.path.join(root, d))]
                             for f in files:
                                 if f.startswith('.') or f.startswith('_'):
                                     continue

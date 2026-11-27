@@ -44,7 +44,7 @@ from core.thumbnail_cache import (
     mark_processing_batch,
     prune_hidden_jobs,
 )
-from helpers import is_hidden
+from helpers import is_hidden, is_library_hidden
 
 # Files per read + write round. Bounds the write transaction, the IN (...)
 # list and how many jobs wait on one commit, whatever the folder holds.
@@ -100,7 +100,7 @@ def iter_candidate_dirs(library_root, walk=os.walk):
         # and WATCH/TARGET nested in the library (downloads in transit).
         dirs[:] = [
             d for d in dirs
-            if not is_hidden(os.path.join(root, d))
+            if not is_library_hidden(os.path.join(root, d))
             and not staging(os.path.join(root, d), is_dir=True)
         ]
         paths = []
