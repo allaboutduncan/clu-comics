@@ -131,6 +131,10 @@ SETTINGS_SCHEMA = {
     # JSON counts of the last Mylar3 import (models/mylar_import.py). The job
     # itself is forgotten after 15 minutes; the wizard's status reads this.
     "MYLAR_IMPORT_LAST_RUN": _s("mylar_import_last_run", _S, "", "onboarding"),
+    # GitHub repos the "Import from GitHub" browser offers (core/cbl_repos.py):
+    # comma-separated "owner/repo" or "owner/repo@branch". "" means none —
+    # the user removed them all, which is not the same as unset. Never in an ini.
+    "CBL_GITHUB_REPOS": _s("cbl_github_repos", _S, "DieselTech/CBL-ReadingLists", "reading_lists"),
 }
 
 # Legacy ini keys that are *not* plain preferences, or that stay out of the

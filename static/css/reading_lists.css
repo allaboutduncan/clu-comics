@@ -584,3 +584,29 @@ body.reading-list-select-mode .reading-list-card {
     color: #fff;
     font-size: 1.05rem;
 }
+
+/* GitHub repo browser: a guide line under each open folder, centred on its
+   chevron. Folder rows sit at depth * --tree-step + --tree-gutter
+   (_treeIndent in reading_list.js); keep the numbers in sync. */
+#githubTreeContent {
+    --tree-step: 22px;
+    --tree-gutter: 12px;
+}
+
+#githubTreeContent .tree-children {
+    position: relative;
+}
+
+#githubTreeContent .tree-children::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0.5rem;
+    left: calc(var(--tree-depth, 0) * var(--tree-step) + var(--tree-gutter) + 7px);
+    border-left: 1px solid var(--bs-border-color);
+    pointer-events: none;
+}
+
+#githubTreeContent .tree-item:hover {
+    background-color: var(--bs-tertiary-bg);
+}
