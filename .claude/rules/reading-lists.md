@@ -106,6 +106,19 @@ read, because rows stored by older versions went through a regex sanitizer.
 The arc pickers in `reading_list.js` show provider descriptions as escaped
 text (`arcDescriptionSnippet`). Asserted in `tests/unit/test_description_html.py`.
 
+### The "Import from GitHub" browser
+
+The repos it browses are the `CBL_GITHUB_REPOS` setting (`core/cbl_repos.py`,
+`owner/repo` or `owner/repo@branch`, default `DieselTech/CBL-ReadingLists`),
+managed from the modal's **Repositories** panel. `""` means the user removed
+them all, not "unset". A spec without a branch uses the ref `HEAD`, which the
+trees API and raw.githubusercontent.com both resolve. `/github-tree` and
+`/import-batch` only act on a *configured* repo, so they are not a general
+GitHub proxy. Trees are cached per spec (memory + `CACHE_DIR/github_trees/`,
+24h); `?refresh=1` is the Refresh button. Raw file URLs go through
+`raw_file_url`, which quotes the path: CBL names carry `#` ("Part #01"), and
+an unquoted `#` is a URL fragment.
+
 ### Reading-List Matching
 
 `CBLLoader.match_file` (`models/cbl.py`) tries identity before names:

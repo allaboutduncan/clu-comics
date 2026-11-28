@@ -54,6 +54,13 @@ class TestParseSource:
         assert kind == GITHUB
         assert ident.startswith("https://raw.githubusercontent.com/")
 
+    def test_github_raw_url_with_unquoted_hash_is_repaired(self):
+        """Imports before the fix stored "Part #01" unquoted; sync 404'd on it."""
+        _, ident = parse_source(
+            "https://raw.githubusercontent.com/D/R/main/Part%20#01%20(WEB).cbl"
+        )
+        assert ident == "https://raw.githubusercontent.com/D/R/main/Part%20%2301%20(WEB).cbl"
+
     @pytest.mark.parametrize("source", [
         None,
         "",

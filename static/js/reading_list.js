@@ -1791,41 +1791,252 @@ document.addEventListener('DOMContentLoaded', function () {
 // ==========================================
 
 let _githubTreeData = null;
-let _githubTreeLoaded = false;
 let _collapsedFolders = new Set();
 let _githubTreeParsed = null; // { folders, folderMap, subFolderIndex }
 
-function loadGithubTree() {
-    if (_githubTreeLoaded) return;
+// Configured repositories ([{spec, name, branch, url, fetched_at}]), null until
+// fetched; the one being browsed; and each repo's tree once loaded, so
+// switching back and forth does not refetch.
+let _githubRepos = null;
+let _githubDefaultRepo = null;
+let _githubCurrentRepo = null;
+const _githubTrees = {};
 
+function _githubRepoLabel(repo) {
+    return repo.branch ? `${repo.name} (${repo.branch})` : repo.name;
+}
+
+function _formatAge(seconds) {
+    if (!seconds) return '';
+    const mins = Math.max(0, Math.round((Date.now() / 1000 - seconds) / 60));
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} h ago`;
+    return `${Math.round(hours / 24)} d ago`;
+}
+
+function _renderGithubRepoStatus() {
+    const status = document.getElementById('githubRepoStatus');
+    if (!status) return;
+    const loaded = _githubTrees[_githubCurrentRepo];
+    if (!loaded) { status.textContent = ''; return; }
+    const count = loaded.tree.filter(i => i.type === 'blob').length;
+    let text = `${count} list${count !== 1 ? 's' : ''} · updated ${_formatAge(loaded.fetched_at)}`;
+    if (loaded.truncated) text += ' · GitHub truncated this tree, some lists may be missing';
+    status.textContent = text;
+}
+
+function _renderGithubRepoBar() {
+    const select = document.getElementById('githubRepoSelect');
+    const link = document.getElementById('githubRepoLink');
+    const refresh = document.getElementById('githubRepoRefresh');
+    if (!select) return;
+
+    select.replaceChildren(...(_githubRepos || []).map(repo => {
+        const opt = document.createElement('option');
+        opt.value = repo.spec;
+        opt.textContent = _githubRepoLabel(repo);
+        return opt;
+    }));
+    const current = (_githubRepos || []).find(r => r.spec === _githubCurrentRepo);
+    select.disabled = !current;
+    refresh.disabled = !current;
+    if (current) {
+        select.value = current.spec;
+        link.href = current.url;
+        link.classList.remove('disabled');
+    } else {
+        link.removeAttribute('href');
+        link.classList.add('disabled');
+    }
+    _renderGithubRepoStatus();
+    _renderGithubRepoRows();
+}
+
+function _renderGithubRepoRows() {
+    const rows = document.getElementById('githubRepoRows');
+    if (!rows) return;
+    rows.replaceChildren();
+    (_githubRepos || []).forEach(repo => addGithubRepoRow(repo.spec));
+    if (!rows.children.length) addGithubRepoRow('');
+}
+
+function addGithubRepoRow(value) {
+    const rows = document.getElementById('githubRepoRows');
+    if (!rows) return;
+    const row = document.createElement('div');
+    row.className = 'input-group input-group-sm github-repo-row';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'form-control github-repo-input';
+    input.placeholder = 'owner/repo';
+    input.setAttribute('aria-label', 'Repository');
+    input.value = value;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-outline-danger';
+    remove.title = 'Remove';
+    remove.setAttribute('aria-label', 'Remove repository');
+    remove.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
+    remove.onclick = () => row.remove();
+
+    row.append(input, remove);
+    rows.appendChild(row);
+    if (!value) input.focus();
+}
+
+function restoreDefaultGithubRepo() {
+    if (!_githubDefaultRepo) return;
+    const inputs = Array.from(document.querySelectorAll('#githubRepoRows .github-repo-input'));
+    if (inputs.some(i => i.value.trim().toLowerCase() === _githubDefaultRepo.toLowerCase())) return;
+    const blank = inputs.find(i => !i.value.trim());
+    if (blank) blank.value = _githubDefaultRepo;
+    else addGithubRepoRow(_githubDefaultRepo);
+}
+
+function saveGithubRepos() {
+    const repos = Array.from(document.querySelectorAll('#githubRepoRows .github-repo-input'))
+        .map(i => i.value.trim())
+        .filter(Boolean);
+    const btn = document.getElementById('githubRepoSave');
+    btn.disabled = true;
+
+    fetch('/api/reading-lists/github-repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repos })
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'Failed to save');
+            _githubRepos = data.repos;
+            const specs = data.repos.map(r => r.spec);
+            Object.keys(_githubTrees).forEach(s => { if (!specs.includes(s)) delete _githubTrees[s]; });
+            if (!specs.includes(_githubCurrentRepo)) _githubCurrentRepo = specs[0] || null;
+            _renderGithubRepoBar();
+            const panel = document.getElementById('githubRepoManage');
+            if (panel && specs.length) bootstrap.Collapse.getOrCreateInstance(panel).hide();
+            CLU.toast('Repositories saved', 'success');
+            loadGithubTree();
+        })
+        .catch(err => CLU.toast(err.message, 'error'))
+        .finally(() => { btn.disabled = false; });
+}
+
+function selectGithubRepo(spec) {
+    if (spec === _githubCurrentRepo) return;
+    _githubCurrentRepo = spec;
+    _renderGithubRepoBar();
+    loadGithubTree();
+}
+
+function _loadGithubRepos() {
+    return fetch('/api/reading-lists/github-repos')
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.message || 'Failed to load repositories');
+            _githubRepos = data.repos;
+            _githubDefaultRepo = data.default;
+            if (!_githubRepos.some(r => r.spec === _githubCurrentRepo)) {
+                _githubCurrentRepo = _githubRepos.length ? _githubRepos[0].spec : null;
+            }
+            _renderGithubRepoBar();
+        });
+}
+
+function _showGithubTree(spec) {
+    const loaded = _githubTrees[spec];
+    _githubTreeData = loaded.tree;
+    renderTreeView(loaded.tree);
+    updateSelectedCount();
+    const filter = document.getElementById('githubTreeFilter');
+    if (filter && filter.value) filterTree(filter.value);
+    _renderGithubRepoStatus();
+}
+
+function loadGithubTree(force = false) {
     const loading = document.getElementById('githubTreeLoading');
     const content = document.getElementById('githubTreeContent');
     const error = document.getElementById('githubTreeError');
 
     if (!loading) return; // Not on the reading lists page
 
+    if (_githubRepos === null) {
+        _loadGithubRepos()
+            .then(() => loadGithubTree(force))
+            .catch(err => {
+                loading.classList.add('d-none');
+                error.classList.remove('d-none');
+                error.textContent = err.message;
+            });
+        return;
+    }
+
+    const spec = _githubCurrentRepo;
+    if (!spec) {
+        _githubTreeData = null;
+        content.replaceChildren();
+        updateSelectedCount();
+        _renderGithubRepoStatus();
+        loading.classList.add('d-none');
+        error.classList.add('d-none');
+        content.classList.remove('d-none');
+        content.appendChild(CLU.emptyState({
+            icon: 'bi-github', title: 'No repositories',
+            message: 'Add one under Repositories to browse its reading lists.', compact: true,
+        }));
+        const panel = document.getElementById('githubRepoManage');
+        if (panel) bootstrap.Collapse.getOrCreateInstance(panel).show();
+        return;
+    }
+
+    if (!force && _githubTrees[spec]) {
+        _showGithubTree(spec);
+        loading.classList.add('d-none');
+        error.classList.add('d-none');
+        content.classList.remove('d-none');
+        return;
+    }
+
+    const refresh = document.getElementById('githubRepoRefresh');
+    if (refresh) refresh.disabled = true;
     loading.classList.remove('d-none');
     content.classList.add('d-none');
     error.classList.add('d-none');
 
-    fetch('/api/reading-lists/github-tree')
+    const url = `/api/reading-lists/github-tree?repo=${encodeURIComponent(spec)}` + (force ? '&refresh=1' : '');
+    fetch(url)
         .then(r => r.json())
         .then(data => {
-            if (data.success) {
-                _githubTreeData = data.tree;
-                _githubTreeLoaded = true;
-                renderTreeView(data.tree);
-                loading.classList.add('d-none');
-                content.classList.remove('d-none');
-            } else {
-                throw new Error(data.message || 'Failed to load');
-            }
+            if (!data.success) throw new Error(data.message || 'Failed to load');
+            _githubTrees[spec] = { tree: data.tree, fetched_at: data.fetched_at, truncated: !!data.truncated };
+            if (spec !== _githubCurrentRepo) return; // the user switched away meanwhile
+            _showGithubTree(spec);
+            loading.classList.add('d-none');
+            content.classList.remove('d-none');
+            if (force) CLU.toast('Repository refreshed', 'success');
         })
         .catch(err => {
+            if (spec !== _githubCurrentRepo) return;
             loading.classList.add('d-none');
             error.classList.remove('d-none');
             error.textContent = 'Failed to load repository: ' + err.message;
+        })
+        .finally(() => {
+            if (refresh) refresh.disabled = !_githubCurrentRepo;
         });
+}
+
+// One indent step per level. reading_lists.css draws each folder's guide line
+// from the same numbers (--tree-step, --tree-gutter), so keep them in sync.
+const TREE_STEP_PX = 22;
+const TREE_GUTTER_PX = 12;
+
+function _treeIndent(depth) {
+    return (depth * TREE_STEP_PX + TREE_GUTTER_PX) + 'px';
 }
 
 function _createFolderEl(folder) {
@@ -1835,10 +2046,12 @@ function _createFolderEl(folder) {
     div.dataset.path = folder.path;
 
     const header = document.createElement('div');
-    header.className = 'tree-item tree-folder-header d-flex align-items-center px-3 py-2';
+    // pe-3, not px-3: Bootstrap's spacing utilities are !important and would
+    // override the per-depth padding-left, flattening the tree.
+    header.className = 'tree-item tree-folder-header d-flex align-items-center pe-3 py-2';
     header.style.cursor = 'pointer';
     const depth = folder.path.split('/').length - 1;
-    header.style.paddingLeft = (depth * 20 + 12) + 'px';
+    header.style.paddingLeft = _treeIndent(depth);
     header.onclick = () => toggleFolder(folder.path);
 
     header.innerHTML = `
@@ -1851,6 +2064,7 @@ function _createFolderEl(folder) {
     // Child container — starts hidden and unloaded
     const children = document.createElement('div');
     children.className = 'tree-children';
+    children.style.setProperty('--tree-depth', depth);
     children.dataset.folderPath = folder.path;
     children.dataset.loaded = 'false';
     children.style.display = 'none';
@@ -1865,14 +2079,14 @@ function _createFolderEl(folder) {
 
 function _createFileEl(file, depth) {
     const div = document.createElement('div');
-    div.className = 'tree-item tree-file d-flex align-items-center px-3 py-2';
+    div.className = 'tree-item tree-file d-flex align-items-center pe-3 py-2';
     div.dataset.path = file.path;
-    div.style.paddingLeft = (depth * 20 + 12) + 'px';
+    div.style.paddingLeft = _treeIndent(depth);
 
     const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
     div.innerHTML = `
         <div class="form-check mb-0">
-            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
             <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
                 <i class="bi bi-file-earmark-text me-1 text-primary"></i>${CLU.escapeHtml(filename)}
             </label>
@@ -1898,6 +2112,53 @@ function _loadFolderChildren(path) {
     });
 
     children.dataset.loaded = 'true';
+
+    // A folder opened by hand while a search is active must not show the
+    // files the search hides.
+    const filter = document.getElementById('githubTreeFilter');
+    const q = filter ? filter.value.toLowerCase().trim() : '';
+    if (q) {
+        children.querySelectorAll(':scope > .tree-file').forEach(item => {
+            item.style.display = item.dataset.path.toLowerCase().includes(q) ? '' : 'none';
+        });
+        children.querySelectorAll(':scope > .tree-folder').forEach(sub => {
+            const hasMatch = (_githubTreeData || []).some(i => i.type === 'blob'
+                && i.path.startsWith(sub.dataset.path + '/')
+                && i.path.toLowerCase().includes(q));
+            sub.style.display = hasMatch ? '' : 'none';
+        });
+    }
+}
+
+// Shift-click range selection. The anchor is the last checkbox toggled; a
+// shift-click sets every *visible* file between it and the clicked one (open
+// folders, current search) to the clicked one's new state. Shift is read on
+// mousedown because a click on the label reaches the checkbox as a synthetic
+// event, and not every browser carries the modifier over to it.
+let _treeAnchor = null;
+let _treeShiftDown = false;
+
+function _bindTreeRangeSelect(container) {
+    if (container.dataset.rangeBound) return;
+    container.dataset.rangeBound = '1';
+    container.addEventListener('mousedown', e => { _treeShiftDown = e.shiftKey; });
+    container.addEventListener('change', e => {
+        const cb = e.target;
+        if (!cb.classList || !cb.classList.contains('tree-file-check')) return;
+        if (_treeShiftDown && _treeAnchor && _treeAnchor !== cb && container.contains(_treeAnchor)) {
+            const visible = Array.from(container.querySelectorAll('.tree-file-check'))
+                .filter(c => c.offsetParent !== null);
+            const a = visible.indexOf(_treeAnchor);
+            const b = visible.indexOf(cb);
+            if (a !== -1 && b !== -1) {
+                const [lo, hi] = a < b ? [a, b] : [b, a];
+                for (let i = lo; i <= hi; i++) visible[i].checked = cb.checked;
+            }
+        }
+        _treeShiftDown = false;
+        _treeAnchor = cb;
+        updateSelectedCount();
+    });
 }
 
 function renderTreeView(tree) {
@@ -1905,6 +2166,8 @@ function renderTreeView(tree) {
     if (!container) return;
 
     container.innerHTML = '';
+    _treeAnchor = null;
+    _bindTreeRangeSelect(container);
     _collapsedFolders.clear();
 
     // Build data structures
@@ -2067,7 +2330,7 @@ function importSelectedFiles() {
     fetch('/api/reading-lists/import-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: files })
+        body: JSON.stringify({ repo: _githubCurrentRepo, files: files })
     })
         .then(r => r.json())
         .then(data => {

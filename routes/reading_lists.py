@@ -52,6 +52,7 @@ from core.reading_list_sync import (
 )
 import core.reading_list_sync as reading_list_sync
 from core.reading_list_match import rematch_entries
+import core.cbl_repos as cbl_repos
 from models.metron import (
     is_metron_configured,
     get_flask_api,
@@ -95,8 +96,9 @@ def sanitize_description_filter(value):
 # hour after their last poll; it used to keep every task for the process's life.
 import_tasks = TaskRegistry()
 
-# GitHub tree cache (memory + disk-backed with TTL)
-_github_tree_cache = {"tree": None, "fetched_at": 0}
+# GitHub tree cache per repo spec (memory + disk-backed with TTL):
+# {spec: {"tree": [...], "fetched_at": float}}
+_github_tree_cache = {}
 _GITHUB_TREE_TTL = 86400  # 24 hours (disk-backed, so safe to keep longer)
 _github_tree_lock = threading.Lock()
 
@@ -787,45 +789,70 @@ def export_cbl(list_id):
     )
 
 
-def _get_github_tree_cache_path():
-    """Get the path for the disk-backed GitHub tree cache file."""
+def _get_github_tree_cache_path(spec):
+    """Disk cache file for one repo spec's tree."""
     cache_dir = current_app.config.get("CACHE_DIR", "/cache") if current_app else "/cache"
-    return os.path.join(cache_dir, "github_tree_cache.json")
+    slug = re_module.sub(r"[^A-Za-z0-9._-]+", "_", spec.lower())
+    return os.path.join(cache_dir, "github_trees", f"{slug}.json")
 
 
-def _load_disk_cache():
-    """Load GitHub tree from disk cache if available and fresh."""
+def _cached_tree(spec):
+    """``(tree, fetched_at)`` from memory or disk if fresh, else ``(None, 0)``."""
+    now = time_module.time()
+    entry = _github_tree_cache.get(spec)
+    if entry and now - entry["fetched_at"] < _GITHUB_TREE_TTL:
+        return entry["tree"], entry["fetched_at"]
     try:
-        cache_path = _get_github_tree_cache_path()
+        cache_path = _get_github_tree_cache_path(spec)
         if os.path.exists(cache_path):
             with open(cache_path, "r") as f:
                 data = json.load(f)
-            if time_module.time() - data.get("fetched_at", 0) < _GITHUB_TREE_TTL:
+            if now - data.get("fetched_at", 0) < _GITHUB_TREE_TTL:
+                _github_tree_cache[spec] = {"tree": data["tree"], "fetched_at": data["fetched_at"]}
                 return data["tree"], data["fetched_at"]
     except Exception as e:
-        app_logger.debug(f"Disk cache read failed: {e}")
+        app_logger.debug(f"GitHub tree disk cache read failed for {spec}: {e}")
     return None, 0
 
 
-def _save_disk_cache(tree, fetched_at):
-    """Save GitHub tree to disk cache."""
+def _save_disk_cache(spec, tree, fetched_at):
     try:
-        cache_path = _get_github_tree_cache_path()
+        cache_path = _get_github_tree_cache_path(spec)
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w") as f:
             json.dump({"tree": tree, "fetched_at": fetched_at}, f)
     except Exception as e:
-        app_logger.debug(f"Disk cache write failed: {e}")
+        app_logger.debug(f"GitHub tree disk cache write failed for {spec}: {e}")
 
 
-def _fetch_github_tree():
-    """Fetch and filter the GitHub tree from the API. Returns (tree, fetched_at) or raises."""
-    resp = requests.get(
-        "https://api.github.com/repos/DieselTech/CBL-ReadingLists/git/trees/main?recursive=1",
-        timeout=30,
-        headers={"Accept": "application/vnd.github.v3+json"},
-    )
-    resp.raise_for_status()
+def _forget_tree(spec):
+    _github_tree_cache.pop(spec, None)
+    try:
+        os.remove(_get_github_tree_cache_path(spec))
+    except OSError:
+        pass
+
+
+class GithubTreeError(Exception):
+    """A tree fetch failed with a message fit to show the user."""
+
+
+def _fetch_github_tree(spec):
+    """Fetch and filter one repo's tree. Returns (tree, fetched_at, truncated); raises GithubTreeError."""
+    try:
+        resp = requests.get(
+            cbl_repos.tree_api_url(spec),
+            timeout=30,
+            headers={"Accept": "application/vnd.github.v3+json"},
+        )
+    except requests.RequestException as e:
+        raise GithubTreeError(f"Could not reach GitHub: {e}") from e
+    if resp.status_code == 404:
+        raise GithubTreeError(f"{spec}: repository or branch not found (or private)")
+    if resp.status_code in (403, 429):
+        raise GithubTreeError("GitHub rate limit reached; try again later")
+    if not resp.ok:
+        raise GithubTreeError(f"GitHub returned HTTP {resp.status_code}")
     data = resp.json()
 
     cbl_files = []
@@ -839,91 +866,151 @@ def _fetch_github_tree():
 
     folders = [{"path": p, "type": "tree"} for p in sorted(folder_paths)]
     tree = folders + sorted(cbl_files, key=lambda x: x["path"])
-    fetched_at = time_module.time()
-    return tree, fetched_at
+    return tree, time_module.time(), bool(data.get("truncated"))
 
 
-def _refresh_github_tree_cache():
-    """Refresh the in-memory and disk caches. Thread-safe."""
-    global _github_tree_cache
+def _refresh_github_tree_cache(spec, force=False):
+    """Fetch ``spec``'s tree into the memory and disk caches. Thread-safe.
+
+    Returns ``(tree, fetched_at, truncated)``; raises GithubTreeError.
+    """
     with _github_tree_lock:
-        # Double-check after acquiring lock
-        if _github_tree_cache["tree"] is not None and (time_module.time() - _github_tree_cache["fetched_at"]) < _GITHUB_TREE_TTL:
-            return _github_tree_cache["tree"]
-        try:
-            tree, fetched_at = _fetch_github_tree()
-            _github_tree_cache["tree"] = tree
-            _github_tree_cache["fetched_at"] = fetched_at
-            _save_disk_cache(tree, fetched_at)
-            app_logger.info(f"GitHub tree cache refreshed: {len(tree)} items")
-            return tree
-        except Exception as e:
-            app_logger.error(f"Error fetching GitHub tree: {e}")
-            return None
+        if not force:
+            # Double-check after acquiring lock
+            tree, fetched_at = _cached_tree(spec)
+            if tree is not None:
+                return tree, fetched_at, False
+        tree, fetched_at, truncated = _fetch_github_tree(spec)
+        _github_tree_cache[spec] = {"tree": tree, "fetched_at": fetched_at}
+        _save_disk_cache(spec, tree, fetched_at)
+        app_logger.info(f"GitHub tree for {spec} refreshed: {len(tree)} items")
+        return tree, fetched_at, truncated
 
 
 def prefetch_github_tree(app):
-    """Pre-fetch GitHub tree in a background thread at startup.
-    Call this after app is created to warm the cache."""
+    """Warm every configured repo's tree cache in a background thread at startup."""
     def _worker():
         with app.app_context():
-            global _github_tree_cache
-            # Try disk cache first
-            tree, fetched_at = _load_disk_cache()
-            if tree:
-                _github_tree_cache["tree"] = tree
-                _github_tree_cache["fetched_at"] = fetched_at
-                app_logger.info(f"GitHub tree loaded from disk cache: {len(tree)} items")
-                return
-            # Fetch fresh from GitHub
-            _refresh_github_tree_cache()
+            for spec in cbl_repos.get_repos():
+                try:
+                    _refresh_github_tree_cache(spec)
+                except GithubTreeError as e:
+                    app_logger.warning(f"GitHub tree prefetch failed for {spec}: {e}")
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
 
 
+def _repo_payload(spec):
+    name, ref = cbl_repos.split_repo(spec)
+    entry = _github_tree_cache.get(spec) or {}
+    return {
+        "spec": spec,
+        "name": name,
+        "branch": None if ref == "HEAD" else ref,
+        "url": cbl_repos.html_url(spec),
+        "fetched_at": entry.get("fetched_at"),
+    }
+
+
+def _requested_repo(value):
+    """The configured spec ``value`` names (case-insensitive), the first one
+    when ``value`` is blank, or None. Only configured repos are fetched, so
+    these endpoints are not a general GitHub proxy."""
+    repos = cbl_repos.get_repos()
+    if not value:
+        return repos[0] if repos else None
+    wanted = cbl_repos.normalize_repo(value)
+    for spec in repos:
+        if wanted and spec.lower() == wanted.lower():
+            return spec
+    return None
+
+
+@reading_lists_bp.route('/api/reading-lists/github-repos', methods=['GET'])
+def github_repos():
+    """The repositories the GitHub browser offers."""
+    return jsonify({"success": True,
+                    "repos": [_repo_payload(s) for s in cbl_repos.get_repos()],
+                    "default": cbl_repos.DEFAULT_REPO})
+
+
+@reading_lists_bp.route('/api/reading-lists/github-repos', methods=['POST'])
+def save_github_repos():
+    """Replace the repo list. Body: ``{"repos": ["owner/repo[@branch]" | url, ...]}``."""
+    data = request.get_json(silent=True) or {}
+    raw = data.get("repos")
+    if not isinstance(raw, list):
+        return jsonify({"success": False, "message": "repos must be a list"}), 400
+    specs = []
+    for item in raw:
+        spec = cbl_repos.normalize_repo(item if isinstance(item, str) else "")
+        if not spec:
+            return jsonify({"success": False,
+                            "message": f"Not a GitHub repository: {item!r}. "
+                                       "Use owner/repo, owner/repo@branch or a github.com URL."}), 400
+        if spec.lower() not in (s.lower() for s in specs):
+            specs.append(spec)
+    before = set(cbl_repos.get_repos())
+    if not cbl_repos.set_repos(specs):
+        return jsonify({"success": False, "message": "Could not save the repository list"}), 500
+    for gone in before - set(specs):
+        _forget_tree(gone)
+    return jsonify({"success": True, "repos": [_repo_payload(s) for s in specs]})
+
+
 @reading_lists_bp.route('/api/reading-lists/github-tree')
 def github_tree():
-    """Proxy endpoint to browse DieselTech/CBL-ReadingLists repo tree."""
-    global _github_tree_cache
+    """Proxy endpoint to browse a configured repo's tree.
 
-    now = time_module.time()
+    ``?repo=owner/repo[@branch]`` picks the repo (default: the first one);
+    ``?refresh=1`` bypasses the cache.
+    """
+    spec = _requested_repo(request.args.get("repo", ""))
+    if not spec:
+        message = ("No GitHub repositories configured" if not cbl_repos.get_repos()
+                   else "Unknown repository")
+        return jsonify({"success": False, "message": message}), 404
+    force = request.args.get("refresh") in ("1", "true")
 
-    # Serve from memory cache if fresh
-    if _github_tree_cache["tree"] is not None and (now - _github_tree_cache["fetched_at"]) < _GITHUB_TREE_TTL:
-        return jsonify({"success": True, "tree": _github_tree_cache["tree"]})
+    if not force:
+        tree, fetched_at = _cached_tree(spec)
+        if tree is not None:
+            return jsonify({"success": True, "repo": spec, "tree": tree, "fetched_at": fetched_at})
 
-    # Try disk cache
-    tree, fetched_at = _load_disk_cache()
-    if tree:
-        _github_tree_cache["tree"] = tree
-        _github_tree_cache["fetched_at"] = fetched_at
-        # Refresh in background for next time
-        threading.Thread(target=lambda: _refresh_github_tree_cache(), daemon=True).start()
-        return jsonify({"success": True, "tree": tree})
-
-    # No cache — fetch synchronously
-    tree = _refresh_github_tree_cache()
-    if tree:
-        return jsonify({"success": True, "tree": tree})
-
-    return jsonify({"success": False, "message": "Failed to fetch repository from GitHub"}), 500
+    try:
+        tree, fetched_at, truncated = _refresh_github_tree_cache(spec, force=force)
+    except GithubTreeError as e:
+        app_logger.warning(f"GitHub tree fetch failed for {spec}: {e}")
+        return jsonify({"success": False, "repo": spec, "message": str(e)}), 502
+    return jsonify({"success": True, "repo": spec, "tree": tree,
+                    "fetched_at": fetched_at, "truncated": truncated})
 
 
 @reading_lists_bp.route('/api/reading-lists/import-batch', methods=['POST'])
 def import_batch():
-    """Import multiple CBL files from the DieselTech repo."""
-    data = request.json
-    files = data.get('files', []) if data else []
+    """Import multiple CBL files from a configured GitHub repo.
+
+    Body: ``{"repo": "owner/repo[@branch]", "files": [path, ...]}``; ``repo``
+    defaults to the first configured one.
+    """
+    data = request.get_json(silent=True) or {}
+    files = data.get('files', [])
 
     if not files:
         return jsonify({'success': False, 'message': 'No files selected'})
+
+    spec = _requested_repo(data.get('repo', ''))
+    if not spec:
+        return jsonify({'success': False, 'message': 'Unknown repository'}), 400
 
     rename_pattern = current_app.config.get('CUSTOM_RENAME_PATTERN', '{series_name} {issue_number}')
     tasks = []
 
     for file_path in files:
-        raw_url = f"https://raw.githubusercontent.com/DieselTech/CBL-ReadingLists/main/{file_path}"
+        # raw_file_url quotes the path: CBL names carry '#' ("Part #01"),
+        # which an unquoted URL reads as a fragment.
+        raw_url = cbl_repos.raw_file_url(spec, file_path)
         filename = file_path.split('/')[-1]
         task_id = str(uuid.uuid4())
         import_tasks[task_id] = {

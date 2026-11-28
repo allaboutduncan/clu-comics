@@ -85,10 +85,15 @@ def _convert_github_blob_to_raw(url):
     """Convert a github.com blob URL to a raw.githubusercontent.com URL.
 
     Only transforms URLs whose hostname is exactly github.com and whose path
-    contains /blob/.  Returns the URL unchanged otherwise.
+    contains /blob/.  A raw URL with an unquoted '#' gets it escaped to %23.
+    Returns the URL unchanged otherwise.
     """
     try:
         parsed = urlparse(url)
+        if parsed.hostname == "raw.githubusercontent.com" and parsed.fragment:
+            # A raw file has no fragment: a '#' here is part of the file name
+            # ("Part #01"), stored unquoted by imports before it was escaped.
+            return url.replace("#", "%23")
         if parsed.hostname == "github.com" and "/blob/" in parsed.path:
             new_path = parsed.path.replace("/blob/", "/", 1)
             return parsed._replace(
