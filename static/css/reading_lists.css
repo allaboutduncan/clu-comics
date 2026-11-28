@@ -610,3 +610,8 @@ body.reading-list-select-mode .reading-list-card {
 #githubTreeContent .tree-item:hover {
     background-color: var(--bs-tertiary-bg);
 }
+
+/* Shift-click selects a range of lists; without this it also selects text. */
+#githubTreeContent .tree-file {
+    user-select: none;
+}

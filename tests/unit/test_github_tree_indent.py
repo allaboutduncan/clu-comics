@@ -21,3 +21,14 @@ def test_tree_rows_do_not_use_important_left_padding():
 def test_tree_rows_indent_by_depth():
     src = JS.read_text(encoding="utf-8")
     assert src.count("style.paddingLeft = _treeIndent(depth)") == 2
+
+
+def test_shift_click_selects_a_range_of_visible_files():
+    """Shift is read on mousedown (a label click reaches the checkbox as a
+    synthetic event), and the range covers visible checkboxes only."""
+    src = JS.read_text(encoding="utf-8")
+    assert "addEventListener('mousedown', e => { _treeShiftDown = e.shiftKey; })" in src
+    assert ".filter(c => c.offsetParent !== null)" in src
+    assert "_bindTreeRangeSelect(container);" in src
+    # One handler counts the selection; an inline onchange would bypass the range.
+    assert 'onchange="updateSelectedCount()"' not in src

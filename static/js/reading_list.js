@@ -2086,7 +2086,7 @@ function _createFileEl(file, depth) {
     const filename = file.path.split('/').pop().replace(/\.cbl$/i, '');
     div.innerHTML = `
         <div class="form-check mb-0">
-            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}" onchange="updateSelectedCount()">
+            <input class="form-check-input tree-file-check" type="checkbox" value="${CLU.escapeHtml(file.path)}" id="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
             <label class="form-check-label" for="chk-${file.path.replace(/[^a-zA-Z0-9]/g, '_')}">
                 <i class="bi bi-file-earmark-text me-1 text-primary"></i>${CLU.escapeHtml(filename)}
             </label>
@@ -2130,11 +2130,44 @@ function _loadFolderChildren(path) {
     }
 }
 
+// Shift-click range selection. The anchor is the last checkbox toggled; a
+// shift-click sets every *visible* file between it and the clicked one (open
+// folders, current search) to the clicked one's new state. Shift is read on
+// mousedown because a click on the label reaches the checkbox as a synthetic
+// event, and not every browser carries the modifier over to it.
+let _treeAnchor = null;
+let _treeShiftDown = false;
+
+function _bindTreeRangeSelect(container) {
+    if (container.dataset.rangeBound) return;
+    container.dataset.rangeBound = '1';
+    container.addEventListener('mousedown', e => { _treeShiftDown = e.shiftKey; });
+    container.addEventListener('change', e => {
+        const cb = e.target;
+        if (!cb.classList || !cb.classList.contains('tree-file-check')) return;
+        if (_treeShiftDown && _treeAnchor && _treeAnchor !== cb && container.contains(_treeAnchor)) {
+            const visible = Array.from(container.querySelectorAll('.tree-file-check'))
+                .filter(c => c.offsetParent !== null);
+            const a = visible.indexOf(_treeAnchor);
+            const b = visible.indexOf(cb);
+            if (a !== -1 && b !== -1) {
+                const [lo, hi] = a < b ? [a, b] : [b, a];
+                for (let i = lo; i <= hi; i++) visible[i].checked = cb.checked;
+            }
+        }
+        _treeShiftDown = false;
+        _treeAnchor = cb;
+        updateSelectedCount();
+    });
+}
+
 function renderTreeView(tree) {
     const container = document.getElementById('githubTreeContent');
     if (!container) return;
 
     container.innerHTML = '';
+    _treeAnchor = null;
+    _bindTreeRangeSelect(container);
     _collapsedFolders.clear();
 
     // Build data structures
